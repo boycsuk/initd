@@ -112,6 +112,15 @@ pub const BORDER_FOCUSED: Style = fg(Color::Cyan);
 /// The border of every other pane.
 pub const BORDER_UNFOCUSED: Style = fg_mod(Color::White, Modifier::DIM);
 
+/// The border of a pane, according to whether it holds focus.
+pub const fn border(focused: bool) -> Style {
+    if focused {
+        BORDER_FOCUSED
+    } else {
+        BORDER_UNFOCUSED
+    }
+}
+
 // --- Command output --------------------------------------------------------
 
 /// The `$` prefix and the echoed command itself.

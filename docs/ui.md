@@ -97,7 +97,11 @@ a clear refusal.
   (`2 tasks`, `1 category`), which costs no rows. Tasks unsupported on the
   running distribution stay visible and dimmed.
 - **Output** — the running task's output, streamed line by line as it is
-  produced, scrollable. Right column. Retains the most recent 2000 lines.
+  produced, scrollable. Right column. Retains the most recent 5000 lines in a
+  ring buffer, dropping the oldest. The bottom border states whether the view
+  is pinned to the newest output (`follow`) or has been scrolled away
+  (`detached`), and while following, a `▌` cursor marks where the next line
+  will land — a quiet command and a frozen screen otherwise look identical.
 - **Detail** — occupies the same area as Output before any task has run,
   showing what the selected task does, titled with the task's own name. With a
   category selected it shows the category name and how many tasks it holds at
@@ -231,25 +235,64 @@ of inventing a colour.
 
 ## Keys
 
+### Anywhere
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Move focus between the tree and the output |
+| `q` | Quit, from any level and either pane |
+
+`j` and `k` mean "next" and "previous" in both panes, so something has to say
+which one they address. That something is `Tab` and **nothing else**:
+overloading a movement key with focus is how keys start leaking between panes.
+
+The focused pane is drawn with a cyan border; the other is dim. The tree's
+selected row stays visible when focus leaves it, drawn underlined rather than
+highlighted — losing the cursor on `Tab` would mean hunting for it again on the
+way back.
+
 ### Task tree
 
 | Key | Action |
 |-----|--------|
 | `↑` / `k` | Move to the previous row (categories included) |
 | `↓` / `j` | Move to the next row |
+| `g` / `G` | Jump to the first / last row of the level |
 | `Enter` | Open the selected category, or run the selected task; destructive tasks open the dialog first |
 | `Esc` / `Backspace` / `←` / `h` | Go back to the parent level; at the top level it reports rather than quitting |
-| `PageUp` | Scroll the output pane towards older lines |
-| `PageDown` | Scroll the output pane back towards the newest |
-| `q` | Quit, from any level |
 
 Every row is selectable: a category that could not be selected could not be
 opened. `Esc` means "go back" rather than "quit", so pressing it one level too
 many cannot drop the user out of the program — `q` is the only way out.
 
-The key bar reflects the selected row: the `Enter` hint reads *open* on a
-category and *run* on a task, and the `Esc` hint appears only below the top
-level.
+A scrollbar appears on the right edge of the tree only when the level overflows
+the pane; a track drawn against a level that fits is a permanent hint that
+content is hidden when none is.
+
+### Output pane
+
+| Key | Action |
+|-----|--------|
+| `↑` / `k` | Scroll one line towards older output, detaching from the tail |
+| `↓` / `j` | Scroll one line back towards the newest |
+| `PageUp` / `PageDown` | Scroll by ten lines |
+| `g` | Jump to the oldest retained line |
+| `G` / `f` | Jump to the newest output and follow it again |
+| `w` | Toggle wrapping of long lines |
+| `Esc` | Return focus to the tree |
+
+Any upward scroll detaches the view from the tail, so reading back through a
+log is never interrupted by new arrivals. Scrolling back to the bottom
+re-attaches on its own — the operator has caught up, and needing another key to
+resume following would be a step with no purpose.
+
+### The key bar
+
+The hints follow the focused pane and the row under the cursor rather than
+listing every binding: a bar that never changes is one the operator stops
+reading. On the tree the `Enter` hint reads *open* on a category and *run* on a
+task; `Esc back` appears only below the top level, and `Tab output` only once
+there is output to switch to.
 
 ### Confirmation dialog
 

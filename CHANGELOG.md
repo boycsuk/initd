@@ -87,6 +87,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open can see which machine is about to change without asking, and knows
   whether privileged work will succeed before starting it rather than when it
   fails.
+- Focus moves between the tree and the output with `Tab`, and with nothing
+  else. `j` and `k` mean "next" and "previous" in both panes, so a single key
+  says which one they address; overloading a movement key with focus is how
+  keys start leaking between panes. The focused pane is bordered in cyan, and
+  the tree's selected row stays visible when focus leaves it.
+- The output pane follows the newest output until the administrator scrolls,
+  states which of the two it is doing on its bottom border (`follow` /
+  `detached`), and marks the write position with `▌` while following — a quiet
+  command and a frozen screen otherwise look identical over a slow link. `w`
+  toggles wrapping, `G` re-attaches to the tail, and scrolling back to the
+  bottom re-attaches on its own.
+- The output buffer holds 5000 lines in a `VecDeque` instead of 2000 in a
+  `Vec`. Dropping the oldest line from a `Vec` shifted every remaining element,
+  which at that cap meant thousands of moves per line for a chatty package
+  manager once the buffer was full.
+- The tree shows a scrollbar when a level overflows its pane, and only then.
+- `g` and `G` jump to the first and last row of a level.
+- The key bar follows the focused pane and the selected row rather than listing
+  every binding, since a bar that never changes is one that stops being read.
 - Text that overflows its column is marked with `…` rather than clipped in
   silence. Breadcrumbs lose their head and task titles their tail, since a path
   is identified by where it ends and a task by how its name starts: `… Access ›

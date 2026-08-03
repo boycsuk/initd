@@ -7,7 +7,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 
 use super::confirm::Confirm;
 use super::output::OutputPane;
@@ -39,11 +42,36 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Right-aligned hint in the header.
 const HELP_HINT: &str = "? help";
 
+/// Lines a page key moves the output by.
+const PAGE_SCROLL: usize = 10;
+
 /// Marks a row that opens onto another level.
 const CATEGORY_MARKER: &str = "› ";
 
 /// Marks a runnable row, keeping task titles aligned with category ones.
 const TASK_MARKER: &str = "  ";
+
+/// Which pane the movement keys act on.
+///
+/// `j` and `k` mean "next" and "previous" in both panes, so something has to
+/// say which one they address. That something is `Tab` and nothing else:
+/// overloading a movement key with focus is how keys start leaking between
+/// panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Tree,
+    Output,
+}
+
+impl Pane {
+    /// The pane `Tab` moves to.
+    const fn other(self) -> Self {
+        match self {
+            Self::Tree => Self::Output,
+            Self::Output => Self::Tree,
+        }
+    }
+}
 
 /// The running application.
 ///
@@ -65,6 +93,8 @@ pub struct App {
     /// Cursor position of each level left behind, restored on the way back.
     cursor_stack: Vec<usize>,
     list_state: ListState,
+    /// Which pane the movement keys currently address.
+    focus: Pane,
     output: OutputPane,
     confirm: Option<Confirm>,
     status: Status,
@@ -97,6 +127,9 @@ impl App {
             path: Vec::new(),
             cursor_stack: Vec::new(),
             list_state,
+            // The tree is where a session starts: nothing has run yet, so
+            // there is no output to read.
+            focus: Pane::Tree,
             output: OutputPane::new(),
             confirm: None,
             status: Status::new(),
@@ -206,22 +239,85 @@ impl App {
             return self.on_confirm_key(key, terminal);
         }
 
+        // Everything except running a task is resolved without the terminal,
+        // so navigation stays testable without one.
+        if self.on_navigation_key(key) {
+            return Ok(());
+        }
+
+        if key.code == KeyCode::Enter && self.focus == Pane::Tree {
+            self.activate(terminal)?;
+        }
+
+        Ok(())
+    }
+
+    /// Handles the keys that only move around, reporting whether one matched.
+    ///
+    /// Running a task is deliberately not here: it needs the terminal handed
+    /// to a child process, and keeping that out of the navigation path is what
+    /// lets every key below be exercised without one.
+    fn on_navigation_key(&mut self, key: KeyEvent) -> bool {
+        // Keys that mean the same thing whichever pane holds focus.
         match key.code {
             // `q` quits from any level; `Esc` means "go back", so that leaving
             // one level too many cannot drop the user out of the program.
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+                return true;
+            }
+            // The only focus key. Overloading a movement key with focus is how
+            // keys start leaking between panes.
+            KeyCode::Tab => {
+                self.focus = self.focus.other();
+                return true;
+            }
+            _ => {}
+        }
+
+        match self.focus {
+            Pane::Tree => self.on_tree_key(key),
+            Pane::Output => self.on_output_key(key),
+        }
+    }
+
+    /// Handles a movement key while the tree holds focus.
+    ///
+    /// `Enter` is not here: it runs a task, which needs the terminal.
+    fn on_tree_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
             KeyCode::Esc | KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
                 self.leave_category();
             }
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
-            KeyCode::PageUp => self.output.scroll_up(10),
-            KeyCode::PageDown => self.output.scroll_down(10),
-            KeyCode::Enter => self.activate(terminal)?,
-            _ => {}
+            KeyCode::Char('g') => self.select_first(),
+            KeyCode::Char('G') => self.select_last(),
+            _ => return false,
         }
 
-        Ok(())
+        true
+    }
+
+    /// Handles a key press while the output pane holds focus.
+    ///
+    /// Reading is never blocked, so these stay available while a task runs.
+    fn on_output_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
+            KeyCode::Up | KeyCode::Char('k') => self.output.scroll_up(1),
+            KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
+            KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
+            KeyCode::Char('g') => self.output.scroll_up(usize::MAX),
+            // `G` and `f` both re-attach to the tail: one is the counterpart
+            // of scrolling away, the other names what it does.
+            KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
+            KeyCode::Char('w') => self.output.toggle_wrap(),
+            KeyCode::Esc => self.focus = Pane::Tree,
+            _ => return false,
+        }
+
+        true
     }
 
     /// Handles a key press while the confirmation dialog is open.
@@ -366,6 +462,17 @@ impl App {
         self.list_state.select(Some(current.saturating_sub(1)));
     }
 
+    /// Moves the cursor to the first row of the level.
+    fn select_first(&mut self) {
+        self.list_state.select(Some(0));
+    }
+
+    /// Moves the cursor to the last row of the level.
+    fn select_last(&mut self) {
+        self.list_state
+            .select(Some(self.current_level().len().saturating_sub(1)));
+    }
+
     /// Draws the whole interface.
     ///
     /// A terminal too small for a legible interface gets a stated requirement
@@ -444,11 +551,12 @@ impl App {
             .map(|node| ListItem::new(row(node, family, row_width)))
             .collect();
 
+        let tree_focused = self.focus == Pane::Tree;
         let list = List::new(items)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(style::BORDER_FOCUSED)
+                    .border_style(style::border(tree_focused))
                     .title(Span::styled(
                         // Two borders and the spaces framing the title.
                         truncate_head(&self.breadcrumb(), tree_area.width.saturating_sub(4)),
@@ -457,48 +565,87 @@ impl App {
                     // The census rides the bottom border, costing no rows.
                     .title_bottom(Span::styled(self.census(), style::BLOCK_SUBTITLE)),
             )
-            .highlight_style(style::SELECTION_FOCUSED);
+            // The selected row stays visible while focus is elsewhere, drawn
+            // differently: losing the cursor on Tab would mean hunting for it
+            // again on the way back.
+            .highlight_style(if tree_focused {
+                style::SELECTION_FOCUSED
+            } else {
+                style::SELECTION_UNFOCUSED
+            });
 
         frame.render_stateful_widget(list, tree_area, &mut self.list_state);
+        self.render_tree_scrollbar(frame, tree_area);
 
         if self.output.is_empty() {
-            // With no output yet, the pane describes what the selection does.
-            // A category has no description of its own, so it reports what it
-            // holds rather than leaving the pane blank.
-            let description = match self.selected_node() {
-                Some(Node::Task(task)) => task.description().to_owned(),
-                Some(Node::Category(category)) => {
-                    let count = category.task_count();
-                    let plural = if count == 1 { "task" } else { "tasks" };
-                    format!(
-                        "{} — {} {} inside.\n\nPress Enter to open.",
-                        category.title, count, plural
-                    )
-                }
-                None => String::new(),
-            };
-
-            let title = match self.selected_node() {
-                Some(Node::Task(task)) => task.title(),
-                _ => "Detail",
-            };
-
-            let paragraph = Paragraph::new(description)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(style::BORDER_UNFOCUSED)
-                        .title(Span::styled(
-                            truncate_head(title, right_area.width.saturating_sub(4)),
-                            style::PANE_TITLE,
-                        )),
-                )
-                .wrap(Wrap { trim: true });
-
-            frame.render_widget(paragraph, right_area);
+            self.render_detail(frame, right_area);
         } else {
-            self.output.render(frame, right_area, "output");
+            self.output
+                .render(frame, right_area, "output", self.focus == Pane::Output);
         }
+    }
+
+    /// Draws the tree's scrollbar, but only when there is something to scroll.
+    ///
+    /// A track drawn against a level that fits is a permanent hint that
+    /// content is hidden when none is.
+    fn render_tree_scrollbar(&self, frame: &mut Frame, area: Rect) {
+        let rows = self.current_level().len();
+        // The block's own borders are not available to the list.
+        let viewport = area.height.saturating_sub(2) as usize;
+
+        if rows <= viewport {
+            return;
+        }
+
+        let mut state =
+            ScrollbarState::new(rows.saturating_sub(viewport)).position(self.list_state.offset());
+
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .style(style::SCROLLBAR_TRACK)
+                .thumb_style(style::SCROLLBAR_THUMB),
+            area,
+            &mut state,
+        );
+    }
+
+    /// Draws what the selected row would do, before anything has run.
+    ///
+    /// A category has no description of its own, so it reports what it holds
+    /// rather than leaving the pane blank.
+    fn render_detail(&self, frame: &mut Frame, area: Rect) {
+        let description = match self.selected_node() {
+            Some(Node::Task(task)) => task.description().to_owned(),
+            Some(Node::Category(category)) => {
+                let count = category.task_count();
+                let plural = if count == 1 { "task" } else { "tasks" };
+                format!(
+                    "{} — {} {} inside.\n\nPress Enter to open.",
+                    category.title, count, plural
+                )
+            }
+            None => String::new(),
+        };
+
+        let title = match self.selected_node() {
+            Some(Node::Task(task)) => task.title(),
+            _ => "Detail",
+        };
+
+        let paragraph = Paragraph::new(description)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style::border(self.focus == Pane::Output))
+                    .title(Span::styled(
+                        truncate_head(title, area.width.saturating_sub(4)),
+                        style::PANE_TITLE,
+                    )),
+            )
+            .wrap(Wrap { trim: true });
+
+        frame.render_widget(paragraph, area);
     }
 
     /// Counts what the level on screen holds, for the tree's bottom border.
@@ -558,11 +705,11 @@ impl App {
         }
     }
 
-    /// Draws the key hints along the bottom row.
+    /// The hints offered while the tree holds focus.
     ///
-    /// What `Enter` does depends on the row under the cursor, so the hint says
-    /// which of the two it is rather than naming both every time.
-    fn render_key_bar(&self, frame: &mut Frame, area: Rect) {
+    /// `Enter` opens a category but runs a task, so the hint names which of
+    /// the two it is rather than listing both every time.
+    fn tree_keys(&self) -> Vec<(&'static str, &'static str)> {
         let enter_hint = match self.selected_node() {
             Some(Node::Category(_)) => "open",
             _ => "run",
@@ -574,6 +721,30 @@ impl App {
         if !self.path.is_empty() {
             keys.push(("Esc", "back"));
         }
+
+        // Switching panes is pointless with nothing to read.
+        if !self.output.is_empty() {
+            keys.push(("Tab", "output"));
+        }
+
+        keys
+    }
+
+    /// Draws the key hints along the bottom row.
+    ///
+    /// The hints follow the focused pane and the row under the cursor rather
+    /// than listing every binding: a bar that never changes is one the operator
+    /// stops reading.
+    fn render_key_bar(&self, frame: &mut Frame, area: Rect) {
+        let mut keys = match self.focus {
+            Pane::Tree => self.tree_keys(),
+            Pane::Output => vec![
+                ("↑↓", "scroll"),
+                ("G", "follow"),
+                ("w", "wrap"),
+                ("Tab", "tree"),
+            ],
+        };
 
         keys.push(("q", "quit"));
 
@@ -924,6 +1095,122 @@ mod tests {
         assert!(test_app(Family::Debian).confirm.is_none());
     }
 
+    /// Feeds a navigation key to the app, as the event loop would.
+    ///
+    /// Only `Enter` on a task needs the terminal, and that is exercised
+    /// through the task tests rather than here.
+    fn press(app: &mut App, code: KeyCode) {
+        app.on_navigation_key(KeyEvent::from(code));
+    }
+
+    #[test]
+    fn tab_is_the_only_key_that_moves_focus() {
+        // Overloading a movement key with focus is how keys start leaking
+        // between panes, so h/l must not do it.
+        let mut app = test_app(Family::Debian);
+        assert_eq!(app.focus, Pane::Tree);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Pane::Output);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Pane::Tree);
+
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.focus, Pane::Tree, "l is not a focus key");
+    }
+
+    #[test]
+    fn movement_keys_address_the_focused_pane() {
+        // j and k mean "next" and "previous" in both panes; focus is what says
+        // which one they act on.
+        let mut app = test_app(Family::Debian);
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+
+        for i in 0..5 {
+            app.output.push(crate::exec::OutputLine {
+                stream: crate::exec::Stream::Stdout,
+                text: format!("line {i}"),
+            });
+        }
+
+        let before = app.list_state.selected();
+
+        app.focus = Pane::Output;
+        press(&mut app, KeyCode::Char('k'));
+
+        assert_eq!(
+            app.list_state.selected(),
+            before,
+            "the tree cursor must not move while the output has focus"
+        );
+        assert!(
+            !app.output.is_following(),
+            "scrolling up must detach the output from its tail"
+        );
+    }
+
+    #[test]
+    fn quitting_works_from_either_pane() {
+        // q is refused only while a task runs, never by focus.
+        for pane in [Pane::Tree, Pane::Output] {
+            let mut app = test_app(Family::Debian);
+            app.focus = pane;
+
+            press(&mut app, KeyCode::Char('q'));
+
+            assert!(app.should_quit, "q must quit with focus on {pane:?}");
+        }
+    }
+
+    #[test]
+    fn the_key_bar_follows_the_focused_pane() {
+        let mut app = test_app(Family::Debian);
+
+        let on_tree = render_to_rows(&mut app, 80, 24)[23].clone();
+        assert!(on_tree.contains("move"), "got {on_tree}");
+
+        app.focus = Pane::Output;
+        let on_output = render_to_rows(&mut app, 80, 24)[23].clone();
+        assert!(on_output.contains("scroll"), "got {on_output}");
+        assert!(on_output.contains("wrap"), "got {on_output}");
+    }
+
+    #[test]
+    fn the_output_tab_hint_appears_only_once_there_is_output() {
+        // Offering a switch to an empty pane is an invitation to nothing.
+        let mut app = test_app(Family::Debian);
+
+        let empty = render_to_rows(&mut app, 80, 24)[23].clone();
+        assert!(!empty.contains("output"), "got {empty}");
+
+        app.output.push(crate::exec::OutputLine {
+            stream: crate::exec::Stream::Stdout,
+            text: "installing".to_owned(),
+        });
+
+        let with_output = render_to_rows(&mut app, 80, 24)[23].clone();
+        assert!(with_output.contains("output"), "got {with_output}");
+    }
+
+    #[test]
+    fn the_selected_row_stays_visible_when_focus_leaves_the_tree() {
+        // Losing the cursor on Tab would mean hunting for it again on the way
+        // back, so it is drawn differently rather than dropped.
+        let mut app = test_app(Family::Debian);
+        app.focus = Pane::Output;
+
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert!(
+            rows[2].contains("Remote Access"),
+            "the selected row must still be drawn: {:?}",
+            rows[2]
+        );
+    }
+
     #[test]
     fn going_back_too_far_flashes_rather_than_changing_state() {
         // Overshooting by one level is a refusal, not a state: the tool is
@@ -1038,6 +1325,33 @@ mod tests {
 
         println!();
         for (index, row) in render_to_rows(&mut wide, 140, 26).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
+
+        // Output streaming, with the pane focused.
+        let mut running = test_app(Family::Debian);
+        enter_first_category(&mut running);
+        enter_first_category(&mut running);
+        enter_first_category(&mut running);
+        running.status.set(State::Running, "ssh.install");
+        running.focus = Pane::Output;
+
+        for text in [
+            "$ apt-get install -y openssh-server",
+            "Reading package lists... Done",
+            "Building dependency tree... Done",
+            "The following NEW packages will be installed:",
+            "  openssh-server openssh-sftp-server",
+            "Setting up openssh-server (1:9.2p1-2) ...",
+        ] {
+            running.output.push(crate::exec::OutputLine {
+                stream: crate::exec::Stream::Stdout,
+                text: text.to_owned(),
+            });
+        }
+
+        println!();
+        for (index, row) in render_to_rows(&mut running, 80, 24).iter().enumerate() {
             println!("{:>2}|{row}", index + 1);
         }
     }
