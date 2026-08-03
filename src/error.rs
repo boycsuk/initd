@@ -69,6 +69,14 @@ pub enum Error {
     /// Port outside the usable range.
     InvalidPort { port: u32 },
 
+    /// A task was run without a value it declared it needs.
+    ///
+    /// User input never reaches this: the interface refuses to submit an
+    /// incomplete form. It exists so that a task whose parameters were
+    /// collected wrongly fails outright rather than substituting a default and
+    /// changing something nobody asked it to.
+    MissingParameter { name: String },
+
     /// The task is not supported on the detected family.
     TaskUnsupported { task: String, family: String },
 
@@ -128,6 +136,7 @@ impl Error {
                 reason: reason.clone(),
             },
             Self::InvalidPort { port } => Msg::InvalidPort { port: *port },
+            Self::MissingParameter { name } => Msg::MissingParameter { name: name.clone() },
             Self::TaskUnsupported { task, family } => Msg::TaskUnsupported {
                 task: task.clone(),
                 family: family.clone(),

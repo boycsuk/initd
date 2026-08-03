@@ -109,8 +109,16 @@ a clear refusal.
 - **Status row** — the state pill plus a message. One borderless row.
 - **Key bar** — the key hints for the current row and state. One borderless
   row, dropped on terminals shorter than 24 rows.
+- **Parameter form** — overlays the centre of the screen for tasks that collect
+  values (a port, a username, a public key). Modal. Each field shows its label,
+  a boxed input, and a note beneath stating either what is wrong with the value
+  or what it parsed as. Validation runs on every keystroke, so the consequences
+  of a value are visible before `Enter` rather than after.
 - **Confirmation dialog** — overlays the centre of the screen, 60% × 40%, for
   destructive operations only. Modal: while it is open, all keys go to it.
+
+The order is always **values, then consent, then the work**: a confirmation
+states what will happen, and it cannot do that before it knows the values.
 
 ## Row markers
 
@@ -294,16 +302,50 @@ reading. On the tree the `Enter` hint reads *open* on a category and *run* on a
 task; `Esc back` appears only below the top level, and `Tab output` only once
 there is output to switch to.
 
-### Confirmation dialog
+### Parameter form (modal)
+
+Every printable character is **literal** here — `j`, `k`, `q` and `/` type
+themselves rather than acting as commands. Only the keys below stay commands.
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `↓` | Next field |
+| `Shift-Tab` / `↑` | Previous field |
+| `Enter` | Next field, or submit on the last one |
+| `←` / `→` | Move the cursor |
+| `Home` / `End` / `Ctrl-A` / `Ctrl-E` | Jump to the start or end of the value |
+| `Backspace` / `Delete` | Delete before or under the cursor |
+| `Ctrl-U` / `Ctrl-K` | Clear before or after the cursor |
+| `Ctrl-W` | Delete the previous word (readline's convention wins here) |
+| `Esc` | Cancel |
+
+Submitting with a field that would be rejected moves the cursor to that field
+rather than merely refusing — the operator should not have to hunt for which
+one is the problem.
+
+`Esc` on a form with typed values asks first: the second `Esc` discards. Any
+other key in between disarms it, so a stale prompt cannot be answered by a
+keystroke aimed at something else. An untouched form closes on the first `Esc`,
+since there is nothing to lose.
+
+A field rejects characters its kind cannot contain — a port field takes only
+digits — so a value that could never be accepted cannot be typed at all. Long
+values scroll horizontally with a `…` marking text dropped from the left; a
+public key is verified by what it *parses* to (type and comment, echoed beneath
+the field), because a 380-character key cannot be checked by reading it.
+
+### Confirmation dialog (modal)
 
 | Key | Action |
 |-----|--------|
 | `Tab` / `←` / `→` | Switch between Yes and No |
+| `y` | Apply |
+| `n` / `Esc` | Cancel |
 | `Enter` | Confirm the current answer |
-| `Esc` | Cancel without running the task |
 
 The dialog opens on **No**, so a stray `Enter` cannot trigger a destructive
-operation.
+operation. `n` and `Esc` both mean the safe answer, so the reflex to back out
+lands on it whichever key it reaches for.
 
 ## Running a privileged task
 

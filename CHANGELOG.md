@@ -87,6 +87,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open can see which machine is about to change without asking, and knows
   whether privileged work will succeed before starting it rather than when it
   fails.
+- Tasks declare the values they need instead of being constructed with them.
+  The tree previously built `ChangePort { port: 22 }` and `AuthorizeKey { key:
+  "" }` with placeholders, so pressing Enter in the TUI meant asking to change
+  the port to the one already in use, or to authorise an empty key. The task
+  tree can now offer a task without inventing values for it, and the CLI and
+  the TUI each supply them their own way.
+- The TUI collects those values in a modal form before running anything.
+  Validation runs on every keystroke and is drawn beneath the field it belongs
+  to, stating what is wrong rather than that something is; a field rejects
+  characters its kind cannot contain, so a port field cannot be made to hold
+  letters at all. A public key is verified by what it parses to — its type and
+  comment — since 380 characters cannot be checked by reading them.
+- The order is now values, then consent, then the work. A confirmation states
+  what will happen, which it could not do before it knew the values.
+- `initd run` refuses a task that collects values, naming them, rather than
+  failing later on a value nobody was asked for.
+- `Esc` on a form with typed values asks before discarding, and any other key
+  disarms the prompt so a stale one cannot be answered by a keystroke aimed at
+  something else. An untouched form closes outright.
+- The confirmation dialog accepts `y` and `n`, with `n` and `Esc` both meaning
+  the safe answer.
 - Focus moves between the tree and the output with `Tab`, and with nothing
   else. `j` and `k` mean "next" and "previous" in both panes, so a single key
   says which one they address; overloading a movement key with focus is how

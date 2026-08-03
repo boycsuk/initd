@@ -115,6 +115,9 @@ pub enum Msg {
     InvalidPort {
         port: u32,
     },
+    MissingParameter {
+        name: String,
+    },
 
     // --- Tasks ---
     TaskUnsupported {

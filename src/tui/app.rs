@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -13,6 +13,7 @@ use ratatui::widgets::{
 };
 
 use super::confirm::Confirm;
+use super::form::Form;
 use super::output::OutputPane;
 use super::status::{State, Status};
 use super::{Tui, layout, style, with_terminal_released};
@@ -21,6 +22,7 @@ use crate::distro::Distro;
 use crate::distro::host::HostFacts;
 use crate::error::Result;
 use crate::exec::Executor;
+use crate::tasks::params::ParamValues;
 use crate::tasks::{self, Node, Task};
 
 /// How long to wait for a key before redrawing.
@@ -96,7 +98,14 @@ pub struct App {
     /// Which pane the movement keys currently address.
     focus: Pane,
     output: OutputPane,
+    /// The parameter form, while one is being filled in.
+    form: Option<Form>,
     confirm: Option<Confirm>,
+    /// Values collected from the form, held until the task actually runs.
+    ///
+    /// A destructive task with parameters passes through the form and then the
+    /// confirmation, and the values have to survive the step between.
+    pending_values: ParamValues,
     status: Status,
     should_quit: bool,
 }
@@ -131,7 +140,9 @@ impl App {
             // there is no output to read.
             focus: Pane::Tree,
             output: OutputPane::new(),
+            form: None,
             confirm: None,
+            pending_values: ParamValues::new(),
             status: Status::new(),
             should_quit: false,
         }
@@ -233,23 +244,41 @@ impl App {
         Ok(())
     }
 
-    /// Handles a key press, routing to the dialog when one is open.
+    /// Handles a key press, routing to whichever dialog is open.
+    ///
+    /// Modal dialogs are checked first and swallow everything: inside a form,
+    /// `j`, `k`, `/` and `q` are literal characters, not commands.
     fn on_key(&mut self, key: KeyEvent, terminal: &mut Tui) -> Result<()> {
-        if self.confirm.is_some() {
-            return self.on_confirm_key(key, terminal);
+        match self.dispatch(key) {
+            // Every key resolves without the terminal except the one that
+            // hands it to a child process, which keeps the rest testable.
+            Some(values) => self.run_selected(terminal, values),
+            None => Ok(()),
+        }
+    }
+
+    /// Routes a key press, returning the values to run the selected task with.
+    ///
+    /// `Some` means the key was the one that starts the work; everything else
+    /// is resolved in place.
+    fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        if self.form.is_some() {
+            return self.on_form_key(key);
         }
 
-        // Everything except running a task is resolved without the terminal,
-        // so navigation stays testable without one.
+        if self.confirm.is_some() {
+            return self.on_confirm_key(key);
+        }
+
         if self.on_navigation_key(key) {
-            return Ok(());
+            return None;
         }
 
         if key.code == KeyCode::Enter && self.focus == Pane::Tree {
-            self.activate(terminal)?;
+            return self.activate();
         }
 
-        Ok(())
+        None
     }
 
     /// Handles the keys that only move around, reporting whether one matched.
@@ -320,70 +349,232 @@ impl App {
         true
     }
 
-    /// Handles a key press while the confirmation dialog is open.
-    fn on_confirm_key(&mut self, key: KeyEvent, terminal: &mut Tui) -> Result<()> {
-        let Some(confirm) = self.confirm.as_mut() else {
-            return Ok(());
-        };
+    /// Handles a key press while the parameter form is open.
+    ///
+    /// Every printable character is literal here. Only `Tab`, `Enter`, `Esc`,
+    /// the arrows and the `Ctrl-*` bindings stay commands.
+    fn on_form_key(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        let form = self.form.as_mut()?;
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
 
         match key.code {
-            KeyCode::Tab | KeyCode::Left | KeyCode::Right => confirm.toggle(),
             KeyCode::Esc => {
-                self.confirm = None;
-                self.status.set(State::Ready, "cancelled");
-            }
-            KeyCode::Enter => {
-                let accepted = confirm.accepted;
-                self.confirm = None;
-
-                if accepted {
-                    self.run_selected(terminal)?;
-                } else {
+                // Discarding a form with work in it on a single keystroke is
+                // how typed values get lost; an untouched one has nothing to
+                // lose, so it closes outright.
+                if form.is_untouched() || form.cancel_armed() {
+                    self.form = None;
                     self.status.set(State::Ready, "cancelled");
+                } else {
+                    form.arm_cancel();
+                    self.status
+                        .flash("press Esc again to discard what you typed", Instant::now());
+                }
+
+                return None;
+            }
+            // Any other key means the operator carried on, so a stale "press
+            // Esc again" cannot be answered several actions later.
+            _ => form.disarm_cancel(),
+        }
+
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => form.focus_next(),
+            KeyCode::BackTab | KeyCode::Up => form.focus_previous(),
+            KeyCode::Enter => return self.submit_form(),
+            // Readline's bindings win inside a text field.
+            KeyCode::Char('u') if control => {
+                if let Some(field) = form.focused_mut() {
+                    field.clear_before_cursor();
+                }
+            }
+            KeyCode::Char('k') if control => {
+                if let Some(field) = form.focused_mut() {
+                    field.clear_after_cursor();
+                }
+            }
+            KeyCode::Char('w') if control => {
+                if let Some(field) = form.focused_mut() {
+                    field.delete_word();
+                }
+            }
+            KeyCode::Char('a') if control => {
+                if let Some(field) = form.focused_mut() {
+                    field.home();
+                }
+            }
+            KeyCode::Char('e') if control => {
+                if let Some(field) = form.focused_mut() {
+                    field.end();
+                }
+            }
+            KeyCode::Char(character) if !control => {
+                if let Some(field) = form.focused_mut() {
+                    field.insert(character);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(field) = form.focused_mut() {
+                    field.backspace();
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(field) = form.focused_mut() {
+                    field.delete();
+                }
+            }
+            KeyCode::Left => {
+                if let Some(field) = form.focused_mut() {
+                    field.left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(field) = form.focused_mut() {
+                    field.right();
+                }
+            }
+            KeyCode::Home => {
+                if let Some(field) = form.focused_mut() {
+                    field.home();
+                }
+            }
+            KeyCode::End => {
+                if let Some(field) = form.focused_mut() {
+                    field.end();
                 }
             }
             _ => {}
         }
 
-        Ok(())
+        None
+    }
+
+    /// Submits the form, or moves to the field standing in the way.
+    ///
+    /// On a field that is not the last, `Enter` advances rather than
+    /// submitting: it is the same key that moves through a form everywhere
+    /// else, and submitting early would surprise.
+    fn submit_form(&mut self) -> Option<ParamValues> {
+        let form = self.form.as_mut()?;
+
+        if !form.on_last_field() {
+            form.focus_next();
+            return None;
+        }
+
+        // Pointing at the offending field beats refusing without saying which
+        // one is wrong.
+        if let Some(index) = form.first_invalid() {
+            form.focus_on(index);
+            self.status
+                .flash("fill in every field first", Instant::now());
+            return None;
+        }
+
+        let values = form.values();
+        self.form = None;
+
+        let destructive = self
+            .selected_task()
+            .is_some_and(crate::tasks::Task::is_destructive);
+
+        if destructive {
+            // The values are held for the confirmation to run with once the
+            // operator consents.
+            self.pending_values = values;
+            self.open_confirmation();
+            return None;
+        }
+
+        Some(values)
+    }
+
+    /// Handles a key press while the confirmation dialog is open.
+    fn on_confirm_key(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        let confirm = self.confirm.as_mut()?;
+
+        match key.code {
+            KeyCode::Tab | KeyCode::Left | KeyCode::Right => confirm.toggle(),
+            // `n` and `Esc` both mean the safe answer, so the reflex to back
+            // out of something lands on it whichever key it reaches for.
+            KeyCode::Esc | KeyCode::Char('n' | 'N') => self.cancel_confirmation(),
+            KeyCode::Char('y' | 'Y') => return self.accept_confirmation(),
+            KeyCode::Enter => {
+                if confirm.accepted {
+                    return self.accept_confirmation();
+                }
+
+                self.cancel_confirmation();
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    /// Closes the dialog and yields the values the task should run with.
+    fn accept_confirmation(&mut self) -> Option<ParamValues> {
+        self.confirm = None;
+
+        // Collected by the form before this dialog opened.
+        Some(std::mem::take(&mut self.pending_values))
+    }
+
+    /// Closes the dialog, discarding anything collected for the task.
+    fn cancel_confirmation(&mut self) {
+        self.confirm = None;
+        self.pending_values = ParamValues::new();
+        self.status.set(State::Ready, "cancelled");
     }
 
     /// Acts on the selected row: descends into a category, or runs a task.
-    fn activate(&mut self, terminal: &mut Tui) -> Result<()> {
-        let Some(index) = self.list_state.selected() else {
-            return Ok(());
-        };
+    fn activate(&mut self) -> Option<ParamValues> {
+        let index = self.list_state.selected()?;
 
         if let Some(Node::Category(_)) = self.current_level().get(index) {
             self.enter_category(index);
-            return Ok(());
+            return None;
         }
 
-        let Some(task) = self.selected_task() else {
-            return Ok(());
-        };
+        let task = self.selected_task()?;
 
         if !task.supports(self.distro.family) {
             // Pressing Enter on a row the host cannot run is a refusal, not a
             // state change: the reason flashes and the tool stays where it was.
             let reason = format!("{} is not supported on {}", task.id(), self.distro.family);
             self.status.flash(reason, Instant::now());
-            return Ok(());
+            return None;
+        }
+
+        // Values first, then consent, then the work: the confirmation states
+        // what will happen, and it cannot do that before it knows the values.
+        if task.needs_input() {
+            self.form = Some(Form::new(task.title(), task.params()));
+            return None;
         }
 
         if task.is_destructive() {
-            self.confirm = Some(Confirm::new(task.title(), task.description()).with_warning(
-                "This operation can lock you out of a server you reach over SSH. \
-                     Make sure you have another way in before continuing.",
-            ));
-            return Ok(());
+            self.open_confirmation();
+            return None;
         }
 
-        self.run_selected(terminal)
+        Some(ParamValues::new())
+    }
+
+    /// Opens the confirmation for the selected task.
+    fn open_confirmation(&mut self) {
+        let Some(task) = self.selected_task() else {
+            return;
+        };
+
+        self.confirm = Some(Confirm::new(task.title(), task.description()).with_warning(
+            "This operation can lock you out of a server you reach over SSH. \
+             Make sure you have another way in before continuing.",
+        ));
     }
 
     /// Executes the selected task, streaming its output into the pane.
-    fn run_selected(&mut self, terminal: &mut Tui) -> Result<()> {
+    fn run_selected(&mut self, terminal: &mut Tui, values: ParamValues) -> Result<()> {
         let Some(index) = self.list_state.selected() else {
             return Ok(());
         };
@@ -411,7 +602,7 @@ impl App {
         let mut lines = Vec::new();
 
         let outcome = with_terminal_released(terminal, || {
-            task.run(executor, backend, &mut |line| {
+            task.run(executor, backend, &values, &mut |line| {
                 // Output is echoed to the released terminal so the user sees
                 // progress while the password prompt is on screen.
                 println!("{}", line.text);
@@ -494,8 +685,14 @@ impl App {
             self.render_key_bar(frame, keys);
         }
 
+        // Dialogs draw last, over everything: they are modal, and content
+        // showing through one would misrepresent what the keys now do.
         if let Some(ref confirm) = self.confirm {
             confirm.render(frame);
+        }
+
+        if let Some(ref mut form) = self.form {
+            form.render(frame);
         }
     }
 
@@ -1095,12 +1292,17 @@ mod tests {
         assert!(test_app(Family::Debian).confirm.is_none());
     }
 
-    /// Feeds a navigation key to the app, as the event loop would.
+    /// Feeds a key to the app, as the event loop would.
     ///
-    /// Only `Enter` on a task needs the terminal, and that is exercised
-    /// through the task tests rather than here.
+    /// Routes through the real dispatcher — dialogs included — against a test
+    /// terminal. A task that actually runs would need the terminal handed to a
+    /// child, which is why the tasks exercised here are ones that stop at a
+    /// form or a confirmation.
     fn press(app: &mut App, code: KeyCode) {
-        app.on_navigation_key(KeyEvent::from(code));
+        // The dispatcher resolves everything except handing the terminal to a
+        // child process, so the tasks exercised here stop at a form or a
+        // confirmation rather than running.
+        app.dispatch(KeyEvent::from(code));
     }
 
     #[test]
@@ -1208,6 +1410,157 @@ mod tests {
             rows[2].contains("Remote Access"),
             "the selected row must still be drawn: {:?}",
             rows[2]
+        );
+    }
+
+    /// Moves the cursor onto the task with the given id, opening categories.
+    fn select_task(app: &mut App, id: &str) {
+        // Depth-first, following the same path the operator would.
+        fn descend(app: &mut App, id: &str, depth: usize) -> bool {
+            if depth > 8 {
+                return false;
+            }
+
+            for index in 0..app.current_level().len() {
+                app.list_state.select(Some(index));
+
+                match app.current_level().get(index) {
+                    Some(Node::Task(task)) if task.id() == id => return true,
+                    Some(Node::Category(_)) => {
+                        app.enter_category(index);
+                        if descend(app, id, depth + 1) {
+                            return true;
+                        }
+                        app.leave_category();
+                    }
+                    _ => {}
+                }
+            }
+
+            false
+        }
+
+        assert!(descend(app, id, 0), "the task {id} must be in the tree");
+    }
+
+    #[test]
+    fn a_task_that_needs_values_opens_a_form_rather_than_running() {
+        // Running with placeholder values is what this replaces: pressing
+        // Enter used to authorise an empty key.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.authorize-key");
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.form.is_some(), "the form must open");
+        assert!(app.confirm.is_none(), "values come before consent");
+    }
+
+    #[test]
+    fn a_form_swallows_the_keys_that_are_commands_elsewhere() {
+        // j, k, q and / are literal characters inside a form.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.authorize-key");
+        press(&mut app, KeyCode::Enter);
+
+        for character in ['j', 'k', 'q', '/'] {
+            press(&mut app, KeyCode::Char(character));
+        }
+
+        assert!(!app.should_quit, "q must not quit inside a form");
+
+        let value = app
+            .form
+            .as_mut()
+            .and_then(Form::focused_mut)
+            .map(|field| field.value())
+            .expect("the first field holds what was typed");
+
+        assert!(value.ends_with("jkq/"), "got {value:?}");
+    }
+
+    #[test]
+    fn a_form_will_not_submit_until_every_field_is_valid() {
+        // The key field starts empty, so Enter must point at it rather than
+        // running the task with nothing.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.authorize-key");
+        press(&mut app, KeyCode::Enter);
+
+        // Enter on the first field advances; on the last it submits.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.form.is_some(), "an invalid form stays open");
+        assert!(
+            app.status.message(Instant::now()).contains("fill in"),
+            "the refusal must say what is missing"
+        );
+    }
+
+    #[test]
+    fn a_destructive_task_with_values_confirms_after_the_form() {
+        // Consent has to state what will happen, which it cannot do before it
+        // knows the values.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.change-port");
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.form.is_some(), "the port is collected first");
+
+        // The field starts on the current port, which is already valid.
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.form.is_none(), "the form closes once submitted");
+        assert!(app.confirm.is_some(), "consent comes after the values");
+    }
+
+    #[test]
+    fn cancelling_a_form_with_typed_values_asks_first() {
+        // Discarding typed work on one keystroke is how values get lost.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.change-port");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('9'));
+
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            app.form.is_some(),
+            "the first Esc asks rather than discards"
+        );
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.form.is_none(), "the second Esc discards");
+    }
+
+    #[test]
+    fn an_untouched_form_closes_on_the_first_escape() {
+        // There is nothing to lose, so asking would be a step with no purpose.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.change-port");
+        press(&mut app, KeyCode::Enter);
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.form.is_none());
+    }
+
+    #[test]
+    fn carrying_on_after_esc_disarms_the_discard() {
+        // A stale "press Esc again" must not be answerable several actions
+        // later by a keystroke aimed at something else.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.change-port");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('9'));
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('9'));
+        press(&mut app, KeyCode::Esc);
+
+        assert!(
+            app.form.is_some(),
+            "typing after Esc must disarm the discard"
         );
     }
 
@@ -1352,6 +1705,27 @@ mod tests {
 
         println!();
         for (index, row) in render_to_rows(&mut running, 80, 24).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
+
+        // The parameter form, with a value partly typed.
+        let mut form = test_app(Family::Debian);
+        form.form = Some(Form::new(
+            "Authorise a public key",
+            crate::tasks::ssh::AuthorizeKey.params(),
+        ));
+
+        if let Some(open) = form.form.as_mut() {
+            open.focus_next();
+            if let Some(field) = open.focused_mut() {
+                for character in "ssh-ed25519 AAAA".chars() {
+                    field.insert(character);
+                }
+            }
+        }
+
+        println!();
+        for (index, row) in render_to_rows(&mut form, 80, 24).iter().enumerate() {
             println!("{:>2}|{row}", index + 1);
         }
     }

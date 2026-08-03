@@ -112,6 +112,19 @@ TUI or CLI:
   - Acceptance: keys already in the file are preserved, and adding the same key
     twice does not duplicate it.
   - Acceptance: a malformed key is rejected before anything is written.
+  - Acceptance: I am shown what the key parsed as — its type and comment —
+    since a 380-character key cannot be verified by reading it.
+- As an **administrator**, I am asked for the values a task needs before it
+  runs, so that no task acts on a value I did not supply.
+  - Acceptance: a value that would be rejected is reported as I type it, saying
+    what is wrong rather than merely that something is.
+  - Acceptance: the task does not run until every value is accepted, and I am
+    shown which field is standing in the way.
+  - Acceptance: where a task already has a value on this host — the current SSH
+    port — the field starts on it, so confirming needs no retyping.
+  - Acceptance: cancelling a form I have typed into asks before discarding it.
+  - TUI exception: the CLI supplies these values as arguments instead, and
+    refuses `initd run` for such a task, naming the values it needs.
 - As an **administrator**, I can change the port SSH listens on so that the
   server is not exposed on the default port.
   - Acceptance: the change is validated before the service is reloaded, and

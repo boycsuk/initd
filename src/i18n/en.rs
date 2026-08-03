@@ -48,6 +48,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::InvalidPort { port } => {
             format!("invalid port: {port} (must be between 1 and 65535)")
         }
+        Msg::MissingParameter { name } => {
+            format!("the task was run without a value for {name}")
+        }
         Msg::TaskUnsupported { task, family } => {
             format!("task {task} is not supported on {family}")
         }

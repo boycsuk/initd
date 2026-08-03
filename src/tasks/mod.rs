@@ -4,6 +4,7 @@
 //! the domain traits, so they inherit the distro abstraction and are testable
 //! without a container. A shell script could not call a trait.
 
+pub mod params;
 pub mod ssh;
 pub mod sshd_config;
 
@@ -11,6 +12,7 @@ use crate::backend::Backend;
 use crate::distro::Family;
 use crate::error::Result;
 use crate::exec::{Executor, OutputLine};
+use crate::tasks::params::{Param, ParamValues};
 
 /// Somewhere a task reports its progress to.
 ///
@@ -38,6 +40,22 @@ pub trait Task {
         false
     }
 
+    /// Values the task needs before it can run.
+    ///
+    /// Declared rather than supplied at construction, so the tree can offer a
+    /// task without inventing values for it. Whichever interface is driving
+    /// collects them: the TUI in a form, the CLI from its arguments.
+    ///
+    /// Most tasks need nothing and inherit the empty default.
+    fn params(&self) -> Vec<Param> {
+        Vec::new()
+    }
+
+    /// Whether the task collects anything before it runs.
+    fn needs_input(&self) -> bool {
+        !self.params().is_empty()
+    }
+
     /// Families this task supports.
     ///
     /// The TUI shows unsupported tasks greyed out with the reason, rather than
@@ -49,11 +67,16 @@ pub trait Task {
         self.supported_families().contains(&family)
     }
 
-    /// Runs the task.
+    /// Runs the task with the values collected for its parameters.
+    ///
+    /// A task that declared no parameters ignores `values`; one that did reads
+    /// them back by the names it declared, and fails rather than substituting
+    /// a default if the interface failed to collect one.
     fn run(
         &self,
         executor: &dyn Executor,
         backend: &dyn Backend,
+        values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<()>;
 }
