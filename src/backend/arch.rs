@@ -5,10 +5,11 @@
 //! the unit gains a `d`.
 
 use super::systemd::{SystemdServices, run_checked};
+use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
 use super::{Backend, Capability};
 use crate::distro::Family;
-use crate::domain::{FileEditor, PackageManager, ServiceManager};
+use crate::domain::{AccountReader, FileEditor, PackageManager, ServiceManager};
 use crate::error::Result;
 use crate::exec::{Command, Executor};
 
@@ -23,6 +24,7 @@ pub struct ArchBackend {
     packages: PacmanPackages,
     services: SystemdServices,
     files: UnixFiles,
+    accounts: UnixAccounts,
 }
 
 impl ArchBackend {
@@ -31,6 +33,7 @@ impl ArchBackend {
             packages: PacmanPackages,
             services: SystemdServices::new(),
             files: UnixFiles::new(),
+            accounts: UnixAccounts::new(),
         }
     }
 }
@@ -62,6 +65,10 @@ impl Backend for ArchBackend {
 
     fn files(&self) -> &dyn FileEditor {
         &self.files
+    }
+
+    fn accounts(&self) -> &dyn AccountReader {
+        &self.accounts
     }
 }
 

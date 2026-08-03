@@ -4,6 +4,7 @@
 //! the domain traits, so they inherit the distro abstraction and are testable
 //! without a container. A shell script could not call a trait.
 
+pub mod algorithms;
 pub mod params;
 pub mod revert;
 pub mod ssh;

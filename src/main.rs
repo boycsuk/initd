@@ -201,13 +201,19 @@ fn cmd_run(id: Option<&str>) -> Result<()> {
         std::process::exit(2);
     };
 
-    // A task that collects values has a subcommand of its own to supply them.
-    // Refusing here with the name of that subcommand is more use than failing
-    // later on a value nobody was asked for.
+    // A task that collects values needs an interface that can ask for them.
+    // Refusing here is more use than failing later on a value nobody supplied.
+    //
+    // Not every such task has a subcommand: `ssh.allow-users` is deliberately
+    // interactive-only, because the CLI has no verification window and a
+    // mistyped account name there leaves a configuration sshd accepts, that
+    // matches nobody, and that nothing offers to undo.
     if task.needs_input() {
         let names: Vec<&str> = task.params().iter().map(|param| param.name).collect();
         eprintln!("{id} needs values: {}", names.join(", "));
-        eprintln!("run `initd list` to see the subcommand that supplies them");
+        eprintln!(
+            "supply them through a subcommand where one exists, or run the task in the interactive interface"
+        );
         std::process::exit(2);
     }
 

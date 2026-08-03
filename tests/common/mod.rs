@@ -19,6 +19,12 @@
 //! unit-level tests assert on the exact command built. Verifying the effect of
 //! `systemctl` would need systemd-enabled images and privileged containers,
 //! which is out of scope for this slice.
+//!
+//! `ssh.allow-users` has no coverage here either, for a different reason: it
+//! is deliberately interactive-only, so there is no subcommand to drive it
+//! from a container script. Widening the CLI surface to make it testable would
+//! reintroduce the very risk that keeping it out of the CLI avoids, so the gap
+//! is accepted and its guards are covered against mocks instead.
 
 use std::process::Command;
 

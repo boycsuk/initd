@@ -7,8 +7,9 @@
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::files::Backup;
-use crate::error::{Error, Result};
+use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
+use crate::tasks::algorithms;
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config::{self, SSHD_CONFIG};
@@ -54,13 +55,23 @@ pub fn category() -> Category {
             Node::Category(Category::new(
                 "Configuration",
                 vec![
+                    // Ordered as they would be applied: narrowing the
+                    // algorithms of a server whose passwords are still
+                    // enabled is a strange place to start.
                     Node::Task(Box::new(HardenSsh)),
+                    Node::Task(Box::new(HardenSshStrict)),
                     Node::Task(Box::new(ChangePort)),
                 ],
             )),
             Node::Category(Category::new(
                 "Keys",
                 vec![Node::Task(Box::new(AuthorizeKey))],
+            )),
+            // Who may log in, rather than how the daemon is tuned or which key
+            // material exists — neither of the categories above fits it.
+            Node::Category(Category::new(
+                "Access",
+                vec![Node::Task(Box::new(RestrictUsers))],
             )),
         ],
     )
@@ -132,7 +143,56 @@ impl Task for InstallSsh {
     }
 }
 
-/// Disables root login and password authentication.
+/// Directives the safe tier sets.
+///
+/// Every one either matches an OpenSSH default or tightens something no
+/// ordinary client depends on, so none can strand a client that could connect
+/// before. Anything that narrows what a client must speak — algorithms,
+/// forwarding — belongs to the strict tier instead.
+///
+/// Keyboard-interactive authentication is absent deliberately: its keyword
+/// differs by version and is probed rather than assumed. See
+/// [`keyboard_interactive_keywords`].
+const SAFE_DIRECTIVES: [(&str, &str); 17] = [
+    ("PermitRootLogin", "no"),
+    ("PasswordAuthentication", "no"),
+    ("PubkeyAuthentication", "yes"),
+    // Six attempts is the default; three still admits a mistyped passphrase
+    // while halving what a brute-force attempt gets per connection.
+    ("MaxAuthTries", "3"),
+    // The default of 120 seconds holds an unauthenticated slot open long
+    // enough to be worth exhausting.
+    ("LoginGraceTime", "30"),
+    ("X11Forwarding", "no"),
+    ("AllowAgentForwarding", "no"),
+    ("PermitEmptyPasswords", "no"),
+    ("HostbasedAuthentication", "no"),
+    ("IgnoreRhosts", "yes"),
+    ("StrictModes", "yes"),
+    ("PermitUserEnvironment", "no"),
+    // Verbose logging records the fingerprint each login used, which is what
+    // makes an unexpected key visible after the fact.
+    ("LogLevel", "VERBOSE"),
+    ("ClientAliveInterval", "300"),
+    ("ClientAliveCountMax", "2"),
+    ("MaxSessions", "10"),
+    ("PermitTunnel", "no"),
+];
+
+/// The keywords for keyboard-interactive authentication, newest first.
+///
+/// `KbdInteractiveAuthentication` is the current name and is unknown before
+/// OpenSSH 6.9; `ChallengeResponseAuthentication` is a deprecated alias since
+/// 8.7 and is on a removal path. No single keyword is safe across the range,
+/// so both are probed and every one this sshd accepts is written. On a version
+/// that knows both they are aliases holding the same value, which is what
+/// stops the pair disagreeing.
+const KEYBOARD_INTERACTIVE_KEYWORDS: [&str; 2] = [
+    "KbdInteractiveAuthentication",
+    "ChallengeResponseAuthentication",
+];
+
+/// Applies the SSH hardening that cannot strand a client.
 ///
 /// Destructive: applied to a server the administrator reaches over SSH without
 /// a working key, it locks them out. The task refuses to disable password
@@ -149,8 +209,15 @@ impl Task for HardenSsh {
     }
 
     fn description(&self) -> &'static str {
-        "Disables root login and password authentication, keeping a backup of \
-         the previous configuration. Requires an authorised key to be in place."
+        "Disables root login, password authentication, agent and X11 \
+         forwarding, tunnelling and user environments; limits authentication \
+         attempts to 3 and the login grace period to 30 seconds; disconnects \
+         idle sessions after 10 minutes; and turns on verbose logging so the \
+         key each login used is recorded. None of these can stop a client that \
+         could connect before from connecting, provided it holds a key. \
+         Requires an authorised key for root, keeps a backup of the previous \
+         configuration, and holds the change open until you confirm you can \
+         still log in."
     }
 
     fn is_destructive(&self) -> bool {
@@ -173,30 +240,24 @@ impl Task for HardenSsh {
 
         // Disabling password authentication without a key in place is the
         // documented way administrators lock themselves out of a server.
-        if !has_any_authorized_key(executor, backend)? {
-            return Err(Error::InvalidSshdConfig {
-                details: "no authorised key found for root; disabling password \
-                          authentication now would lock you out. Add a key with \
-                          `ssh.authorize-key` first."
-                    .to_owned(),
+        if !has_authorized_key(executor, backend, "root")? {
+            return Err(Error::LockoutRisk {
+                kind: Lockout::NoKeyForRoot,
             });
         }
 
         report(
             progress,
-            "Disabling root login and password authentication...",
+            format!("Applying {} hardening directives...", SAFE_DIRECTIVES.len()),
         );
 
-        let hardened = [
-            ("PermitRootLogin", "no"),
-            ("PasswordAuthentication", "no"),
-            ("ChallengeResponseAuthentication", "no"),
-            ("PubkeyAuthentication", "yes"),
-        ]
-        .into_iter()
-        .fold(contents, |acc, (directive, value)| {
-            sshd_config::set_directive(&acc, directive, value)
-        });
+        let hardened = SAFE_DIRECTIVES
+            .into_iter()
+            .fold(contents, |acc, (directive, value)| {
+                sshd_config::set_directive(&acc, directive, value)
+            });
+
+        let hardened = disable_keyboard_interactive(executor, &hardened, progress)?;
 
         let backup = sshd_config::write_validated(executor, backend, &hardened)?;
 
@@ -215,6 +276,151 @@ impl Task for HardenSsh {
         // So the change is offered back until they say otherwise.
         Ok(revertible(backup, backend))
     }
+}
+
+/// Directives the strict tier sets besides the algorithm lists.
+///
+/// `RequiredRSASize` may only ever be raised, and 3072 is the smallest size
+/// current guidance accepts. `AllowTcpForwarding no` is the one directive here
+/// an administrator is likely to want back: it stops port forwarding, which
+/// tunnels and remote development tooling rely on.
+const STRICT_DIRECTIVES: [(&str, &str); 2] =
+    [("RequiredRSASize", "3072"), ("AllowTcpForwarding", "no")];
+
+/// Narrows the algorithms and forwarding sshd will accept.
+///
+/// Destructive in a way the safe tier is not: a client too old to speak any
+/// surviving algorithm can no longer connect at all.
+pub struct HardenSshStrict;
+
+impl Task for HardenSshStrict {
+    fn id(&self) -> &'static str {
+        "ssh.harden-strict"
+    }
+
+    fn title(&self) -> &'static str {
+        "Harden the SSH cryptography"
+    }
+
+    fn description(&self) -> &'static str {
+        "Restricts the key exchange, cipher, MAC and host key algorithms to a \
+         modern set, requires RSA keys of at least 3072 bits, and disables TCP \
+         forwarding, which stops tunnelling and remote development tools. Only \
+         algorithms this OpenSSH reports it supports are written, and a list \
+         that would be narrowed to fewer than two is left at the system \
+         default and reported. Old clients may no longer be able to connect. \
+         Requires an authorised key for root, keeps a backup, and holds the \
+         change open until you confirm you can still log in."
+    }
+
+    fn is_destructive(&self) -> bool {
+        true
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let files = backend.files();
+        let contents = files.read(executor, SSHD_CONFIG)?;
+
+        // Same guard as the safe tier. This task disables no password, but a
+        // configuration that strands the administrator's client is just as
+        // unrecoverable as one that refuses their password.
+        if !has_authorized_key(executor, backend, "root")? {
+            return Err(Error::LockoutRisk {
+                kind: Lockout::NoKeyForRoot,
+            });
+        }
+
+        report(progress, "Narrowing the accepted algorithms...");
+
+        let mut hardened = contents;
+
+        for class in algorithms::ALL_CLASSES {
+            match algorithms::hardened_for(executor, class) {
+                Some(value) => {
+                    report(progress, format!("{}: {value}", class.directive()));
+                    hardened = sshd_config::set_directive(&hardened, class.directive(), &value);
+                }
+                // Skipping is the safe outcome, not a compromise: the
+                // compiled-in default admits a reasonable range, while a list
+                // narrowed too far refuses clients for no gain. Reported so
+                // that a directive the administrator asked for is never
+                // silently absent.
+                None => progress(OutputLine {
+                    stream: Stream::Stderr,
+                    text: format!(
+                        "warning: {} left at the system default — this OpenSSH supports too \
+                         few of the hardened algorithms to narrow it safely",
+                        class.directive()
+                    ),
+                }),
+            }
+        }
+
+        let hardened = STRICT_DIRECTIVES
+            .into_iter()
+            .fold(hardened, |acc, (directive, value)| {
+                sshd_config::set_directive(&acc, directive, value)
+            });
+
+        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
+
+        if let Some(ref backup) = backup {
+            report(
+                progress,
+                format!("Previous configuration saved to {}", backup.copy),
+            );
+        }
+
+        reload_ssh(executor, backend, progress)?;
+
+        Ok(revertible(backup, backend))
+    }
+}
+
+/// Turns off keyboard-interactive authentication under whichever keyword this
+/// sshd recognises.
+///
+/// Writing a keyword the daemon does not know is not a warning: `sshd -t`
+/// rejects the file, `write_validated` restores the backup, and every other
+/// directive set alongside it is lost. So each candidate is probed first and
+/// only the accepted ones are written. When none is accepted the setting is
+/// left alone and said so — the sixteen directives that did apply are worth
+/// more than the one that could not.
+fn disable_keyboard_interactive(
+    executor: &dyn Executor,
+    contents: &str,
+    progress: Progress<'_>,
+) -> Result<String> {
+    let mut updated = contents.to_owned();
+    let mut applied = false;
+
+    for keyword in KEYBOARD_INTERACTIVE_KEYWORDS {
+        if sshd_config::accepts_directive(executor, keyword, "no")? {
+            updated = sshd_config::set_directive(&updated, keyword, "no");
+            applied = true;
+        }
+    }
+
+    if !applied {
+        progress(OutputLine {
+            stream: Stream::Stderr,
+            text: "warning: keyboard-interactive authentication left unchanged — this sshd \
+                   recognises neither keyword for it"
+                .to_owned(),
+        });
+    }
+
+    Ok(updated)
 }
 
 /// Wraps a configuration backup as the undo for a change already applied.
@@ -487,12 +693,12 @@ fn warn_if_socket_activated(
     Ok(())
 }
 
-/// Whether root has at least one authorised key.
+/// Whether the named user has at least one authorised key.
 ///
 /// Read through the file editor rather than `std::fs` so it works under
 /// privilege escalation, and so a missing file is a plain `false`.
-fn has_any_authorized_key(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
-    let path = format!("/root/{AUTHORIZED_KEYS_RELATIVE}");
+fn has_authorized_key(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
+    let path = format!("{}/{AUTHORIZED_KEYS_RELATIVE}", home_dir(user));
 
     if !backend.files().exists(executor, &path)? {
         return Ok(false);
@@ -551,6 +757,147 @@ pub fn is_valid_public_key(line: &str) -> Result<()> {
 /// Whether a byte may appear in base64 content.
 const fn is_base64_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
+}
+
+/// Restricts SSH login to a named set of accounts.
+///
+/// Fieldless: the accounts are declared as a parameter and collected when the
+/// task is run, so the tree can offer it without inventing a list.
+pub struct RestrictUsers;
+
+impl RestrictUsers {
+    /// Name of the parameter holding the accounts permitted to log in.
+    pub const USERS: &'static str = "users";
+}
+
+impl Task for RestrictUsers {
+    fn id(&self) -> &'static str {
+        "ssh.allow-users"
+    }
+
+    fn title(&self) -> &'static str {
+        "Restrict SSH login to named users"
+    }
+
+    fn description(&self) -> &'static str {
+        "Sets AllowUsers in /etc/ssh/sshd_config to the accounts you name. \
+         Afterwards sshd refuses every other account, including root and \
+         including accounts that hold a valid key. Each account is checked to \
+         exist first, and at least one of them must already have an authorised \
+         key, since password authentication may be disabled. A backup is kept \
+         and the change is held open until you confirm you can still log in."
+    }
+
+    fn is_destructive(&self) -> bool {
+        true
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            // No starting value: seeding "root" would suggest the root-only
+            // configuration `ssh.harden` exists to disable.
+            Param::new(Self::USERS, "Allowed users", ParamKind::UsernameList)
+                .with_hint("space-separated; every other account is refused"),
+        ]
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let users = values.get(Self::USERS)?.trim().to_owned();
+
+        // Checked again here rather than trusted from the interface: nothing
+        // escapes a directive's value when it is written, so a newline in this
+        // string would append a directive of the caller's choosing to a file
+        // edited as root.
+        ParamKind::UsernameList
+            .validate(&users)
+            .map_err(|reason| Error::InvalidAllowUsers { reason })?;
+
+        let named: Vec<&str> = users.split_whitespace().collect();
+
+        // An account that does not exist yields a configuration `sshd -t`
+        // accepts and that matches nobody, so every login is refused. A typo
+        // is the likely cause, which is why the name is reported back.
+        for user in &named {
+            if !backend.accounts().exists(executor, user)? {
+                return Err(Error::LockoutRisk {
+                    kind: Lockout::UnknownUser {
+                        user: (*user).to_owned(),
+                    },
+                });
+            }
+        }
+
+        let files = backend.files();
+        let contents = files.read(executor, SSHD_CONFIG)?;
+
+        // Holding a key is not the same as being able to log in. An account
+        // the daemon already refuses cannot be the one way back in, and root
+        // is the case that matters: `ssh.harden` sets PermitRootLogin no, so
+        // `AllowUsers root` afterwards produces a file sshd accepts and that
+        // admits nobody. Nothing rolls that back, because nothing is wrong
+        // with it.
+        let root_refused = sshd_config::directive_value(&contents, "PermitRootLogin")
+            .is_some_and(|value| value.eq_ignore_ascii_case("no"));
+
+        // At least one, not all: a service account that logs in by other means
+        // is a legitimate member of the list. One account that can log in and
+        // holds a key is one way back in.
+        let mut with_keys = Vec::new();
+        for user in &named {
+            let refused_outright = root_refused && *user == "root";
+
+            if !refused_outright && has_authorized_key(executor, backend, user)? {
+                with_keys.push(*user);
+            }
+        }
+
+        if with_keys.is_empty() {
+            return Err(Error::LockoutRisk {
+                kind: Lockout::NoKeyForAllowedUsers {
+                    users: users.clone(),
+                },
+            });
+        }
+
+        // Stated before the change lands rather than after: this is the point
+        // where the administrator can still recognise a name they did not
+        // intend. Which accounts hold a key is the part that decides whether
+        // the list is reachable at all.
+        progress(OutputLine {
+            stream: Stream::Stderr,
+            text: format!(
+                "After this change only these accounts may log in over SSH: {users}. \
+                 Of those, {} already hold an authorised key.",
+                with_keys.join(", ")
+            ),
+        });
+
+        report(progress, format!("Restricting SSH login to {users}..."));
+
+        let updated = sshd_config::set_directive(&contents, "AllowUsers", &users);
+        let backup = sshd_config::write_validated(executor, backend, &updated)?;
+
+        if let Some(ref backup) = backup {
+            report(
+                progress,
+                format!("Previous configuration saved to {}", backup.copy),
+            );
+        }
+
+        reload_ssh(executor, backend, progress)?;
+
+        Ok(revertible(backup, backend))
+    }
 }
 
 #[cfg(test)]
@@ -737,10 +1084,688 @@ mod tests {
             .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
             .expect_err("hardening without a key must refuse");
 
-        assert!(matches!(err, Error::InvalidSshdConfig { .. }), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForRoot
+                }
+            ),
+            "{err:?}"
+        );
         assert!(
             !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
             "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn hardening_sets_every_safe_directive() {
+        // Iterates the table rather than listing directives again, so a pair
+        // added there is covered here without this test being edited.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("hardening must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        for (directive, value) in SAFE_DIRECTIVES {
+            assert!(
+                written.contains(&format!("{directive} {value}")),
+                "{directive} is missing from the written config"
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_sets_no_crypto_directives() {
+        // The tier boundary: narrowing algorithms can strand a client that
+        // could connect before, so it belongs to the strict task.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        for directive in ["Ciphers", "KexAlgorithms", "MACs", "AllowTcpForwarding"] {
+            assert!(
+                !written.contains(directive),
+                "{directive} belongs to the strict tier, got: {written}"
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_writes_the_keyword_this_sshd_understands() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::ok(""),          // probe: KbdInteractiveAuthentication accepted
+            Reply::failure(
+                1,
+                "command-line: line 0: Bad configuration option: ChallengeResponseAuthentication",
+            ),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("KbdInteractiveAuthentication no"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("ChallengeResponseAuthentication no"),
+            "a keyword this sshd rejects must not be written, got: {written}"
+        );
+    }
+
+    #[test]
+    fn hardening_falls_back_to_the_legacy_keyword() {
+        // OpenSSH before 6.9 does not know the current name. Writing it would
+        // cost the whole change, not just this directive.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::failure(
+                1,
+                "command-line: line 0: Bad configuration option: KbdInteractiveAuthentication",
+            ),
+            Reply::ok(""), // probe: ChallengeResponseAuthentication accepted
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("ChallengeResponseAuthentication no"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("KbdInteractiveAuthentication no"),
+            "got: {written}"
+        );
+    }
+
+    #[test]
+    fn hardening_skips_keyboard_interactive_when_neither_keyword_is_known() {
+        // The property that makes probing worth its cost: one unusable keyword
+        // must not take the other sixteen directives down with it.
+        let bad_option = |keyword: &str| {
+            Reply::failure(
+                1,
+                format!("command-line: line 0: Bad configuration option: {keyword}"),
+            )
+        };
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            bad_option("KbdInteractiveAuthentication"),
+            bad_option("ChallengeResponseAuthentication"),
+        ]);
+        let backend = for_family(Family::Debian);
+        let mut warnings = Vec::new();
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            })
+            .expect("the other directives must still apply");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must still be written");
+
+        assert!(
+            !written.contains("KbdInteractive") && !written.contains("ChallengeResponse"),
+            "no unrecognised keyword may be written, got: {written}"
+        );
+        for (directive, value) in SAFE_DIRECTIVES {
+            assert!(
+                written.contains(&format!("{directive} {value}")),
+                "{directive} must survive a failed probe"
+            );
+        }
+        assert!(
+            warnings.iter().any(|w| w.contains("keyboard-interactive")),
+            "the skip must be reported, got: {warnings:?}"
+        );
+    }
+
+    /// Scripts the four `ssh -Q` queries the strict tier makes, in order.
+    fn query_replies(kex: &str, cipher: &str, mac: &str, host_key: &str) -> [Reply; 4] {
+        [
+            Reply::ok(kex),
+            Reply::ok(cipher),
+            Reply::ok(mac),
+            Reply::ok(host_key),
+        ]
+    }
+
+    #[test]
+    fn strict_hardening_writes_only_supported_algorithms() {
+        let mut replies = vec![
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ];
+        replies.extend(query_replies(
+            "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
+            // No chacha20 on this build: it must not reach the file.
+            "aes256-gcm@openssh.com\naes256-ctr\n",
+            "hmac-sha2-512-etm@openssh.com\nhmac-sha2-256-etm@openssh.com\n",
+            "ssh-ed25519\nrsa-sha2-512\n",
+        ));
+        let mock = MockExecutor::with_replies(replies);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("strict hardening must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("Ciphers aes256-gcm@openssh.com,aes256-ctr"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("chacha20"),
+            "an algorithm this build lacks must not be written, got: {written}"
+        );
+        assert!(written.contains("RequiredRSASize 3072"), "got: {written}");
+        assert!(written.contains("AllowTcpForwarding no"), "got: {written}");
+    }
+
+    #[test]
+    fn strict_hardening_skips_a_directive_it_cannot_query() {
+        // `ssh` absent, or a query name this release does not know. The task
+        // still has other work to do and must finish it.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("a failed query must not fail the task");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must still be written");
+
+        for directive in ["Ciphers", "KexAlgorithms", "MACs", "HostKeyAlgorithms"] {
+            assert!(
+                !written.contains(directive),
+                "{directive} must be left at the default, got: {written}"
+            );
+        }
+        assert!(written.contains("RequiredRSASize 3072"), "got: {written}");
+    }
+
+    #[test]
+    fn strict_hardening_warns_when_it_skips_a_directive() {
+        // A directive the administrator asked for must never be silently
+        // absent from the result.
+        let mut replies = vec![Reply::ok("Port 22\n"), Reply::ok(""), Reply::ok(TEST_KEY)];
+        replies.extend(query_replies(
+            "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
+            // Only one hardened cipher survives: below the floor.
+            "3des-cbc\naes256-ctr\n",
+            "hmac-sha2-512-etm@openssh.com\nhmac-sha2-256-etm@openssh.com\n",
+            "ssh-ed25519\nrsa-sha2-512\n",
+        ));
+        let mock = MockExecutor::with_replies(replies);
+        let backend = for_family(Family::Debian);
+        let mut warnings = Vec::new();
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            })
+            .expect("runs");
+
+        assert!(
+            warnings.iter().any(|w| w.contains("Ciphers")),
+            "the skipped directive must be named, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_refuses_without_an_authorised_key() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::failure(1, ""),  // authorized_keys does not exist
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect_err("strict hardening without a key must refuse");
+
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForRoot
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_reloads_rather_than_restarts() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"),
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let commands = mock.recorded_lines();
+        assert!(
+            commands.iter().any(|c| c.contains("reload")),
+            "got: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("restart")),
+            "restarting drops the administrator's own session, got: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_offers_a_revert() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"),
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let outcome = HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        assert!(
+            outcome.is_revertible(),
+            "narrowing algorithms can strand a client, so it must be undoable"
+        );
+    }
+
+    /// For the task that restricts login to named accounts.
+    fn users_values(users: &str) -> ParamValues {
+        let mut values = ParamValues::new();
+        values.set(RestrictUsers::USERS, users);
+        values
+    }
+
+    #[test]
+    fn restricting_users_writes_the_allow_list() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),          // getent alice
+            Reply::ok(""),          // getent bob
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // alice authorized_keys exists
+            Reply::ok(TEST_KEY),    // and holds a key
+            Reply::ok(""),          // bob authorized_keys exists
+            Reply::ok(TEST_KEY),    // and holds a key
+            Reply::ok(""),          // test -e for the write
+            Reply::ok(""),          // cp backup
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::ok(""),          // systemctl reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        RestrictUsers
+            .run(
+                &mock,
+                backend.as_ref(),
+                &users_values("alice bob"),
+                &mut |_| {},
+            )
+            .expect("restricting to existing users with keys must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(written.contains("AllowUsers alice bob"), "got: {written}");
+    }
+
+    #[test]
+    fn restricting_users_refuses_an_unknown_account() {
+        // A typo yields a config sshd accepts and that matches nobody, so
+        // every login is refused.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),         // getent alice
+            Reply::failure(2, ""), // getent admn — no such account
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = RestrictUsers
+            .run(
+                &mock,
+                backend.as_ref(),
+                &users_values("alice admn"),
+                &mut |_| {},
+            )
+            .expect_err("an unknown account must refuse");
+
+        assert!(
+            matches!(&err, Error::LockoutRisk { kind: Lockout::UnknownUser { user } } if user == "admn"),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn restricting_users_refuses_when_no_named_user_has_a_key() {
+        // Hardening disables password authentication, so an allow-list where
+        // nobody holds a key leaves no way to log in at all.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),          // getent alice
+            Reply::ok(""),          // getent bob
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::failure(1, ""),  // alice has no authorized_keys
+            Reply::failure(1, ""),  // nor does bob
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = RestrictUsers
+            .run(
+                &mock,
+                backend.as_ref(),
+                &users_values("alice bob"),
+                &mut |_| {},
+            )
+            .expect_err("an allow-list with no keys must refuse");
+
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForAllowedUsers { .. }
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn restricting_users_accepts_when_one_of_several_holds_a_key() {
+        // Deliberately "at least one", not "all": a service account that logs
+        // in by other means is a legitimate member of the list.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),          // getent alice
+            Reply::ok(""),          // getent deploy
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // alice authorized_keys exists
+            Reply::ok(TEST_KEY),    // and holds a key
+            Reply::failure(1, ""),  // deploy has none
+            Reply::ok(""),          // test -e for the write
+            Reply::ok(""),          // cp backup
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::ok(""),          // systemctl reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        RestrictUsers
+            .run(
+                &mock,
+                backend.as_ref(),
+                &users_values("alice deploy"),
+                &mut |_| {},
+            )
+            .expect("one account with a key is one way back in");
+    }
+
+    #[test]
+    fn restricting_users_refuses_to_allow_only_an_account_sshd_already_rejects() {
+        // The trap: root holds a key, so a check for key possession alone
+        // passes, but `ssh.harden` already set PermitRootLogin no. The result
+        // is a file sshd accepts and that admits nobody — and since nothing is
+        // wrong with it, nothing rolls it back.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                     // getent root
+            Reply::ok("PermitRootLogin no\n"), // read sshd_config
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = RestrictUsers
+            .run(&mock, backend.as_ref(), &users_values("root"), &mut |_| {})
+            .expect_err("an allow-list of accounts sshd refuses must be refused");
+
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForAllowedUsers { .. }
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn restricting_users_still_allows_root_where_root_may_log_in() {
+        // The guard must not refuse a list naming root on a server that has
+        // not disabled root login.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),          // getent root
+            Reply::ok("Port 22\n"), // read sshd_config — root login untouched
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // and holds a key
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::ok(""),          // reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        RestrictUsers
+            .run(&mock, backend.as_ref(), &users_values("root"), &mut |_| {})
+            .expect("root may still be named where root may still log in");
+    }
+
+    #[test]
+    fn restricting_users_rejects_a_value_that_would_inject_a_directive() {
+        // Nothing escapes a directive's value when it is written, and the CLI
+        // never passes through the keystroke filter, so this is the only
+        // barrier between an argument and a file edited as root.
+        let mock = MockExecutor::new();
+        let backend = for_family(Family::Debian);
+
+        let err = RestrictUsers
+            .run(
+                &mock,
+                backend.as_ref(),
+                &users_values("alice\nPermitRootLogin yes"),
+                &mut |_| {},
+            )
+            .expect_err("a newline must be refused");
+
+        assert!(matches!(err, Error::InvalidAllowUsers { .. }), "{err:?}");
+        assert!(
+            mock.recorded().is_empty(),
+            "the value must be rejected before anything runs, got: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn restricting_users_names_who_will_still_be_able_to_log_in() {
+        // The administrator's last chance to recognise a name they did not
+        // intend is before the change lands, not after.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),          // getent alice
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // alice authorized_keys exists
+            Reply::ok(TEST_KEY),    // and holds a key
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::ok(""),          // reload
+        ]);
+        let backend = for_family(Family::Debian);
+        let mut warnings = Vec::new();
+
+        RestrictUsers
+            .run(
+                &mock,
+                backend.as_ref(),
+                &users_values("alice"),
+                &mut |line| {
+                    if line.stream == Stream::Stderr {
+                        warnings.push(line.text);
+                    }
+                },
+            )
+            .expect("runs");
+
+        assert!(
+            warnings.iter().any(|w| w.contains("alice")),
+            "got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn restricting_users_offers_a_revert() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),          // getent alice
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // holds a key
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::ok(""),          // reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let outcome = RestrictUsers
+            .run(&mock, backend.as_ref(), &users_values("alice"), &mut |_| {})
+            .expect("runs");
+
+        assert!(
+            outcome.is_revertible(),
+            "the change must be held open for confirmation"
+        );
+    }
+
+    #[test]
+    fn the_key_guard_reads_the_named_users_own_file() {
+        // Generalised from root: `ssh.allow-users` has to ask the same question
+        // about an ordinary account, whose keys live under /home.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),       // authorized_keys exists
+            Reply::ok(TEST_KEY), // and holds a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let found = has_authorized_key(&mock, backend.as_ref(), "alice")
+            .expect("reading the file must succeed");
+
+        assert!(found, "a valid key must be recognised");
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|c| c.contains("/home/alice/.ssh/authorized_keys")),
+            "got: {:?}",
+            mock.recorded_lines()
         );
     }
 

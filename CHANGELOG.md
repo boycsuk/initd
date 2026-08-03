@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ssh.harden-strict`, which narrows the key exchange, cipher, MAC and host key
+  algorithms to a modern set, requires 3072-bit RSA keys and disables TCP
+  forwarding. Separate from `ssh.harden` because it is the only hardening that
+  can stop a client which could connect before.
+- Algorithm lists are filtered against `ssh -Q` before being written. The
+  published hardened lists name algorithms that do not exist on every release —
+  post-quantum key exchange arrived in OpenSSH 9 — and a name the daemon cannot
+  parse costs the whole change, since `sshd -t` rejects the file and the backup
+  is restored over it. The intersection walks the hardened list rather than the
+  query output, because these are preference lists and `ssh -Q cipher` leads
+  with `3des-cbc`.
+- A directive whose algorithms cannot be determined, or which would be narrowed
+  to fewer than two, is left at the system default and reported on stderr. A
+  list naming one algorithm refuses every client lacking it, while the
+  compiled-in default admits a reasonable range.
+- `ssh.allow-users`, restricting login to named accounts. Interactive interface
+  only: `AllowUsers` naming an account that does not exist yields a
+  configuration `sshd -t` accepts and that matches nobody, and the CLI has no
+  verification window to undo it. Every named account must exist and at least
+  one must both hold an authorised key and be an account the server still
+  admits — naming only root where root login is already disabled is refused,
+  since holding a key is not the same as being able to log in.
+- `AccountReader`, a capability for asking whether an account exists. Behind a
+  trait because `getent` is absent from busybox, so Alpine will need its own
+  implementation.
 - `docs/tui-specification.html`, the interface's visual contract: nine screens
   drawn as literal character grids at 80×24 and 120×40, plus the keyboard map,
   style table, layout geometry and state machine the implementation follows.
@@ -44,6 +69,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships on.
 
 ### Changed
+- `ssh.harden` sets seventeen directives rather than four: the authentication
+  limits, the forwarding switches, the idle timeout and the verbose logging
+  that records which key each login used. Every one either matches an OpenSSH
+  default or tightens something no ordinary client depends on, so a client that
+  could connect before still can.
+- Keyboard-interactive authentication is probed rather than assumed. Its
+  keyword was renamed in OpenSSH 8.7 and the current name is unknown before
+  6.9, so no single spelling is safe across the versions this tool is pointed
+  at. Both are tested with `sshd -t -o` and only the accepted ones are written;
+  when neither is recognised the setting is left alone and reported, rather
+  than costing the other sixteen directives.
+- A refused change now raises `LockoutRisk` naming which account is at fault,
+  instead of `InvalidSshdConfig` carrying an English sentence. Nothing is
+  invalid about the configuration in that case — the tool is refusing to write
+  one that would strand the administrator — and error variants are meant to
+  carry structured data, with the wording living in the catalogue.
 - The task tree is now recursive: a category holds tasks, further categories,
   or both, to any depth. `TaskGroup` was a single flat level and could not
   express an area with internal structure.

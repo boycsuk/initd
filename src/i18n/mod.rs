@@ -115,6 +115,16 @@ pub enum Msg {
     InvalidPort {
         port: u32,
     },
+    InvalidAllowUsers {
+        reason: String,
+    },
+    LockoutNoKeyForRoot,
+    LockoutUnknownUser {
+        user: String,
+    },
+    LockoutNoKeyForAllowedUsers {
+        users: String,
+    },
     MissingParameter {
         name: String,
     },

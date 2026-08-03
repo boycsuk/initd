@@ -48,6 +48,25 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::InvalidPort { port } => {
             format!("invalid port: {port} (must be between 1 and 65535)")
         }
+        Msg::InvalidAllowUsers { reason } => {
+            format!("invalid list of allowed users: {reason}")
+        }
+        Msg::LockoutNoKeyForRoot => "no authorised key found for root; disabling password \
+             authentication now would lock you out. Add a key with `ssh.authorize-key` first"
+            .to_owned(),
+        Msg::LockoutUnknownUser { user } => {
+            format!(
+                "no account named {user} exists on this host; restricting SSH to it would \
+                 refuse every login. Check the spelling, or create the account first"
+            )
+        }
+        Msg::LockoutNoKeyForAllowedUsers { users } => {
+            format!(
+                "none of these accounts has an authorised key: {users}. Password \
+                 authentication may already be disabled, which would leave no way to log \
+                 in. Authorise a key for one of them with `ssh.authorize-key` first"
+            )
+        }
         Msg::MissingParameter { name } => {
             format!("the task was run without a value for {name}")
         }
