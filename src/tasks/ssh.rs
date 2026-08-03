@@ -138,7 +138,56 @@ impl Task for InstallSsh {
     }
 }
 
-/// Disables root login and password authentication.
+/// Directives the safe tier sets.
+///
+/// Every one either matches an OpenSSH default or tightens something no
+/// ordinary client depends on, so none can strand a client that could connect
+/// before. Anything that narrows what a client must speak — algorithms,
+/// forwarding — belongs to the strict tier instead.
+///
+/// Keyboard-interactive authentication is absent deliberately: its keyword
+/// differs by version and is probed rather than assumed. See
+/// [`keyboard_interactive_keywords`].
+const SAFE_DIRECTIVES: [(&str, &str); 17] = [
+    ("PermitRootLogin", "no"),
+    ("PasswordAuthentication", "no"),
+    ("PubkeyAuthentication", "yes"),
+    // Six attempts is the default; three still admits a mistyped passphrase
+    // while halving what a brute-force attempt gets per connection.
+    ("MaxAuthTries", "3"),
+    // The default of 120 seconds holds an unauthenticated slot open long
+    // enough to be worth exhausting.
+    ("LoginGraceTime", "30"),
+    ("X11Forwarding", "no"),
+    ("AllowAgentForwarding", "no"),
+    ("PermitEmptyPasswords", "no"),
+    ("HostbasedAuthentication", "no"),
+    ("IgnoreRhosts", "yes"),
+    ("StrictModes", "yes"),
+    ("PermitUserEnvironment", "no"),
+    // Verbose logging records the fingerprint each login used, which is what
+    // makes an unexpected key visible after the fact.
+    ("LogLevel", "VERBOSE"),
+    ("ClientAliveInterval", "300"),
+    ("ClientAliveCountMax", "2"),
+    ("MaxSessions", "10"),
+    ("PermitTunnel", "no"),
+];
+
+/// The keywords for keyboard-interactive authentication, newest first.
+///
+/// `KbdInteractiveAuthentication` is the current name and is unknown before
+/// OpenSSH 6.9; `ChallengeResponseAuthentication` is a deprecated alias since
+/// 8.7 and is on a removal path. No single keyword is safe across the range,
+/// so both are probed and every one this sshd accepts is written. On a version
+/// that knows both they are aliases holding the same value, which is what
+/// stops the pair disagreeing.
+const KEYBOARD_INTERACTIVE_KEYWORDS: [&str; 2] = [
+    "KbdInteractiveAuthentication",
+    "ChallengeResponseAuthentication",
+];
+
+/// Applies the SSH hardening that cannot strand a client.
 ///
 /// Destructive: applied to a server the administrator reaches over SSH without
 /// a working key, it locks them out. The task refuses to disable password
@@ -155,8 +204,15 @@ impl Task for HardenSsh {
     }
 
     fn description(&self) -> &'static str {
-        "Disables root login and password authentication, keeping a backup of \
-         the previous configuration. Requires an authorised key to be in place."
+        "Disables root login, password authentication, agent and X11 \
+         forwarding, tunnelling and user environments; limits authentication \
+         attempts to 3 and the login grace period to 30 seconds; disconnects \
+         idle sessions after 10 minutes; and turns on verbose logging so the \
+         key each login used is recorded. None of these can stop a client that \
+         could connect before from connecting, provided it holds a key. \
+         Requires an authorised key for root, keeps a backup of the previous \
+         configuration, and holds the change open until you confirm you can \
+         still log in."
     }
 
     fn is_destructive(&self) -> bool {
@@ -187,19 +243,16 @@ impl Task for HardenSsh {
 
         report(
             progress,
-            "Disabling root login and password authentication...",
+            format!("Applying {} hardening directives...", SAFE_DIRECTIVES.len()),
         );
 
-        let hardened = [
-            ("PermitRootLogin", "no"),
-            ("PasswordAuthentication", "no"),
-            ("ChallengeResponseAuthentication", "no"),
-            ("PubkeyAuthentication", "yes"),
-        ]
-        .into_iter()
-        .fold(contents, |acc, (directive, value)| {
-            sshd_config::set_directive(&acc, directive, value)
-        });
+        let hardened = SAFE_DIRECTIVES
+            .into_iter()
+            .fold(contents, |acc, (directive, value)| {
+                sshd_config::set_directive(&acc, directive, value)
+            });
+
+        let hardened = disable_keyboard_interactive(executor, &hardened, progress)?;
 
         let backup = sshd_config::write_validated(executor, backend, &hardened)?;
 
@@ -218,6 +271,42 @@ impl Task for HardenSsh {
         // So the change is offered back until they say otherwise.
         Ok(revertible(backup, backend))
     }
+}
+
+/// Turns off keyboard-interactive authentication under whichever keyword this
+/// sshd recognises.
+///
+/// Writing a keyword the daemon does not know is not a warning: `sshd -t`
+/// rejects the file, `write_validated` restores the backup, and every other
+/// directive set alongside it is lost. So each candidate is probed first and
+/// only the accepted ones are written. When none is accepted the setting is
+/// left alone and said so — the sixteen directives that did apply are worth
+/// more than the one that could not.
+fn disable_keyboard_interactive(
+    executor: &dyn Executor,
+    contents: &str,
+    progress: Progress<'_>,
+) -> Result<String> {
+    let mut updated = contents.to_owned();
+    let mut applied = false;
+
+    for keyword in KEYBOARD_INTERACTIVE_KEYWORDS {
+        if sshd_config::accepts_directive(executor, keyword, "no")? {
+            updated = sshd_config::set_directive(&updated, keyword, "no");
+            applied = true;
+        }
+    }
+
+    if !applied {
+        progress(OutputLine {
+            stream: Stream::Stderr,
+            text: "warning: keyboard-interactive authentication left unchanged — this sshd \
+                   recognises neither keyword for it"
+                .to_owned(),
+        });
+    }
+
+    Ok(updated)
 }
 
 /// Wraps a configuration backup as the undo for a change already applied.
@@ -882,6 +971,189 @@ mod tests {
         assert!(
             !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
             "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn hardening_sets_every_safe_directive() {
+        // Iterates the table rather than listing directives again, so a pair
+        // added there is covered here without this test being edited.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("hardening must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        for (directive, value) in SAFE_DIRECTIVES {
+            assert!(
+                written.contains(&format!("{directive} {value}")),
+                "{directive} is missing from the written config"
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_sets_no_crypto_directives() {
+        // The tier boundary: narrowing algorithms can strand a client that
+        // could connect before, so it belongs to the strict task.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        for directive in ["Ciphers", "KexAlgorithms", "MACs", "AllowTcpForwarding"] {
+            assert!(
+                !written.contains(directive),
+                "{directive} belongs to the strict tier, got: {written}"
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_writes_the_keyword_this_sshd_understands() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::ok(""),          // probe: KbdInteractiveAuthentication accepted
+            Reply::failure(
+                1,
+                "command-line: line 0: Bad configuration option: ChallengeResponseAuthentication",
+            ),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("KbdInteractiveAuthentication no"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("ChallengeResponseAuthentication no"),
+            "a keyword this sshd rejects must not be written, got: {written}"
+        );
+    }
+
+    #[test]
+    fn hardening_falls_back_to_the_legacy_keyword() {
+        // OpenSSH before 6.9 does not know the current name. Writing it would
+        // cost the whole change, not just this directive.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::failure(
+                1,
+                "command-line: line 0: Bad configuration option: KbdInteractiveAuthentication",
+            ),
+            Reply::ok(""), // probe: ChallengeResponseAuthentication accepted
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("ChallengeResponseAuthentication no"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("KbdInteractiveAuthentication no"),
+            "got: {written}"
+        );
+    }
+
+    #[test]
+    fn hardening_skips_keyboard_interactive_when_neither_keyword_is_known() {
+        // The property that makes probing worth its cost: one unusable keyword
+        // must not take the other sixteen directives down with it.
+        let bad_option = |keyword: &str| {
+            Reply::failure(
+                1,
+                format!("command-line: line 0: Bad configuration option: {keyword}"),
+            )
+        };
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            bad_option("KbdInteractiveAuthentication"),
+            bad_option("ChallengeResponseAuthentication"),
+        ]);
+        let backend = for_family(Family::Debian);
+        let mut warnings = Vec::new();
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            })
+            .expect("the other directives must still apply");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must still be written");
+
+        assert!(
+            !written.contains("KbdInteractive") && !written.contains("ChallengeResponse"),
+            "no unrecognised keyword may be written, got: {written}"
+        );
+        for (directive, value) in SAFE_DIRECTIVES {
+            assert!(
+                written.contains(&format!("{directive} {value}")),
+                "{directive} must survive a failed probe"
+            );
+        }
+        assert!(
+            warnings.iter().any(|w| w.contains("keyboard-interactive")),
+            "the skip must be reported, got: {warnings:?}"
         );
     }
 

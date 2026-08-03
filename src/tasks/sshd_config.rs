@@ -36,7 +36,40 @@ const NON_SYNTAX_FAILURES: [&str; 2] = ["no hostkeys available", "unable to load
 pub fn validate(executor: &dyn Executor) -> Result<Validation> {
     // `-t` is test mode: parse the config and exit without serving.
     let command = Command::new("sshd").arg("-t").privileged();
-    let output = executor.run(&command)?;
+
+    classify(executor, &command)
+}
+
+/// Whether this sshd recognises a directive at all.
+///
+/// `-o` applies an override on top of the live configuration, so the daemon
+/// parses the keyword without anything being written first. `Inconclusive`
+/// counts as recognised: missing host keys say nothing about whether the
+/// keyword is known, and on a freshly installed system that is the answer
+/// every probe would get.
+///
+/// This exists because a keyword sshd does not know is not a warning — it is a
+/// rejected configuration, and `write_validated` responds by restoring the
+/// backup, discarding every other directive set alongside it. Probing costs
+/// one command and protects the whole change.
+pub fn accepts_directive(executor: &dyn Executor, directive: &str, value: &str) -> Result<bool> {
+    let command = Command::new("sshd")
+        .args(["-t", "-o", &format!("{directive}={value}")])
+        .privileged();
+
+    Ok(!matches!(
+        classify(executor, &command)?,
+        Validation::Invalid { .. }
+    ))
+}
+
+/// Runs a validation command and classifies what it reports.
+///
+/// Shared so that a probe and a full validation agree on what counts as a
+/// syntax error: both distinguish "sshd rejected this" from "sshd could not
+/// run", and the second must never be read as the first.
+fn classify(executor: &dyn Executor, command: &Command) -> Result<Validation> {
+    let output = executor.run(command)?;
 
     if output.success() {
         return Ok(Validation::Valid);
@@ -248,6 +281,59 @@ mod tests {
             validate(&mock).expect("runs"),
             Validation::Invalid { .. }
         ));
+    }
+
+    #[test]
+    fn a_directive_this_sshd_parses_is_accepted() {
+        let mock = MockExecutor::with_replies([Reply::ok("")]);
+
+        assert!(
+            accepts_directive(&mock, "KbdInteractiveAuthentication", "no").expect("the probe runs")
+        );
+    }
+
+    #[test]
+    fn an_unknown_directive_is_rejected() {
+        // Measured: the probe reports this on stderr rather than through the
+        // exit code, which is 1 here and not the 255 a file with the same
+        // error produces.
+        let mock = MockExecutor::with_replies([Reply::failure(
+            1,
+            "command-line: line 0: Bad configuration option: KbdInteractiveAuthentication",
+        )]);
+
+        assert!(!accepts_directive(&mock, "KbdInteractiveAuthentication", "no").expect("runs"));
+    }
+
+    #[test]
+    fn missing_host_keys_do_not_make_a_directive_look_unknown() {
+        // On a freshly installed system `sshd -t` always fails this way, so
+        // reading it as "unknown keyword" would skip every probed directive on
+        // exactly the machines this tool is pointed at.
+        let mock = MockExecutor::with_replies([Reply::failure(
+            1,
+            "sshd: no hostkeys available -- exiting.",
+        )]);
+
+        assert!(
+            accepts_directive(&mock, "KbdInteractiveAuthentication", "no").expect("runs"),
+            "an unrunnable sshd says nothing about the keyword"
+        );
+    }
+
+    #[test]
+    fn the_probe_overrides_rather_than_writing() {
+        // The keyword must be tested without the file being touched first: a
+        // probe that wrote would be the very rollback it exists to avoid.
+        let mock = MockExecutor::with_replies([Reply::ok("")]);
+
+        accepts_directive(&mock, "PermitTunnel", "no").expect("runs");
+
+        let command = mock.single_command();
+        assert!(
+            command.to_string().contains("-o PermitTunnel=no"),
+            "got: {command}"
+        );
     }
 
     #[test]
