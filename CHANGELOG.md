@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `docs/tui-specification.html`, the interface's visual contract: nine screens
+  drawn as literal character grids at 80×24 and 120×40, plus the keyboard map,
+  style table, layout geometry and state machine the implementation follows.
+- Rendering tests that assert against a real `TestBackend` buffer rather than
+  against constraint arithmetic, since the specification's mockups are literal
+  grids and can be diffed cell by cell.
 - Initial project setup with `.claude/` template (CLAUDE.md, hooks, agents, skills, rules).
 - Cargo scaffolding: edition 2024 crate with `ratatui` 0.30, `crossterm` 0.29 and `thiserror` 2.0.
 - Domain error type carrying structured data only, rendered through an i18n
@@ -55,6 +61,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be opened.
 - `initd list` prints the tree indented by level instead of one heading per
   area. No subcommand, argument or exit code changed.
+- The interface is built from one-line bands rather than bordered blocks:
+  header, body, status row and key bar. Bordered chrome spent six of the
+  twenty-four rows a terminal is assumed to have; it now spends three.
+- Every style the interface draws is named once in `src/tui/style.rs` and
+  referenced from call sites. A `Style` built where it is used drifts from its
+  siblings the moment either is edited.
+- Layout geometry lives in `src/tui/layout.rs` as constraint lists, switching
+  between a fixed-width tree (≥100 columns), a proportional split (72–99) and a
+  single pane below that. A terminal under 60×15 gets a stated requirement
+  instead of a partial interface.
+- Task rows carry glyph markers — `!` destructive, `·` unsupported — and
+  categories carry their task count, right-aligned. Colour alone never carries
+  a signal, so a monochrome or `NO_COLOR` terminal loses nothing.
+- The status row opens with a state pill (`READY`, `UNSUPPORTED`, `CONFIRM`) in
+  fixed cells at the left edge, so the operator's eye never searches for it.
+- Text that overflows its column is marked with `…` rather than clipped in
+  silence. Breadcrumbs lose their head and task titles their tail, since a path
+  is identified by where it ends and a task by how its name starts: `… Access ›
+  SSH › Configuration` and `Install and enable the SSH s…`. A title cut to
+  `Install and enable the SSH ser` reads as a real name, so the administrator
+  cannot tell anything is missing.
 
 ### Deprecated
 

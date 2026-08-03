@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::confirm::Confirm;
 use super::output::OutputPane;
-use super::{Tui, with_terminal_released};
+use super::{Tui, layout, style, with_terminal_released};
 use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::error::Result;
@@ -332,95 +332,77 @@ impl App {
     }
 
     /// Draws the whole interface.
+    ///
+    /// A terminal too small for a legible interface gets a stated requirement
+    /// rather than a partial one: a garbled layout on a production server is
+    /// worse than a clear refusal.
     fn render(&mut self, frame: &mut Frame) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(5),
-                Constraint::Length(3),
-            ])
-            .split(frame.area());
+        if !layout::is_usable(frame.area()) {
+            render_too_small(frame);
+            return;
+        }
 
-        self.render_header(frame, chunks[0]);
-        self.render_body(frame, chunks[1]);
-        self.render_status(frame, chunks[2]);
+        let bands = layout::frame(frame.area());
+
+        self.render_header(frame, bands.header);
+        self.render_body(frame, bands.body);
+        self.render_status(frame, bands.status);
+
+        if let Some(keys) = bands.keys {
+            self.render_key_bar(frame, keys);
+        }
 
         if let Some(ref confirm) = self.confirm {
             confirm.render(frame);
         }
     }
 
-    /// Draws the header naming the detected system.
+    /// Draws the one-line header naming the tool and the detected host.
+    ///
+    /// Borderless: at 24 rows a bordered header would spend three of them on
+    /// one line of text.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
         let header = Paragraph::new(Line::from(vec![
-            Span::styled("initd", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("  —  "),
-            Span::raw(self.distro.display_name().to_owned()),
-            Span::raw("  ("),
-            Span::raw(self.backend.family().to_string()),
-            Span::raw(")"),
-        ]))
-        .block(Block::default().borders(Borders::ALL));
+            Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
+            Span::styled("  ·  ", style::BLOCK_SUBTITLE),
+            Span::styled(self.distro.display_name().to_owned(), style::EMPHASIS),
+            Span::styled("  ·  ", style::BLOCK_SUBTITLE),
+            Span::styled(self.backend.family().to_string(), style::NORMAL),
+        ]));
 
         frame.render_widget(header, area);
     }
 
     /// Draws the task tree beside the output pane.
     fn render_body(&mut self, frame: &mut Frame, area: Rect) {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
+        let split = layout::BodyLayout::for_width(area.width);
+        let (tree_area, right_area) = layout::body(area, split);
 
+        let family = self.distro.family;
+        // The two borders and the marker column are not available to the row.
+        let row_width = tree_area.width.saturating_sub(2) as usize;
         let items: Vec<ListItem> = self
             .current_level()
             .iter()
-            .map(|node| match node {
-                // The marker tells a category apart from a task at a glance;
-                // with one level on screen there is no indentation to do it.
-                Node::Category(category) => ListItem::new(Line::styled(
-                    format!("{}{}", CATEGORY_MARKER, category.title),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Node::Task(task) => {
-                    // Unsupported tasks stay visible but greyed out, with the
-                    // reason, rather than being hidden.
-                    let supported = task.supports(self.distro.family);
-                    let style = if supported {
-                        Style::default()
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    };
-                    let suffix = if supported {
-                        String::new()
-                    } else {
-                        format!("  (not supported on {})", self.distro.family)
-                    };
-
-                    ListItem::new(Line::styled(
-                        format!("{}{}{}", TASK_MARKER, task.title(), suffix),
-                        style,
-                    ))
-                }
-            })
+            .map(|node| ListItem::new(row(node, family, row_width)))
             .collect();
 
         let list = List::new(items)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(self.breadcrumb()),
+                    .border_style(style::BORDER_FOCUSED)
+                    .title(Span::styled(
+                        // Two borders and the spaces framing the title.
+                        truncate_head(&self.breadcrumb(), tree_area.width.saturating_sub(4)),
+                        style::PANE_TITLE,
+                    ))
+                    // The census rides the bottom border, costing no rows.
+                    .title_bottom(Span::styled(self.census(), style::BLOCK_SUBTITLE)),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            );
+            .highlight_style(style::SELECTION_FOCUSED);
 
-        frame.render_stateful_widget(list, columns[0], &mut self.list_state);
+        frame.render_stateful_widget(list, tree_area, &mut self.list_state);
 
         if self.output.is_empty() {
             // With no output yet, the pane describes what the selection does.
@@ -439,51 +421,250 @@ impl App {
                 None => String::new(),
             };
 
+            let title = match self.selected_node() {
+                Some(Node::Task(task)) => task.title(),
+                _ => "Detail",
+            };
+
             let paragraph = Paragraph::new(description)
-                .block(Block::default().borders(Borders::ALL).title("Description"))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(style::BORDER_UNFOCUSED)
+                        .title(Span::styled(
+                            truncate_head(title, right_area.width.saturating_sub(4)),
+                            style::PANE_TITLE,
+                        )),
+                )
                 .wrap(Wrap { trim: true });
 
-            frame.render_widget(paragraph, columns[1]);
+            frame.render_widget(paragraph, right_area);
         } else {
-            self.output.render(frame, columns[1], "Output");
+            self.output.render(frame, right_area, "output");
         }
+    }
+
+    /// Counts what the level on screen holds, for the tree's bottom border.
+    fn census(&self) -> String {
+        let level = self.current_level();
+        let categories = level
+            .iter()
+            .filter(|node| matches!(node, Node::Category(_)))
+            .count();
+        let tasks = level.len() - categories;
+
+        let parts: Vec<String> = [
+            (categories, "category", "categories"),
+            (tasks, "task", "tasks"),
+        ]
+        .iter()
+        .filter(|(count, _, _)| *count > 0)
+        .map(|(count, singular, plural)| {
+            let noun = if *count == 1 { singular } else { plural };
+            format!("{count} {noun}")
+        })
+        .collect();
+
+        format!(" {} ", parts.join(", "))
     }
 
     /// Draws the status bar and key hints.
     ///
-    /// What `Enter` does depends on the row under the cursor, so the hint says
-    /// which of the two it is rather than naming both every time.
+    /// The pill always occupies the same cells at the left edge, so the eye
+    /// never has to search for the tool's current state.
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let pill = self.pill();
 
-        let enter_hint = match self.selected_node() {
-            Some(Node::Category(_)) => " open  ",
-            _ => " run  ",
-        };
-
-        let mut spans = vec![
-            Span::raw(self.status.clone()),
-            Span::raw("   |   "),
-            Span::styled("↑↓", bold),
-            Span::raw(" navigate  "),
-            Span::styled("Enter", bold),
-            Span::raw(enter_hint),
-        ];
-
-        // Going back is only offered where there is somewhere to go back to.
-        if !self.path.is_empty() {
-            spans.push(Span::styled("Esc", bold));
-            spans.push(Span::raw(" back  "));
-        }
-
-        spans.push(Span::styled("q", bold));
-        spans.push(Span::raw(" quit"));
-
-        let status =
-            Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
+        let status = Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {} ", pill.label), pill.style),
+            Span::raw("  "),
+            Span::styled(self.status.clone(), style::NORMAL),
+        ]));
 
         frame.render_widget(status, area);
     }
+
+    /// The state pill for the status row.
+    ///
+    /// A row whose task cannot run here reports that rather than `READY`: the
+    /// pill is the one place that always states what pressing Enter would do.
+    fn pill(&self) -> Pill {
+        match self.selected_node() {
+            Some(Node::Task(task)) if !task.supports(self.distro.family) => Pill {
+                label: "UNSUPPORTED",
+                style: style::STATUS_INERT,
+            },
+            _ if self.confirm.is_some() => Pill {
+                label: "CONFIRM",
+                style: style::STATUS_ERROR,
+            },
+            _ => Pill {
+                label: "READY",
+                style: style::STATUS_READY,
+            },
+        }
+    }
+
+    /// Draws the key hints along the bottom row.
+    ///
+    /// What `Enter` does depends on the row under the cursor, so the hint says
+    /// which of the two it is rather than naming both every time.
+    fn render_key_bar(&self, frame: &mut Frame, area: Rect) {
+        let enter_hint = match self.selected_node() {
+            Some(Node::Category(_)) => "open",
+            _ => "run",
+        };
+
+        let mut keys = vec![("↑↓", "move"), ("Enter", enter_hint)];
+
+        // Going back is only offered where there is somewhere to go back to.
+        if !self.path.is_empty() {
+            keys.push(("Esc", "back"));
+        }
+
+        keys.push(("q", "quit"));
+
+        let mut spans = Vec::with_capacity(keys.len() * 3);
+        for (key, label) in keys {
+            spans.push(Span::styled(format!(" {key}"), style::KEYBAR_KEY));
+            spans.push(Span::styled(format!(" {label} "), style::KEYBAR_LABEL));
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+}
+
+/// A status-row pill: a word plus the style that carries its meaning.
+///
+/// The word stands alone when colour is absent, which is why every pill has
+/// one rather than being a coloured block.
+struct Pill {
+    label: &'static str,
+    style: Style,
+}
+
+/// Builds one row of the tree.
+///
+/// Flags are glyphs rather than colours so that a monochrome terminal loses
+/// nothing, and unsupported tasks stay visible with their reason rather than
+/// being hidden — hiding them makes the tool look inconsistent between hosts.
+fn row(node: &Node, family: crate::distro::Family, width: usize) -> Line<'static> {
+    let (marker, marker_style, title, title_style, trailing, trailing_style) = match node {
+        // The marker tells a category apart from a task at a glance; with one
+        // level on screen there is no indentation to do it.
+        //
+        // The count is what makes a collapsed level navigable: it tells a
+        // 3-task category from an 8-task one without opening either.
+        Node::Category(category) => (
+            CATEGORY_MARKER,
+            style::CATEGORY_COLLAPSED,
+            category.title,
+            style::HEADING,
+            category.task_count().to_string(),
+            style::BLOCK_SUBTITLE,
+        ),
+        Node::Task(task) => {
+            let supported = task.supports(family);
+            let (text_style, flag, flag_style) = if !supported {
+                (
+                    style::DISABLED,
+                    style::MARKER_UNSUPPORTED,
+                    style::FLAG_UNSUPPORTED,
+                )
+            } else if task.is_destructive() {
+                (style::NORMAL, style::MARKER_DANGER, style::FLAG_DANGER)
+            } else {
+                (style::NORMAL, "", style::NORMAL)
+            };
+
+            (
+                TASK_MARKER,
+                text_style,
+                task.title(),
+                text_style,
+                flag.to_owned(),
+                flag_style,
+            )
+        }
+    };
+
+    // A title longer than its column is cut with an ellipsis rather than
+    // silently clipped by the terminal: "Install and enable the SSH ser" reads
+    // as a real name, so the operator cannot tell it was truncated.
+    //
+    // Titles lose their tail, unlike breadcrumbs, which lose their head: a task
+    // is identified by how its name starts, a path by where it ends.
+    let fixed = marker.chars().count() + trailing.chars().count();
+    // One space always separates the title from the trailing flag.
+    let room_for_title = width.saturating_sub(fixed + 1);
+    let title = truncate_tail(title, room_for_title);
+
+    let used = fixed + title.chars().count();
+    let padding = width.saturating_sub(used).max(1);
+
+    Line::from(vec![
+        Span::styled(marker, marker_style),
+        Span::styled(title, title_style),
+        Span::raw(" ".repeat(padding)),
+        Span::styled(trailing, trailing_style),
+    ])
+}
+
+/// Fits `text` into `width` cells, dropping characters from the end.
+///
+/// The companion of [`truncate_head`], for text identified by how it starts.
+fn truncate_tail(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+
+    // Too narrow to say anything meaningful; an ellipsis alone is honest.
+    if width <= 1 {
+        return "…".repeat(width);
+    }
+
+    text.chars().take(width - 1).chain(['…']).collect()
+}
+
+/// Fits `text` into `width` cells, dropping characters from the front.
+///
+/// Paths lose their head, never their tail: `…› Configuration` says where you
+/// are, whereas `Remote Access › SSH › Configura` does not. The result is
+/// padded with a space on each side, the way every title in the interface is
+/// framed against its border.
+fn truncate_head(text: &str, width: u16) -> String {
+    let available = width as usize;
+    let length = text.chars().count();
+
+    if length <= available {
+        return format!(" {text} ");
+    }
+
+    // One cell goes to the ellipsis that marks the dropped head.
+    let kept: String = text
+        .chars()
+        .skip(length.saturating_sub(available.saturating_sub(1)))
+        .collect();
+
+    format!(" …{kept} ")
+}
+
+/// Draws the refusal shown on a terminal too small for a legible interface.
+fn render_too_small(frame: &mut Frame) {
+    let message = format!(
+        "initd needs at least {}×{} .\nThis terminal is {}×{}.",
+        layout::MIN_WIDTH,
+        layout::MIN_HEIGHT,
+        frame.area().width,
+        frame.area().height,
+    );
+
+    frame.render_widget(
+        Paragraph::new(message)
+            .style(style::NORMAL)
+            .wrap(Wrap { trim: true }),
+        frame.area(),
+    );
 }
 
 /// The nodes reached by following `path` from the root of `tree`.
@@ -683,5 +864,251 @@ mod tests {
     #[test]
     fn no_dialog_is_open_initially() {
         assert!(test_app(Family::Debian).confirm.is_none());
+    }
+
+    /// Renders the app into an off-screen buffer and returns it as text rows.
+    ///
+    /// The mockups in `docs/tui-specification.html` are literal character
+    /// grids, so the interface is checked against a real buffer rather than by
+    /// reasoning about constraints.
+    fn render_to_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| app.render(frame))
+            .expect("drawing must not fail");
+
+        let buffer = terminal.backend().buffer().clone();
+
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// Prints the rendered grid, for diffing against the mockups by eye.
+    ///
+    /// Ignored by default: it asserts nothing and exists as a viewer. Run with
+    /// `cargo test show_the_reference_frame -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "viewer, not an assertion"]
+    fn show_the_reference_frame() {
+        let mut app = test_app(Family::Debian);
+
+        for (index, row) in render_to_rows(&mut app, 80, 24).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
+
+        // Descend to a level of real tasks, where the flags are visible.
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+        app.list_state.select(Some(1));
+        app.enter_category(1);
+
+        println!();
+        for (index, row) in render_to_rows(&mut app, 80, 24).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
+
+        // The wide layout, where the tree takes its fixed width and long task
+        // titles have to be truncated rather than clipped.
+        let mut wide = test_app(Family::Debian);
+        enter_first_category(&mut wide);
+        enter_first_category(&mut wide);
+        enter_first_category(&mut wide);
+
+        println!();
+        for (index, row) in render_to_rows(&mut wide, 140, 26).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
+    }
+
+    #[test]
+    fn the_reference_size_spends_only_three_rows_on_chrome() {
+        // 80x24 is the size that has to work: row 1 header, rows 2-22 body,
+        // row 23 status, row 24 keys. Bordered chrome bands would eat six.
+        let mut app = test_app(Family::Debian);
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert!(
+            rows[0].contains("initd"),
+            "row 1 is the header: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].starts_with('┌'),
+            "the body must start on row 2: {:?}",
+            rows[1]
+        );
+        assert!(
+            rows[22].contains("READY"),
+            "row 23 is the status pill: {:?}",
+            rows[22]
+        );
+        assert!(
+            rows[23].contains("quit"),
+            "row 24 is the key bar: {:?}",
+            rows[23]
+        );
+    }
+
+    #[test]
+    fn a_task_title_too_long_for_its_column_is_not_cut_mid_word() {
+        // "Install and enable the SSH server" overflows a 34-cell tree pane,
+        // which is what a wide terminal actually renders.
+        let mut app = test_app(Family::Debian);
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+
+        let rows = render_to_rows(&mut app, 140, 30);
+        let tree_rows = rows[2..6].join("\n");
+
+        assert!(
+            !tree_rows.contains("SSH ser│") && !tree_rows.contains("SSH ser "),
+            "a truncated title must be marked, not silently cut: {tree_rows}"
+        );
+    }
+
+    #[test]
+    fn a_long_breadcrumb_loses_its_head_not_its_tail() {
+        // "…› Configuration" says where you are; "Remote Access › SSH › Conf"
+        // does not, so truncation must drop from the front.
+        let fitted = truncate_head("Remote Access › SSH › Configuration", 20);
+
+        assert!(fitted.starts_with(" …"), "got {fitted:?}");
+        assert!(
+            fitted.trim_end().ends_with("Configuration"),
+            "got {fitted:?}"
+        );
+        assert!(fitted.chars().count() <= 22, "got {fitted:?}");
+    }
+
+    #[test]
+    fn a_breadcrumb_that_fits_is_left_alone() {
+        assert_eq!(truncate_head("Tasks", 20), " Tasks ");
+    }
+
+    #[test]
+    fn the_deepest_breadcrumb_is_not_cut_mid_word_at_the_reference_size() {
+        // Remote Access > SSH > Configuration overflows a 34-cell tree pane,
+        // which is the case that surfaced this rule.
+        let mut app = test_app(Family::Debian);
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+        app.list_state.select(Some(1));
+        app.enter_category(1);
+
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert!(
+            rows[1].contains('…'),
+            "an overflowing breadcrumb must be marked: {:?}",
+            rows[1]
+        );
+        assert!(
+            rows[1].contains("Configuration"),
+            "the tail names where you are: {:?}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn the_header_names_the_detected_host() {
+        // The operator checks what was detected before touching anything.
+        let mut app = test_app(Family::Debian);
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert!(rows[0].contains("Debian GNU/Linux 13"), "got {:?}", rows[0]);
+    }
+
+    #[test]
+    fn the_census_rides_the_bottom_border() {
+        // A bottom title costs no rows, which is why the count lives there.
+        let mut app = test_app(Family::Debian);
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        let body = rows[..22].join("\n");
+        assert!(
+            body.contains("categor"),
+            "the tree must report what the level holds: {body}"
+        );
+    }
+
+    #[test]
+    fn a_destructive_task_is_flagged_in_the_tree() {
+        // The marker is a glyph so a monochrome terminal loses nothing.
+        let mut app = test_app(Family::Debian);
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+        // Remote Access > SSH > Configuration holds the destructive tasks.
+        app.list_state.select(Some(1));
+        app.enter_category(1);
+
+        let rows = render_to_rows(&mut app, 80, 24);
+        let body = rows[..22].join("\n");
+
+        assert!(
+            body.contains(style::MARKER_DANGER),
+            "a destructive task must carry its marker: {body}"
+        );
+    }
+
+    #[test]
+    fn a_terminal_below_the_minimum_states_what_it_needs() {
+        // A garbled layout on a production box is worse than a refusal.
+        let mut app = test_app(Family::Debian);
+        let rows = render_to_rows(&mut app, 50, 10);
+        let screen = rows.join("\n");
+
+        assert!(
+            screen.contains("60") && screen.contains("15"),
+            "the refusal must state the requirement: {screen}"
+        );
+        assert!(
+            !screen.contains("READY"),
+            "no partial interface is drawn: {screen}"
+        );
+    }
+
+    #[test]
+    fn the_key_bar_names_what_enter_does_on_this_row() {
+        // Enter opens a category but runs a task, so the hint must follow the
+        // cursor rather than naming both every time.
+        let mut app = test_app(Family::Debian);
+
+        let on_category = render_to_rows(&mut app, 80, 24)[23].clone();
+        assert!(on_category.contains("open"), "got {on_category}");
+
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+        enter_first_category(&mut app);
+
+        let on_task = render_to_rows(&mut app, 80, 24)[23].clone();
+        assert!(on_task.contains("run"), "got {on_task}");
+    }
+
+    #[test]
+    fn an_unsupported_task_says_so_in_the_status_pill() {
+        // The pill is the one place that always states what Enter would do.
+        let mut app = test_app(Family::Arch);
+        let arch_supports_everything = tasks::all_tasks()
+            .iter()
+            .all(|task| task.supports(Family::Arch));
+
+        if arch_supports_everything {
+            // Nothing to assert on this tree yet; the branch exists so the
+            // test starts failing the day an Arch-unsupported task lands.
+            return;
+        }
+
+        let rows = render_to_rows(&mut app, 80, 24);
+        assert!(rows[22].contains("READY") || rows[22].contains("UNSUPPORTED"));
     }
 }

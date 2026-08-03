@@ -10,7 +10,9 @@
 
 pub mod app;
 pub mod confirm;
+pub mod layout;
 pub mod output;
+pub mod style;
 
 use std::io::{self, Stdout};
 
