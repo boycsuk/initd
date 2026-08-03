@@ -130,6 +130,9 @@ TUI or CLI:
     refuses every login.
   - Acceptance: the operation is refused when none of the named accounts holds
     an authorised key, since password authentication may already be disabled.
+  - Acceptance: an account the server already refuses does not count as a way
+    back in — naming only root on a server where root login is disabled is
+    refused, even though root holds a key.
   - Acceptance: I am told which accounts will still be able to log in before
     the change takes effect.
   - Acceptance: a value that would inject another directive into the

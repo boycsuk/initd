@@ -27,7 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only: `AllowUsers` naming an account that does not exist yields a
   configuration `sshd -t` accepts and that matches nobody, and the CLI has no
   verification window to undo it. Every named account must exist and at least
-  one must hold an authorised key before anything is written.
+  one must both hold an authorised key and be an account the server still
+  admits — naming only root where root login is already disabled is refused,
+  since holding a key is not the same as being able to log in.
 - `AccountReader`, a capability for asking whether an account exists. Behind a
   trait because `getent` is absent from busybox, so Alpine will need its own
   implementation.
