@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships on.
 
 ### Changed
+- The task tree is now recursive: a category holds tasks, further categories,
+  or both, to any depth. `TaskGroup` was a single flat level and could not
+  express an area with internal structure.
+- SSH tasks are grouped under `Remote Access > SSH > {Service, Configuration,
+  Keys}`. The top level is named for what its members do rather than for a
+  protocol, so WireGuard joins it without renaming anything. Task identifiers
+  are unchanged, so `initd run <task-id>` is unaffected.
+- The TUI navigates by drilling down: one level is shown at a time, `Enter`
+  opens a category or runs a task, and `Esc`/`Backspace`/`←`/`h` returns to the
+  parent. The panel title is a breadcrumb of the current path.
+- `Esc` no longer quits. It means "go back", so overshooting by one level
+  cannot drop the administrator out of the program mid-session; `q` quits from
+  anywhere.
+- Category rows are selectable, since a category that cannot be selected cannot
+  be opened.
+- `initd list` prints the tree indented by level instead of one heading per
+  area. No subcommand, argument or exit code changed.
 
 ### Deprecated
 

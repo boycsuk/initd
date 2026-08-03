@@ -9,7 +9,7 @@ use crate::distro::Family;
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::sshd_config::{self, SSHD_CONFIG};
-use crate::tasks::{Progress, Task};
+use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families every SSH task supports.
 const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
@@ -35,22 +35,38 @@ const VALID_KEY_PREFIXES: [&str; 5] = [
 /// Default port offered when none is given.
 const DEFAULT_SSH_PORT: u32 = 22;
 
-/// Builds the SSH task list.
+/// Builds the SSH category, subdivided by what each task acts on.
 ///
-/// Parameterised tasks appear with placeholder values so the tree can list
-/// them; the CLI and the TUI construct them with real arguments before running.
-pub fn tasks() -> Vec<Box<dyn Task>> {
-    vec![
-        Box::new(InstallSsh),
-        Box::new(HardenSsh),
-        Box::new(AuthorizeKey {
-            user: "root".to_owned(),
-            key: String::new(),
-        }),
-        Box::new(ChangePort {
-            port: DEFAULT_SSH_PORT,
-        }),
-    ]
+/// The area owns its own subdivision so that `tasks::tree()` stays a flat list
+/// of areas. Parameterised tasks appear with placeholder values so the tree can
+/// list them; the CLI and the TUI construct them with real arguments before
+/// running.
+pub fn category() -> Category {
+    Category::new(
+        "SSH",
+        vec![
+            Node::Category(Category::new(
+                "Service",
+                vec![Node::Task(Box::new(InstallSsh))],
+            )),
+            Node::Category(Category::new(
+                "Configuration",
+                vec![
+                    Node::Task(Box::new(HardenSsh)),
+                    Node::Task(Box::new(ChangePort {
+                        port: DEFAULT_SSH_PORT,
+                    })),
+                ],
+            )),
+            Node::Category(Category::new(
+                "Keys",
+                vec![Node::Task(Box::new(AuthorizeKey {
+                    user: "root".to_owned(),
+                    key: String::new(),
+                }))],
+            )),
+        ],
+    )
 }
 
 /// Reports a step to the caller as a normal output line.

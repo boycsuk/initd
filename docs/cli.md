@@ -86,8 +86,26 @@ of a wrapped command, and the effective uid.
 Lists the task tree. Tasks not supported on the running distribution are
 listed and marked rather than hidden.
 
-**Output:** one group heading per area, then one line per task with its
-identifier and title.
+**Output:** the tree, indented two spaces per level. Category rows end in `:`;
+task rows carry a support marker (`[ ]` supported, `[!]` not supported on this
+distribution), the identifier and the title. Identifiers are padded to a common
+width so titles line up regardless of depth.
+
+```
+Remote Access:
+  SSH:
+    Service:
+      [ ] ssh.install        Install and enable the SSH server
+    Configuration:
+      [ ] ssh.harden         Harden the SSH configuration
+      [ ] ssh.change-port    Change the SSH port
+    Keys:
+      [ ] ssh.authorize-key  Authorise a public key
+```
+
+Nesting is unbounded: a category may contain tasks, further categories, or
+both. Task identifiers stay globally unique and independent of position, so
+`run <task-id>` is unaffected by where a task sits in the tree.
 
 ### `initd run <task-id>`
 

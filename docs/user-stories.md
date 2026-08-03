@@ -78,6 +78,15 @@ TUI or CLI:
   run on my system so that I know what is possible before changing anything.
   - Acceptance: tasks not supported on the running distribution are still
     listed, marked, and never silently hidden.
+- As an **administrator**, I can browse the tasks grouped by area rather than
+  as one flat list, so that I can find what I need as the tool grows.
+  - Acceptance: tasks are organised into categories that may themselves contain
+    categories, to any depth.
+  - Acceptance: a task's identifier does not change when it is regrouped, so
+    scripts calling it keep working.
+  - TUI exception: categories are opened one level at a time, with a breadcrumb
+    showing the current location and a way back to the parent.
+  - CLI exception: the whole tree is printed at once, indented by level.
 
 ### SSH server
 

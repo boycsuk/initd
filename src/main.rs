@@ -114,6 +114,9 @@ fn cmd_change_port(port: Option<&str>) -> Result<()> {
     execute(&tasks::ssh::ChangePort { port })
 }
 
+/// Indentation applied per level of the task tree.
+const LIST_INDENT: &str = "  ";
+
 /// Lists the task tree and whether each task runs on this system.
 fn cmd_list() -> Result<()> {
     let family = distro::detect::detect()?.family;
@@ -122,31 +125,42 @@ fn cmd_list() -> Result<()> {
 
     // Width is measured rather than fixed so a longer id added later cannot
     // silently break the alignment.
-    let id_width = tree
+    let id_width = tasks::all_tasks()
         .iter()
-        .flat_map(|group| &group.tasks)
         .map(|task| task.id().len())
         .max()
         .unwrap_or(0);
 
-    for group in &tree {
-        println!("{}:", group.title);
-
-        for task in &group.tasks {
-            // Unsupported tasks stay visible with a reason, rather than being
-            // hidden — the same rule the TUI follows.
-            let mark = if task.supports(family) { " " } else { "!" };
-            println!(
-                "  [{}] {:<width$}  {}",
-                mark,
-                task.id(),
-                task.title(),
-                width = id_width
-            );
-        }
-    }
+    print_nodes(&tree, family, id_width, 0);
 
     Ok(())
+}
+
+/// Prints a forest of nodes, indenting one level per depth.
+fn print_nodes(nodes: &[tasks::Node], family: distro::Family, id_width: usize, depth: usize) {
+    let indent = LIST_INDENT.repeat(depth);
+
+    for node in nodes {
+        match node {
+            tasks::Node::Category(category) => {
+                println!("{}{}:", indent, category.title);
+                print_nodes(&category.children, family, id_width, depth + 1);
+            }
+            tasks::Node::Task(task) => {
+                // Unsupported tasks stay visible with a reason, rather than
+                // being hidden — the same rule the TUI follows.
+                let mark = if task.supports(family) { " " } else { "!" };
+                println!(
+                    "{}[{}] {:<width$}  {}",
+                    indent,
+                    mark,
+                    task.id(),
+                    task.title(),
+                    width = id_width
+                );
+            }
+        }
+    }
 }
 
 /// Runs a single task by identifier.
