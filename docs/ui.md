@@ -53,14 +53,18 @@ The screen is three horizontal bands. The middle band splits into two columns.
 
 - **Header** — the product name and the detected system: distribution and
   resolved family. Fixed 3 rows.
-- **Task tree** — the navigable list of groups and tasks. Left column, 40% of
-  the width. Tasks unsupported on the running distribution stay visible, dimmed
-  and annotated with the reason.
+- **Task tree** — the navigable list of categories and tasks. Left column, 40%
+  of the width. Navigation is **drill-down**: exactly one level is on screen at
+  a time, and opening a category replaces the list with its contents. Category
+  rows are prefixed `›`; the panel title is the breadcrumb of the current path
+  (`Remote Access › SSH`, or `Tasks` at the top level). Tasks unsupported on the
+  running distribution stay visible, dimmed and annotated with the reason.
 - **Output** — the running task's output, streamed line by line as it is
   produced, scrollable. Right column, 60% of the width. Retains the most recent
   2000 lines.
 - **Description** — occupies the same area as Output before any task has run,
-  showing what the selected task does.
+  showing what the selected task does. With a category selected it shows the
+  category name and how many tasks it holds at any depth.
 - **Status bar** — the current state (ready, running, finished, failed, or
   cancelled) plus the key hints. Fixed 3 rows.
 - **Confirmation dialog** — overlays the centre of the screen, 60% × 40%, for
@@ -70,7 +74,7 @@ The screen is three horizontal bands. The middle band splits into two columns.
 
 | Role | Style | Where |
 |------|-------|-------|
-| `heading` | Cyan + bold | Group titles in the task tree |
+| `heading` | Cyan + bold | Category rows in the task tree |
 | `selection` | Blue background + bold | The highlighted row |
 | `disabled` | Dark grey | Tasks unsupported on this distribution |
 | `progress` | Default | stdout lines in the output pane |
@@ -86,12 +90,21 @@ The screen is three horizontal bands. The middle band splits into two columns.
 
 | Key | Action |
 |-----|--------|
-| `↑` / `k` | Move to the previous task (group headings are skipped) |
-| `↓` / `j` | Move to the next task |
-| `Enter` | Run the selected task; destructive tasks open the dialog first |
+| `↑` / `k` | Move to the previous row (categories included) |
+| `↓` / `j` | Move to the next row |
+| `Enter` | Open the selected category, or run the selected task; destructive tasks open the dialog first |
+| `Esc` / `Backspace` / `←` / `h` | Go back to the parent level; at the top level it reports rather than quitting |
 | `PageUp` | Scroll the output pane towards older lines |
 | `PageDown` | Scroll the output pane back towards the newest |
-| `q` / `Esc` | Quit |
+| `q` | Quit, from any level |
+
+Every row is selectable: a category that could not be selected could not be
+opened. `Esc` means "go back" rather than "quit", so pressing it one level too
+many cannot drop the user out of the program — `q` is the only way out.
+
+The status bar reflects the selected row: the `Enter` hint reads *open* on a
+category and *run* on a task, and the `Esc` hint appears only below the top
+level.
 
 ### Confirmation dialog
 
