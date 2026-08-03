@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -16,6 +16,7 @@ use super::confirm::Confirm;
 use super::form::Form;
 use super::output::OutputPane;
 use super::status::{State, Status};
+use super::verify::Verification;
 use super::{Tui, layout, style, with_terminal_released};
 use crate::backend::Backend;
 use crate::distro::Distro;
@@ -23,6 +24,7 @@ use crate::distro::host::HostFacts;
 use crate::error::Result;
 use crate::exec::Executor;
 use crate::tasks::params::ParamValues;
+use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::{self, Node, Task};
 
 /// How long to wait for a key before redrawing.
@@ -46,6 +48,9 @@ const HELP_HINT: &str = "? help";
 
 /// Lines a page key moves the output by.
 const PAGE_SCROLL: usize = 10;
+
+/// Rows the verification banner occupies: its top border and four lines.
+const VERIFY_BANNER_ROWS: u16 = 5;
 
 /// Marks a row that opens onto another level.
 const CATEGORY_MARKER: &str = "› ";
@@ -106,6 +111,8 @@ pub struct App {
     /// A destructive task with parameters passes through the form and then the
     /// confirmation, and the values have to survive the step between.
     pending_values: ParamValues,
+    /// An applied change waiting to be kept or put back.
+    verification: Option<Verification>,
     status: Status,
     should_quit: bool,
 }
@@ -143,6 +150,7 @@ impl App {
             form: None,
             confirm: None,
             pending_values: ParamValues::new(),
+            verification: None,
             status: Status::new(),
             should_quit: false,
         }
@@ -208,6 +216,10 @@ impl App {
     /// Runs the event loop until the user quits.
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
         while !self.should_quit {
+            // Checked before drawing, so an expired window is never shown with
+            // a countdown that has already run out.
+            self.expire_verification();
+
             terminal
                 .draw(|frame| self.render(frame))
                 .map_err(|source| crate::error::Error::Terminal { source })?;
@@ -262,6 +274,13 @@ impl App {
     /// `Some` means the key was the one that starts the work; everything else
     /// is resolved in place.
     fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        // Semi-modal: reading is never blocked while a change is unverified,
+        // but nothing new may be started until this one is settled.
+        if self.verification.is_some() {
+            self.on_verify_key(key);
+            return None;
+        }
+
         if self.form.is_some() {
             return self.on_form_key(key);
         }
@@ -347,6 +366,44 @@ impl App {
         }
 
         true
+    }
+
+    /// Handles a key press while a change is applied but not yet kept.
+    ///
+    /// `K` and `R` are uppercase deliberately: lowercase `k` is "move up"
+    /// everywhere else in this interface, and this is the one place where a
+    /// mistyped navigation key would do something unrecoverable. Scrolling
+    /// stays available, because reading the log of what just happened is
+    /// exactly what the administrator needs in order to decide.
+    fn on_verify_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('K') => self.keep_change(),
+            KeyCode::Char('R') => self.revert_change("reverted"),
+            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
+            KeyCode::Up => self.output.scroll_up(1),
+            KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
+            KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
+            // Every other key is refused rather than ignored: an unanswered
+            // window is the one state where doing nothing has consequences.
+            _ => self
+                .status
+                .flash("K keeps this change, R puts it back", Instant::now()),
+        }
+    }
+
+    /// Puts the change back if its window has run out.
+    ///
+    /// Called from the event loop rather than driven by a key, because the
+    /// whole point is that it happens when nobody is pressing anything.
+    fn expire_verification(&mut self) {
+        let expired = self
+            .verification
+            .as_ref()
+            .is_some_and(|window| window.has_expired(Instant::now()));
+
+        if expired {
+            self.revert_change("no confirmation");
+        }
     }
 
     /// Handles a key press while the parameter form is open.
@@ -616,14 +673,67 @@ impl App {
 
         // Success and failure are pills of their own, so the outcome is
         // legible from the left edge without reading the message.
+        //
+        // A change that can sever this session is not reported as done: it is
+        // applied, and held open until the administrator proves they can still
+        // get in. A failing task is reported in the status row rather than
+        // tearing the interface down — the administrator stays in control.
         match outcome {
-            Ok(()) => self.status.set(State::Done, id),
+            Ok(result) => match result {
+                Outcome::Revertible(revert) => self.begin_verification(id, revert),
+                Outcome::Done => self.status.set(State::Done, id),
+            },
             Err(ref err) => self.status.set(State::Failed, format!("{id} — {err}")),
         }
 
-        // A failing task is reported in the status bar rather than tearing the
-        // interface down: the administrator stays in control.
         Ok(())
+    }
+
+    /// Opens the window in which an applied change can still be undone.
+    fn begin_verification(&mut self, task: &str, revert: Revert) {
+        let window = Verification::new(task, revert, Instant::now());
+
+        self.status
+            .set(State::Verify, format!("{task} — applied, not yet kept"));
+        self.verification = Some(window);
+    }
+
+    /// Keeps an applied change, closing its window.
+    fn keep_change(&mut self) {
+        let Some(window) = self.verification.take() else {
+            return;
+        };
+
+        self.status
+            .set(State::Done, format!("{} — kept", window.task));
+    }
+
+    /// Puts an applied change back, closing its window.
+    ///
+    /// A revert that itself fails is reported rather than swallowed: the
+    /// administrator has to know the machine is in neither state.
+    fn revert_change(&mut self, reason: &str) {
+        let Some(window) = self.verification.take() else {
+            return;
+        };
+
+        let outcome = window
+            .revert()
+            .apply(self.executor.as_ref(), self.backend.as_ref());
+
+        match outcome {
+            Ok(()) => self.status.set(
+                State::Done,
+                format!(
+                    "{} — {reason}, previous configuration restored",
+                    window.task
+                ),
+            ),
+            Err(ref err) => self.status.set(
+                State::Failed,
+                format!("{} — could not restore: {err}", window.task),
+            ),
+        }
     }
 
     /// The task currently under the cursor, if the cursor is on one.
@@ -774,7 +884,17 @@ impl App {
         frame.render_stateful_widget(list, tree_area, &mut self.list_state);
         self.render_tree_scrollbar(frame, tree_area);
 
-        if self.output.is_empty() {
+        if let Some(ref window) = self.verification {
+            // The countdown takes the top of the pane and the output keeps the
+            // rest: what the change did is the evidence for the decision.
+            let [banner, log] =
+                Layout::vertical([Constraint::Length(VERIFY_BANNER_ROWS), Constraint::Min(3)])
+                    .areas(right_area);
+
+            render_verification(frame, banner, window);
+            self.output
+                .render(frame, log, "output", self.focus == Pane::Output);
+        } else if self.output.is_empty() {
             self.render_detail(frame, right_area);
         } else {
             self.output
@@ -933,7 +1053,12 @@ impl App {
     /// than listing every binding: a bar that never changes is one the operator
     /// stops reading.
     fn render_key_bar(&self, frame: &mut Frame, area: Rect) {
+        // While a change is unverified the tree keys are refused, so offering
+        // them would advertise actions the state does not allow.
         let mut keys = match self.focus {
+            _ if self.verification.is_some() => {
+                vec![("K", "keep"), ("R", "revert"), ("↑↓", "scroll")]
+            }
             Pane::Tree => self.tree_keys(),
             Pane::Output => vec![
                 ("↑↓", "scroll"),
@@ -943,7 +1068,11 @@ impl App {
             ],
         };
 
-        keys.push(("q", "quit"));
+        // Quitting is refused while a change is unverified — leaving would
+        // abandon it with nobody left to put it back — so it is not offered.
+        if self.verification.is_none() {
+            keys.push(("q", "quit"));
+        }
 
         let mut spans = Vec::with_capacity(keys.len() * 3);
         for (key, label) in keys {
@@ -953,6 +1082,46 @@ impl App {
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
+}
+
+/// Draws the banner over an applied change that has not been kept.
+///
+/// It states three things in order: that the change is applied but not yet
+/// permanent, how long is left, and what to press. The countdown is red
+/// because it is the one number on screen that acts on its own.
+fn render_verification(frame: &mut Frame, area: Rect, window: &Verification) {
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" VERIFY ", style::STATUS_BUSY),
+            Span::raw("  "),
+            Span::styled("applied, ", style::NORMAL),
+            Span::styled("not yet kept", style::EMPHASIS),
+        ]),
+        Line::from(vec![
+            Span::styled("reverting in ", style::DANGER_TEXT),
+            Span::styled(window.countdown(Instant::now()), style::EMPHASIS),
+            Span::raw("   "),
+            Span::styled("K", style::KEYBAR_KEY),
+            Span::styled(" keep   ", style::KEYBAR_LABEL),
+            Span::styled("R", style::KEYBAR_KEY),
+            Span::styled(" revert now", style::KEYBAR_LABEL),
+        ]),
+        // The instruction that matters: the tool cannot check this itself, so
+        // the one thing the administrator must do is stated outright.
+        Line::styled("Open a second session and check you", style::EMPHASIS),
+        Line::styled("can still log in.", style::EMPHASIS),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                    .border_style(style::DIALOG_BORDER_DANGER),
+            )
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 /// Builds one row of the tree.
@@ -1564,6 +1733,187 @@ mod tests {
         );
     }
 
+    /// A verification window over a fabricated change.
+    fn open_verification(app: &mut App) {
+        app.begin_verification(
+            "ssh.harden",
+            Revert::ConfigFile {
+                backup: crate::domain::files::Backup {
+                    original: "/etc/ssh/sshd_config".to_owned(),
+                    copy: "/etc/ssh/sshd_config.initd".to_owned(),
+                },
+                service: "ssh.service",
+            },
+        );
+    }
+
+    #[test]
+    fn a_revertible_change_is_not_reported_as_done() {
+        // "Done" would claim the tool knows the administrator can still get
+        // in, which is exactly what it cannot know.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        assert_eq!(app.status.state(), State::Verify);
+        assert!(app.verification.is_some());
+    }
+
+    #[test]
+    fn keeping_a_change_closes_the_window() {
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Char('K'));
+
+        assert!(app.verification.is_none());
+        assert_eq!(app.status.state(), State::Done);
+    }
+
+    #[test]
+    fn lowercase_k_cannot_keep_a_change() {
+        // k is "move up" everywhere else, and this is the one place where a
+        // mistyped navigation key would do something unrecoverable.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Char('k'));
+
+        assert!(
+            app.verification.is_some(),
+            "a lowercase k must not commit the change"
+        );
+    }
+
+    #[test]
+    fn reverting_puts_the_configuration_back() {
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Char('R'));
+
+        assert!(app.verification.is_none());
+    }
+
+    #[test]
+    fn an_unanswered_window_reverts_on_its_own() {
+        // The whole point: an administrator who has just locked themselves out
+        // cannot press a key to undo it.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        // Reopen the window as though it had been left unanswered.
+        app.verification = Some(Verification::new(
+            "ssh.harden",
+            Revert::ConfigFile {
+                backup: crate::domain::files::Backup {
+                    original: "/etc/ssh/sshd_config".to_owned(),
+                    copy: "/etc/ssh/sshd_config.initd".to_owned(),
+                },
+                service: "ssh.service",
+            },
+            Instant::now() - Duration::from_secs(120),
+        ));
+
+        app.expire_verification();
+
+        assert!(
+            app.verification.is_none(),
+            "an expired window must resolve itself"
+        );
+    }
+
+    #[test]
+    fn nothing_new_can_be_started_while_a_change_is_unverified() {
+        // One unsettled change at a time: starting another would leave two
+        // reverts outstanding with no way to say which is which.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.form.is_none(), "Enter must not open a form");
+        assert!(app.confirm.is_none(), "Enter must not open a confirmation");
+        assert!(app.verification.is_some(), "the window stays open");
+    }
+
+    #[test]
+    fn reading_the_log_stays_available_during_verification() {
+        // The log of what just happened is the evidence for the decision.
+        let mut app = test_app(Family::Debian);
+        for i in 0..10 {
+            app.output.push(crate::exec::OutputLine {
+                stream: crate::exec::Stream::Stdout,
+                text: format!("line {i}"),
+            });
+        }
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Up);
+
+        assert!(
+            !app.output.is_following(),
+            "scrolling must work while a change is unverified"
+        );
+        assert!(app.verification.is_some());
+    }
+
+    #[test]
+    fn an_unrecognised_key_says_what_the_two_answers_are() {
+        // Doing nothing has consequences here, so a stray key is refused with
+        // the answer rather than ignored.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Char('x'));
+
+        let message = app.status.message(Instant::now());
+        assert!(
+            message.contains('K') && message.contains('R'),
+            "got {message}"
+        );
+    }
+
+    #[test]
+    fn quitting_is_refused_while_a_change_is_unverified() {
+        // Leaving now would abandon the change with nobody left to revert it,
+        // which is the one outcome the window exists to prevent.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Char('q'));
+
+        assert!(!app.should_quit, "q must not leave a change unsettled");
+        assert!(app.verification.is_some());
+    }
+
+    #[test]
+    fn the_key_bar_offers_only_what_verification_allows() {
+        // Advertising Enter or Esc here would name actions the state refuses.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        let keys = render_to_rows(&mut app, 80, 24)[23].clone();
+
+        assert!(keys.contains("K keep"), "got {keys}");
+        assert!(keys.contains("R revert"), "got {keys}");
+        assert!(!keys.contains("run"), "got {keys}");
+        assert!(!keys.contains("quit"), "got {keys}");
+    }
+
+    #[test]
+    fn the_banner_states_the_countdown_and_both_keys() {
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        let rows = render_to_rows(&mut app, 80, 24);
+        let screen = rows.join("\n");
+
+        assert!(screen.contains("not yet kept"), "{screen}");
+        assert!(screen.contains("reverting in"), "{screen}");
+        assert!(screen.contains("second session"), "{screen}");
+        assert!(rows[22].contains("VERIFY"), "got {:?}", rows[22]);
+    }
+
     #[test]
     fn going_back_too_far_flashes_rather_than_changing_state() {
         // Overshooting by one level is a refusal, not a state: the tool is
@@ -1726,6 +2076,29 @@ mod tests {
 
         println!();
         for (index, row) in render_to_rows(&mut form, 80, 24).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
+
+        // The verification window over an applied change.
+        let mut verifying = test_app(Family::Debian);
+        select_task(&mut verifying, "ssh.harden");
+
+        for text in [
+            "$ sshd -t -f /etc/ssh/sshd_config",
+            "ok syntax valid",
+            "$ systemctl reload ssh.service",
+            "ok reloaded, pid 812 kept — no restart",
+        ] {
+            verifying.output.push(crate::exec::OutputLine {
+                stream: crate::exec::Stream::Stdout,
+                text: text.to_owned(),
+            });
+        }
+
+        open_verification(&mut verifying);
+
+        println!();
+        for (index, row) in render_to_rows(&mut verifying, 80, 24).iter().enumerate() {
             println!("{:>2}|{row}", index + 1);
         }
     }

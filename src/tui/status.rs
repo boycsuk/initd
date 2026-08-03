@@ -47,6 +47,8 @@ pub enum State {
     /// variant at a time.
     #[cfg_attr(not(test), allow(dead_code))]
     Cancelled,
+    /// A change is applied but not yet kept.
+    Verify,
     /// A confirmation dialog is open.
     Confirm,
     /// The selected task cannot run on this host.
@@ -62,6 +64,7 @@ impl State {
             Self::Done => "DONE",
             Self::Failed => "FAILED",
             Self::Cancelled => "CANCELLED",
+            Self::Verify => "VERIFY",
             Self::Confirm => "CONFIRM",
             Self::Unsupported => "UNSUPPORTED",
         }
@@ -71,7 +74,9 @@ impl State {
     pub const fn style(self) -> Style {
         match self {
             Self::Ready | Self::Done => style::STATUS_READY,
-            Self::Running => style::STATUS_BUSY,
+            // Verifying is busy, not done: the change is applied but the tool
+            // is still waiting to be told it worked.
+            Self::Running | Self::Verify => style::STATUS_BUSY,
             Self::Failed | Self::Cancelled | Self::Confirm => style::STATUS_ERROR,
             Self::Unsupported => style::STATUS_INERT,
         }

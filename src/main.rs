@@ -78,7 +78,7 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
     let backend = backend::for_family(distro.family);
     let executor = exec::local::LocalExecutor::new(exec::privilege::detect());
 
-    task.run(
+    let outcome = task.run(
         &executor,
         backend.as_ref(),
         values,
@@ -86,7 +86,20 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
             exec::Stream::Stdout => println!("{}", line.text),
             exec::Stream::Stderr => eprintln!("{}", line.text),
         },
-    )
+    )?;
+
+    // The CLI has no verification window to offer — it is not interactive and
+    // exits immediately — so it names the backup instead. An administrator who
+    // finds themselves locked out needs the path, not a prompt they cannot
+    // answer.
+    if let Some(revert) = outcome.revert() {
+        println!(
+            "the previous {} was kept; restore it if you lose access",
+            revert.describes()
+        );
+    }
+
+    Ok(())
 }
 
 /// Authorises a public key for a user.

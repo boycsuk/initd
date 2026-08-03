@@ -6,9 +6,11 @@
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
+use crate::domain::files::Backup;
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
+use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config::{self, SSHD_CONFIG};
 use crate::tasks::{Category, Node, Progress, Task};
 
@@ -39,9 +41,8 @@ const DEFAULT_SSH_PORT: u32 = 22;
 /// Builds the SSH category, subdivided by what each task acts on.
 ///
 /// The area owns its own subdivision so that `tasks::tree()` stays a flat list
-/// of areas. Parameterised tasks appear with placeholder values so the tree can
-/// list them; the CLI and the TUI construct them with real arguments before
-/// running.
+/// of areas. Tasks appear here with no values at all: those they need are
+/// declared through `params()` and collected when the task is run.
 pub fn category() -> Category {
     Category::new(
         "SSH",
@@ -100,7 +101,7 @@ impl Task for InstallSsh {
         backend: &dyn Backend,
         _values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         // The task asks for a capability; the backend knows the names.
         let package = backend.package_for(Capability::Ssh);
         let service = backend.service_for(Capability::Ssh);
@@ -125,7 +126,9 @@ impl Task for InstallSsh {
             ),
         );
 
-        Ok(())
+        // Installing and enabling a service cannot cost the administrator
+        // their way in, so there is nothing worth offering to undo.
+        Ok(Outcome::Done)
     }
 }
 
@@ -164,7 +167,7 @@ impl Task for HardenSsh {
         backend: &dyn Backend,
         _values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         let files = backend.files();
         let contents = files.read(executor, SSHD_CONFIG)?;
 
@@ -197,15 +200,34 @@ impl Task for HardenSsh {
 
         let backup = sshd_config::write_validated(executor, backend, &hardened)?;
 
-        if let Some(backup) = backup {
+        if let Some(ref backup) = backup {
             report(
                 progress,
                 format!("Previous configuration saved to {}", backup.copy),
             );
         }
 
-        reload_ssh(executor, backend, progress)
+        reload_ssh(executor, backend, progress)?;
+
+        // `sshd -t` proved the syntax and the reload proved the daemon
+        // accepted it, but neither proves the administrator can still log in:
+        // the key this task requires might not be the one their client offers.
+        // So the change is offered back until they say otherwise.
+        Ok(revertible(backup, backend))
     }
+}
+
+/// Wraps a configuration backup as the undo for a change already applied.
+///
+/// A change with no backup — a file that did not exist — has nothing to put
+/// back, so it finishes rather than offering an undo that would delete it.
+fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
+    backup.map_or(Outcome::Done, |backup| {
+        Outcome::Revertible(Revert::ConfigFile {
+            backup,
+            service: backend.service_for(Capability::Ssh),
+        })
+    })
 }
 
 /// Adds a public key to a user's `authorized_keys`.
@@ -257,7 +279,7 @@ impl Task for AuthorizeKey {
         backend: &dyn Backend,
         values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         let user = values.get(Self::USER)?.to_owned();
         let key = values.get(Self::KEY)?.trim().to_owned();
         let key = key.as_str();
@@ -283,7 +305,7 @@ impl Task for AuthorizeKey {
 
         if key_is_present(&existing, key) {
             report(progress, "The key is already authorised; nothing to do");
-            return Ok(());
+            return Ok(Outcome::Done);
         }
 
         report(progress, format!("Adding the key to {path}..."));
@@ -303,7 +325,9 @@ impl Task for AuthorizeKey {
 
         report(progress, "Key authorised");
 
-        Ok(())
+        // Authorising a key only ever grants access; undoing it is the
+        // dangerous direction, so it is not offered here.
+        Ok(Outcome::Done)
     }
 }
 
@@ -385,7 +409,7 @@ impl Task for ChangePort {
         backend: &dyn Backend,
         values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         let port = values.port(Self::PORT)?;
 
         // Checked again here rather than trusted from the interface: the CLI
@@ -406,7 +430,7 @@ impl Task for ChangePort {
                 progress,
                 format!("The port is already {current}; nothing to do"),
             );
-            return Ok(());
+            return Ok(Outcome::Done);
         }
 
         let updated = sshd_config::set_directive(&contents, "Port", &port.to_string());
@@ -415,7 +439,7 @@ impl Task for ChangePort {
             progress,
             format!("Changing the port from {current} to {}...", port),
         );
-        sshd_config::write_validated(executor, backend, &updated)?;
+        let backup = sshd_config::write_validated(executor, backend, &updated)?;
 
         // Debian ships ssh.socket alongside ssh.service. When it is active the
         // socket owns the listening port, so editing sshd_config alone changes
@@ -425,13 +449,17 @@ impl Task for ChangePort {
         report(
             progress,
             format!(
-                "Port set to {}. If a firewall or SELinux is active, the new \
-                 port may need to be opened before it can be reached.",
-                port
+                "Port set to {port}. If a firewall or SELinux is active, the \
+                 new port may need to be opened before it can be reached."
             ),
         );
 
-        reload_ssh(executor, backend, progress)
+        reload_ssh(executor, backend, progress)?;
+
+        // The firewall and SELinux warnings above are exactly the reasons this
+        // change can succeed and still leave the machine unreachable, which is
+        // why the old port is kept available to go back to.
+        Ok(revertible(backup, backend))
     }
 }
 

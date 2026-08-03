@@ -87,6 +87,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open can see which machine is about to change without asking, and knows
   whether privileged work will succeed before starting it rather than when it
   fails.
+- A change that could sever the administrator's own access is applied and then
+  held for sixty seconds rather than declared done. `sshd -t` proves the syntax
+  and a reload proves the daemon accepted it, but neither proves the
+  administrator can still log in — only a second session does. `K` keeps the
+  change, `R` puts it back, and running out of time puts it back too: the
+  default outcome of silence is the safe one, because someone who has just
+  locked themselves out cannot press a key to undo it.
+- `K` and `R` are uppercase deliberately, since lowercase `k` is "move up"
+  everywhere else and this is the one place a mistyped navigation key would do
+  something unrecoverable. Quitting and starting another task are both refused
+  while a change is unsettled, and neither is offered in the key bar.
+- Tasks report what they leave behind: `Outcome::Done` for work that cannot
+  cost anyone their way in, `Outcome::Revertible` for a change that can. The
+  CLI has no window to offer — it exits immediately — so it names the backup it
+  kept instead.
 - Tasks declare the values they need instead of being constructed with them.
   The tree previously built `ChangePort { port: 22 }` and `AuthorizeKey { key:
   "" }` with placeholders, so pressing Enter in the TUI meant asking to change

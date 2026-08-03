@@ -5,6 +5,7 @@
 //! without a container. A shell script could not call a trait.
 
 pub mod params;
+pub mod revert;
 pub mod ssh;
 pub mod sshd_config;
 
@@ -13,6 +14,7 @@ use crate::distro::Family;
 use crate::error::Result;
 use crate::exec::{Executor, OutputLine};
 use crate::tasks::params::{Param, ParamValues};
+use crate::tasks::revert::Outcome;
 
 /// Somewhere a task reports its progress to.
 ///
@@ -72,13 +74,18 @@ pub trait Task {
     /// A task that declared no parameters ignores `values`; one that did reads
     /// them back by the names it declared, and fails rather than substituting
     /// a default if the interface failed to collect one.
+    ///
+    /// Returning [`Outcome::Revertible`] hands the caller an undo for a change
+    /// that has already been applied — the tool cannot tell whether the
+    /// administrator can still reach the machine, so it applies, offers to put
+    /// things back, and lets them prove it.
     fn run(
         &self,
         executor: &dyn Executor,
         backend: &dyn Backend,
         values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()>;
+    ) -> Result<Outcome>;
 }
 
 /// A node of the task tree: either a runnable task or a category of nodes.

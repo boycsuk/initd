@@ -114,6 +114,23 @@ TUI or CLI:
   - Acceptance: a malformed key is rejected before anything is written.
   - Acceptance: I am shown what the key parsed as — its type and comment —
     since a 380-character key cannot be verified by reading it.
+- As an **administrator**, I get a window to prove I still have access after a
+  change that could lock me out, so that a mistake undoes itself instead of
+  stranding me.
+  - Acceptance: the change is applied and held, not declared done — the tool
+    cannot know whether I can still log in, only whether the daemon accepted
+    the configuration.
+  - Acceptance: I am told to open a second session and check, because that is
+    the only thing that actually proves it.
+  - Acceptance: the previous configuration goes back on its own if I do not
+    confirm within the window. An administrator who has just locked themselves
+    out cannot press a key to undo it.
+  - Acceptance: keeping the change needs a deliberate keypress that no
+    navigation key can produce by accident.
+  - Acceptance: I cannot quit, or start another task, while a change is
+    unsettled — leaving would abandon it with nobody left to put it back.
+  - TUI exception: the CLI exits immediately and has no window to offer, so it
+    names the backup it kept instead.
 - As an **administrator**, I am asked for the values a task needs before it
   runs, so that no task acts on a value I did not supply.
   - Acceptance: a value that would be rejected is reported as I type it, saying

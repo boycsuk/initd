@@ -117,6 +117,12 @@ a clear refusal.
 - **Confirmation dialog** — overlays the centre of the screen, 60% × 40%, for
   destructive operations only. Modal: while it is open, all keys go to it.
 
+- **Verification banner** — replaces the detail pane after a change that could
+  sever the administrator's own access. States that the change is applied but
+  not yet kept, counts down to the automatic revert, and names the two keys.
+  The output pane keeps the rest of the column, because the log of what just
+  happened is the evidence for the decision.
+
 The order is always **values, then consent, then the work**: a confirmation
 states what will happen, and it cannot do that before it knows the values.
 
@@ -145,6 +151,7 @@ the word carries the meaning alone when colour is absent.
 | `DONE` | The last task succeeded |
 | `FAILED` | The last task failed |
 | `CANCELLED` | The last task was interrupted before it finished |
+| `VERIFY` | A change is applied but not yet kept |
 | `CONFIRM` | A confirmation dialog is open |
 | `UNSUPPORTED` | The selected task cannot run on this host |
 
@@ -333,6 +340,32 @@ digits — so a value that could never be accepted cannot be typed at all. Long
 values scroll horizontally with a `…` marking text dropped from the left; a
 public key is verified by what it *parses* to (type and comment, echoed beneath
 the field), because a 380-character key cannot be checked by reading it.
+
+### Verification window (semi-modal)
+
+Open after a change that could end the administrator's own session. Reading is
+never blocked — the log is what the decision rests on — but nothing new may be
+started until this change is settled.
+
+| Key | Action |
+|-----|--------|
+| `K` | Keep the change |
+| `R` | Put the previous configuration back now |
+| `↑` / `↓` / `PageUp` / `PageDown` | Scroll the output |
+| *timer* | Puts the change back on its own after 60 seconds |
+| *anything else* | Refused, restating what the two answers are |
+
+`K` and `R` are **uppercase deliberately**: lowercase `k` is "move up"
+everywhere else in this interface, and this is the one place where a mistyped
+navigation key would do something unrecoverable.
+
+`q` is refused here and is not offered in the key bar. Quitting would abandon
+the change with nobody left to put it back — the one outcome the window exists
+to prevent.
+
+The default outcome of silence is the safe one. An administrator who has just
+locked themselves out is, by definition, unable to press a key to undo it, so
+the revert happens without them.
 
 ### Confirmation dialog (modal)
 

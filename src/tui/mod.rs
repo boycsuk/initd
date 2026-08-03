@@ -16,6 +16,7 @@ pub mod layout;
 pub mod output;
 pub mod status;
 pub mod style;
+pub mod verify;
 
 use std::io::{self, Stdout};
 
