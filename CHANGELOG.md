@@ -68,6 +68,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and unknown registries rejected, scoped to the musl and gnu targets `initd`
   ships on.
 
+### Added
+- Connection tests that start a real daemon and authenticate against it, so
+  the hardening tiers are measured by whether a client can still log in rather
+  than by whether the file parses. `sshd -t` answers a different question than
+  it appears to: a configuration narrowed to an empty or mutually unusable set
+  of algorithms is perfectly *valid*, validation succeeds, and nobody can
+  connect. Confirmed in a container — a daemon given `Ciphers 3des-cbc` alone
+  passes `sshd -t` and refuses every client — which is precisely the failure
+  `ssh.harden-strict` is documented as the only tier able to cause, and the one
+  the previous suite would have reported green.
+- The scenarios log in as an unprivileged account, not root: `ssh.harden`
+  writes `PermitRootLogin no`, so a root session after hardening would fail for
+  a reason unrelated to connectivity.
+- A complementary scenario reads the authentication methods the *running*
+  daemon still offers, from its own refusal message, proving hardening took
+  something away rather than only that it took nothing needed. Read from the
+  daemon rather than from `sshd_config`, since a directive written into a file
+  the daemon never loaded would satisfy a grep and change nothing.
+- `.github/workflows/ci.yml`, running format, lint, the unit suite and the
+  container suite. Arch runs as a separate scheduled job that never blocks a
+  merge: it is a rolling image, so the strict tier's algorithm filtering can
+  genuinely change outcome when OpenSSH moves upstream. That signal is worth
+  having as its own notification rather than as red on an unrelated pull
+  request. A third job builds against the `rust-version` declared in
+  `Cargo.toml`, which nothing previously enforced.
+- `INITD_REQUIRE_DOCKER`, which turns the container tests' skip-without-Docker
+  into a failure. Skipping is right on a developer machine and wrong in CI,
+  where a misconfigured runner would report a green suite having executed none
+  of them.
+
 ### Changed
 - Container integration tests are driven by an image matrix rather than one
   file per distribution. Everything a scenario needs to know about a family —
