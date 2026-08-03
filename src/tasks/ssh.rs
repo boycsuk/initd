@@ -837,12 +837,26 @@ impl Task for RestrictUsers {
             }
         }
 
+        let files = backend.files();
+        let contents = files.read(executor, SSHD_CONFIG)?;
+
+        // Holding a key is not the same as being able to log in. An account
+        // the daemon already refuses cannot be the one way back in, and root
+        // is the case that matters: `ssh.harden` sets PermitRootLogin no, so
+        // `AllowUsers root` afterwards produces a file sshd accepts and that
+        // admits nobody. Nothing rolls that back, because nothing is wrong
+        // with it.
+        let root_refused = sshd_config::directive_value(&contents, "PermitRootLogin")
+            .is_some_and(|value| value.eq_ignore_ascii_case("no"));
+
         // At least one, not all: a service account that logs in by other means
-        // is a legitimate member of the list. One account with a key is one
-        // way back in.
+        // is a legitimate member of the list. One account that can log in and
+        // holds a key is one way back in.
         let mut with_keys = Vec::new();
         for user in &named {
-            if has_authorized_key(executor, backend, user)? {
+            let refused_outright = root_refused && *user == "root";
+
+            if !refused_outright && has_authorized_key(executor, backend, user)? {
                 with_keys.push(*user);
             }
         }
@@ -867,9 +881,6 @@ impl Task for RestrictUsers {
                 with_keys.join(", ")
             ),
         });
-
-        let files = backend.files();
-        let contents = files.read(executor, SSHD_CONFIG)?;
 
         report(progress, format!("Restricting SSH login to {users}..."));
 
@@ -1468,11 +1479,11 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),          // getent alice
             Reply::ok(""),          // getent bob
+            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // alice authorized_keys exists
             Reply::ok(TEST_KEY),    // and holds a key
             Reply::ok(""),          // bob authorized_keys exists
             Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // test -e for the write
             Reply::ok(""),          // cp backup
             Reply::ok(""),          // tee
@@ -1534,10 +1545,11 @@ mod tests {
         // Hardening disables password authentication, so an allow-list where
         // nobody holds a key leaves no way to log in at all.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),         // getent alice
-            Reply::ok(""),         // getent bob
-            Reply::failure(1, ""), // alice has no authorized_keys
-            Reply::failure(1, ""), // nor does bob
+            Reply::ok(""),          // getent alice
+            Reply::ok(""),          // getent bob
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::failure(1, ""),  // alice has no authorized_keys
+            Reply::failure(1, ""),  // nor does bob
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1572,10 +1584,10 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),          // getent alice
             Reply::ok(""),          // getent deploy
+            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // alice authorized_keys exists
             Reply::ok(TEST_KEY),    // and holds a key
             Reply::failure(1, ""),  // deploy has none
-            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // test -e for the write
             Reply::ok(""),          // cp backup
             Reply::ok(""),          // tee
@@ -1592,6 +1604,59 @@ mod tests {
                 &mut |_| {},
             )
             .expect("one account with a key is one way back in");
+    }
+
+    #[test]
+    fn restricting_users_refuses_to_allow_only_an_account_sshd_already_rejects() {
+        // The trap: root holds a key, so a check for key possession alone
+        // passes, but `ssh.harden` already set PermitRootLogin no. The result
+        // is a file sshd accepts and that admits nobody — and since nothing is
+        // wrong with it, nothing rolls it back.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                     // getent root
+            Reply::ok("PermitRootLogin no\n"), // read sshd_config
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = RestrictUsers
+            .run(&mock, backend.as_ref(), &users_values("root"), &mut |_| {})
+            .expect_err("an allow-list of accounts sshd refuses must be refused");
+
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForAllowedUsers { .. }
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn restricting_users_still_allows_root_where_root_may_log_in() {
+        // The guard must not refuse a list naming root on a server that has
+        // not disabled root login.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),          // getent root
+            Reply::ok("Port 22\n"), // read sshd_config — root login untouched
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // and holds a key
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::ok(""),          // reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        RestrictUsers
+            .run(&mock, backend.as_ref(), &users_values("root"), &mut |_| {})
+            .expect("root may still be named where root may still log in");
     }
 
     #[test]
@@ -1625,9 +1690,9 @@ mod tests {
         // intend is before the change lands, not after.
         let mock = MockExecutor::with_replies([
             Reply::ok(""),          // getent alice
+            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // alice authorized_keys exists
             Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // test -e
             Reply::ok(""),          // cp
             Reply::ok(""),          // tee
@@ -1660,9 +1725,9 @@ mod tests {
     fn restricting_users_offers_a_revert() {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),          // getent alice
+            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // holds a key
-            Reply::ok("Port 22\n"), // read sshd_config
             Reply::ok(""),          // test -e
             Reply::ok(""),          // cp
             Reply::ok(""),          // tee
