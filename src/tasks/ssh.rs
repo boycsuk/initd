@@ -6,8 +6,11 @@
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
+use crate::domain::files::Backup;
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
+use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
+use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config::{self, SSHD_CONFIG};
 use crate::tasks::{Category, Node, Progress, Task};
 
@@ -38,9 +41,8 @@ const DEFAULT_SSH_PORT: u32 = 22;
 /// Builds the SSH category, subdivided by what each task acts on.
 ///
 /// The area owns its own subdivision so that `tasks::tree()` stays a flat list
-/// of areas. Parameterised tasks appear with placeholder values so the tree can
-/// list them; the CLI and the TUI construct them with real arguments before
-/// running.
+/// of areas. Tasks appear here with no values at all: those they need are
+/// declared through `params()` and collected when the task is run.
 pub fn category() -> Category {
     Category::new(
         "SSH",
@@ -53,17 +55,12 @@ pub fn category() -> Category {
                 "Configuration",
                 vec![
                     Node::Task(Box::new(HardenSsh)),
-                    Node::Task(Box::new(ChangePort {
-                        port: DEFAULT_SSH_PORT,
-                    })),
+                    Node::Task(Box::new(ChangePort)),
                 ],
             )),
             Node::Category(Category::new(
                 "Keys",
-                vec![Node::Task(Box::new(AuthorizeKey {
-                    user: "root".to_owned(),
-                    key: String::new(),
-                }))],
+                vec![Node::Task(Box::new(AuthorizeKey))],
             )),
         ],
     )
@@ -102,8 +99,9 @@ impl Task for InstallSsh {
         &self,
         executor: &dyn Executor,
         backend: &dyn Backend,
+        _values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         // The task asks for a capability; the backend knows the names.
         let package = backend.package_for(Capability::Ssh);
         let service = backend.service_for(Capability::Ssh);
@@ -128,7 +126,9 @@ impl Task for InstallSsh {
             ),
         );
 
-        Ok(())
+        // Installing and enabling a service cannot cost the administrator
+        // their way in, so there is nothing worth offering to undo.
+        Ok(Outcome::Done)
     }
 }
 
@@ -165,8 +165,9 @@ impl Task for HardenSsh {
         &self,
         executor: &dyn Executor,
         backend: &dyn Backend,
+        _values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         let files = backend.files();
         let contents = files.read(executor, SSHD_CONFIG)?;
 
@@ -199,21 +200,47 @@ impl Task for HardenSsh {
 
         let backup = sshd_config::write_validated(executor, backend, &hardened)?;
 
-        if let Some(backup) = backup {
+        if let Some(ref backup) = backup {
             report(
                 progress,
                 format!("Previous configuration saved to {}", backup.copy),
             );
         }
 
-        reload_ssh(executor, backend, progress)
+        reload_ssh(executor, backend, progress)?;
+
+        // `sshd -t` proved the syntax and the reload proved the daemon
+        // accepted it, but neither proves the administrator can still log in:
+        // the key this task requires might not be the one their client offers.
+        // So the change is offered back until they say otherwise.
+        Ok(revertible(backup, backend))
     }
 }
 
+/// Wraps a configuration backup as the undo for a change already applied.
+///
+/// A change with no backup — a file that did not exist — has nothing to put
+/// back, so it finishes rather than offering an undo that would delete it.
+fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
+    backup.map_or(Outcome::Done, |backup| {
+        Outcome::Revertible(Revert::ConfigFile {
+            backup,
+            service: backend.service_for(Capability::Ssh),
+        })
+    })
+}
+
 /// Adds a public key to a user's `authorized_keys`.
-pub struct AuthorizeKey {
-    pub user: String,
-    pub key: String,
+///
+/// Fieldless: the user and the key are declared as parameters and collected
+/// when the task is run, so the tree can offer it without inventing values.
+pub struct AuthorizeKey;
+
+impl AuthorizeKey {
+    /// Name of the parameter holding the account to authorise the key for.
+    pub const USER: &'static str = "user";
+    /// Name of the parameter holding the key itself.
+    pub const KEY: &'static str = "key";
 }
 
 impl Task for AuthorizeKey {
@@ -230,6 +257,18 @@ impl Task for AuthorizeKey {
          with the strict permissions sshd requires."
     }
 
+    fn params(&self) -> Vec<Param> {
+        vec![
+            // root is offered because it is the account that always exists,
+            // not because it is the one to prefer.
+            Param::new(Self::USER, "Username", ParamKind::Username)
+                .with_initial("root")
+                .with_hint("the account the key authorises"),
+            Param::new(Self::KEY, "Public key", ParamKind::PublicKey)
+                .with_hint("paste the contents of a .pub file"),
+        ]
+    }
+
     fn supported_families(&self) -> &'static [Family] {
         SUPPORTED
     }
@@ -238,13 +277,17 @@ impl Task for AuthorizeKey {
         &self,
         executor: &dyn Executor,
         backend: &dyn Backend,
+        values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
-        let key = self.key.trim();
+    ) -> Result<Outcome> {
+        let user = values.get(Self::USER)?.to_owned();
+        let key = values.get(Self::KEY)?.trim().to_owned();
+        let key = key.as_str();
+
         is_valid_public_key(key)?;
 
         let files = backend.files();
-        let home = home_dir(&self.user);
+        let home = home_dir(&user);
         let ssh_dir = format!("{home}/.ssh");
         let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
 
@@ -252,7 +295,7 @@ impl Task for AuthorizeKey {
         // group- or world-accessible, so the modes are part of the operation
         // rather than an afterthought.
         files.create_dir(executor, &ssh_dir, SSH_DIR_MODE)?;
-        files.set_owner(executor, &ssh_dir, &self.user)?;
+        files.set_owner(executor, &ssh_dir, &user)?;
 
         let existing = if files.exists(executor, &path)? {
             files.read(executor, &path)?
@@ -262,7 +305,7 @@ impl Task for AuthorizeKey {
 
         if key_is_present(&existing, key) {
             report(progress, "The key is already authorised; nothing to do");
-            return Ok(());
+            return Ok(Outcome::Done);
         }
 
         report(progress, format!("Adding the key to {path}..."));
@@ -278,11 +321,13 @@ impl Task for AuthorizeKey {
 
         files.write(executor, &path, &updated)?;
         files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
-        files.set_owner(executor, &path, &self.user)?;
+        files.set_owner(executor, &path, &user)?;
 
         report(progress, "Key authorised");
 
-        Ok(())
+        // Authorising a key only ever grants access; undoing it is the
+        // dangerous direction, so it is not offered here.
+        Ok(Outcome::Done)
     }
 }
 
@@ -317,8 +362,14 @@ fn key_fingerprint(line: &str) -> Option<(&str, &str)> {
 }
 
 /// Changes the port sshd listens on.
-pub struct ChangePort {
-    pub port: u32,
+///
+/// Fieldless: the port is declared as a parameter and collected when the task
+/// is run, so the tree can offer it without inventing a value.
+pub struct ChangePort;
+
+impl ChangePort {
+    /// Name of the parameter holding the port to move sshd to.
+    pub const PORT: &'static str = "port";
 }
 
 impl Task for ChangePort {
@@ -340,6 +391,14 @@ impl Task for ChangePort {
         true
     }
 
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::PORT, "Port", ParamKind::Port)
+                .with_initial(DEFAULT_SSH_PORT.to_string())
+                .with_hint("1-65535"),
+        ]
+    }
+
     fn supported_families(&self) -> &'static [Family] {
         SUPPORTED
     }
@@ -348,10 +407,15 @@ impl Task for ChangePort {
         &self,
         executor: &dyn Executor,
         backend: &dyn Backend,
+        values: &ParamValues,
         progress: Progress<'_>,
-    ) -> Result<()> {
-        if self.port == 0 || self.port > 65535 {
-            return Err(Error::InvalidPort { port: self.port });
+    ) -> Result<Outcome> {
+        let port = values.port(Self::PORT)?;
+
+        // Checked again here rather than trusted from the interface: the CLI
+        // reaches this same path without passing through a form.
+        if port == 0 || port > MAX_PORT {
+            return Err(Error::InvalidPort { port });
         }
 
         let files = backend.files();
@@ -361,21 +425,21 @@ impl Task for ChangePort {
         let current = sshd_config::directive_value(&contents, "Port")
             .unwrap_or_else(|| DEFAULT_SSH_PORT.to_string());
 
-        if current == self.port.to_string() {
+        if current == port.to_string() {
             report(
                 progress,
                 format!("The port is already {current}; nothing to do"),
             );
-            return Ok(());
+            return Ok(Outcome::Done);
         }
 
-        let updated = sshd_config::set_directive(&contents, "Port", &self.port.to_string());
+        let updated = sshd_config::set_directive(&contents, "Port", &port.to_string());
 
         report(
             progress,
-            format!("Changing the port from {current} to {}...", self.port),
+            format!("Changing the port from {current} to {}...", port),
         );
-        sshd_config::write_validated(executor, backend, &updated)?;
+        let backup = sshd_config::write_validated(executor, backend, &updated)?;
 
         // Debian ships ssh.socket alongside ssh.service. When it is active the
         // socket owns the listening port, so editing sshd_config alone changes
@@ -385,13 +449,17 @@ impl Task for ChangePort {
         report(
             progress,
             format!(
-                "Port set to {}. If a firewall or SELinux is active, the new \
-                 port may need to be opened before it can be reached.",
-                self.port
+                "Port set to {port}. If a firewall or SELinux is active, the \
+                 new port may need to be opened before it can be reached."
             ),
         );
 
-        reload_ssh(executor, backend, progress)
+        reload_ssh(executor, backend, progress)?;
+
+        // The firewall and SELinux warnings above are exactly the reasons this
+        // change can succeed and still leave the machine unreachable, which is
+        // why the old port is kept available to go back to.
+        Ok(revertible(backup, backend))
     }
 }
 
@@ -457,7 +525,7 @@ fn reload_ssh(
 /// Only structural validation: type prefix plus a base64-looking body. Full
 /// cryptographic verification is `ssh-keygen`'s job, and a malformed key would
 /// make sshd ignore the whole file.
-fn is_valid_public_key(line: &str) -> Result<()> {
+pub fn is_valid_public_key(line: &str) -> Result<()> {
     let invalid = |reason: &str| Error::InvalidPublicKey {
         reason: reason.to_owned(),
     };
@@ -491,13 +559,33 @@ mod tests {
     use crate::backend::for_family;
     use crate::exec::mock::{MockExecutor, Reply};
 
+    /// For tasks that declare no parameters.
+    fn no_values() -> ParamValues {
+        ParamValues::new()
+    }
+
+    /// The values `AuthorizeKey` declares, as the interface would collect them.
+    fn key_values(user: &str, key: &str) -> ParamValues {
+        let mut values = ParamValues::new();
+        values.set(AuthorizeKey::USER, user);
+        values.set(AuthorizeKey::KEY, key);
+        values
+    }
+
+    /// The value `ChangePort` declares.
+    fn port_values(port: u32) -> ParamValues {
+        let mut values = ParamValues::new();
+        values.set(ChangePort::PORT, port.to_string());
+        values
+    }
+
     /// Runs the task against a mock, returning the commands it issued.
     fn run_install(family: Family, replies: Vec<Reply>) -> Vec<String> {
         let mock = MockExecutor::with_replies(replies);
         let backend = for_family(family);
 
         InstallSsh
-            .run(&mock, backend.as_ref(), &mut |_| {})
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
             .expect("install must succeed");
 
         mock.recorded_lines()
@@ -574,7 +662,7 @@ mod tests {
         let backend = for_family(Family::Debian);
 
         let err = InstallSsh
-            .run(&mock, backend.as_ref(), &mut |_| {})
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
             .expect_err("a failing install must surface");
 
         assert!(
@@ -590,7 +678,9 @@ mod tests {
         let mut lines = Vec::new();
 
         InstallSsh
-            .run(&mock, backend.as_ref(), &mut |line| lines.push(line.text))
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                lines.push(line.text)
+            })
             .expect("install must succeed");
 
         assert!(!lines.is_empty(), "the task must report what it is doing");
@@ -644,7 +734,7 @@ mod tests {
         let backend = for_family(Family::Debian);
 
         let err = HardenSsh
-            .run(&mock, backend.as_ref(), &mut |_| {})
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
             .expect_err("hardening without a key must refuse");
 
         assert!(matches!(err, Error::InvalidSshdConfig { .. }), "{err:?}");
@@ -669,7 +759,7 @@ mod tests {
         let backend = for_family(Family::Debian);
 
         HardenSsh
-            .run(&mock, backend.as_ref(), &mut |_| {})
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
             .expect("hardening must succeed");
 
         let written = mock
@@ -699,7 +789,7 @@ mod tests {
         let backend = for_family(Family::Debian);
 
         HardenSsh
-            .run(&mock, backend.as_ref(), &mut |_| {})
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
             .expect("hardening must succeed");
 
         let commands = mock.recorded_lines();
@@ -720,12 +810,14 @@ mod tests {
         ]);
         let backend = for_family(Family::Debian);
 
-        AuthorizeKey {
-            user: "root".to_owned(),
-            key: TEST_KEY.to_owned(),
-        }
-        .run(&mock, backend.as_ref(), &mut |_| {})
-        .expect("authorising must succeed");
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
 
         let commands = mock.recorded_lines();
         assert!(
@@ -750,12 +842,14 @@ mod tests {
         ]);
         let backend = for_family(Family::Debian);
 
-        AuthorizeKey {
-            user: "root".to_owned(),
-            key: TEST_KEY.to_owned(),
-        }
-        .run(&mock, backend.as_ref(), &mut |_| {})
-        .expect("a duplicate key must be a no-op");
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("a duplicate key must be a no-op");
 
         assert!(
             !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
@@ -778,12 +872,14 @@ mod tests {
         ]);
         let backend = for_family(Family::Debian);
 
-        AuthorizeKey {
-            user: "root".to_owned(),
-            key: TEST_KEY.to_owned(),
-        }
-        .run(&mock, backend.as_ref(), &mut |_| {})
-        .expect("authorising must succeed");
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
 
         let written = mock
             .recorded()
@@ -804,12 +900,14 @@ mod tests {
         let mock = MockExecutor::new();
         let backend = for_family(Family::Debian);
 
-        let err = AuthorizeKey {
-            user: "root".to_owned(),
-            key: "definitely not a key".to_owned(),
-        }
-        .run(&mock, backend.as_ref(), &mut |_| {})
-        .expect_err("an invalid key must be rejected");
+        let err = AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", "definitely not a key"),
+                &mut |_| {},
+            )
+            .expect_err("an invalid key must be rejected");
 
         assert!(matches!(err, Error::InvalidPublicKey { .. }), "{err:?}");
         assert!(
@@ -832,8 +930,8 @@ mod tests {
         ]);
         let backend = for_family(Family::Debian);
 
-        ChangePort { port: 2222 }
-            .run(&mock, backend.as_ref(), &mut |_| {})
+        ChangePort
+            .run(&mock, backend.as_ref(), &port_values(2222), &mut |_| {})
             .expect("changing the port must succeed");
 
         let written = mock
@@ -852,8 +950,8 @@ mod tests {
         let backend = for_family(Family::Debian);
 
         for port in [0, 70_000] {
-            let err = ChangePort { port }
-                .run(&mock, backend.as_ref(), &mut |_| {})
+            let err = ChangePort
+                .run(&mock, backend.as_ref(), &port_values(port), &mut |_| {})
                 .expect_err("an out-of-range port must be rejected");
 
             assert!(matches!(err, Error::InvalidPort { .. }), "{err:?}");
@@ -877,8 +975,8 @@ mod tests {
         let backend = for_family(Family::Debian);
         let mut warnings = Vec::new();
 
-        ChangePort { port: 2222 }
-            .run(&mock, backend.as_ref(), &mut |line| {
+        ChangePort
+            .run(&mock, backend.as_ref(), &port_values(2222), &mut |line| {
                 if line.stream == Stream::Stderr {
                     warnings.push(line.text);
                 }
@@ -895,7 +993,7 @@ mod tests {
     fn destructive_tasks_are_marked_as_such() {
         // The TUI gates these behind a confirmation prompt.
         assert!(HardenSsh.is_destructive());
-        assert!(ChangePort { port: 22 }.is_destructive());
+        assert!(ChangePort.is_destructive());
         assert!(!InstallSsh.is_destructive());
     }
 }

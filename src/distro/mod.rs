@@ -5,6 +5,7 @@
 //! on the distribution, they call domain traits that the backend implements.
 
 pub mod detect;
+pub mod host;
 
 use std::fmt;
 

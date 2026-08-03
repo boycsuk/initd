@@ -27,6 +27,12 @@ pub enum Capability {
 /// Everything a task needs from the distribution it runs on.
 pub trait Backend {
     /// The family this backend serves.
+    ///
+    /// Nothing in the interface asks for it today — the header names the
+    /// distribution, not its family — but it is what proves a backend was
+    /// resolved for the family that was detected, which is the one mistake
+    /// this indirection could silently make.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn family(&self) -> Family;
 
     /// The package providing a capability on this distribution.

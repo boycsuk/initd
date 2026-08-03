@@ -114,7 +114,10 @@ Runs a task that takes no arguments. Task identifiers come from `initd list`.
 **Arguments:** `<task-id>` — required, e.g. `ssh.install`.
 
 **Errors:** an unknown identifier exits `2`; a task unsupported on the running
-distribution exits `1`.
+distribution exits `1`. A task that collects values — `ssh.authorize-key`,
+`ssh.change-port` — exits `2` naming the values it needs, since it has a
+subcommand of its own that supplies them. Refusing here is more use than
+failing later on a value nobody was asked for.
 
 ### `initd authorize-key <user> <key>`
 

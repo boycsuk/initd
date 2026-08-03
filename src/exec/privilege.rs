@@ -17,7 +17,10 @@ use crate::error::{Error, Result};
 /// `sudo` comes first as the most widely deployed; `run0` last because it
 /// requires systemd and behaves differently enough (polkit agent, separate
 /// TTY) that it is a fallback rather than a default.
-const CANDIDATES: [&str; 3] = ["sudo", "doas", "run0"];
+const CANDIDATES: [&str; 3] = [SUDO, "doas", "run0"];
+
+/// The one helper that can authenticate ahead of the work.
+const SUDO: &str = "sudo";
 
 /// Wraps a command so it runs with root privileges.
 pub trait PrivilegeEscalator: fmt::Debug {
@@ -26,6 +29,20 @@ pub trait PrivilegeEscalator: fmt::Debug {
 
     /// Name of the mechanism, for display in the UI.
     fn name(&self) -> &str;
+
+    /// The command that authenticates ahead of time, if this mechanism has one.
+    ///
+    /// `sudo -v` establishes a timestamp that later commands reuse, which is
+    /// what lets the interface run a task without handing the terminal over
+    /// for each command. Returning `None` means every privileged command has
+    /// to authenticate on its own.
+    ///
+    /// `doas` has no equivalent, and `run0` authenticates through polkit,
+    /// which owns its own prompt and its own caching — neither is ours to
+    /// drive.
+    fn preauth_command(&self) -> Option<(String, Vec<String>)> {
+        None
+    }
 }
 
 /// No escalation: the process already runs as root, or the command does not
@@ -69,6 +86,12 @@ impl PrivilegeEscalator for HelperEscalation {
 
     fn name(&self) -> &str {
         &self.program
+    }
+
+    fn preauth_command(&self) -> Option<(String, Vec<String>)> {
+        // Only sudo has a validate flag. doas authenticates per invocation with
+        // no client-side refresh, and run0 defers to polkit.
+        (self.program == SUDO).then(|| (self.program.clone(), vec!["-v".to_owned()]))
     }
 }
 

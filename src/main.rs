@@ -14,6 +14,8 @@ mod tui;
 
 pub use error::{Error, Result};
 
+use crate::tasks::params::ParamValues;
+
 fn main() {
     // Errors are rendered through the i18n catalogue rather than printed with
     // `Debug`, and turned into an exit code here so `run` stays pure.
@@ -63,7 +65,7 @@ fn usage() {
 ///
 /// Shared by every task-running subcommand: detection, backend resolution and
 /// the support check are identical regardless of which task runs.
-fn execute(task: &dyn tasks::Task) -> Result<()> {
+fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
     let distro = distro::detect::detect()?;
 
     if !task.supports(distro.family) {
@@ -76,10 +78,28 @@ fn execute(task: &dyn tasks::Task) -> Result<()> {
     let backend = backend::for_family(distro.family);
     let executor = exec::local::LocalExecutor::new(exec::privilege::detect());
 
-    task.run(&executor, backend.as_ref(), &mut |line| match line.stream {
-        exec::Stream::Stdout => println!("{}", line.text),
-        exec::Stream::Stderr => eprintln!("{}", line.text),
-    })
+    let outcome = task.run(
+        &executor,
+        backend.as_ref(),
+        values,
+        &mut |line| match line.stream {
+            exec::Stream::Stdout => println!("{}", line.text),
+            exec::Stream::Stderr => eprintln!("{}", line.text),
+        },
+    )?;
+
+    // The CLI has no verification window to offer — it is not interactive and
+    // exits immediately — so it names the backup instead. An administrator who
+    // finds themselves locked out needs the path, not a prompt they cannot
+    // answer.
+    if let Some(revert) = outcome.revert() {
+        println!(
+            "the previous {} was kept; restore it if you lose access",
+            revert.describes()
+        );
+    }
+
+    Ok(())
 }
 
 /// Authorises a public key for a user.
@@ -90,12 +110,13 @@ fn cmd_authorize_key(args: &[String]) -> Result<()> {
         std::process::exit(2);
     };
 
+    let mut values = ParamValues::new();
+    values.set(tasks::ssh::AuthorizeKey::USER, user.clone());
     // The key is taken as the remaining arguments joined, so an unquoted key
     // pasted on the command line still works.
-    execute(&tasks::ssh::AuthorizeKey {
-        user: user.clone(),
-        key: key_parts.join(" "),
-    })
+    values.set(tasks::ssh::AuthorizeKey::KEY, key_parts.join(" "));
+
+    execute(&tasks::ssh::AuthorizeKey, &values)
 }
 
 /// Changes the SSH port.
@@ -111,7 +132,10 @@ fn cmd_change_port(port: Option<&str>) -> Result<()> {
         std::process::exit(2);
     };
 
-    execute(&tasks::ssh::ChangePort { port })
+    let mut values = ParamValues::new();
+    values.set(tasks::ssh::ChangePort::PORT, port.to_string());
+
+    execute(&tasks::ssh::ChangePort, &values)
 }
 
 /// Indentation applied per level of the task tree.
@@ -177,7 +201,17 @@ fn cmd_run(id: Option<&str>) -> Result<()> {
         std::process::exit(2);
     };
 
-    execute(task.as_ref())
+    // A task that collects values has a subcommand of its own to supply them.
+    // Refusing here with the name of that subcommand is more use than failing
+    // later on a value nobody was asked for.
+    if task.needs_input() {
+        let names: Vec<&str> = task.params().iter().map(|param| param.name).collect();
+        eprintln!("{id} needs values: {}", names.join(", "));
+        eprintln!("run `initd list` to see the subcommand that supplies them");
+        std::process::exit(2);
+    }
+
+    execute(task.as_ref(), &ParamValues::new())
 }
 
 /// Prints the privilege escalation mechanism resolved for this system.

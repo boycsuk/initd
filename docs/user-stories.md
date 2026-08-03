@@ -112,6 +112,56 @@ TUI or CLI:
   - Acceptance: keys already in the file are preserved, and adding the same key
     twice does not duplicate it.
   - Acceptance: a malformed key is rejected before anything is written.
+  - Acceptance: I am shown what the key parsed as — its type and comment —
+    since a 380-character key cannot be verified by reading it.
+- As an **administrator**, I watch a task's output as it happens, so that I can
+  tell a slow command from a stalled one.
+  - Acceptance: output appears as the task produces it, not once it ends.
+  - Acceptance: the interface stays usable while a task runs — I can scroll,
+    read and switch panes.
+  - Acceptance: a spinner and an elapsed clock keep moving even when the
+    command itself says nothing for a long time.
+  - Acceptance: I am asked for my password once, before the interface starts,
+    rather than each time a task needs root.
+  - TUI exception: the CLI prints output to the terminal as it arrives and has
+    no interface to keep responsive.
+- As an **administrator**, I can stop a running task without leaving the
+  machine half-configured.
+  - Acceptance: stopping takes effect between two commands, never in the middle
+    of one.
+  - Acceptance: until the current step finishes, the tool says it is *stopping*
+    rather than claiming it has stopped.
+  - Acceptance: once stopped, I am told where it got to.
+  - Acceptance: I cannot quit while a task is running; I am told to stop it
+    first.
+- As an **administrator**, I get a window to prove I still have access after a
+  change that could lock me out, so that a mistake undoes itself instead of
+  stranding me.
+  - Acceptance: the change is applied and held, not declared done — the tool
+    cannot know whether I can still log in, only whether the daemon accepted
+    the configuration.
+  - Acceptance: I am told to open a second session and check, because that is
+    the only thing that actually proves it.
+  - Acceptance: the previous configuration goes back on its own if I do not
+    confirm within the window. An administrator who has just locked themselves
+    out cannot press a key to undo it.
+  - Acceptance: keeping the change needs a deliberate keypress that no
+    navigation key can produce by accident.
+  - Acceptance: I cannot quit, or start another task, while a change is
+    unsettled — leaving would abandon it with nobody left to put it back.
+  - TUI exception: the CLI exits immediately and has no window to offer, so it
+    names the backup it kept instead.
+- As an **administrator**, I am asked for the values a task needs before it
+  runs, so that no task acts on a value I did not supply.
+  - Acceptance: a value that would be rejected is reported as I type it, saying
+    what is wrong rather than merely that something is.
+  - Acceptance: the task does not run until every value is accepted, and I am
+    shown which field is standing in the way.
+  - Acceptance: where a task already has a value on this host — the current SSH
+    port — the field starts on it, so confirming needs no retyping.
+  - Acceptance: cancelling a form I have typed into asks before discarding it.
+  - TUI exception: the CLI supplies these values as arguments instead, and
+    refuses `initd run` for such a task, naming the values it needs.
 - As an **administrator**, I can change the port SSH listens on so that the
   server is not exposed on the default port.
   - Acceptance: the change is validated before the service is reloaded, and
