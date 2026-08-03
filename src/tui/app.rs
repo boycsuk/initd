@@ -1,19 +1,21 @@
 //! Application state, navigation and the event loop.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::confirm::Confirm;
 use super::output::OutputPane;
+use super::status::{State, Status};
 use super::{Tui, layout, style, with_terminal_released};
 use crate::backend::Backend;
 use crate::distro::Distro;
+use crate::distro::host::HostFacts;
 use crate::error::Result;
 use crate::exec::Executor;
 use crate::tasks::{self, Node, Task};
@@ -22,7 +24,20 @@ use crate::tasks::{self, Node, Task};
 ///
 /// Short enough that the interface stays responsive, long enough that an idle
 /// TUI does not spin the CPU.
+///
+/// It also bounds how late a transient message can outlive its stated
+/// lifetime: such a message expires on a redraw, and a redraw happens at least
+/// this often whether or not anything is typed.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The version shown in the header.
+///
+/// Taken from the manifest so the interface cannot claim a release the binary
+/// is not.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Right-aligned hint in the header.
+const HELP_HINT: &str = "? help";
 
 /// Marks a row that opens onto another level.
 const CATEGORY_MARKER: &str = "› ";
@@ -36,6 +51,8 @@ const TASK_MARKER: &str = "  ";
 /// time, and entering a category replaces the list with its children.
 pub struct App {
     distro: Distro,
+    /// Facts about the machine, probed once at startup.
+    host: HostFacts,
     backend: Box<dyn Backend>,
     executor: Box<dyn Executor>,
     /// The whole tree, owned so that levels can be borrowed from it.
@@ -50,14 +67,19 @@ pub struct App {
     list_state: ListState,
     output: OutputPane,
     confirm: Option<Confirm>,
-    status: String,
+    status: Status,
     should_quit: bool,
 }
 
 impl App {
     /// Builds the application for a detected system.
+    ///
+    /// The host facts are passed in rather than probed here so that the caller
+    /// owns every read of the machine, and so tests can state a host outright
+    /// instead of inheriting whichever one they happen to run on.
     pub fn new(
         distro: Distro,
+        host: HostFacts,
         backend: Box<dyn Backend>,
         executor: impl Executor + 'static,
     ) -> Self {
@@ -68,6 +90,7 @@ impl App {
 
         Self {
             distro,
+            host,
             backend,
             executor: Box::new(executor),
             tree: tasks::tree(),
@@ -76,7 +99,7 @@ impl App {
             list_state,
             output: OutputPane::new(),
             confirm: None,
-            status: "Ready".to_owned(),
+            status: Status::new(),
             should_quit: false,
         }
     }
@@ -117,7 +140,7 @@ impl App {
         self.cursor_stack.push(index);
         self.path.push(index);
         self.list_state.select(Some(0));
-        self.status = "Ready".to_owned();
+        self.status.set(State::Ready, "");
     }
 
     /// Returns to the parent level, restoring the cursor it was left on.
@@ -127,7 +150,10 @@ impl App {
     /// make going back one level too far a destructive mistake.
     fn leave_category(&mut self) {
         if self.path.pop().is_none() {
-            self.status = "Already at the top level".to_owned();
+            // A refusal, not a state: the tool is still ready, the key simply
+            // had nowhere to go.
+            self.status
+                .flash("already at the top level", Instant::now());
             return;
         }
 
@@ -149,6 +175,10 @@ impl App {
     }
 
     /// Reads and dispatches one round of input.
+    ///
+    /// Returns without an event when the poll times out, which is what lets a
+    /// flashed refusal disappear on its own: nothing schedules its removal, the
+    /// next redraw simply stops drawing it.
     fn handle_events(&mut self, terminal: &mut Tui) -> Result<()> {
         let has_event = event::poll(POLL_INTERVAL)
             .map_err(|source| crate::error::Error::Terminal { source })?;
@@ -204,7 +234,7 @@ impl App {
             KeyCode::Tab | KeyCode::Left | KeyCode::Right => confirm.toggle(),
             KeyCode::Esc => {
                 self.confirm = None;
-                self.status = "Cancelled".to_owned();
+                self.status.set(State::Ready, "cancelled");
             }
             KeyCode::Enter => {
                 let accepted = confirm.accepted;
@@ -213,7 +243,7 @@ impl App {
                 if accepted {
                     self.run_selected(terminal)?;
                 } else {
-                    self.status = "Cancelled".to_owned();
+                    self.status.set(State::Ready, "cancelled");
                 }
             }
             _ => {}
@@ -238,7 +268,10 @@ impl App {
         };
 
         if !task.supports(self.distro.family) {
-            self.status = format!("{} is not supported on {}", task.id(), self.distro.family);
+            // Pressing Enter on a row the host cannot run is a refusal, not a
+            // state change: the reason flashes and the tool stays where it was.
+            let reason = format!("{} is not supported on {}", task.id(), self.distro.family);
+            self.status.flash(reason, Instant::now());
             return Ok(());
         }
 
@@ -271,7 +304,7 @@ impl App {
         let id = task.id();
 
         self.output.clear();
-        self.status = format!("Running {id}...");
+        self.status.set(State::Running, id);
 
         // The terminal is handed to the child so that sudo can prompt for a
         // password: raw mode would swallow the input, and the alternate screen
@@ -294,10 +327,12 @@ impl App {
             self.output.push(line);
         }
 
-        self.status = match outcome {
-            Ok(()) => format!("{id} finished"),
-            Err(ref err) => format!("{id} failed: {err}"),
-        };
+        // Success and failure are pills of their own, so the outcome is
+        // legible from the left edge without reading the message.
+        match outcome {
+            Ok(()) => self.status.set(State::Done, id),
+            Err(ref err) => self.status.set(State::Failed, format!("{id} — {err}")),
+        }
 
         // A failing task is reported in the status bar rather than tearing the
         // interface down: the administrator stays in control.
@@ -357,20 +392,42 @@ impl App {
         }
     }
 
-    /// Draws the one-line header naming the tool and the detected host.
+    /// Draws the one-line header naming the tool and the machine.
     ///
     /// Borderless: at 24 rows a bordered header would spend three of them on
     /// one line of text.
+    ///
+    /// The hostname is emphasised because it answers the question an
+    /// administrator with several terminals open actually has — *which machine
+    /// am I about to change?* — and the privilege mechanism is stated up front
+    /// so that "this will need a password" is known before a task is started
+    /// rather than when one fails.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
-            Span::styled("  ·  ", style::BLOCK_SUBTITLE),
-            Span::styled(self.distro.display_name().to_owned(), style::EMPHASIS),
-            Span::styled("  ·  ", style::BLOCK_SUBTITLE),
-            Span::styled(self.backend.family().to_string(), style::NORMAL),
-        ]));
+        let separator = || Span::styled("  ·  ", style::BLOCK_SUBTITLE);
 
-        frame.render_widget(header, area);
+        let mut spans = vec![
+            Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {VERSION}"), style::BLOCK_SUBTITLE),
+            separator(),
+            Span::styled(self.host.hostname.clone(), style::EMPHASIS),
+            separator(),
+            Span::styled(self.distro.display_name().to_owned(), style::NORMAL),
+            separator(),
+            Span::styled(format!("root via {}", self.host.privilege), style::NORMAL),
+        ];
+
+        // The help hint is dropped rather than allowed to wrap onto a row the
+        // header does not have.
+        let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+        let hint_width = HELP_HINT.chars().count() + 1;
+
+        if used + hint_width <= area.width as usize {
+            let gap = area.width as usize - used - hint_width;
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled(HELP_HINT, style::BLOCK_SUBTITLE));
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// Draws the task tree beside the output pane.
@@ -473,12 +530,12 @@ impl App {
     /// The pill always occupies the same cells at the left edge, so the eye
     /// never has to search for the tool's current state.
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let pill = self.pill();
+        let state = self.pill();
 
         let status = Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {} ", pill.label), pill.style),
+            Span::styled(format!(" {} ", state.label()), state.style()),
             Span::raw("  "),
-            Span::styled(self.status.clone(), style::NORMAL),
+            Span::styled(self.status.message(Instant::now()), style::NORMAL),
         ]));
 
         frame.render_widget(status, area);
@@ -486,22 +543,18 @@ impl App {
 
     /// The state pill for the status row.
     ///
-    /// A row whose task cannot run here reports that rather than `READY`: the
-    /// pill is the one place that always states what pressing Enter would do.
-    fn pill(&self) -> Pill {
+    /// Mostly this is whatever the last action left behind, but two conditions
+    /// describe the cursor rather than the past and therefore win: a dialog is
+    /// open, or the row under the cursor cannot run here. The pill is the one
+    /// place that always states what pressing Enter would do.
+    fn pill(&self) -> State {
+        if self.confirm.is_some() {
+            return State::Confirm;
+        }
+
         match self.selected_node() {
-            Some(Node::Task(task)) if !task.supports(self.distro.family) => Pill {
-                label: "UNSUPPORTED",
-                style: style::STATUS_INERT,
-            },
-            _ if self.confirm.is_some() => Pill {
-                label: "CONFIRM",
-                style: style::STATUS_ERROR,
-            },
-            _ => Pill {
-                label: "READY",
-                style: style::STATUS_READY,
-            },
+            Some(Node::Task(task)) if !task.supports(self.distro.family) => State::Unsupported,
+            _ => self.status.state(),
         }
     }
 
@@ -532,15 +585,6 @@ impl App {
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
-}
-
-/// A status-row pill: a word plus the style that carries its meaning.
-///
-/// The word stands alone when colour is absent, which is why every pill has
-/// one rather than being a coloured block.
-struct Pill {
-    label: &'static str,
-    style: Style,
 }
 
 /// Builds one row of the tree.
@@ -701,8 +745,22 @@ mod tests {
         }
     }
 
+    /// A host stated outright, so the assertions do not depend on whichever
+    /// machine happens to run the suite.
+    fn test_host() -> HostFacts {
+        HostFacts {
+            hostname: "web-01".to_owned(),
+            privilege: "sudo".to_owned(),
+        }
+    }
+
     fn test_app(family: Family) -> App {
-        App::new(test_distro(family), for_family(family), MockExecutor::new())
+        App::new(
+            test_distro(family),
+            test_host(),
+            for_family(family),
+            MockExecutor::new(),
+        )
     }
 
     /// Descends into the first category of the level currently shown.
@@ -866,6 +924,61 @@ mod tests {
         assert!(test_app(Family::Debian).confirm.is_none());
     }
 
+    #[test]
+    fn going_back_too_far_flashes_rather_than_changing_state() {
+        // Overshooting by one level is a refusal, not a state: the tool is
+        // still ready, the key simply had nowhere to go.
+        let mut app = test_app(Family::Debian);
+
+        app.leave_category();
+
+        assert_eq!(app.status.state(), State::Ready);
+        assert!(
+            app.status.message(Instant::now()).contains("top level"),
+            "the refusal must say why nothing happened"
+        );
+    }
+
+    #[test]
+    fn a_refusal_leaves_the_pill_alone() {
+        // Losing sight of what the tool is doing because something was refused
+        // is the failure this separation exists to prevent.
+        let mut app = test_app(Family::Debian);
+        app.status.set(State::Done, "ssh.install");
+
+        app.leave_category();
+
+        assert_eq!(
+            app.pill(),
+            State::Done,
+            "the pill reports the last outcome, not the refusal"
+        );
+    }
+
+    #[test]
+    fn an_open_dialog_owns_the_pill() {
+        // The pill must describe what Enter would do now, which while a dialog
+        // is open is answering it, whatever ran before.
+        let mut app = test_app(Family::Debian);
+        app.status.set(State::Done, "ssh.install");
+        app.confirm = Some(Confirm::new("Harden", "..."));
+
+        assert_eq!(app.pill(), State::Confirm);
+    }
+
+    #[test]
+    fn the_status_row_states_the_outcome_of_the_last_task() {
+        // Success and failure are pills of their own, so the outcome is
+        // legible from the left edge without reading the message.
+        let mut app = test_app(Family::Debian);
+        app.status.set(State::Failed, "ssh.harden — invalid config");
+
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert!(rows[22].contains("FAILED"), "got {:?}", rows[22]);
+        assert!(rows[22].contains("invalid config"), "got {:?}", rows[22]);
+    }
+
     /// Renders the app into an off-screen buffer and returns it as text rows.
     ///
     /// The mockups in `docs/tui-specification.html` are literal character
@@ -1026,6 +1139,59 @@ mod tests {
         let rows = render_to_rows(&mut app, 80, 24);
 
         assert!(rows[0].contains("Debian GNU/Linux 13"), "got {:?}", rows[0]);
+    }
+
+    #[test]
+    fn the_header_names_the_machine_being_administered() {
+        // An administrator with four terminals open must be able to see which
+        // one is about to be changed without asking.
+        let mut app = test_app(Family::Debian);
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert!(rows[0].contains("web-01"), "got {:?}", rows[0]);
+    }
+
+    #[test]
+    fn the_header_states_how_root_is_obtained() {
+        // Whether privileged work will succeed is knowable before starting it,
+        // rather than at the moment a task fails.
+        let mut app = test_app(Family::Debian);
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert!(rows[0].contains("root via sudo"), "got {:?}", rows[0]);
+    }
+
+    #[test]
+    fn the_header_never_overflows_its_single_row() {
+        // The header is one row; anything that does not fit must be dropped
+        // rather than wrapped onto a row that does not exist.
+        for width in [60, 80, 100, 140] {
+            let mut app = test_app(Family::Debian);
+            let rows = render_to_rows(&mut app, width, 24);
+
+            assert!(
+                rows[0].chars().count() <= width as usize,
+                "the header overflows at {width} columns: {:?}",
+                rows[0]
+            );
+            assert!(
+                rows[1].starts_with('┌'),
+                "the body must still start on row 2 at {width} columns"
+            );
+        }
+    }
+
+    #[test]
+    fn the_help_hint_yields_before_the_host_facts() {
+        // On a narrow terminal the hint is the first thing to go: knowing
+        // which machine this is matters more than knowing that ? opens help.
+        let mut app = test_app(Family::Debian);
+
+        let narrow = render_to_rows(&mut app, 60, 24)[0].clone();
+        assert!(narrow.contains("web-01"), "got {narrow:?}");
+
+        let wide = render_to_rows(&mut app, 140, 24)[0].clone();
+        assert!(wide.contains(HELP_HINT), "got {wide:?}");
     }
 
     #[test]

@@ -74,8 +74,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Task rows carry glyph markers — `!` destructive, `·` unsupported — and
   categories carry their task count, right-aligned. Colour alone never carries
   a signal, so a monochrome or `NO_COLOR` terminal loses nothing.
-- The status row opens with a state pill (`READY`, `UNSUPPORTED`, `CONFIRM`) in
-  fixed cells at the left edge, so the operator's eye never searches for it.
+- The status row opens with a state pill (`READY`, `RUNNING`, `DONE`, `FAILED`,
+  `CONFIRM`, `UNSUPPORTED`) in fixed cells at the left edge, so the operator's
+  eye never searches for it and the outcome of a task is legible without
+  reading the message beside it.
+- Refusals — "already at the top level", "not supported on arch" — flash beside
+  the pill for two seconds and expire on their own, rather than overwriting the
+  state. The administrator no longer loses sight of what the tool is doing
+  because a key was refused.
+- The header states the machine's hostname and how root is obtained (`root via
+  sudo`) alongside the distribution. An administrator with several terminals
+  open can see which machine is about to change without asking, and knows
+  whether privileged work will succeed before starting it rather than when it
+  fails.
 - Text that overflows its column is marked with `…` rather than clipped in
   silence. Breadcrumbs lose their head and task titles their tail, since a path
   is identified by where it ends and a task by how its name starts: `… Access ›

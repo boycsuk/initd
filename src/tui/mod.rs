@@ -12,6 +12,7 @@ pub mod app;
 pub mod confirm;
 pub mod layout;
 pub mod output;
+pub mod status;
 pub mod style;
 
 use std::io::{self, Stdout};
@@ -82,10 +83,16 @@ fn terminal_error(source: io::Error) -> Error {
 pub fn run() -> Result<()> {
     let distro = crate::distro::detect::detect()?;
     let backend = crate::backend::for_family(distro.family);
-    let executor = crate::exec::local::LocalExecutor::new(crate::exec::privilege::detect());
+
+    // The escalator is probed before it is handed to the executor, so the
+    // header can state how root will be obtained without the executor having
+    // to expose it — a detail the SSH implementation would not share.
+    let escalator = crate::exec::privilege::detect();
+    let host = crate::distro::host::HostFacts::probe(escalator.as_ref());
+    let executor = crate::exec::local::LocalExecutor::new(escalator);
 
     let mut terminal = init()?;
-    let outcome = app::App::new(distro, backend, executor).run(&mut terminal);
+    let outcome = app::App::new(distro, host, backend, executor).run(&mut terminal);
 
     // Restoration must happen whether the app succeeded or failed; a failure
     // to restore is only reported if the app itself did not already fail.

@@ -80,8 +80,14 @@ a clear refusal.
 
 ## Panels
 
-- **Header** — the product name and the detected system: distribution and
-  resolved family. One borderless row.
+- **Header** — the product name and version, the machine's hostname, the
+  detected distribution, and how root is obtained (`root via sudo`). One
+  borderless row. The hostname is emphasised because it answers the question an
+  administrator with several terminals open actually has — *which machine am I
+  about to change?* — and the privilege mechanism is stated up front so that
+  "this will need a password" is known before a task is started rather than
+  when one fails. A `? help` hint is right-aligned when the width allows, and
+  dropped rather than wrapped when it does not.
 - **Task tree** — the navigable list of categories and tasks. Left column.
   Navigation is **drill-down**: exactly one level is on screen at a time, and
   opening a category replaces the list with its contents. Category rows are
@@ -114,17 +120,36 @@ Meaning is carried by a glyph, never by colour alone, so a monochrome or
 | `!` | The task is destructive and asks for confirmation |
 | `·` | The task is not supported on this host |
 
-## Status pill
+## Status row
 
-The status row opens with a pill in the same cells at the left edge, so the
-operator's eye never searches for it. The word carries the meaning alone when
-colour is absent.
+One authoritative place for what the tool is doing. It opens with a pill in the
+same cells at the left edge, so the operator's eye never searches for it, and
+the word carries the meaning alone when colour is absent.
 
 | Pill | Meaning |
 |------|---------|
 | `READY` | Waiting for input |
-| `UNSUPPORTED` | The selected task cannot run on this host |
+| `RUNNING` | A task is running |
+| `DONE` | The last task succeeded |
+| `FAILED` | The last task failed |
+| `CANCELLED` | The last task was interrupted before it finished |
 | `CONFIRM` | A confirmation dialog is open |
+| `UNSUPPORTED` | The selected task cannot run on this host |
+
+Two of these describe the cursor rather than the past and therefore override
+whatever the last action left behind: `CONFIRM` while a dialog is open, and
+`UNSUPPORTED` when the selected row cannot run here. The pill must always state
+what pressing `Enter` would do now.
+
+### Transient messages
+
+Refusals — "already at the top level", "not supported on arch" — flash beside
+the pill for two seconds and then disappear on their own. They override the
+state's message but **never** the pill: losing sight of what the tool is doing
+because something was refused is exactly what the separation prevents.
+
+There are no toasts and no overlays. A message that occludes content is
+unacceptable when the content is the log of a command running as root.
 
 ## Truncation
 
