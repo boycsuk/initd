@@ -17,7 +17,8 @@ use super::form::Form;
 use super::output::OutputPane;
 use super::status::{State, Status};
 use super::verify::Verification;
-use super::{Tui, help, layout, style, with_terminal_released};
+use super::worker::{Running, Update};
+use super::{Tui, help, layout, style};
 use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
@@ -114,6 +115,8 @@ pub struct App {
     /// A destructive task with parameters passes through the form and then the
     /// confirmation, and the values have to survive the step between.
     pending_values: ParamValues,
+    /// The task currently running, if any.
+    running: Option<Running>,
     /// An applied change waiting to be kept or put back.
     verification: Option<Verification>,
     /// How far the help overlay is scrolled, while it is showing.
@@ -158,6 +161,7 @@ impl App {
             form: None,
             confirm: None,
             pending_values: ParamValues::new(),
+            running: None,
             verification: None,
             help: None,
             status: Status::new(),
@@ -225,15 +229,17 @@ impl App {
     /// Runs the event loop until the user quits.
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
         while !self.should_quit {
-            // Checked before drawing, so an expired window is never shown with
-            // a countdown that has already run out.
+            // Both before drawing: output that has arrived should appear in
+            // this frame, and an expired window should never be shown with a
+            // countdown that has already run out.
+            self.poll_running();
             self.expire_verification();
 
             terminal
                 .draw(|frame| self.render(frame))
                 .map_err(|source| crate::error::Error::Terminal { source })?;
 
-            self.handle_events(terminal)?;
+            self.handle_events()?;
         }
 
         Ok(())
@@ -244,7 +250,7 @@ impl App {
     /// Returns without an event when the poll times out, which is what lets a
     /// flashed refusal disappear on its own: nothing schedules its removal, the
     /// next redraw simply stops drawing it.
-    fn handle_events(&mut self, terminal: &mut Tui) -> Result<()> {
+    fn handle_events(&mut self) -> Result<()> {
         let has_event = event::poll(POLL_INTERVAL)
             .map_err(|source| crate::error::Error::Terminal { source })?;
 
@@ -259,7 +265,7 @@ impl App {
         if let Event::Key(key) = event
             && key.kind == KeyEventKind::Press
         {
-            self.on_key(key, terminal)?;
+            self.on_key(key);
         }
 
         Ok(())
@@ -269,12 +275,11 @@ impl App {
     ///
     /// Modal dialogs are checked first and swallow everything: inside a form,
     /// `j`, `k`, `/` and `q` are literal characters, not commands.
-    fn on_key(&mut self, key: KeyEvent, terminal: &mut Tui) -> Result<()> {
-        match self.dispatch(key) {
-            // Every key resolves without the terminal except the one that
-            // hands it to a child process, which keeps the rest testable.
-            Some(values) => self.run_selected(terminal, values),
-            None => Ok(()),
+    /// No key needs the terminal any more: starting a task hands it to a
+    /// thread rather than to a child process, so the whole path is testable.
+    fn on_key(&mut self, key: KeyEvent) {
+        if let Some(values) = self.dispatch(key) {
+            self.run_selected(values);
         }
     }
 
@@ -285,6 +290,15 @@ impl App {
     fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
         if self.help.is_some() {
             self.on_help_key(key);
+            return None;
+        }
+
+        // While a task runs the interface stays open — scrolling, switching
+        // panes and reading all work — but nothing new may be started and
+        // nothing may be answered. Only one task at a time, and the keys that
+        // would start another are refused rather than queued.
+        if self.running.is_some() {
+            self.on_running_key(key);
             return None;
         }
 
@@ -386,6 +400,57 @@ impl App {
         }
 
         true
+    }
+
+    /// Handles a key press while a task is running.
+    ///
+    /// Reading is never blocked — the log of what is happening is the reason
+    /// to be watching — but every key that would change something is refused.
+    fn on_running_key(&mut self, key: KeyEvent) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Char('c') if control => self.cancel_running(),
+            KeyCode::Tab => self.focus = self.focus.other(),
+            KeyCode::Char('?') => self.help = Some(0),
+            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
+            KeyCode::Up | KeyCode::Char('k') => self.output.scroll_up(1),
+            KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
+            KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
+            KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
+            KeyCode::Char('w') => self.output.toggle_wrap(),
+            // Quitting mid-task is how a server ends up half-configured, so it
+            // is refused with the way to actually stop.
+            KeyCode::Char('q') => self.status.flash(
+                "a task is running — Ctrl-C to stop it first",
+                Instant::now(),
+            ),
+            _ => self
+                .status
+                .flash("a task is already running", Instant::now()),
+        }
+    }
+
+    /// Asks the running task to stop at its next step boundary.
+    fn cancel_running(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+
+        if running.is_cancelling() {
+            self.status.flash(
+                "already stopping — waiting for the current step",
+                Instant::now(),
+            );
+            return;
+        }
+
+        running.cancel();
+        // Not "cancelled": the task has been asked to stop and has not yet
+        // done so. Saying otherwise before the step finishes would be a lie
+        // about what state the machine is in.
+        self.status
+            .set(State::Running, "stopping after the current step...");
     }
 
     /// Handles a key press while the help overlay is showing.
@@ -676,49 +741,67 @@ impl App {
     }
 
     /// Executes the selected task, streaming its output into the pane.
-    fn run_selected(&mut self, terminal: &mut Tui, values: ParamValues) -> Result<()> {
-        let Some(index) = self.list_state.selected() else {
-            return Ok(());
-        };
-        // The tree is rebuilt rather than borrowed from `self`, because running
-        // the task needs `self.output` and `self.status` mutably while
-        // `current_level` borrows all of `self`. Rebuilding is a handful of
-        // allocations against an interactive action, and it keeps this path
-        // free of `unsafe` in a binary that runs as root.
-        let tree = tasks::tree();
-        let Some(Node::Task(task)) = level_at(&tree, &self.path).get(index) else {
-            return Ok(());
+    fn run_selected(&mut self, values: ParamValues) {
+        let Some(Node::Task(task)) = self.selected_node() else {
+            return;
         };
 
         let id = task.id();
 
         self.output.clear();
         self.status.set(State::Running, id);
+        // Reading what is about to happen is the natural thing to do next.
+        self.focus = Pane::Output;
 
-        // The terminal is handed to the child so that sudo can prompt for a
-        // password: raw mode would swallow the input, and the alternate screen
-        // would hide the prompt. Input events stay unread meanwhile, so the
-        // TUI does not compete with sudo for keystrokes.
-        let executor = self.executor.as_ref();
-        let backend = self.backend.as_ref();
-        let mut lines = Vec::new();
+        // The task runs on its own thread and reports back through a channel,
+        // which the event loop drains each tick. Running it inline would
+        // freeze the interface for the duration: no output as it arrives, no
+        // way to cancel, and no clock for the verification window.
+        self.running = Some(Running::start(id, self.distro.family, values));
+    }
 
-        let outcome = with_terminal_released(terminal, || {
-            task.run(executor, backend, &values, &mut |line| {
-                // Output is echoed to the released terminal so the user sees
-                // progress while the password prompt is on screen.
-                println!("{}", line.text);
-                lines.push(line);
-            })
-        });
+    /// Takes whatever the running task has reported since the last redraw.
+    fn poll_running(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
 
-        for line in lines {
-            self.output.push(line);
+        let mut outcome = None;
+
+        for update in running.drain() {
+            match update {
+                Update::Line(line) => self.output.push(line),
+                Update::Finished(result) => outcome = Some(result),
+            }
         }
 
-        // Success and failure are pills of their own, so the outcome is
-        // legible from the left edge without reading the message.
-        //
+        let Some(outcome) = outcome else {
+            return;
+        };
+
+        let cancelled = running.is_cancelling();
+        let id = running.task_id;
+        self.running = None;
+
+        self.finish_run(id, outcome, cancelled);
+    }
+
+    /// Records how a finished task ended.
+    ///
+    /// Success and failure are pills of their own, so the outcome is legible
+    /// from the left edge without reading the message beside it.
+    fn finish_run(&mut self, id: &str, outcome: Result<Outcome>, cancelled: bool) {
+        // Cancellation is reported only once the task has actually stopped,
+        // and it says which steps ran. A tool that claims to have stopped
+        // before it has is how half-configured servers happen.
+        if cancelled {
+            self.status.set(
+                State::Cancelled,
+                format!("{id} — stopped after the last step"),
+            );
+            return;
+        }
+
         // A change that can sever this session is not reported as done: it is
         // applied, and held open until the administrator proves they can still
         // get in. A failing task is reported in the status row rather than
@@ -730,8 +813,6 @@ impl App {
             },
             Err(ref err) => self.status.set(State::Failed, format!("{id} — {err}")),
         }
-
-        Ok(())
     }
 
     /// Opens the window in which an applied change can still be undone.
@@ -1086,15 +1167,31 @@ impl App {
     /// The pill always occupies the same cells at the left edge, so the eye
     /// never has to search for the tool's current state.
     fn render_status(&self, frame: &mut Frame, area: Rect) {
+        let now = Instant::now();
         let state = self.pill();
 
-        let status = Paragraph::new(Line::from(vec![
+        let mut spans = vec![
             Span::styled(format!(" {} ", state.label()), state.style()),
             Span::raw("  "),
-            Span::styled(self.status.message(Instant::now()), style::NORMAL),
-        ]));
+            Span::styled(self.status.message(now), style::NORMAL),
+        ];
 
-        frame.render_widget(status, area);
+        // Two independent liveness signals, right-aligned: a spinner driven by
+        // the clock and a wall-clock timer. Both keep moving through a command
+        // that produces no output for a minute, which is what distinguishes a
+        // slow package manager from a frozen screen over a bad link.
+        if let Some(ref running) = self.running {
+            let live = format!("{}  {}  ", running.spinner(now), running.elapsed(now));
+            let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+            let width = area.width as usize;
+
+            if used + live.chars().count() <= width {
+                spans.push(Span::raw(" ".repeat(width - used - live.chars().count())));
+                spans.push(Span::styled(live, style::BLOCK_SUBTITLE));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// The state pill for the status row.
@@ -1148,6 +1245,14 @@ impl App {
         // While a change is unverified the tree keys are refused, so offering
         // them would advertise actions the state does not allow.
         let mut keys = match self.focus {
+            // Only the keys the state actually accepts. Offering "Enter run"
+            // while a task is running would name an action that is refused.
+            _ if self.running.is_some() => vec![
+                ("Ctrl-C", "stop"),
+                ("↑↓", "scroll"),
+                ("w", "wrap"),
+                ("?", "keys"),
+            ],
             _ if self.verification.is_some() => {
                 vec![("K", "keep"), ("R", "revert"), ("↑↓", "scroll")]
             }
@@ -1160,9 +1265,10 @@ impl App {
             ],
         };
 
-        // Quitting is refused while a change is unverified — leaving would
-        // abandon it with nobody left to put it back — so it is not offered.
-        if self.verification.is_none() {
+        // Quitting is refused while work is outstanding: mid-task it would
+        // leave a server half-configured, and mid-verification it would
+        // abandon a change with nobody left to put it back.
+        if self.verification.is_none() && self.running.is_none() {
             keys.push(("q", "quit"));
         }
 
@@ -2128,7 +2234,7 @@ mod tests {
         enter_first_category(&mut running);
         enter_first_category(&mut running);
         enter_first_category(&mut running);
-        running.status.set(State::Running, "ssh.install");
+        pretend_running(&mut running);
         running.focus = Pane::Output;
 
         for text in [
@@ -2424,6 +2530,195 @@ mod tests {
             on_output.contains("installing openssh-server"),
             "the output is drawn with focus on it: {on_output}"
         );
+    }
+
+    /// A task running, without actually spawning one.
+    ///
+    /// `Running::start` would run a real task against the host; what these
+    /// tests exercise is how the interface behaves while one is in flight.
+    fn pretend_running(app: &mut App) {
+        app.running = Some(Running::start(
+            "ssh.install",
+            app.distro.family,
+            ParamValues::new(),
+        ));
+        app.status.set(State::Running, "ssh.install");
+    }
+
+    #[test]
+    fn starting_a_task_does_not_block_the_interface() {
+        // The whole point of the thread: the call returns immediately, with
+        // the task still running.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.install");
+
+        app.run_selected(ParamValues::new());
+
+        assert!(app.running.is_some(), "the task runs in the background");
+        assert_eq!(app.status.state(), State::Running);
+    }
+
+    #[test]
+    fn starting_a_task_moves_focus_to_its_output() {
+        // Reading what is about to happen is the natural next thing to do.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.install");
+
+        app.run_selected(ParamValues::new());
+
+        assert_eq!(app.focus, Pane::Output);
+    }
+
+    #[test]
+    fn a_second_task_cannot_be_started_while_one_runs() {
+        // Two tasks writing to the same configuration file is how a machine
+        // ends up in a state neither of them intended.
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(
+            app.form.is_none() && app.confirm.is_none(),
+            "Enter must not start anything"
+        );
+        assert!(
+            app.status
+                .message(Instant::now())
+                .contains("already running"),
+            "the refusal must say why"
+        );
+    }
+
+    #[test]
+    fn quitting_mid_task_is_refused_with_the_way_to_stop() {
+        // Quitting halfway through is how a server ends up half-configured.
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        press(&mut app, KeyCode::Char('q'));
+
+        assert!(!app.should_quit, "q must not quit mid-task");
+        assert!(
+            app.status.message(Instant::now()).contains("Ctrl-C"),
+            "the refusal must name the way to actually stop"
+        );
+    }
+
+    #[test]
+    fn reading_stays_available_while_a_task_runs() {
+        // The log of what is happening is the reason to be watching.
+        let mut app = test_app(Family::Debian);
+        for i in 0..10 {
+            app.output.push(crate::exec::OutputLine {
+                stream: crate::exec::Stream::Stdout,
+                text: format!("line {i}"),
+            });
+        }
+        pretend_running(&mut app);
+
+        press(&mut app, KeyCode::Up);
+
+        assert!(!app.output.is_following(), "scrolling must work");
+        assert!(app.running.is_some(), "and must not stop the task");
+    }
+
+    #[test]
+    fn cancelling_says_it_is_stopping_rather_than_stopped() {
+        // Claiming to have stopped before the current step finishes would be a
+        // lie about what state the machine is in.
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        app.cancel_running();
+
+        assert_eq!(
+            app.status.state(),
+            State::Running,
+            "still running until the step ends"
+        );
+        assert!(
+            app.status.message(Instant::now()).contains("stopping"),
+            "but the message says what is happening"
+        );
+    }
+
+    #[test]
+    fn cancelling_twice_reports_that_it_is_already_stopping() {
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        app.cancel_running();
+        app.cancel_running();
+
+        assert!(
+            app.status
+                .message(Instant::now())
+                .contains("already stopping"),
+            "got {:?}",
+            app.status.message(Instant::now())
+        );
+    }
+
+    #[test]
+    fn a_cancelled_task_reports_where_it_stopped() {
+        // A tool that says only "cancelled" leaves the operator guessing what
+        // ran and what did not.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run("ssh.install", Ok(Outcome::Done), true);
+
+        assert_eq!(app.status.state(), State::Cancelled);
+        assert!(
+            app.status
+                .message(Instant::now())
+                .contains("after the last step"),
+            "got {:?}",
+            app.status.message(Instant::now())
+        );
+    }
+
+    #[test]
+    fn a_task_that_vanishes_is_reported_rather_than_left_running() {
+        // A thread that dies without reporting must not look like one still
+        // working.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run(
+            "ssh.install",
+            Err(crate::error::Error::TaskVanished {
+                task: "ssh.install".to_owned(),
+            }),
+            false,
+        );
+
+        assert_eq!(app.status.state(), State::Failed);
+    }
+
+    #[test]
+    fn a_running_task_shows_a_clock_and_a_spinner() {
+        // Over a bad link a quiet command and a frozen screen look identical,
+        // so both signals keep moving whether or not output arrives.
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        let status = render_to_rows(&mut app, 80, 24)[22].clone();
+
+        assert!(status.contains("RUNNING"), "got {status:?}");
+        assert!(status.contains("0:0"), "the clock must show: {status:?}");
+    }
+
+    #[test]
+    fn the_key_bar_offers_only_what_a_running_task_allows() {
+        // Naming Enter or q here would advertise actions the state refuses.
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        let keys = render_to_rows(&mut app, 80, 24)[23].clone();
+
+        assert!(keys.contains("Ctrl-C"), "got {keys:?}");
+        assert!(!keys.contains("quit"), "got {keys:?}");
+        assert!(!keys.contains("run"), "got {keys:?}");
     }
 
     #[test]

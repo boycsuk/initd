@@ -51,6 +51,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::MissingParameter { name } => {
             format!("the task was run without a value for {name}")
         }
+        Msg::TaskVanished { task } => {
+            format!("{task} stopped without reporting what it did")
+        }
         Msg::TaskUnsupported { task, family } => {
             format!("task {task} is not supported on {family}")
         }

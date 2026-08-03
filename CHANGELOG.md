@@ -87,6 +87,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open can see which machine is about to change without asking, and knows
   whether privileged work will succeed before starting it rather than when it
   fails.
+- Tasks run on their own thread and report back through a channel the event
+  loop drains each tick. Execution used to block the interface for its whole
+  duration: nothing could be shown while a package installed, nothing could be
+  cancelled, and the rollback countdown could not tick because the event loop
+  was not running.
+- The password is asked for once, before the interface starts, while the
+  terminal is still ordinary and `sudo` can draw its own prompt. `initd` never
+  reads it. The timestamp sudo leaves behind covers the commands the tasks go
+  on to run, so the screen is no longer torn down and rebuilt around every
+  privileged command. Measured on Debian 13 and Arch — see
+  `docs/sudo-timestamp-findings.md`.
+- Privileged commands inherit stdin instead of being given `/dev/null`. Both
+  distributions key sudo's timestamp by terminal, and a process with no
+  terminal is refused even when the session that spawned it has authenticated;
+  `Command::output()` sets that redirection implicitly.
+- `Ctrl-C` asks a running task to stop at its next step boundary. It is
+  cooperative rather than a kill — stopping mid-write is how a half-written
+  configuration file happens — and the tool says *stopping* until the step
+  actually ends rather than claiming it has already stopped.
+- The status row carries a spinner and an elapsed clock while a task runs, both
+  driven by the clock rather than by arriving output: over a slow link a quiet
+  command and a frozen screen are otherwise indistinguishable. The spinner is
+  ASCII, since braille frames are missing or double-width in too many of the
+  fonts a server console has.
+- Quitting is refused while a task runs, naming `Ctrl-C` as the way to stop.
 - Below 72 columns the two panes become two views of one area, switched with
   `Tab`. Both were previously handed the whole width and drawn on top of each
   other, so the output overwrote the tree. The header trades the host facts for

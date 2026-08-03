@@ -114,6 +114,26 @@ TUI or CLI:
   - Acceptance: a malformed key is rejected before anything is written.
   - Acceptance: I am shown what the key parsed as — its type and comment —
     since a 380-character key cannot be verified by reading it.
+- As an **administrator**, I watch a task's output as it happens, so that I can
+  tell a slow command from a stalled one.
+  - Acceptance: output appears as the task produces it, not once it ends.
+  - Acceptance: the interface stays usable while a task runs — I can scroll,
+    read and switch panes.
+  - Acceptance: a spinner and an elapsed clock keep moving even when the
+    command itself says nothing for a long time.
+  - Acceptance: I am asked for my password once, before the interface starts,
+    rather than each time a task needs root.
+  - TUI exception: the CLI prints output to the terminal as it arrives and has
+    no interface to keep responsive.
+- As an **administrator**, I can stop a running task without leaving the
+  machine half-configured.
+  - Acceptance: stopping takes effect between two commands, never in the middle
+    of one.
+  - Acceptance: until the current step finishes, the tool says it is *stopping*
+    rather than claiming it has stopped.
+  - Acceptance: once stopped, I am told where it got to.
+  - Acceptance: I cannot quit while a task is running; I am told to stop it
+    first.
 - As an **administrator**, I get a window to prove I still have access after a
   change that could lock me out, so that a mistake undoes itself instead of
   stranding me.

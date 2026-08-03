@@ -18,6 +18,7 @@ pub mod output;
 pub mod status;
 pub mod style;
 pub mod verify;
+pub mod worker;
 
 use std::io::{self, Stdout};
 
@@ -61,6 +62,13 @@ pub fn restore() -> Result<()> {
 /// The final `clear()` is not cosmetic: without it, programs that query the
 /// terminal's colours leave raw ANSI RGB values printed inside the restored
 /// interface.
+///
+/// Nothing calls this now that the interface authenticates once at startup and
+/// runs tasks on a thread. It stays because that arrangement rests on a
+/// timestamp `doas` and `run0` do not provide — for those, or if sudo's
+/// timestamp expires mid-session, handing the terminal over is still the only
+/// way to let a helper prompt.
+#[allow(dead_code)]
 pub fn with_terminal_released<T>(
     terminal: &mut Tui,
     action: impl FnOnce() -> Result<T>,
@@ -78,6 +86,31 @@ pub fn with_terminal_released<T>(
     result
 }
 
+/// Asks for the password once, before the interface starts.
+///
+/// The terminal is still ordinary here, so `sudo` prompts and reads the
+/// password itself — `initd` never sees it. What this buys is a timestamp the
+/// later commands reuse, so a task can run inside the interface instead of the
+/// screen being torn down and rebuilt around every privileged command.
+///
+/// Verified on Debian 13 and Arch: see `docs/sudo-timestamp-findings.md`.
+fn preauthenticate(escalator: &dyn crate::exec::privilege::PrivilegeEscalator) {
+    let Some((program, args)) = escalator.preauth_command() else {
+        return;
+    };
+
+    println!("initd needs administrator access.");
+
+    // Every stream is inherited: sudo has to reach the terminal to prompt, and
+    // the timestamp it writes is keyed by that terminal.
+    let _ = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+}
+
 /// Wraps an I/O failure as a terminal error.
 fn terminal_error(source: io::Error) -> Error {
     Error::Terminal { source }
@@ -93,6 +126,17 @@ pub fn run() -> Result<()> {
     // to expose it — a detail the SSH implementation would not share.
     let escalator = crate::exec::privilege::detect();
     let host = crate::distro::host::HostFacts::probe(escalator.as_ref());
+
+    // Authenticating here, before the alternate screen, is the whole reason a
+    // task's output can be streamed into the interface later: sudo draws its
+    // own prompt on an ordinary terminal, and the timestamp it establishes
+    // covers the commands the tasks go on to run.
+    //
+    // A refusal is not fatal. The operator may have cancelled the prompt, or
+    // the mechanism may not support this at all, and either way privileged
+    // commands still work — they just prompt when they run.
+    preauthenticate(escalator.as_ref());
+
     let executor = crate::exec::local::LocalExecutor::new(escalator);
 
     let mut terminal = init()?;

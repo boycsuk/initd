@@ -118,6 +118,9 @@ pub enum Msg {
     MissingParameter {
         name: String,
     },
+    TaskVanished {
+        task: String,
+    },
 
     // --- Tasks ---
     TaskUnsupported {

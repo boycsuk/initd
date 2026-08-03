@@ -366,6 +366,35 @@ Closing on any other key, including `?` itself, is deliberate: an overlay that
 has to be dismissed a particular way traps whoever opened it by accident. The
 closing key does **not** also do whatever it normally would.
 
+### While a task is running
+
+The interface stays open — scrolling, switching panes and reading all work —
+but nothing new may be started, and nothing already applied may be answered.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-C` | Ask the task to stop at its next step boundary |
+| `↑` / `↓` / `PageUp` / `PageDown` | Scroll the output |
+| `w` | Toggle wrapping |
+| `Tab` | Switch panes |
+| `?` | Help |
+| `q` | Refused, naming `Ctrl-C` as the way to stop |
+| *anything else* | Refused: a task is already running |
+
+**Cancellation is cooperative, and honest about it.** `Ctrl-C` asks the task to
+stop between two commands rather than killing it mid-write — a half-written
+configuration file is how a machine ends up in a state nobody chose. Until the
+current step ends the status still reads `RUNNING`, with the message
+*stopping after the current step*; only once the task has actually stopped does
+it read `CANCELLED`, and it says where it got to.
+
+The status row carries two liveness signals at its right edge while a task
+runs: a one-character ASCII spinner and a wall-clock timer, both driven by the
+clock rather than by arriving output. Over a slow link a quiet command and a
+frozen screen are otherwise indistinguishable. The spinner is ASCII rather than
+braille, which is missing or double-width in too many of the fonts a server
+console actually has.
+
 ### Verification window (semi-modal)
 
 Open after a change that could end the administrator's own session. Reading is
@@ -407,13 +436,23 @@ lands on it whichever key it reaches for.
 
 ## Running a privileged task
 
-When a task needs root, the interface hands the terminal back before the child
-process starts: it leaves the alternate screen and disables raw mode, so the
-password prompt is legible and accepts input normally. Once the task ends, raw
-mode and the alternate screen are restored and the screen is cleared.
+The password is asked for **once, before the interface starts**, while the
+terminal is still ordinary and `sudo` can draw its own prompt. `initd` never
+reads it: the prompt belongs to sudo, and what the tool gets is the
+authentication timestamp sudo leaves behind. Later privileged commands reuse
+that timestamp, which is what lets a task's output stream into the pane instead
+of the interface being torn down and rebuilt around every command.
 
-The clear is required, not cosmetic: programs that query the terminal's colors
-otherwise leave raw ANSI RGB values printed inside the restored interface.
+Two properties this depends on, measured on real Debian 13 and Arch systems and
+recorded in `sudo-timestamp-findings.md`:
 
-Input events are not read while the child runs, so the interface never competes
-with the password prompt for keystrokes.
+- Both key the timestamp by **terminal**, so spawned commands inherit stdin
+  rather than being given `/dev/null` — a process with no terminal is refused
+  even when the session that spawned it has authenticated.
+- Arch expires it after **five minutes**, not the fifteen usually assumed. Any
+  privileged command extends the window, so a task in progress keeps it open.
+
+A refusal at startup is not fatal. The operator may have cancelled the prompt,
+or the mechanism may not support this at all — `doas` has no equivalent and
+`run0` defers to polkit — and privileged commands still work either way. They
+simply prompt when they run.

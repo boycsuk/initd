@@ -157,12 +157,19 @@ impl Executor for LocalExecutor {
     }
 }
 
-/// Whether the child needs a stdin pipe or should inherit a closed one.
+/// What the child gets for stdin.
+///
+/// A command with a payload gets a pipe to receive it. Everything else
+/// *inherits* the terminal rather than getting `/dev/null`, which is not a
+/// detail: both Debian and Arch key sudo's authentication timestamp by
+/// terminal, and a process with no terminal on stdin is refused even when the
+/// session that spawned it has authenticated. Measured on both, in
+/// `docs/sudo-timestamp-findings.md`.
 fn stdin_for(command: &Command) -> Stdio {
     if command.stdin.is_some() {
         Stdio::piped()
     } else {
-        Stdio::null()
+        Stdio::inherit()
     }
 }
 
