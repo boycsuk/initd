@@ -69,6 +69,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships on.
 
 ### Changed
+- Container integration tests are driven by an image matrix rather than one
+  file per distribution. Everything a scenario needs to know about a family —
+  its package-manager commands, the name `initd detect` must report — lives in
+  a single `Image` entry, and scenarios that must hold everywhere are written
+  once and expanded across the matrix by a `for_each_image!` macro. Adding a
+  distribution was going to mean writing a fresh copy of every scenario, which
+  is the duplication the backend abstraction exists to prevent in the code
+  itself; now it means adding an entry. A declarative macro rather than a loop
+  over the matrix, because a loop is a single test: the first family to fail
+  would hide every family after it, and the failure would name a line rather
+  than a distribution. No dependency was added — `rstest` would have done the
+  same, but the matrix has to stay cheap to extend, not cheap to write once.
+- Package names are no longer restated in the tests. A scenario that needs
+  OpenSSH installed asks the matrix entry for the command, so the test cannot
+  agree with itself while disagreeing with the backend.
+- The per-distribution test files keep only behaviour whose reason is specific
+  to that family, and each states the reason: Arch covers the missing host keys
+  that make every `sshd -t` inconclusive, Debian covers the packaging that
+  makes it conclusive. Everything else was an invariant in disguise.
+- Scenarios that assert a written configuration is one sshd accepts now
+  generate host keys first. The matrix surfaced this immediately: five
+  scenarios passed on Debian and failed on Arch, because Debian's packaging
+  generates host keys while Arch leaves it to a systemd unit that never runs
+  in a container. Without them `sshd -t` reports `no hostkeys available` and
+  decides nothing, so those scenarios were asserting a verdict that was never
+  reached — passing on one family and proving nothing on the other. Finding
+  that is what running the same scenario across families is for.
 - `ssh.harden` sets seventeen directives rather than four: the authentication
   limits, the forwarding switches, the idle timeout and the verbose logging
   that records which key each login used. Every one either matches an OpenSSH

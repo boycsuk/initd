@@ -1,6 +1,11 @@
-//! Integration tests against a real Arch container.
+//! Behaviour that is particular to Arch, not shared with every family.
 //!
 //! Ignored by default; run with `cargo nextest run -- --ignored`.
+//!
+//! Invariants that must hold everywhere live in `integration_shared.rs`. What
+//! remains here is behaviour whose *reason* is specific to this distribution —
+//! each one states that reason, because a scenario that cannot say why it is
+//! not shared is usually a shared scenario in the wrong file.
 
 mod common;
 
@@ -8,58 +13,18 @@ use common::{ARCH, run_in_container, stdout_of};
 
 #[test]
 #[ignore = "requires docker"]
-fn detects_arch_inside_the_container() {
+fn detection_resolves_the_id_as_well_as_the_family() {
     require_docker!();
 
+    // Arch is where `id` and `family` coincide, which is the case a shared
+    // scenario cannot assert: on Ubuntu the id is `ubuntu` and the family is
+    // `debian`, resolved through ID_LIKE. Only checking the family would let a
+    // backend claim the right family while reporting the wrong distribution.
     let output = run_in_container(&ARCH, "initd detect");
     let stdout = stdout_of(&output);
 
     assert!(output.status.success(), "detect failed: {stdout}");
-    assert!(stdout.contains("family:       arch"), "got: {stdout}");
     assert!(stdout.contains("id:           arch"), "got: {stdout}");
-}
-
-#[test]
-#[ignore = "requires docker"]
-fn installs_the_openssh_package_under_its_arch_name() {
-    require_docker!();
-
-    // The package is `openssh` here, not `openssh-server` as on Debian: this
-    // is the divergence the backend abstraction exists to absorb.
-    let output = run_in_container(
-        &ARCH,
-        "initd run ssh.install >/dev/null 2>&1; pacman -Q openssh",
-    );
-    let stdout = stdout_of(&output);
-
-    assert!(
-        stdout.contains("openssh"),
-        "openssh must be installed: {stdout}"
-    );
-}
-
-#[test]
-#[ignore = "requires docker"]
-fn authorises_a_key_with_the_permissions_sshd_requires() {
-    require_docker!();
-
-    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd";
-    let output = run_in_container(
-        &ARCH,
-        &format!(
-            "initd authorize-key root '{key}' >/dev/null 2>&1; \
-             stat -c '%a' /root/.ssh; stat -c '%a' /root/.ssh/authorized_keys"
-        ),
-    );
-    let stdout = stdout_of(&output);
-    let mut lines = stdout.lines();
-
-    assert_eq!(lines.next(), Some("700"), "~/.ssh must be 700: {stdout}");
-    assert_eq!(
-        lines.next(),
-        Some("600"),
-        "authorized_keys must be 600: {stdout}"
-    );
 }
 
 #[test]
@@ -67,10 +32,14 @@ fn authorises_a_key_with_the_permissions_sshd_requires() {
 fn missing_host_keys_do_not_block_a_port_change() {
     require_docker!();
 
-    // The empirically verified Arch case: on a fresh install `sshd -t` fails
-    // with "no hostkeys available" even though the config is fine. Treating
-    // that as a syntax error would make the task refuse a valid file, so the
-    // change must still be applied.
+    // The empirically verified Arch case, and the reason `NON_SYNTAX_FAILURES`
+    // exists: on a fresh install `sshd -t` fails with "no hostkeys available"
+    // even though the config is fine. Treating that as a syntax error would
+    // make the task refuse a valid file, so the change must still be applied.
+    //
+    // Not shared, because it needs the host keys removed first — a state the
+    // other families' images do not naturally arrive at, and one that would be
+    // destroyed outright if these images were ever pre-baked with keys.
     let output = run_in_container(
         &ARCH,
         "pacman -S --needed --noconfirm openssh >/dev/null 2>&1; \
@@ -88,76 +57,31 @@ fn missing_host_keys_do_not_block_a_port_change() {
 
 #[test]
 #[ignore = "requires docker"]
-fn hardening_refuses_without_an_authorised_key() {
+fn hardening_applies_even_when_every_validation_is_inconclusive() {
     require_docker!();
 
-    // The lockout guard must hold on a real system, not just against mocks.
-    let output = run_in_container(
-        &ARCH,
-        "pacman -S --needed --noconfirm openssh >/dev/null 2>&1; \
-         initd run ssh.harden 2>&1; \
-         grep -c '^PasswordAuthentication no' /etc/ssh/sshd_config || true",
-    );
-    let stdout = stdout_of(&output);
-
-    assert!(
-        stdout.trim().ends_with('0'),
-        "password auth must not be disabled without a key: {stdout}"
-    );
-}
-
-/// A key the hardening tasks accept, so the lockout guard lets them proceed.
-const TEST_KEY: &str =
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd";
-
-#[test]
-#[ignore = "requires docker"]
-fn hardening_produces_a_config_sshd_accepts() {
-    require_docker!();
-
-    // Arch is where this matters most: a fresh container has no host keys, so
-    // every `sshd -t` here returns the inconclusive failure. If the directive
-    // probe read that as "unknown keyword" the whole tier would be skipped,
-    // and this test would find the directives missing.
+    // A fresh Arch container has no host keys, so *every* `sshd -t` here
+    // returns the inconclusive failure. If the directive probe read that as
+    // "unknown keyword" the whole tier would be skipped — and this test would
+    // find the directives missing.
+    //
+    // The shared tier scenarios cannot catch this: they install openssh, which
+    // on Debian generates host keys, so validation there is conclusive.
     let output = run_in_container(
         &ARCH,
         &format!(
             "pacman -S --needed --noconfirm openssh >/dev/null 2>&1; \
-             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             rm -f /etc/ssh/ssh_host_*; \
+             initd authorize-key root '{}' >/dev/null 2>&1; \
              initd run ssh.harden >/dev/null 2>&1; \
-             grep -c '^MaxAuthTries 3' /etc/ssh/sshd_config"
+             grep -c '^MaxAuthTries 3' /etc/ssh/sshd_config",
+            common::TEST_KEY
         ),
     );
     let stdout = stdout_of(&output);
 
     assert!(
-        stdout.lines().any(|line| line.trim() == "1"),
+        common::has_line(&stdout, "1"),
         "the safe tier must apply even with no host keys present: {stdout}"
-    );
-}
-
-#[test]
-#[ignore = "requires docker"]
-fn strict_hardening_writes_only_algorithms_this_build_supports() {
-    require_docker!();
-
-    // Arch ships a newer OpenSSH than Debian, so the surviving set differs.
-    // What must hold on both is that nothing written is unsupported.
-    let output = run_in_container(
-        &ARCH,
-        &format!(
-            "pacman -S --needed --noconfirm openssh >/dev/null 2>&1; \
-             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
-             initd run ssh.harden-strict >/dev/null 2>&1; \
-             ssh -Q kex > /tmp/supported; \
-             grep '^KexAlgorithms ' /etc/ssh/sshd_config | cut -d' ' -f2 | tr ',' '\\n' \
-               | grep -vxF -f /tmp/supported | wc -l"
-        ),
-    );
-    let stdout = stdout_of(&output);
-
-    assert!(
-        stdout.lines().any(|line| line.trim() == "0"),
-        "every written kex algorithm must be one this build supports: {stdout}"
     );
 }
