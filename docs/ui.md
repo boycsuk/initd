@@ -72,6 +72,11 @@ The tree takes a fixed width above 100 columns because its content has a fixed
 natural width, so extra width belongs to the output, where lines are long and
 wrapping hurts.
 
+Below 72 columns the two panes become **two views of one area**, switched with
+`Tab`. The header trades the host facts for a `tasks / output` indicator, since
+nothing else would say which of the two is showing and `Tab` would look like it
+did nothing.
+
 The key bar is dropped below 24 rows — it is a convenience, whereas the status
 row is the only authoritative place the operator is told what the tool is
 doing. Below **60 × 15** the interface is not drawn at all: it states the size
@@ -117,6 +122,11 @@ a clear refusal.
 - **Confirmation dialog** — overlays the centre of the screen, 60% × 40%, for
   destructive operations only. Modal: while it is open, all keys go to it.
 
+- **Help overlay** — every binding the interface has, grouped by where it
+  applies. Opened with `?` from anywhere, including on top of a dialog, since
+  the moment someone needs the key list is the moment they do not know which
+  key to press. Scrollable, because the section worth reading most — the keys
+  that cannot be guessed from anywhere else — is the one at the end.
 - **Verification banner** — replaces the detail pane after a change that could
   sever the administrator's own access. States that the change is applied but
   not yet kept, counts down to the automatic revert, and names the two keys.
@@ -255,6 +265,7 @@ of inventing a colour.
 | Key | Action |
 |-----|--------|
 | `Tab` | Move focus between the tree and the output |
+| `?` | Open the help overlay |
 | `q` | Quit, from any level and either pane |
 
 `j` and `k` mean "next" and "previous" in both panes, so something has to say
@@ -340,6 +351,20 @@ digits — so a value that could never be accepted cannot be typed at all. Long
 values scroll horizontally with a `…` marking text dropped from the left; a
 public key is verified by what it *parses* to (type and comment, echoed beneath
 the field), because a 380-character key cannot be checked by reading it.
+
+### Help overlay
+
+| Key | Action |
+|-----|--------|
+| `↑` / `k` / `↓` / `j` | Scroll a line |
+| `PageUp` / `PageDown` | Scroll a page |
+| `g` / `Home` | Top of the list |
+| `G` / `End` | Bottom of the list |
+| *anything else* | Close |
+
+Closing on any other key, including `?` itself, is deliberate: an overlay that
+has to be dismissed a particular way traps whoever opened it by accident. The
+closing key does **not** also do whatever it normally would.
 
 ### Verification window (semi-modal)
 

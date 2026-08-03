@@ -17,7 +17,7 @@ use super::form::Form;
 use super::output::OutputPane;
 use super::status::{State, Status};
 use super::verify::Verification;
-use super::{Tui, layout, style, with_terminal_released};
+use super::{Tui, help, layout, style, with_terminal_released};
 use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
@@ -51,6 +51,9 @@ const PAGE_SCROLL: usize = 10;
 
 /// Rows the verification banner occupies: its top border and four lines.
 const VERIFY_BANNER_ROWS: u16 = 5;
+
+/// Lines a page key moves the help overlay by.
+const HELP_PAGE: u16 = 10;
 
 /// Marks a row that opens onto another level.
 const CATEGORY_MARKER: &str = "› ";
@@ -113,6 +116,11 @@ pub struct App {
     pending_values: ParamValues,
     /// An applied change waiting to be kept or put back.
     verification: Option<Verification>,
+    /// How far the help overlay is scrolled, while it is showing.
+    ///
+    /// `None` means it is closed: the overlay has no state worth keeping
+    /// between openings, and it always starts at the top.
+    help: Option<u16>,
     status: Status,
     should_quit: bool,
 }
@@ -151,6 +159,7 @@ impl App {
             confirm: None,
             pending_values: ParamValues::new(),
             verification: None,
+            help: None,
             status: Status::new(),
             should_quit: false,
         }
@@ -274,6 +283,11 @@ impl App {
     /// `Some` means the key was the one that starts the work; everything else
     /// is resolved in place.
     fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        if self.help.is_some() {
+            self.on_help_key(key);
+            return None;
+        }
+
         // Semi-modal: reading is never blocked while a change is unverified,
         // but nothing new may be started until this one is settled.
         if self.verification.is_some() {
@@ -312,6 +326,12 @@ impl App {
             // one level too many cannot drop the user out of the program.
             KeyCode::Char('q') => {
                 self.should_quit = true;
+                return true;
+            }
+            // Available from anywhere, since the moment someone needs the key
+            // list is the moment they do not know which key to press.
+            KeyCode::Char('?') => {
+                self.help = Some(0);
                 return true;
             }
             // The only focus key. Overloading a movement key with focus is how
@@ -366,6 +386,31 @@ impl App {
         }
 
         true
+    }
+
+    /// Handles a key press while the help overlay is showing.
+    ///
+    /// The movement keys scroll it; everything else closes it, including the
+    /// key that opened it. An overlay that has to be dismissed a particular
+    /// way traps whoever opened it by accident.
+    fn on_help_key(&mut self, key: KeyEvent) {
+        let Some(scroll) = self.help else {
+            return;
+        };
+
+        // The frame is not known here, so the clamp uses the reference size;
+        // `render` clamps again against the real one.
+        let limit = help::max_scroll(Rect::new(0, 0, 80, 24));
+
+        self.help = match key.code {
+            KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_add(1).min(limit)),
+            KeyCode::Up | KeyCode::Char('k') => Some(scroll.saturating_sub(1)),
+            KeyCode::PageDown => Some(scroll.saturating_add(HELP_PAGE).min(limit)),
+            KeyCode::PageUp => Some(scroll.saturating_sub(HELP_PAGE)),
+            KeyCode::Home | KeyCode::Char('g') => Some(0),
+            KeyCode::End | KeyCode::Char('G') => Some(limit),
+            _ => None,
+        };
     }
 
     /// Handles a key press while a change is applied but not yet kept.
@@ -804,6 +849,12 @@ impl App {
         if let Some(ref mut form) = self.form {
             form.render(frame);
         }
+
+        // Last of all: help is asked for from wherever the operator is stuck,
+        // including on top of a dialog.
+        if let Some(scroll) = self.help {
+            help::render(frame, scroll);
+        }
     }
 
     /// Draws the one-line header naming the tool and the machine.
@@ -819,16 +870,36 @@ impl App {
     fn render_header(&self, frame: &mut Frame, area: Rect) {
         let separator = || Span::styled("  ·  ", style::BLOCK_SUBTITLE);
 
-        let mut spans = vec![
-            Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {VERSION}"), style::BLOCK_SUBTITLE),
-            separator(),
-            Span::styled(self.host.hostname.clone(), style::EMPHASIS),
-            separator(),
-            Span::styled(self.distro.display_name().to_owned(), style::NORMAL),
-            separator(),
-            Span::styled(format!("root via {}", self.host.privilege), style::NORMAL),
-        ];
+        // With one pane on screen at a time, nothing else says which one is
+        // showing, so the header trades the host facts for an indicator —
+        // otherwise `Tab` would look like it did nothing.
+        let mut spans = if layout::BodyLayout::for_width(area.width) == layout::BodyLayout::Single {
+            let (tree, output) = match self.focus {
+                Pane::Tree => (style::EMPHASIS, style::BLOCK_SUBTITLE),
+                Pane::Output => (style::BLOCK_SUBTITLE, style::EMPHASIS),
+            };
+
+            vec![
+                Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
+                separator(),
+                Span::styled(self.host.hostname.clone(), style::EMPHASIS),
+                Span::raw("  "),
+                Span::styled("tasks", tree),
+                Span::styled(" / ", style::BLOCK_SUBTITLE),
+                Span::styled("output", output),
+            ]
+        } else {
+            vec![
+                Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {VERSION}"), style::BLOCK_SUBTITLE),
+                separator(),
+                Span::styled(self.host.hostname.clone(), style::EMPHASIS),
+                separator(),
+                Span::styled(self.distro.display_name().to_owned(), style::NORMAL),
+                separator(),
+                Span::styled(format!("root via {}", self.host.privilege), style::NORMAL),
+            ]
+        };
 
         // The help hint is dropped rather than allowed to wrap onto a row the
         // header does not have.
@@ -849,6 +920,24 @@ impl App {
         let split = layout::BodyLayout::for_width(area.width);
         let (tree_area, right_area) = layout::body(area, split);
 
+        // Below the split threshold both panes are the whole area, so drawing
+        // both would leave one written over the other. One is shown at a time
+        // and `Tab` chooses which.
+        if split == layout::BodyLayout::Single {
+            match self.focus {
+                Pane::Tree => self.render_tree(frame, tree_area),
+                Pane::Output => self.render_right(frame, right_area),
+            }
+
+            return;
+        }
+
+        self.render_tree(frame, tree_area);
+        self.render_right(frame, right_area);
+    }
+
+    /// Draws the task tree and its scrollbar.
+    fn render_tree(&mut self, frame: &mut Frame, tree_area: Rect) {
         let family = self.distro.family;
         // The two borders and the marker column are not available to the row.
         let row_width = tree_area.width.saturating_sub(2) as usize;
@@ -883,7 +972,10 @@ impl App {
 
         frame.render_stateful_widget(list, tree_area, &mut self.list_state);
         self.render_tree_scrollbar(frame, tree_area);
+    }
 
+    /// Draws whichever of detail, output or verification the state calls for.
+    fn render_right(&mut self, frame: &mut Frame, right_area: Rect) {
         if let Some(ref window) = self.verification {
             // The countdown takes the top of the pane and the output keeps the
             // rest: what the change did is the evidence for the decision.
@@ -2101,6 +2193,25 @@ mod tests {
         for (index, row) in render_to_rows(&mut verifying, 80, 24).iter().enumerate() {
             println!("{:>2}|{row}", index + 1);
         }
+
+        // The single-pane fallback, below the split threshold.
+        let mut narrow = test_app(Family::Debian);
+        enter_first_category(&mut narrow);
+        enter_first_category(&mut narrow);
+
+        println!();
+        for (index, row) in render_to_rows(&mut narrow, 64, 16).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
+
+        // The help overlay.
+        let mut helping = test_app(Family::Debian);
+        helping.help = Some(0);
+
+        println!();
+        for (index, row) in render_to_rows(&mut helping, 80, 24).iter().enumerate() {
+            println!("{:>2}|{row}", index + 1);
+        }
     }
 
     #[test]
@@ -2285,6 +2396,141 @@ mod tests {
             body.contains(style::MARKER_DANGER),
             "a destructive task must carry its marker: {body}"
         );
+    }
+
+    #[test]
+    fn a_narrow_terminal_draws_one_pane_at_a_time() {
+        // Below the split threshold both panes are handed the whole area, so
+        // drawing both would overwrite one with the other.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine {
+            stream: crate::exec::Stream::Stdout,
+            text: "installing openssh-server".to_owned(),
+        });
+
+        let on_tree = render_to_rows(&mut app, 64, 20).join("\n");
+        assert!(
+            on_tree.contains("Remote Access"),
+            "the tree is drawn with focus on it: {on_tree}"
+        );
+        assert!(
+            !on_tree.contains("installing openssh-server"),
+            "the output must not be drawn over the tree: {on_tree}"
+        );
+
+        app.focus = Pane::Output;
+        let on_output = render_to_rows(&mut app, 64, 20).join("\n");
+        assert!(
+            on_output.contains("installing openssh-server"),
+            "the output is drawn with focus on it: {on_output}"
+        );
+    }
+
+    #[test]
+    fn help_opens_from_anywhere_and_closes_on_any_key() {
+        // The moment someone needs the key list is the moment they do not know
+        // which key to press, so it must not be dismissed a particular way.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help.is_some());
+
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.help.is_none(), "any other key must close it");
+    }
+
+    #[test]
+    fn help_does_not_act_on_the_key_that_closes_it() {
+        // Closing must not also run whatever that key would normally do.
+        let mut app = test_app(Family::Debian);
+        press(&mut app, KeyCode::Char('?'));
+
+        press(&mut app, KeyCode::Char('q'));
+
+        assert!(app.help.is_none());
+        assert!(!app.should_quit, "the closing key must not also quit");
+    }
+
+    #[test]
+    fn help_lists_the_keys_that_cannot_be_guessed() {
+        let mut app = test_app(Family::Debian);
+        app.help = Some(0);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(screen.contains("Keys"), "{screen}");
+        assert!(screen.contains("Task tree"), "{screen}");
+        assert!(screen.contains("closes"), "{screen}");
+    }
+
+    #[test]
+    fn the_keys_that_cannot_be_guessed_are_reachable_in_the_help() {
+        // K and R sit at the end of the list, past the fold at 80x24. They are
+        // the whole reason the overlay scrolls rather than truncating.
+        let mut app = test_app(Family::Debian);
+        app.help = Some(0);
+
+        let first = render_to_rows(&mut app, 80, 24).join("\n");
+        assert!(!first.contains("put the previous"), "not visible yet");
+
+        press(&mut app, KeyCode::End);
+        let last = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(
+            last.contains("keep the change"),
+            "K must be reachable: {last}"
+        );
+        assert!(
+            last.contains("put the previous"),
+            "R must be reachable: {last}"
+        );
+    }
+
+    #[test]
+    fn scrolling_the_help_does_not_close_it() {
+        let mut app = test_app(Family::Debian);
+        app.help = Some(0);
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.help, Some(1), "j and the arrows scroll");
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.help, Some(0));
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.help, Some(0), "scrolling stops at the top");
+    }
+
+    #[test]
+    fn help_covers_the_interface_beneath_it() {
+        // An overlay showing content through it misrepresents what the keys do.
+        let mut app = test_app(Family::Debian);
+        let before = render_to_rows(&mut app, 80, 24).join("\n");
+        assert!(before.contains("Remote Access"));
+
+        app.help = Some(0);
+        let after = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(
+            !after.contains("Remote Access"),
+            "the tree must not show through: {after}"
+        );
+    }
+
+    #[test]
+    fn the_narrow_header_says_which_pane_is_showing() {
+        // With one pane at a time and no indicator, Tab looks like it did
+        // nothing at all.
+        let mut app = test_app(Family::Debian);
+
+        let on_tree = render_to_rows(&mut app, 64, 20)[0].clone();
+        assert!(on_tree.contains("tasks"), "got {on_tree:?}");
+        assert!(on_tree.contains("output"), "got {on_tree:?}");
+
+        // The wide header spends its room on host facts instead.
+        let wide = render_to_rows(&mut app, 100, 24)[0].clone();
+        assert!(wide.contains("root via"), "got {wide:?}");
+        assert!(!wide.contains(" / output"), "got {wide:?}");
     }
 
     #[test]

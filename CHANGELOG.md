@@ -87,6 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open can see which machine is about to change without asking, and knows
   whether privileged work will succeed before starting it rather than when it
   fails.
+- Below 72 columns the two panes become two views of one area, switched with
+  `Tab`. Both were previously handed the whole width and drawn on top of each
+  other, so the output overwrote the tree. The header trades the host facts for
+  a `tasks / output` indicator at that width, since nothing else would say
+  which of the two is showing.
+- `?` opens a help overlay listing every binding grouped by where it applies,
+  from anywhere including on top of a dialog. It scrolls rather than dropping
+  what will not fit: the section worth reading most — `K` and `R`, the keys
+  that cannot be guessed from anywhere else — is the one at the end, and a
+  fixed overlay lost it. Any key other than the movement keys closes it,
+  including `?` itself, and that key does not also do whatever it normally
+  would.
 - A change that could sever the administrator's own access is applied and then
   held for sixty seconds rather than declared done. `sshd -t` proves the syntax
   and a reload proves the daemon accepted it, but neither proves the

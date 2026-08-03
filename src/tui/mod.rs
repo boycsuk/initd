@@ -12,6 +12,7 @@ pub mod app;
 pub mod confirm;
 pub mod field;
 pub mod form;
+pub mod help;
 pub mod layout;
 pub mod output;
 pub mod status;
