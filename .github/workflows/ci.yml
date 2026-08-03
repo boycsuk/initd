@@ -1,0 +1,118 @@
+# Verification for every change.
+#
+# Two jobs rather than one, split by what a failure would *mean*:
+#
+#   `check` fails because of the commit under test. It is the gate.
+#   `rolling` fails because Arch moved. It is a warning, and it runs on a
+#   schedule so an OpenSSH update upstream cannot paint someone's unrelated
+#   pull request red.
+#
+# That split matters here specifically: the strict hardening tier filters
+# algorithm names against what the daemon reports, so a new OpenSSH release
+# genuinely can change the outcome without a line of this repository changing.
+# That signal is worth having — but as its own notification, not as noise on a
+# contributor's branch.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Arch is a rolling image: this job exists to notice when upstream moves.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A misconfigured runner would otherwise skip every container test and
+  # report success having verified nothing. See `require_docker!`.
+  INITD_REQUIRE_DOCKER: "1"
+
+jobs:
+  check:
+    name: Format, lint, and test on Debian
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt,clippy
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      # Subsumed by the container step below, and kept anyway: it needs no
+      # Docker and finishes in seconds, so an ordinary logic error surfaces
+      # without first waiting on image pulls and package installs.
+      - name: Unit tests
+        run: cargo nextest run
+
+      # The binary the container tests bind-mount must exist before they run.
+      - name: Build the binary the container tests mount
+        run: cargo build
+
+      # Everything except the Arch expansions, rather than "the Debian ones":
+      # naming what to include silently drops any test belonging to neither
+      # family — the matrix synchronisation check, the helpers' own tests —
+      # and a filter that runs less than it appears to is the one CI defect
+      # that looks exactly like success.
+      - name: Container tests (everything but the rolling image)
+        run: cargo nextest run --run-ignored all -E 'not test(::arch) and not binary(integration_arch)'
+
+  rolling:
+    name: Container tests on the rolling Arch image
+    runs-on: ubuntu-latest
+    # Never blocks a merge: this job speaks about upstream, not about the
+    # commit. `check` is the gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Build the binary the container tests mount
+        run: cargo build
+
+      - name: Container tests (Arch only)
+        run: cargo nextest run --run-ignored all -E 'test(arch)'
+
+  msrv:
+    name: Build on the declared minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `rust-version` in Cargo.toml is a claim about which compilers accept
+      # this crate. Nothing enforces it, so it drifts the first time a newer
+      # feature is used — and the failure would land on a user's machine.
+      - name: Install the declared minimum
+        run: |
+          MSRV=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "Declared MSRV: $MSRV"
+          rustup toolchain install "$MSRV" --profile minimal
+          rustup default "$MSRV"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-targets
