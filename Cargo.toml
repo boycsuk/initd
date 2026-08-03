@@ -1,0 +1,18 @@
+[package]
+name = "initd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Multi-distro Linux server administration TUI"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+thiserror = "2.0.19"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

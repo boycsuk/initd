@@ -1,0 +1,58 @@
+{
+  "_comment": "Per-project settings ONLY. The base permissions, hooks, attribution, and bypass lockdown live centrally in ~/.claude/settings.json (installed from the dotclaude repo) and apply to every project automatically \u2014 do NOT duplicate them here. This file holds only what is specific to THIS project: MCP tool permissions, project-local overrides. permissions and hooks MERGE across scopes, so anything added here is in addition to the central config, never a replacement. If the project has nothing project-specific, this file can be left as-is (empty permissions) or deleted.",
+  "permissions": {
+    "allow": [
+      "mcp__serena__*",
+      "mcp__graphify__*"
+    ],
+    "ask": [],
+    "deny": []
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "serena-hooks activate --client=claude-code"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "serena-hooks remind --client=claude-code"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME\"/.claude/hooks/prefer-serena-bash.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME\"/.claude/hooks/prefer-graphify.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__serena__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "serena-hooks auto-approve --client=claude-code"
+          }
+        ]
+      }
+    ]
+  }
+}

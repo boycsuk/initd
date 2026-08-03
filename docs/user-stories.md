@@ -1,0 +1,132 @@
+# User stories
+
+> **What this file is.** The behavioral contract of the product: everything
+> the user must be able to DO, written as user stories — independent of which
+> screen or platform implements it. It is the single source of truth for
+> "what can this product do for its user?". A reader of this file alone should
+> be able to list every capability without opening the source or the other
+> docs.
+>
+> **What this file is NOT.** Not the API (`backend.md` lists endpoints), not
+> the visual map (`ui.md` lists screens and tokens), not implementation. A
+> story says *what the user achieves and why*, never *how it is built*.
+>
+> **Platform model: parity by default, exceptions only.** Assume every story
+> works the same on every client (web, iOS, Android, desktop). Write each
+> story once. Only when a capability genuinely differs on a platform do you
+> add a short exception line under it — do not tag every story with a platform
+> matrix when almost all of them are identical. If a whole story is
+> platform-specific, say so in its own line.
+>
+> **How to keep it true (no tooling required).** Plain Markdown — maintain it
+> by hand in any editor (Xcode, a sandboxed editor, a teammate without Claude
+> Code). With Claude Code, `/update-docs` can update it from the diff. Update
+> it whenever a user-facing capability is added, removed, or changes what the
+> user can achieve. **Coverage over depth:** every capability must appear,
+> even as a one-liner; the *what* must be exhaustive, the *how* can stay out.
+> A new capability with no story here is a contract that does not exist for
+> anyone reading only `docs/`.
+
+## Format
+
+Group stories by area (epic). Within each, one bullet per capability:
+
+> As a **\<role\>**, I can **\<do something\>** so that **\<benefit\>**.
+
+Add nested lines only when they carry contract-level information:
+- **Acceptance:** the observable condition that proves it works (optional but
+  recommended for non-obvious stories).
+- **Platform exception:** only if a platform differs. e.g.
+  *"iOS only — uses the native share sheet"* or *"Not on web — requires the
+  camera"*.
+
+Keep stories outcome-focused. "I can reset my password" is a story; "the
+reset button is blue" is not (that is `ui.md`), and "calls `POST /auth/reset`"
+is not (that is `backend.md`).
+
+## Interfaces
+
+`initd` has two clients over the same tasks, so "platform exception" here means
+TUI or CLI:
+
+- **TUI** — the interactive interface, started by running `initd` with no
+  arguments.
+- **CLI** — one subcommand per task, for scripting and for machines without an
+  interactive terminal.
+
+## Roles
+
+- **Administrator** — runs `initd` on the Linux server being administered.
+  There is no login and no second role: authority comes from the operating
+  system, through `sudo`, `doas` or `run0`.
+
+## Stories
+
+### Orientation
+
+- As an **administrator**, I can see which distribution `initd` detected so
+  that I know it will use the right commands for my system.
+  - Acceptance: `initd detect` prints the distribution name, its id, its
+    version and the resolved family (`debian` or `arch`).
+  - Acceptance: on an unsupported distribution the command reports which
+    family was missing instead of crashing.
+- As an **administrator**, I can see which privilege escalation mechanism will
+  be used so that I can diagnose a system where `sudo` is absent.
+  - Acceptance: `initd privileges` names the mechanism (`sudo`, `doas`,
+    `run0`, or none when already root) and shows an example command.
+- As an **administrator**, I can list the available tasks and see which ones
+  run on my system so that I know what is possible before changing anything.
+  - Acceptance: tasks not supported on the running distribution are still
+    listed, marked, and never silently hidden.
+
+### SSH server
+
+- As an **administrator**, I can install and enable the SSH server so that the
+  machine accepts remote connections after a reboot.
+  - Acceptance: the correct package for the distribution is installed
+    (`openssh-server` on Debian, `openssh` on Arch) and the correct unit is
+    enabled (`ssh.service` on Debian, `sshd.service` on Arch).
+  - Acceptance: running it again on a machine that already has SSH does not
+    reinstall the package.
+- As an **administrator**, I can harden the SSH configuration so that the
+  server refuses root logins and password authentication.
+  - Acceptance: the previous configuration is copied aside before anything is
+    written.
+  - Acceptance: the operation is refused, with an explanation, when no
+    authorised key exists — otherwise it would lock me out.
+  - Acceptance: a configuration rejected by `sshd -t` is rolled back and the
+    service is not reloaded.
+- As an **administrator**, I can authorise a public key for a user so that they
+  can log in without a password.
+  - Acceptance: `~/.ssh` ends up mode 700 and `authorized_keys` mode 600, the
+    permissions sshd requires before honouring the key.
+  - Acceptance: keys already in the file are preserved, and adding the same key
+    twice does not duplicate it.
+  - Acceptance: a malformed key is rejected before anything is written.
+- As an **administrator**, I can change the port SSH listens on so that the
+  server is not exposed on the default port.
+  - Acceptance: the change is validated before the service is reloaded, and
+    rolled back if the resulting configuration is invalid.
+  - Acceptance: I am warned that a firewall or SELinux may still block the new
+    port.
+  - Acceptance: on Debian, I am warned when `ssh.socket` is active, because the
+    socket — not `sshd_config` — decides the port in that case.
+
+### Running tasks safely
+
+- As an **administrator**, I am asked to confirm before any operation that
+  could lock me out of the server, so that a stray keystroke cannot strand me.
+  - Acceptance: the confirmation defaults to "no".
+  - Platform exception: TUI only. On the CLI, running the subcommand *is* the
+    confirmation.
+- As an **administrator**, I can watch a task's output as it runs so that I can
+  see what is happening rather than waiting for a result.
+  - Platform exception: the TUI shows it in a scrollable pane; the CLI prints
+    it as it arrives.
+- As an **administrator**, I can enter my password when a task needs root, so
+  that privileged operations work from the interactive interface.
+  - Acceptance: the password prompt is legible, and the interface is intact
+    afterwards, with no leftover escape sequences on screen.
+  - Platform exception: TUI only — the CLI inherits the terminal directly.
+- As an **administrator**, I keep a usable terminal even if `initd` fails, so
+  that a crash does not leave me with a broken shell.

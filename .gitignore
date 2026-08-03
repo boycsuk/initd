@@ -1,0 +1,32 @@
+# Claude Code local overrides (personal, not committed)
+.claude/settings.local.json
+
+# Plan files generated during plan mode
+.claude/plans/
+
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Environment files (must never be committed)
+.env
+.env.*
+!.env.example
+
+# Secrets directories
+secrets/
+credentials/
+
+# Serena MCP local config (project.yml and memories/ ARE committed; only the personal override is not)
+.serena/project.local.yml
+.serena/cache/
+
+# Graphify knowledge-graph build output (rebuilt by /graphify .; commit only if sharing the graph)
+graphify-out/
