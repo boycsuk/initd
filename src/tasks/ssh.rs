@@ -9,6 +9,7 @@ use crate::distro::Family;
 use crate::domain::files::Backup;
 use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
+use crate::tasks::algorithms;
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config::{self, SSHD_CONFIG};
@@ -54,7 +55,11 @@ pub fn category() -> Category {
             Node::Category(Category::new(
                 "Configuration",
                 vec![
+                    // Ordered as they would be applied: narrowing the
+                    // algorithms of a server whose passwords are still
+                    // enabled is a strange place to start.
                     Node::Task(Box::new(HardenSsh)),
+                    Node::Task(Box::new(HardenSshStrict)),
                     Node::Task(Box::new(ChangePort)),
                 ],
             )),
@@ -269,6 +274,115 @@ impl Task for HardenSsh {
         // accepted it, but neither proves the administrator can still log in:
         // the key this task requires might not be the one their client offers.
         // So the change is offered back until they say otherwise.
+        Ok(revertible(backup, backend))
+    }
+}
+
+/// Directives the strict tier sets besides the algorithm lists.
+///
+/// `RequiredRSASize` may only ever be raised, and 3072 is the smallest size
+/// current guidance accepts. `AllowTcpForwarding no` is the one directive here
+/// an administrator is likely to want back: it stops port forwarding, which
+/// tunnels and remote development tooling rely on.
+const STRICT_DIRECTIVES: [(&str, &str); 2] =
+    [("RequiredRSASize", "3072"), ("AllowTcpForwarding", "no")];
+
+/// Narrows the algorithms and forwarding sshd will accept.
+///
+/// Destructive in a way the safe tier is not: a client too old to speak any
+/// surviving algorithm can no longer connect at all.
+pub struct HardenSshStrict;
+
+impl Task for HardenSshStrict {
+    fn id(&self) -> &'static str {
+        "ssh.harden-strict"
+    }
+
+    fn title(&self) -> &'static str {
+        "Harden the SSH cryptography"
+    }
+
+    fn description(&self) -> &'static str {
+        "Restricts the key exchange, cipher, MAC and host key algorithms to a \
+         modern set, requires RSA keys of at least 3072 bits, and disables TCP \
+         forwarding, which stops tunnelling and remote development tools. Only \
+         algorithms this OpenSSH reports it supports are written, and a list \
+         that would be narrowed to fewer than two is left at the system \
+         default and reported. Old clients may no longer be able to connect. \
+         Requires an authorised key for root, keeps a backup, and holds the \
+         change open until you confirm you can still log in."
+    }
+
+    fn is_destructive(&self) -> bool {
+        true
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let files = backend.files();
+        let contents = files.read(executor, SSHD_CONFIG)?;
+
+        // Same guard as the safe tier. This task disables no password, but a
+        // configuration that strands the administrator's client is just as
+        // unrecoverable as one that refuses their password.
+        if !has_authorized_key(executor, backend, "root")? {
+            return Err(Error::LockoutRisk {
+                kind: Lockout::NoKeyForRoot,
+            });
+        }
+
+        report(progress, "Narrowing the accepted algorithms...");
+
+        let mut hardened = contents;
+
+        for class in algorithms::ALL_CLASSES {
+            match algorithms::hardened_for(executor, class) {
+                Some(value) => {
+                    report(progress, format!("{}: {value}", class.directive()));
+                    hardened = sshd_config::set_directive(&hardened, class.directive(), &value);
+                }
+                // Skipping is the safe outcome, not a compromise: the
+                // compiled-in default admits a reasonable range, while a list
+                // narrowed too far refuses clients for no gain. Reported so
+                // that a directive the administrator asked for is never
+                // silently absent.
+                None => progress(OutputLine {
+                    stream: Stream::Stderr,
+                    text: format!(
+                        "warning: {} left at the system default — this OpenSSH supports too \
+                         few of the hardened algorithms to narrow it safely",
+                        class.directive()
+                    ),
+                }),
+            }
+        }
+
+        let hardened = STRICT_DIRECTIVES
+            .into_iter()
+            .fold(hardened, |acc, (directive, value)| {
+                sshd_config::set_directive(&acc, directive, value)
+            });
+
+        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
+
+        if let Some(ref backup) = backup {
+            report(
+                progress,
+                format!("Previous configuration saved to {}", backup.copy),
+            );
+        }
+
+        reload_ssh(executor, backend, progress)?;
+
         Ok(revertible(backup, backend))
     }
 }
@@ -1154,6 +1268,191 @@ mod tests {
         assert!(
             warnings.iter().any(|w| w.contains("keyboard-interactive")),
             "the skip must be reported, got: {warnings:?}"
+        );
+    }
+
+    /// Scripts the four `ssh -Q` queries the strict tier makes, in order.
+    fn query_replies(kex: &str, cipher: &str, mac: &str, host_key: &str) -> [Reply; 4] {
+        [
+            Reply::ok(kex),
+            Reply::ok(cipher),
+            Reply::ok(mac),
+            Reply::ok(host_key),
+        ]
+    }
+
+    #[test]
+    fn strict_hardening_writes_only_supported_algorithms() {
+        let mut replies = vec![
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ];
+        replies.extend(query_replies(
+            "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
+            // No chacha20 on this build: it must not reach the file.
+            "aes256-gcm@openssh.com\naes256-ctr\n",
+            "hmac-sha2-512-etm@openssh.com\nhmac-sha2-256-etm@openssh.com\n",
+            "ssh-ed25519\nrsa-sha2-512\n",
+        ));
+        let mock = MockExecutor::with_replies(replies);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("strict hardening must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("Ciphers aes256-gcm@openssh.com,aes256-ctr"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("chacha20"),
+            "an algorithm this build lacks must not be written, got: {written}"
+        );
+        assert!(written.contains("RequiredRSASize 3072"), "got: {written}");
+        assert!(written.contains("AllowTcpForwarding no"), "got: {written}");
+    }
+
+    #[test]
+    fn strict_hardening_skips_a_directive_it_cannot_query() {
+        // `ssh` absent, or a query name this release does not know. The task
+        // still has other work to do and must finish it.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("a failed query must not fail the task");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must still be written");
+
+        for directive in ["Ciphers", "KexAlgorithms", "MACs", "HostKeyAlgorithms"] {
+            assert!(
+                !written.contains(directive),
+                "{directive} must be left at the default, got: {written}"
+            );
+        }
+        assert!(written.contains("RequiredRSASize 3072"), "got: {written}");
+    }
+
+    #[test]
+    fn strict_hardening_warns_when_it_skips_a_directive() {
+        // A directive the administrator asked for must never be silently
+        // absent from the result.
+        let mut replies = vec![Reply::ok("Port 22\n"), Reply::ok(""), Reply::ok(TEST_KEY)];
+        replies.extend(query_replies(
+            "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
+            // Only one hardened cipher survives: below the floor.
+            "3des-cbc\naes256-ctr\n",
+            "hmac-sha2-512-etm@openssh.com\nhmac-sha2-256-etm@openssh.com\n",
+            "ssh-ed25519\nrsa-sha2-512\n",
+        ));
+        let mock = MockExecutor::with_replies(replies);
+        let backend = for_family(Family::Debian);
+        let mut warnings = Vec::new();
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            })
+            .expect("runs");
+
+        assert!(
+            warnings.iter().any(|w| w.contains("Ciphers")),
+            "the skipped directive must be named, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_refuses_without_an_authorised_key() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::failure(1, ""),  // authorized_keys does not exist
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect_err("strict hardening without a key must refuse");
+
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForRoot
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_reloads_rather_than_restarts() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"),
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let commands = mock.recorded_lines();
+        assert!(
+            commands.iter().any(|c| c.contains("reload")),
+            "got: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("restart")),
+            "restarting drops the administrator's own session, got: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_offers_a_revert() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"),
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let outcome = HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        assert!(
+            outcome.is_revertible(),
+            "narrowing algorithms can strand a client, so it must be undoable"
         );
     }
 
