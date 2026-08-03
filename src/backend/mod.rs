@@ -7,10 +7,11 @@
 pub mod arch;
 pub mod debian;
 pub mod systemd;
+pub mod unix_accounts;
 pub mod unix_files;
 
 use crate::distro::Family;
-use crate::domain::{FileEditor, PackageManager, ServiceManager};
+use crate::domain::{AccountReader, FileEditor, PackageManager, ServiceManager};
 
 /// A capability that tasks request by name, without knowing what it is called
 /// on the running system.
@@ -44,6 +45,7 @@ pub trait Backend {
     fn packages(&self) -> &dyn PackageManager;
     fn services(&self) -> &dyn ServiceManager;
     fn files(&self) -> &dyn FileEditor;
+    fn accounts(&self) -> &dyn AccountReader;
 }
 
 /// Builds the backend for a detected family.

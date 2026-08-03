@@ -91,6 +91,12 @@ pub enum Error {
     /// The public key is not in a recognisable format.
     InvalidPublicKey { reason: String },
 
+    /// The `AllowUsers` value could not name a set of accounts.
+    ///
+    /// Raised by the task rather than only by the form: a CLI argument reaches
+    /// the same path without passing through a keystroke filter.
+    InvalidAllowUsers { reason: String },
+
     /// Port outside the usable range.
     InvalidPort { port: u32 },
 
@@ -171,6 +177,9 @@ impl Error {
                 },
             },
             Self::InvalidPublicKey { reason } => Msg::InvalidPublicKey {
+                reason: reason.clone(),
+            },
+            Self::InvalidAllowUsers { reason } => Msg::InvalidAllowUsers {
                 reason: reason.clone(),
             },
             Self::InvalidPort { port } => Msg::InvalidPort { port: *port },

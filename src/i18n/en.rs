@@ -48,6 +48,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::InvalidPort { port } => {
             format!("invalid port: {port} (must be between 1 and 65535)")
         }
+        Msg::InvalidAllowUsers { reason } => {
+            format!("invalid list of allowed users: {reason}")
+        }
         Msg::LockoutNoKeyForRoot => "no authorised key found for root; disabling password \
              authentication now would lock you out. Add a key with `ssh.authorize-key` first"
             .to_owned(),

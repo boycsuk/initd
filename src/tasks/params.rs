@@ -23,9 +23,20 @@ pub enum ParamKind {
     Port,
     /// A username that must exist on this host.
     Username,
+    /// A space-separated list of usernames, as `AllowUsers` takes.
+    UsernameList,
     /// An OpenSSH public key, in `authorized_keys` format.
     PublicKey,
 }
+
+/// Characters that would change the meaning of the line a value is written
+/// into.
+///
+/// Rejected for every value that reaches `sshd_config` verbatim: directives
+/// are written with `format!("{directive} {value}")` and nothing escapes them,
+/// so a newline would append a directive of the operator's choosing to a file
+/// this tool edits as root. `#` would comment out the remainder of the line.
+const CONFIG_UNSAFE: [char; 3] = ['\n', '\r', '#'];
 
 impl ParamKind {
     /// Whether a character can appear in a value of this kind.
@@ -38,8 +49,9 @@ impl ParamKind {
         match self {
             Self::Port => character.is_ascii_digit(),
             // A key is pasted far more often than typed, and its base64 body
-            // and comment between them admit almost anything printable.
-            Self::Username | Self::PublicKey => !character.is_control(),
+            // and comment between them admit almost anything printable. A list
+            // of usernames needs the space that separates its entries.
+            Self::Username | Self::UsernameList | Self::PublicKey => !character.is_control(),
         }
     }
 
@@ -51,6 +63,7 @@ impl ParamKind {
         match self {
             Self::Port => validate_port(value),
             Self::Username => validate_username(value),
+            Self::UsernameList => validate_username_list(value),
             Self::PublicKey => validate_public_key(value),
         }
     }
@@ -89,6 +102,36 @@ fn validate_username(value: &str) -> std::result::Result<(), String> {
 
     if value.contains(char::is_whitespace) {
         return Err("a username cannot contain spaces".to_owned());
+    }
+
+    Ok(())
+}
+
+/// Rejects a list of usernames that could not name a set of accounts.
+///
+/// Shape only, as with a single username: whether the accounts exist is a
+/// question for the host, and the task asks it when it runs. What is enforced
+/// here is that the value cannot change the meaning of the line it is written
+/// into — the CLI never passes through the keystroke filter, so this is the
+/// only barrier between an argument and `sshd_config`.
+fn validate_username_list(value: &str) -> std::result::Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("at least one username is required".to_owned());
+    }
+
+    if value.contains(CONFIG_UNSAFE) {
+        return Err("a username cannot contain a newline or a '#'".to_owned());
+    }
+
+    for name in value.split_whitespace() {
+        // A comma separates entries in AllowGroups but not in AllowUsers, so
+        // `alice,bob` would be read as one account named "alice,bob" and match
+        // nobody — a configuration sshd accepts and that refuses every login.
+        if name.contains(',') {
+            return Err("separate usernames with spaces, not commas".to_owned());
+        }
+
+        validate_username(name)?;
     }
 
     Ok(())
@@ -253,6 +296,40 @@ mod tests {
         assert!(ParamKind::Username.validate("admin").is_ok());
         assert!(ParamKind::Username.validate("web admin").is_err());
         assert!(ParamKind::Username.validate("").is_err());
+    }
+
+    #[test]
+    fn a_username_list_accepts_several_names() {
+        assert!(ParamKind::UsernameList.validate("alice bob").is_ok());
+        assert!(ParamKind::UsernameList.validate("alice").is_ok());
+        assert!(ParamKind::UsernameList.validate("").is_err());
+        assert!(ParamKind::UsernameList.validate("   ").is_err());
+    }
+
+    #[test]
+    fn a_username_list_rejects_a_value_that_would_change_the_line() {
+        // Directives are written without escaping, so these would append a
+        // directive of the caller's choosing, or comment out the rest.
+        assert!(
+            ParamKind::UsernameList
+                .validate("alice\nPermitRootLogin yes")
+                .is_err()
+        );
+        assert!(ParamKind::UsernameList.validate("alice\rbob").is_err());
+        assert!(ParamKind::UsernameList.validate("alice #bob").is_err());
+    }
+
+    #[test]
+    fn a_username_list_rejects_commas() {
+        // AllowUsers separates on whitespace: "alice,bob" would be read as a
+        // single account of that name and match nobody.
+        assert!(ParamKind::UsernameList.validate("alice,bob").is_err());
+    }
+
+    #[test]
+    fn a_username_list_field_accepts_a_space_but_not_a_newline() {
+        assert!(ParamKind::UsernameList.accepts(' '));
+        assert!(!ParamKind::UsernameList.accepts('\n'));
     }
 
     #[test]

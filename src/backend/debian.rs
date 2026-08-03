@@ -5,10 +5,11 @@
 //! changing the port — see the SSH port task.
 
 use super::systemd::{SystemdServices, run_checked};
+use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
 use super::{Backend, Capability};
 use crate::distro::Family;
-use crate::domain::{FileEditor, PackageManager, ServiceManager};
+use crate::domain::{AccountReader, FileEditor, PackageManager, ServiceManager};
 use crate::error::Result;
 use crate::exec::{Command, Executor};
 
@@ -23,6 +24,7 @@ pub struct DebianBackend {
     packages: AptPackages,
     services: SystemdServices,
     files: UnixFiles,
+    accounts: UnixAccounts,
 }
 
 impl DebianBackend {
@@ -31,6 +33,7 @@ impl DebianBackend {
             packages: AptPackages,
             services: SystemdServices::new(),
             files: UnixFiles::new(),
+            accounts: UnixAccounts::new(),
         }
     }
 }
@@ -62,6 +65,10 @@ impl Backend for DebianBackend {
 
     fn files(&self) -> &dyn FileEditor {
         &self.files
+    }
+
+    fn accounts(&self) -> &dyn AccountReader {
+        &self.accounts
     }
 }
 
