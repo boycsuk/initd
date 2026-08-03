@@ -98,13 +98,46 @@ TUI or CLI:
   - Acceptance: running it again on a machine that already has SSH does not
     reinstall the package.
 - As an **administrator**, I can harden the SSH configuration so that the
-  server refuses root logins and password authentication.
+  server refuses root logins, password authentication, forwarding and
+  tunnelling, limits how long and how often a client may try to authenticate,
+  and records which key each login used.
   - Acceptance: the previous configuration is copied aside before anything is
     written.
   - Acceptance: the operation is refused, with an explanation, when no
     authorised key exists — otherwise it would lock me out.
   - Acceptance: a configuration rejected by `sshd -t` is rolled back and the
     service is not reloaded.
+  - Acceptance: a directive this version of OpenSSH does not recognise is
+    skipped and reported, rather than written and taking every other directive
+    down with it when the file is rejected.
+  - Acceptance: nothing here stops a client that could connect before from
+    connecting, as long as it holds a key.
+- As an **administrator**, I can restrict the SSH cryptography to a modern set
+  so that weak algorithms are refused.
+  - Acceptance: only algorithms this OpenSSH reports it supports are written —
+    an older server is never handed a name it cannot parse.
+  - Acceptance: a list that would be narrowed to fewer than two algorithms is
+    left at the system default and I am told which one and why, because a list
+    naming a single algorithm is more brittle than the default.
+  - Acceptance: the strongest algorithms are offered first, regardless of the
+    order the system reports them in.
+  - Acceptance: I am warned that old clients may no longer be able to connect.
+  - Acceptance: the change is held open until I confirm I still have access.
+- As an **administrator**, I can restrict SSH login to a named set of accounts
+  so that no other account can log in.
+  - Acceptance: an account that does not exist on this host is refused before
+    anything is written — a typo would otherwise produce a configuration that
+    refuses every login.
+  - Acceptance: the operation is refused when none of the named accounts holds
+    an authorised key, since password authentication may already be disabled.
+  - Acceptance: I am told which accounts will still be able to log in before
+    the change takes effect.
+  - Acceptance: a value that would inject another directive into the
+    configuration is rejected.
+  - Acceptance: the change is held open until I confirm I still have access.
+  - CLI exception: available in the interactive interface only. The CLI has no
+    verification window, and this is the one change where losing it means
+    losing the machine.
 - As an **administrator**, I can authorise a public key for a user so that they
   can log in without a password.
   - Acceptance: `~/.ssh` ends up mode 700 and `authorized_keys` mode 600, the

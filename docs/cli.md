@@ -98,9 +98,12 @@ Remote Access:
       [ ] ssh.install        Install and enable the SSH server
     Configuration:
       [ ] ssh.harden         Harden the SSH configuration
+      [ ] ssh.harden-strict  Harden the SSH cryptography
       [ ] ssh.change-port    Change the SSH port
     Keys:
       [ ] ssh.authorize-key  Authorise a public key
+    Access:
+      [ ] ssh.allow-users    Restrict SSH login to named users
 ```
 
 Nesting is unbounded: a category may contain tasks, further categories, or
@@ -115,9 +118,12 @@ Runs a task that takes no arguments. Task identifiers come from `initd list`.
 
 **Errors:** an unknown identifier exits `2`; a task unsupported on the running
 distribution exits `1`. A task that collects values — `ssh.authorize-key`,
-`ssh.change-port` — exits `2` naming the values it needs, since it has a
-subcommand of its own that supplies them. Refusing here is more use than
-failing later on a value nobody was asked for.
+`ssh.change-port`, `ssh.allow-users` — exits `2` naming the values it needs.
+Refusing here is more use than failing later on a value nobody was asked for.
+
+The first two have a subcommand of their own that supplies those values.
+`ssh.allow-users` does not, and that is deliberate rather than an omission:
+see the note below the task table.
 
 ### `initd authorize-key <user> <key>`
 
@@ -152,14 +158,42 @@ than `sshd_config` decides the port in that case.
 
 Tasks are the unit of work shared by the CLI and the interactive interface.
 Those taking no arguments run through `initd run <task-id>`; the rest have a
-dedicated subcommand.
+dedicated subcommand, except where noted.
 
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
 | `ssh.install` | `run ssh.install` | no | Installs the OpenSSH server and enables it at boot. |
-| `ssh.harden` | `run ssh.harden` | yes | Disables root login and password authentication. Refuses when no authorised key exists. |
+| `ssh.harden` | `run ssh.harden` | yes | Disables root login, password authentication, agent and X11 forwarding, tunnelling and user environments; limits authentication attempts and the login grace period; enables verbose logging. Refuses when no authorised key exists. |
+| `ssh.harden-strict` | `run ssh.harden-strict` | yes | Restricts key exchange, cipher, MAC and host key algorithms to a modern set, requires 3072-bit RSA keys, and disables TCP forwarding. Refuses when no authorised key exists. |
 | `ssh.authorize-key` | `authorize-key <user> <key>` | no | Adds a public key to a user's `authorized_keys`. |
 | `ssh.change-port` | `change-port <port>` | yes | Changes the port sshd listens on. |
+| `ssh.allow-users` | interactive interface only | yes | Restricts SSH login to named accounts. |
+
+### `ssh.allow-users` has no CLI form
+
+Deliberate, not an oversight. `AllowUsers` naming an account that does not
+exist produces a configuration `sshd -t` accepts and that matches nobody, so
+every login is refused — and unlike a syntax error, nothing rolls it back. The
+interactive interface holds the change open until the administrator confirms
+from a second session that they can still log in, and reverts on its own
+otherwise. The CLI has no such window: it exits immediately, printing the
+backup path to a session that may already be the last one open.
+
+The task's own guards still apply wherever it runs: every named account must
+exist, and at least one must hold an authorised key.
+
+### Partially applied directives
+
+`ssh.harden-strict` exits `0` having written the file, but not necessarily
+every directive it names. Where the local OpenSSH reports too few of the
+hardened algorithms to narrow a list safely — or cannot be asked at all — that
+one directive is left at the system default and a line naming it is written to
+stderr. Scripts that require a specific algorithm list must check the resulting
+file rather than the exit code.
+
+`ssh.harden` behaves the same way for keyboard-interactive authentication,
+whose directive was renamed in OpenSSH 8.7: both spellings are probed and only
+the accepted ones are written.
 
 ## Error model
 
