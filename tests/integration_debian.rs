@@ -108,6 +108,134 @@ fn changing_the_port_writes_a_valid_config() {
     );
 }
 
+/// A key the hardening tasks accept, so the lockout guard lets them proceed.
+const TEST_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd";
+
+#[test]
+#[ignore = "requires docker"]
+fn hardening_produces_a_config_sshd_accepts() {
+    require_docker!();
+
+    // Seventeen directives written against a real daemon. A mock cannot say
+    // whether this OpenSSH parses them; only sshd can.
+    let output = run_in_container(
+        &DEBIAN,
+        &format!(
+            "apt-get install -y -qq openssh-server >/dev/null 2>&1; \
+             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             initd run ssh.harden >/dev/null 2>&1; \
+             sshd -t && echo VALID"
+        ),
+    );
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.contains("VALID"),
+        "the hardened config must pass sshd -t: {stdout}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn strict_hardening_produces_a_config_sshd_accepts() {
+    require_docker!();
+
+    // The test that justifies the whole filtering module: it is the only one
+    // that proves the algorithm names written are ones the daemon parses.
+    let output = run_in_container(
+        &DEBIAN,
+        &format!(
+            "apt-get install -y -qq openssh-server >/dev/null 2>&1; \
+             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             initd run ssh.harden-strict >/dev/null 2>&1; \
+             sshd -t && echo VALID"
+        ),
+    );
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.contains("VALID"),
+        "the strict config must pass sshd -t: {stdout}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn strict_hardening_writes_only_algorithms_this_build_supports() {
+    require_docker!();
+
+    // Every cipher written must appear in `ssh -Q cipher`. Reported as the
+    // count of names that do not.
+    let output = run_in_container(
+        &DEBIAN,
+        &format!(
+            "apt-get install -y -qq openssh-server >/dev/null 2>&1; \
+             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             initd run ssh.harden-strict >/dev/null 2>&1; \
+             ssh -Q cipher > /tmp/supported; \
+             grep '^Ciphers ' /etc/ssh/sshd_config | cut -d' ' -f2 | tr ',' '\\n' \
+               | grep -vxF -f /tmp/supported | wc -l"
+        ),
+    );
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.lines().any(|line| line.trim() == "0"),
+        "every written cipher must be one this build supports: {stdout}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn the_two_tiers_compose() {
+    require_docker!();
+
+    // The realistic order. Repeated `set_directive` passes over the same file
+    // must not corrupt it.
+    let output = run_in_container(
+        &DEBIAN,
+        &format!(
+            "apt-get install -y -qq openssh-server >/dev/null 2>&1; \
+             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             initd run ssh.harden >/dev/null 2>&1; \
+             initd run ssh.harden-strict >/dev/null 2>&1; \
+             sshd -t && echo VALID"
+        ),
+    );
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.contains("VALID"),
+        "applying both tiers must leave a valid config: {stdout}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn hardening_is_idempotent() {
+    require_docker!();
+
+    // Running twice must not leave two active copies of a directive: the
+    // second run comments the first out rather than appending beside it.
+    let output = run_in_container(
+        &DEBIAN,
+        &format!(
+            "apt-get install -y -qq openssh-server >/dev/null 2>&1; \
+             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             initd run ssh.harden >/dev/null 2>&1; \
+             initd run ssh.harden >/dev/null 2>&1; \
+             grep -c '^PermitRootLogin no' /etc/ssh/sshd_config"
+        ),
+    );
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.lines().any(|line| line.trim() == "1"),
+        "exactly one active PermitRootLogin must remain: {stdout}"
+    );
+}
+
 #[test]
 #[ignore = "requires docker"]
 fn an_invalid_config_is_rolled_back_and_the_original_survives() {

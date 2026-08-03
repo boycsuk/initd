@@ -105,3 +105,59 @@ fn hardening_refuses_without_an_authorised_key() {
         "password auth must not be disabled without a key: {stdout}"
     );
 }
+
+/// A key the hardening tasks accept, so the lockout guard lets them proceed.
+const TEST_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd";
+
+#[test]
+#[ignore = "requires docker"]
+fn hardening_produces_a_config_sshd_accepts() {
+    require_docker!();
+
+    // Arch is where this matters most: a fresh container has no host keys, so
+    // every `sshd -t` here returns the inconclusive failure. If the directive
+    // probe read that as "unknown keyword" the whole tier would be skipped,
+    // and this test would find the directives missing.
+    let output = run_in_container(
+        &ARCH,
+        &format!(
+            "pacman -S --needed --noconfirm openssh >/dev/null 2>&1; \
+             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             initd run ssh.harden >/dev/null 2>&1; \
+             grep -c '^MaxAuthTries 3' /etc/ssh/sshd_config"
+        ),
+    );
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.lines().any(|line| line.trim() == "1"),
+        "the safe tier must apply even with no host keys present: {stdout}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn strict_hardening_writes_only_algorithms_this_build_supports() {
+    require_docker!();
+
+    // Arch ships a newer OpenSSH than Debian, so the surviving set differs.
+    // What must hold on both is that nothing written is unsupported.
+    let output = run_in_container(
+        &ARCH,
+        &format!(
+            "pacman -S --needed --noconfirm openssh >/dev/null 2>&1; \
+             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             initd run ssh.harden-strict >/dev/null 2>&1; \
+             ssh -Q kex > /tmp/supported; \
+             grep '^KexAlgorithms ' /etc/ssh/sshd_config | cut -d' ' -f2 | tr ',' '\\n' \
+               | grep -vxF -f /tmp/supported | wc -l"
+        ),
+    );
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.lines().any(|line| line.trim() == "0"),
+        "every written kex algorithm must be one this build supports: {stdout}"
+    );
+}
