@@ -7,7 +7,7 @@
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::files::Backup;
-use crate::error::{Error, Result};
+use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
@@ -173,12 +173,9 @@ impl Task for HardenSsh {
 
         // Disabling password authentication without a key in place is the
         // documented way administrators lock themselves out of a server.
-        if !has_any_authorized_key(executor, backend)? {
-            return Err(Error::InvalidSshdConfig {
-                details: "no authorised key found for root; disabling password \
-                          authentication now would lock you out. Add a key with \
-                          `ssh.authorize-key` first."
-                    .to_owned(),
+        if !has_authorized_key(executor, backend, "root")? {
+            return Err(Error::LockoutRisk {
+                kind: Lockout::NoKeyForRoot,
             });
         }
 
@@ -487,12 +484,12 @@ fn warn_if_socket_activated(
     Ok(())
 }
 
-/// Whether root has at least one authorised key.
+/// Whether the named user has at least one authorised key.
 ///
 /// Read through the file editor rather than `std::fs` so it works under
 /// privilege escalation, and so a missing file is a plain `false`.
-fn has_any_authorized_key(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
-    let path = format!("/root/{AUTHORIZED_KEYS_RELATIVE}");
+fn has_authorized_key(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
+    let path = format!("{}/{AUTHORIZED_KEYS_RELATIVE}", home_dir(user));
 
     if !backend.files().exists(executor, &path)? {
         return Ok(false);
@@ -737,10 +734,41 @@ mod tests {
             .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
             .expect_err("hardening without a key must refuse");
 
-        assert!(matches!(err, Error::InvalidSshdConfig { .. }), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForRoot
+                }
+            ),
+            "{err:?}"
+        );
         assert!(
             !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
             "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn the_key_guard_reads_the_named_users_own_file() {
+        // Generalised from root: `ssh.allow-users` has to ask the same question
+        // about an ordinary account, whose keys live under /home.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),       // authorized_keys exists
+            Reply::ok(TEST_KEY), // and holds a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let found = has_authorized_key(&mock, backend.as_ref(), "alice")
+            .expect("reading the file must succeed");
+
+        assert!(found, "a valid key must be recognised");
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|c| c.contains("/home/alice/.ssh/authorized_keys")),
+            "got: {:?}",
+            mock.recorded_lines()
         );
     }
 

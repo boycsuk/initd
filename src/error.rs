@@ -15,6 +15,24 @@ use crate::i18n::{Lang, Msg};
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Why a change was refused for risking the administrator's own access.
+///
+/// A discriminant rather than a message: the wording belongs in the catalogue,
+/// and each case names the accounts involved so the administrator is told
+/// which one to fix rather than merely that something is wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lockout {
+    /// Passwords would be disabled while no key authorises root.
+    NoKeyForRoot,
+    /// An account named in `AllowUsers` does not exist on this host.
+    ///
+    /// A typo produces a configuration `sshd -t` accepts and that matches
+    /// nobody, so every login is refused.
+    UnknownUser { user: String },
+    /// No account named in `AllowUsers` has an authorised key.
+    NoKeyForAllowedUsers { users: String },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// `/etc/os-release` could not be read.
@@ -62,6 +80,13 @@ pub enum Error {
 
     /// `sshd -t` rejected the configuration over a genuine syntax error.
     InvalidSshdConfig { details: String },
+
+    /// A task refused to run because applying it would leave no way back in.
+    ///
+    /// Distinct from [`Error::InvalidSshdConfig`], which means `sshd -t`
+    /// rejected a file. Nothing is wrong with the configuration here — the
+    /// tool is refusing to write one that would strand the administrator.
+    LockoutRisk { kind: Lockout },
 
     /// The public key is not in a recognisable format.
     InvalidPublicKey { reason: String },
@@ -137,6 +162,13 @@ impl Error {
             },
             Self::InvalidSshdConfig { details } => Msg::InvalidSshdConfig {
                 details: details.clone(),
+            },
+            Self::LockoutRisk { kind } => match kind {
+                Lockout::NoKeyForRoot => Msg::LockoutNoKeyForRoot,
+                Lockout::UnknownUser { user } => Msg::LockoutUnknownUser { user: user.clone() },
+                Lockout::NoKeyForAllowedUsers { users } => Msg::LockoutNoKeyForAllowedUsers {
+                    users: users.clone(),
+                },
             },
             Self::InvalidPublicKey { reason } => Msg::InvalidPublicKey {
                 reason: reason.clone(),
