@@ -143,22 +143,35 @@ impl OutputPane {
     /// silently stopped updating and one that is following a quiet command
     /// look the same.
     pub fn render(&self, frame: &mut Frame, area: Rect, title: &str, focused: bool) {
-        let mut text: Vec<Line> = self.lines.iter().map(render_line).collect();
-
-        // The cursor marks where the next line lands, so a quiet command is
-        // distinguishable from a frozen screen.
-        if self.follow {
-            text.push(Line::from(Span::styled(WRITE_CURSOR, style::OUTPUT_CURSOR)));
-        }
-
         let status = if self.follow { "follow" } else { "detached" };
 
         // The visible height excludes the block's top and bottom borders.
         let viewport = area.height.saturating_sub(2) as usize;
-        let scroll = text
-            .len()
+
+        // The cursor occupies a row of its own, so it counts towards the total
+        // the scroll offset is measured against.
+        let total = self.lines.len() + usize::from(self.follow);
+        let scroll = total
             .saturating_sub(viewport)
             .saturating_sub(self.scroll_offset);
+
+        let window = Window::new(self.wrap, self.lines.len(), viewport, scroll, total);
+
+        let mut text: Vec<Line> = self
+            .lines
+            .iter()
+            .skip(window.skipped)
+            .take(window.visible)
+            .map(render_line)
+            .collect();
+
+        // The cursor marks where the next line lands, so a quiet command is
+        // distinguishable from a frozen screen.
+        if self.follow && window.reaches_tail(self.lines.len()) {
+            text.push(Line::from(Span::styled(WRITE_CURSOR, style::OUTPUT_CURSOR)));
+        }
+
+        let scroll = window.scroll;
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -173,6 +186,56 @@ impl OutputPane {
         }
 
         frame.render_widget(paragraph, area);
+    }
+}
+
+/// Which retained lines are worth styling for one frame.
+///
+/// Rendering the whole retained history clones every line's text on every
+/// frame, and the loop redraws ten times a second whether or not anything
+/// arrived — work proportional to the backlog rather than to the screen, on
+/// exactly the path a package installation exercises. Only the rows the
+/// viewport can show need styling.
+///
+/// Wrapping is the exception: one logical line then occupies several rows, and
+/// `Paragraph::scroll` counts rows *after* wrapping, so no line-based window
+/// can say which rows fall inside the viewport. That case keeps the whole text
+/// and leaves the arithmetic to the widget, which is why `scroll` is carried
+/// here rather than assumed — pre-sliced text starts at the first visible row
+/// and must not be scrolled a second time.
+#[derive(Debug, PartialEq, Eq)]
+struct Window {
+    /// Lines to skip before the first one drawn.
+    skipped: usize,
+    /// Lines to draw.
+    visible: usize,
+    /// Rows the widget must scroll the text it is handed.
+    scroll: usize,
+}
+
+impl Window {
+    fn new(wrap: bool, retained: usize, viewport: usize, scroll: usize, total: usize) -> Self {
+        if wrap {
+            return Self {
+                skipped: 0,
+                visible: retained,
+                scroll,
+            };
+        }
+
+        Self {
+            skipped: scroll,
+            visible: viewport.min(total.saturating_sub(scroll)),
+            scroll: 0,
+        }
+    }
+
+    /// Whether the window reaches the newest line.
+    ///
+    /// The write cursor belongs after the last line, so it is only drawn when
+    /// the window actually extends that far.
+    const fn reaches_tail(&self, retained: usize) -> bool {
+        self.skipped + self.visible >= retained
     }
 }
 
@@ -315,6 +378,69 @@ mod tests {
 
         assert!(pane.is_following());
         assert_eq!(pane.scroll_offset, 0);
+    }
+
+    #[test]
+    fn only_the_visible_rows_are_styled() {
+        // The point of the window: a full backlog must cost the viewport, not
+        // the backlog, on every one of the ten redraws a second the loop makes.
+        let window = Window::new(false, MAX_LINES, 20, MAX_LINES - 20, MAX_LINES);
+
+        assert_eq!(window.visible, 20, "only a screenful is styled");
+        assert_eq!(window.skipped, MAX_LINES - 20);
+        assert_eq!(
+            window.scroll, 0,
+            "pre-sliced text must not be scrolled a second time"
+        );
+    }
+
+    #[test]
+    fn the_window_shows_the_same_rows_the_widget_would_have() {
+        // The optimisation must be invisible: whichever rows a full text
+        // scrolled by `scroll` would have shown are the ones the window picks.
+        let viewport = 20;
+
+        for offset in [0, 1, 7, 100] {
+            let total = 500;
+            let scroll = total - viewport - offset;
+            let window = Window::new(false, total, viewport, scroll, total);
+
+            assert_eq!(
+                window.skipped, scroll,
+                "the first drawn line is the first visible one"
+            );
+            assert_eq!(window.visible, viewport);
+        }
+    }
+
+    #[test]
+    fn a_backlog_shorter_than_the_viewport_draws_every_line() {
+        let window = Window::new(false, 3, 20, 0, 3);
+
+        assert_eq!(window.skipped, 0);
+        assert_eq!(window.visible, 3, "never more than what exists");
+    }
+
+    #[test]
+    fn wrapping_keeps_the_whole_text() {
+        // A wrapped line occupies several rows, so no line-based window can say
+        // which rows the viewport shows; the widget must do the arithmetic.
+        let window = Window::new(true, 500, 20, 480, 500);
+
+        assert_eq!(window.skipped, 0);
+        assert_eq!(window.visible, 500);
+        assert_eq!(window.scroll, 480, "the widget still scrolls");
+    }
+
+    #[test]
+    fn the_cursor_is_drawn_only_at_the_tail() {
+        // Scrolled back through history, the write position is off-screen;
+        // drawing it anyway would put it after an arbitrary older line.
+        let at_tail = Window::new(false, 500, 20, 480, 500);
+        assert!(at_tail.reaches_tail(500));
+
+        let scrolled_away = Window::new(false, 500, 20, 100, 500);
+        assert!(!scrolled_away.reaches_tail(500));
     }
 
     #[test]
