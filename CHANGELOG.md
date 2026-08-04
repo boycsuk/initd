@@ -64,8 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lock, and a second administrator — or another session of this tool — could
   remove the key in between. Every other task can afford that window; recovery
   from this one is the hosting provider's rescue console.
-
-### Fixed
 - WireGuard's server configuration is created with its mode set before the
   private key is written into it. Writing first and tightening afterwards left
   a window in which the key sat in a world-readable file — brief, but long
