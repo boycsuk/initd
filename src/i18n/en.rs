@@ -73,6 +73,38 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskUnsupported { task, family } => {
             format!("task {task} is not supported on {family}")
         }
+        Msg::ConsequencePortChanged { task, from, to } => {
+            format!("{task} still refers to port {from}, not {to}")
+        }
+        Msg::ConsequenceRequiresSetting { task, setting } => {
+            format!("{task} requires {setting}, which is not set")
+        }
+        Msg::ConsequenceNeedsRestart { task, service } => {
+            format!("{service} must be restarted before {task} observes this")
+        }
+        Msg::ConsequenceAccountNotListed { task, user } => {
+            format!("{task} does not name the account {user}")
+        }
+        Msg::ConsequenceConflictsOverBanRules { task } => {
+            format!(
+                "{task} also writes ban rules through the firewall; running \
+                 both bans twice and unbans unpredictably"
+            )
+        }
+        // Says plainly that this one cannot be checked from here. An
+        // administrator who opens a port locally and still cannot reach it has
+        // usually hit exactly this, and the tool has no way to see it.
+        Msg::ConsequenceProviderFirewall { port, protocol } => {
+            format!(
+                "check your hosting provider's firewall allows {port}/{protocol} \
+                 — this tool cannot see it"
+            )
+        }
+        Msg::ConsequenceDnsMustResolve => {
+            "the name must resolve to this host before a certificate can be \
+             issued — this tool cannot see it"
+                .to_owned()
+        }
         Msg::Terminal { source } => {
             format!("terminal error: {source}")
         }

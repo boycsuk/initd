@@ -10,6 +10,7 @@ use crate::domain::files::Backup;
 use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::algorithms;
+use crate::tasks::consequence::{Consequence, External, Protocol, Reason};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
@@ -607,6 +608,44 @@ impl Task for ChangePort {
 
     fn supported_families(&self) -> &'static [Family] {
         SUPPORTED
+    }
+
+    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+        let Ok(port) = values.port(Self::PORT) else {
+            // The port failed to parse, so the task will not run and there is
+            // nothing downstream to invalidate.
+            return Vec::new();
+        };
+
+        // Moving to the port sshd already uses changes nothing, so it
+        // invalidates nothing. Warning anyway would train the administrator to
+        // dismiss these without reading them.
+        if port == DEFAULT_SSH_PORT {
+            return Vec::new();
+        }
+
+        let from = DEFAULT_SSH_PORT.to_string();
+        let to = port.to_string();
+
+        vec![
+            Consequence::Invalidates {
+                task: "firewall.allow-port",
+                reason: Reason::PortChanged {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                // Deliberately no check yet: `firewall.allow-port` does not
+                // exist, so there is no rule to query. It arrives with the
+                // task, rather than being guessed at now.
+                check: None,
+            },
+            Consequence::External {
+                note: External::ProviderFirewall {
+                    port,
+                    protocol: Protocol::Tcp,
+                },
+            },
+        ]
     }
 
     fn run(
@@ -2056,5 +2095,69 @@ mod tests {
         assert!(HardenSsh.is_destructive());
         assert!(ChangePort.is_destructive());
         assert!(!InstallSsh.is_destructive());
+    }
+
+    #[test]
+    fn moving_the_port_invalidates_the_firewall_rule() {
+        let consequences = ChangePort.consequences(&port_values(2222));
+
+        let firewall = consequences
+            .iter()
+            .find(|c| c.task() == Some("firewall.allow-port"))
+            .expect("changing the port must name the firewall");
+
+        assert_eq!(
+            *firewall,
+            Consequence::Invalidates {
+                task: "firewall.allow-port",
+                reason: Reason::PortChanged {
+                    from: "22".to_owned(),
+                    to: "2222".to_owned(),
+                },
+                check: None,
+            }
+        );
+    }
+
+    #[test]
+    fn moving_the_port_warns_about_the_provider_firewall() {
+        // The failure this exists for: a port opened locally that the provider
+        // still blocks. Nothing on this host can observe that, so it is
+        // reported as unverifiable rather than checked.
+        let consequences = ChangePort.consequences(&port_values(2222));
+
+        let external: Vec<_> = consequences.iter().filter(|c| c.is_external()).collect();
+
+        assert_eq!(external.len(), 1, "got: {consequences:?}");
+        assert!(
+            external[0].check().is_none(),
+            "an external warning must not offer verification"
+        );
+    }
+
+    #[test]
+    fn keeping_the_current_port_invalidates_nothing() {
+        // Re-running with 22 changes nothing, so it breaks nothing. Warning
+        // anyway is how these get dismissed unread.
+        assert!(ChangePort.consequences(&port_values(22)).is_empty());
+    }
+
+    #[test]
+    fn a_port_that_does_not_parse_yields_no_consequences() {
+        // The task will not run, so nothing downstream is affected. This must
+        // not panic: `consequences` is called while rendering.
+        let mut unparseable = ParamValues::new();
+        unparseable.set(ChangePort::PORT, "not-a-port".to_owned());
+
+        assert!(ChangePort.consequences(&unparseable).is_empty());
+        assert!(ChangePort.consequences(&ParamValues::new()).is_empty());
+    }
+
+    #[test]
+    fn tasks_that_change_nothing_elsewhere_declare_nothing() {
+        // The default is empty, so a task only speaks up when it has something
+        // to say.
+        assert!(InstallSsh.consequences(&ParamValues::new()).is_empty());
+        assert!(HardenSsh.consequences(&ParamValues::new()).is_empty());
     }
 }

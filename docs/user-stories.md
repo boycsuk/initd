@@ -218,6 +218,17 @@ TUI or CLI:
   see what is happening rather than waiting for a result.
   - Platform exception: the TUI shows it in a scrollable pane; the CLI prints
     it as it arrives.
+- As an **administrator**, I am told what a finished task invalidated elsewhere,
+  so that I find out from the tool rather than from a service that has stopped
+  answering.
+  - Acceptance: warnings are reported, never acted on — the tool does not
+    change anything the administrator did not ask it to change.
+  - Acceptance: a warning about something beyond this machine — a hosting
+    provider's firewall, a DNS record — is marked differently from one the tool
+    can check, and its text says it was not verified. The tool never implies it
+    inspected something it cannot reach.
+  - Acceptance: nothing is reported when the task changed nothing that matters,
+    such as setting the SSH port to the value it already had.
 - As an **administrator**, I can enter my password when a task needs root, so
   that privileged operations work from the interactive interface.
   - Acceptance: the password prompt is legible, and the interface is intact

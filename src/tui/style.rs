@@ -95,6 +95,17 @@ pub const RESULT_OK: Style = fg(Color::Green);
 /// The `✗` glyph on a failed task.
 pub const RESULT_FAIL: Style = fg_mod(Color::Red, Modifier::BOLD);
 
+/// A consequence the tool can inspect, and verify when asked.
+pub const CONSEQUENCE: Style = fg(Color::Yellow);
+
+/// A consequence beyond this machine, which the tool cannot check.
+///
+/// Distinct from [`CONSEQUENCE`] because the difference is the point: the
+/// administrator has to be able to tell which warnings the tool can settle and
+/// which are theirs to chase. Colour alone does not carry that, so the marker
+/// differs too — the same reason the status pills stay readable without it.
+pub const CONSEQUENCE_EXTERNAL: Style = fg_mod(Color::Yellow, Modifier::BOLD);
+
 // --- Chrome ----------------------------------------------------------------
 
 /// Depth guides, pinned rows and horizontal rules.

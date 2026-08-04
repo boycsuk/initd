@@ -224,6 +224,8 @@ Two rules govern the table:
 | `flag_unsupported` | White + dim | The `·` marker |
 | `result_ok` | Green | The `✓` glyph and `ok` lines |
 | `result_fail` | Red + bold | The `✗` glyph |
+| `consequence` | Yellow | The `!` marker on a consequence the tool can check |
+| `consequence_external` | Yellow + bold | The `⚠` marker on one it cannot |
 | `tree_guide` | White + dim | Depth guides and rules |
 | `scrollbar_track` | White + dim | Scrollbar track and arrows |
 | `scrollbar_thumb` | White | Scrollbar thumb |

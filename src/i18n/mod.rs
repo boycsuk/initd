@@ -132,6 +132,33 @@ pub enum Msg {
         family: String,
     },
 
+    // --- Consequences ---
+    ConsequencePortChanged {
+        task: String,
+        from: String,
+        to: String,
+    },
+    ConsequenceRequiresSetting {
+        task: String,
+        setting: String,
+    },
+    ConsequenceNeedsRestart {
+        task: String,
+        service: String,
+    },
+    ConsequenceAccountNotListed {
+        task: String,
+        user: String,
+    },
+    ConsequenceConflictsOverBanRules {
+        task: String,
+    },
+    ConsequenceProviderFirewall {
+        port: String,
+        protocol: String,
+    },
+    ConsequenceDnsMustResolve,
+
     // --- Terminal ---
     Terminal {
         source: String,

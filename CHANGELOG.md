@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Tasks declare what they invalidate elsewhere, and the interface states it
+  after the task succeeds. `src/tasks/revert.rs` already named the case in a
+  comment — "a firewall that was never opened on the new port" — as a reason
+  the verification window exists; the tool could say to wait, but not what had
+  just been invalidated. `ssh.change-port` is the first to declare any, since
+  it is the change that motivated the mechanism.
+- The warnings separate what the tool can inspect from what it cannot. A
+  firewall rule on this host is readable; a hosting provider's edge firewall is
+  not, and neither is a DNS record that has to resolve before a certificate can
+  be issued. The second kind carries its own marker and says in its text that
+  nothing checked it — reporting both alike would imply a check that never ran.
+  Nothing is acted on either way: the administrator decides.
+- Re-running a task with the value it already had declares nothing. A warning
+  raised every time is one that gets dismissed unread, which costs the warnings
+  that mattered.
+- The interface keeps the values a task was started with. They are moved onto
+  the worker thread when it launches, so reporting from the ones the form held
+  found them empty — every consequence would have been computed from nothing
+  and silently reported none. Caught by wiring the reporting up rather than by
+  the task's own tests, which call `consequences` directly and cannot see the
+  path in between; there is now a test that drives the interface instead.
+
 ### Changed
 - Configuration paths resolve through the backend, like package and unit names
   already did. `SSHD_CONFIG` was a constant in the task layer, which worked

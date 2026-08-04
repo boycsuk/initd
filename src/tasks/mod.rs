@@ -5,6 +5,7 @@
 //! without a container. A shell script could not call a trait.
 
 pub mod algorithms;
+pub mod consequence;
 pub mod params;
 pub mod revert;
 pub mod ssh;
@@ -14,6 +15,7 @@ use crate::backend::Backend;
 use crate::distro::Family;
 use crate::error::Result;
 use crate::exec::{Executor, OutputLine};
+use crate::tasks::consequence::Consequence;
 use crate::tasks::params::{Param, ParamValues};
 use crate::tasks::revert::Outcome;
 
@@ -57,6 +59,24 @@ pub trait Task {
     /// Whether the task collects anything before it runs.
     fn needs_input(&self) -> bool {
         !self.params().is_empty()
+    }
+
+    /// What this task invalidates elsewhere, given the values it ran with.
+    ///
+    /// Declared rather than acted on: the interface states these and the
+    /// administrator decides. Chaining the follow-up changes automatically
+    /// would make a single keystroke reconfigure several subsystems, which is
+    /// the opposite of what the verification window exists to provide.
+    ///
+    /// Takes the values because the consequence usually depends on them —
+    /// moving SSH to 2222 invalidates a firewall rule naming 22, while
+    /// re-running the same task with 22 invalidates nothing. A declaration that
+    /// ignored them would warn every time and be learned to ignore.
+    ///
+    /// Most tasks affect nothing else and inherit the empty default.
+    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+        let _ = values;
+        Vec::new()
     }
 
     /// Families this task supports.

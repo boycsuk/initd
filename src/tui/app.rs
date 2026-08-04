@@ -23,7 +23,8 @@ use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
 use crate::error::Result;
-use crate::exec::Executor;
+use crate::exec::{Executor, OutputLine, Stream};
+use crate::i18n::Lang;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::{self, Node, Task};
@@ -115,6 +116,15 @@ pub struct App {
     /// A destructive task with parameters passes through the form and then the
     /// confirmation, and the values have to survive the step between.
     pending_values: ParamValues,
+
+    /// The values the running task was started with.
+    ///
+    /// Separate from `pending_values`, which is emptied when the task is
+    /// launched. Consequences are declared from what the task actually ran
+    /// with — moving to port 2222 invalidates a firewall rule naming 22, while
+    /// re-running with 22 invalidates nothing — so reporting them needs the
+    /// values to outlive the launch.
+    ran_with: ParamValues,
     /// The task currently running, if any.
     running: Option<Running>,
     /// An applied change waiting to be kept or put back.
@@ -161,6 +171,7 @@ impl App {
             form: None,
             confirm: None,
             pending_values: ParamValues::new(),
+            ran_with: ParamValues::new(),
             running: None,
             verification: None,
             help: None,
@@ -725,6 +736,11 @@ impl App {
         // Reading what is about to happen is the natural thing to do next.
         self.focus = Pane::Output;
 
+        // Kept because consequences are declared from the values the task ran
+        // with, and those are reported once it finishes — by which point the
+        // originals have been moved onto the worker thread.
+        self.ran_with = values.clone();
+
         // The task runs on its own thread and reports back through a channel,
         // which the event loop drains each tick. Running it inline would
         // freeze the interface for the duration: no output as it arrives, no
@@ -779,11 +795,61 @@ impl App {
         // get in. A failing task is reported in the status row rather than
         // tearing the interface down — the administrator stays in control.
         match outcome {
-            Ok(result) => match result {
-                Outcome::Revertible(revert) => self.begin_verification(id, revert),
-                Outcome::Done => self.status.set(State::Done, id),
-            },
+            Ok(result) => {
+                // Stated before the verification window opens, so what the
+                // change invalidated is on screen while there is still an undo
+                // available. A failed task invalidates nothing, which is why
+                // this sits on the success path only.
+                self.report_consequences(id);
+
+                match result {
+                    Outcome::Revertible(revert) => self.begin_verification(id, revert),
+                    Outcome::Done => self.status.set(State::Done, id),
+                }
+            }
             Err(ref err) => self.status.set(State::Failed, format!("{id} — {err}")),
+        }
+    }
+
+    /// Writes what the finished task invalidated into the output pane.
+    ///
+    /// Reported, never acted on: the administrator decides what to do about
+    /// each one. Warnings the tool cannot verify carry a different marker from
+    /// those it can, since presenting both alike would imply the provider's
+    /// firewall had been checked when nothing checked it.
+    fn report_consequences(&mut self, id: &str) {
+        let Some(task) = tasks::find(id) else {
+            return;
+        };
+
+        let consequences = task.consequences(&self.ran_with);
+
+        if consequences.is_empty() {
+            return;
+        }
+
+        let lang = Lang::from_env();
+
+        self.output.push(OutputLine {
+            stream: Stream::Stdout,
+            text: String::new(),
+        });
+        self.output.push(OutputLine {
+            stream: Stream::Stdout,
+            text: "Consequences:".to_owned(),
+        });
+
+        for consequence in consequences {
+            let marker = if consequence.is_external() {
+                "⚠"
+            } else {
+                "!"
+            };
+
+            self.output.push(OutputLine {
+                stream: Stream::Stdout,
+                text: format!("  {marker} {}", lang.render(&consequence.message())),
+            });
         }
     }
 
@@ -2850,5 +2916,59 @@ mod tests {
 
         let rows = render_to_rows(&mut app, 80, 24);
         assert!(rows[22].contains("READY") || rows[22].contains("UNSUPPORTED"));
+    }
+
+    #[test]
+    fn a_finished_task_reports_what_it_invalidated() {
+        // Guards the wiring rather than the declaration: the values are moved
+        // onto the worker thread when the task starts, so reporting from the
+        // ones the form still held would find them empty and silently warn
+        // about nothing. The task's own tests cannot catch that — they call
+        // `consequences` directly.
+        let mut app = test_app(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(crate::tasks::ssh::ChangePort::PORT, "2222".to_owned());
+        app.ran_with = values;
+
+        app.finish_run("ssh.change-port", Ok(Outcome::Done), false);
+
+        let output = render_to_rows(&mut app, 100, 30).join("\n");
+
+        assert!(
+            output.contains("firewall.allow-port"),
+            "the firewall warning must reach the pane: {output}"
+        );
+        assert!(
+            output.contains("2222"),
+            "the warning must name the new port: {output}"
+        );
+    }
+
+    #[test]
+    fn a_failed_task_invalidates_nothing() {
+        // A change that did not happen breaks nothing downstream. Warning here
+        // would send the administrator to fix a firewall for a port sshd never
+        // moved to.
+        let mut app = test_app(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(crate::tasks::ssh::ChangePort::PORT, "2222".to_owned());
+        app.ran_with = values;
+
+        app.finish_run(
+            "ssh.change-port",
+            Err(crate::error::Error::MissingParameter {
+                name: "port".to_owned(),
+            }),
+            false,
+        );
+
+        let output = render_to_rows(&mut app, 100, 30).join("\n");
+
+        assert!(
+            !output.contains("firewall.allow-port"),
+            "a failed task must not warn: {output}"
+        );
     }
 }
