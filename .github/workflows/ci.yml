@@ -74,7 +74,7 @@ jobs:
       - name: Container tests (everything but the rolling image)
         run: |
           cargo nextest run --run-ignored all \
-            -E 'not test(::arch) and not binary(integration_arch) and not binary(integration_systemd) and not binary(integration_old_client)'
+            -E 'not test(::arch) and not binary(integration_arch) and not binary(integration_systemd) and not binary(integration_old_client) and not binary(integration_tui)'
 
   rolling:
     name: Container tests on the rolling Arch image
@@ -103,10 +103,10 @@ jobs:
       - name: Container tests (Arch only)
         run: |
           cargo nextest run --run-ignored all \
-            -E '(test(::arch) or binary(integration_arch)) and not binary(integration_systemd) and not binary(integration_old_client)'
+            -E '(test(::arch) or binary(integration_arch)) and not binary(integration_systemd) and not binary(integration_old_client) and not binary(integration_tui)'
 
   systemd:
-    name: Container tests that need systemd as PID 1
+    name: Container tests that need systemd as PID 1 or a second host
     runs-on: ubuntu-latest
     # Never blocks a merge. These need `--privileged` and `--cgroupns=host`,
     # which a runner is entitled to refuse; a host that will not grant them has
@@ -133,10 +133,10 @@ jobs:
       # Two containers each, an init system booted per test, and package
       # installs inside both — far slower than the ephemeral scenarios, and
       # the reason they are their own binaries rather than part of the matrix.
-      - name: systemd and old-client tests
+      - name: systemd, TUI and old-client tests
         run: |
           cargo nextest run --run-ignored all \
-            -E 'binary(integration_systemd) or binary(integration_old_client)' \
+            -E 'binary(integration_systemd) or binary(integration_old_client) or binary(integration_tui)' \
             --test-threads 2
 
   msrv:
