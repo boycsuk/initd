@@ -36,11 +36,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `rustup show` installs whatever `rust-toolchain.toml` pins — channel,
+      # components and both musl targets. Installing `stable` and setting it as
+      # the default would download a toolchain the pin then overrides, so the
+      # log would name one compiler while another did the work.
       - name: Install the pinned toolchain
-        run: |
-          rustup toolchain install stable --profile minimal \
-            --component rustfmt,clippy
-          rustup default stable
+        run: rustup show
 
       - uses: Swatinem/rust-cache@v2
 
@@ -59,9 +60,20 @@ jobs:
       - name: Unit tests
         run: cargo nextest run
 
-      # The binary the container tests bind-mount must exist before they run.
-      - name: Build the binary the container tests mount
-        run: cargo build
+      # Both binaries the container tests bind-mount. Alpine has no glibc, so
+      # its scenarios need the musl build — and they *skip* without it rather
+      # than failing, which would leave this job green having covered one
+      # family fewer. That is the failure this file's header warns about: a
+      # step that runs less than it appears to.
+      - name: Build the binaries the container tests mount
+        run: |
+          cargo build
+          cargo build --target x86_64-unknown-linux-musl
+
+      # Asserted rather than trusted: `require_runnable!` skips quietly, so
+      # nothing downstream would report the absence.
+      - name: Confirm the musl binary exists
+        run: test -x target/x86_64-unknown-linux-musl/debug/initd
 
       # Everything except the Arch expansions, rather than "the Debian ones":
       # naming what to include silently drops any test belonging to neither
@@ -86,9 +98,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install the pinned toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+        run: rustup show
 
       - uses: Swatinem/rust-cache@v2
 
@@ -118,17 +128,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install the pinned toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+        run: rustup show
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Build the binary the container tests mount
-        run: cargo build
+      # The TUI scenarios expand across every image, Alpine included, so this
+      # job needs the musl build as much as the gate does.
+      - name: Build the binaries the container tests mount
+        run: |
+          cargo build
+          cargo build --target x86_64-unknown-linux-musl
 
       # Two containers each, an init system booted per test, and package
       # installs inside both — far slower than the ephemeral scenarios, and
@@ -153,9 +165,14 @@ jobs:
           MSRV=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
           echo "Declared MSRV: $MSRV"
           rustup toolchain install "$MSRV" --profile minimal
-          rustup default "$MSRV"
+          echo "MSRV=$MSRV" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
 
+      # `cargo +TOOLCHAIN` rather than `rustup default`: `rust-toolchain.toml`
+      # overrides the default, so setting one would have this job build with
+      # the pinned channel while reporting the minimum. They agree today, and
+      # the first time the pin moves ahead the job would pass without ever
+      # having compiled against the version it names.
       - name: Check
-        run: cargo check --all-targets
+        run: cargo "+$MSRV" check --all-targets

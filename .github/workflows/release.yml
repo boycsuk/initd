@@ -43,15 +43,29 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup show
 
-      - name: Build the static binary the container tests need
-        run: cargo build --target x86_64-unknown-linux-musl
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
 
-      - name: Test
+      # Both, because the container matrix mounts one per image: Debian and
+      # Arch run the ordinary build, and Alpine has no glibc to run it with.
+      # A missing musl build does not fail those scenarios — they skip — so
+      # the job would pass having tested one family fewer.
+      - name: Build the binaries the container tests mount
         run: |
-          cargo fmt --all --check
-          cargo clippy --all-targets --all-features -- -D warnings
-          cargo test
-          cargo test -- --ignored
+          cargo build
+          cargo build --target x86_64-unknown-linux-musl
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # `--run-ignored all` rather than two invocations: `cargo test --
+      # --ignored` runs *only* the ignored tests, so a release verified that
+      # way would have skipped every unit test.
+      - name: Test
+        run: cargo nextest run --run-ignored all --test-threads 2
 
   build:
     name: Build ${{ matrix.target }}
