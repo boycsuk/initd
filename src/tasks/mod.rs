@@ -230,6 +230,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn docs_cli_lists_exactly_the_tasks_the_tree_offers() {
+        // `docs/cli.md` is the programmatic contract, and it went stale within
+        // one phase of the tree growing — twenty-two tasks existed that it did
+        // not mention. A reader of `docs/` alone must be able to answer "what
+        // can this do", so the drift is checked rather than remembered.
+        //
+        // Both directions matter: a task missing from the table is one nobody
+        // knows they can run, and a table naming a task that no longer exists
+        // sends a script after something that will exit 2.
+        let doc = include_str!("../../docs/cli.md");
+
+        let documented: Vec<&str> = doc
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|rest| rest.split('`').next())
+            // Section headings and the conventions table use the same pipe
+            // syntax; a task id is what the tree would recognise.
+            .filter(|id| id.contains('.'))
+            .collect();
+
+        let mut in_tree: Vec<String> = all_tasks()
+            .into_iter()
+            .map(|task| task.id().to_owned())
+            .collect();
+        in_tree.sort_unstable();
+
+        let mut listed: Vec<String> = documented.iter().map(|id| (*id).to_owned()).collect();
+        listed.sort_unstable();
+        listed.dedup();
+
+        let undocumented: Vec<&String> = in_tree.iter().filter(|id| !listed.contains(id)).collect();
+        let stale: Vec<&String> = listed.iter().filter(|id| !in_tree.contains(id)).collect();
+
+        assert!(
+            undocumented.is_empty(),
+            "these tasks are missing from docs/cli.md: {undocumented:?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "docs/cli.md names tasks that no longer exist: {stale:?}"
+        );
+    }
+
+    #[test]
     fn every_task_has_a_unique_id() {
         let ids: Vec<_> = all_tasks()
             .into_iter()

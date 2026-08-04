@@ -117,13 +117,15 @@ Runs a task that takes no arguments. Task identifiers come from `initd list`.
 **Arguments:** `<task-id>` — required, e.g. `ssh.install`.
 
 **Errors:** an unknown identifier exits `2`; a task unsupported on the running
-distribution exits `1`. A task that collects values — `ssh.authorize-key`,
-`ssh.change-port`, `ssh.allow-users` — exits `2` naming the values it needs.
-Refusing here is more use than failing later on a value nobody was asked for.
+distribution exits `1`. A task that collects values exits `2` naming the values
+it needs. Refusing here is more use than failing later on a value nobody was
+asked for.
 
-The first two have a subcommand of their own that supplies those values.
-`ssh.allow-users` does not, and that is deliberate rather than an omission:
-see the note below the task table.
+Two of those tasks have a subcommand that supplies their values —
+`authorize-key` and `change-port`. The rest are reachable only through the
+interactive interface today; the task table marks which. That is a limit of the
+CLI surface rather than of the tasks, except for `ssh.allow-users`, where it is
+deliberate: see the note below the table.
 
 ### `initd authorize-key <user> <key>`
 
@@ -157,8 +159,24 @@ than `sshd_config` decides the port in that case.
 ## Tasks
 
 Tasks are the unit of work shared by the CLI and the interactive interface.
-Those taking no arguments run through `initd run <task-id>`; the rest have a
-dedicated subcommand, except where noted.
+Those taking no arguments run through `initd run <task-id>`. Those that collect
+values need an interface that can ask for them: two have a dedicated
+subcommand, and the rest are marked *interactive* below.
+
+*Interactive* is a statement about the CLI surface, not about the task. Every
+one of them runs identically from the interactive interface, and a subcommand
+can be added without touching the task — except `ssh.allow-users`, which is
+interactive by design for the reason given under the table.
+
+### Identity & Access
+
+| Task id | Invocation | Destructive | Summary |
+|---------|-----------|-------------|---------|
+| `users.create` | interactive | no | Creates an account with a home directory, no password, and membership of the group granting sudo on this distribution. |
+| `users.set-shell` | interactive | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
+| `users.lock-root` | interactive | yes | Expires the root account so no method admits it. Refuses unless another account exists, can escalate, and holds an authorised key. |
+
+### Remote Access — SSH
 
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
@@ -168,6 +186,50 @@ dedicated subcommand, except where noted.
 | `ssh.authorize-key` | `authorize-key <user> <key>` | no | Adds a public key to a user's `authorized_keys`. |
 | `ssh.change-port` | `change-port <port>` | yes | Changes the port sshd listens on. |
 | `ssh.allow-users` | interactive interface only | yes | Restricts SSH login to named accounts. |
+
+### Remote Access — WireGuard
+
+| Task id | Invocation | Destructive | Summary |
+|---------|-----------|-------------|---------|
+| `wireguard.status` | `run wireguard.status` | no | Reports whether the tunnel is up and how many peers are configured. |
+| `wireguard.install` | interactive | no | Installs WireGuard, generates the server keys and writes `wg0.conf`. Refuses to overwrite an existing configuration. |
+| `wireguard.add-peer` | interactive | no | Generates a peer keypair, records it on the server, and prints the client configuration once. |
+
+### Network
+
+| Task id | Invocation | Destructive | Summary |
+|---------|-----------|-------------|---------|
+| `firewall.status` | `run firewall.status` | no | Reports whether inbound filtering is active and which ports it admits. |
+| `firewall.enable` | interactive | yes | Denies inbound traffic by default, admitting established connections, loopback and the SSH port. |
+| `firewall.allow-port` | interactive | no | Admits inbound traffic on one port, for one protocol. |
+| `sysctl.ip-forward` | `run sysctl.ip-forward` | no | Enables IP forwarding, now and across reboots. |
+| `sysctl.unprivileged-ports` | `run sysctl.unprivileged-ports` | no | Lets an unprivileged process bind 80 and 443. |
+
+### Services
+
+| Task id | Invocation | Destructive | Summary |
+|---------|-----------|-------------|---------|
+| `docker-rootless.install` | interactive | no | Installs the Docker engine under one account, with lingering enabled. Refuses an account with no subordinate id range. |
+| `caddy.install` | `run caddy.install` | no | Installs Caddy and enables it. Writes no site configuration. |
+| `caddy.validate` | `run caddy.validate` | no | Asks Caddy whether its configuration parses. |
+| `caddy.security-headers` | `run caddy.security-headers` | yes | Defines a snippet setting HSTS, nosniff, frame-deny and a referrer policy. Rolls back if the result does not parse. |
+
+### Developer environment
+
+| Task id | Invocation | Destructive | Summary |
+|---------|-----------|-------------|---------|
+| `fish.install` | `run fish.install` | no | Installs fish and registers it in `/etc/shells`. |
+| `zellij.install` | interactive | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. |
+| `mise.install` | `run mise.install` | no | Installs mise. |
+| `rust.install` | interactive | no | Installs rustup and a stable toolchain for one account. |
+
+### Hardening
+
+| Task id | Invocation | Destructive | Summary |
+|---------|-----------|-------------|---------|
+| `fail2ban.install` | interactive | no | Watches the authentication log and bans addresses that fail repeatedly. Conflicts with `crowdsec.install`. |
+| `crowdsec.install` | `run crowdsec.install` | yes | Bans addresses a reputation network has seen attacking others. Reports what this host sees in exchange. Conflicts with `fail2ban.install`. |
+| `updates.unattended-security` | `run updates.unattended-security` | no | Applies security updates automatically, never rebooting. Debian only. |
 
 ### `ssh.allow-users` has no CLI form
 
