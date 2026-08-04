@@ -173,6 +173,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of them.
 
 ### Changed
+- Centring a dialog on a proportion of the screen is `layout::centred_percent`,
+  beside the fixed-size `layout::centred` the form and the help overlay use.
+  The confirmation dialog had its own copy, which left the module that declares
+  it owns every inner split not owning this one.
+- The parameter form resolves which field method a key means before touching
+  the form, instead of repeating the same focus guard around twelve editing
+  keys.
 - Container integration tests are driven by an image matrix rather than one
   file per distribution. Everything a scenario needs to know about a family —
   its package-manager commands, the name `initd detect` must report — lives in
@@ -389,8 +396,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 
 ### Removed
+- `Error::FileIo` and its catalogue entry. Every file operation reaches the
+  system through an `Executor` command, so failures surface as `CommandFailed`
+  or `CommandIo`; the variant was left over from a design that used `std::fs`
+  directly, and was constructed only by its own test. The test that covered it
+  now exercises `OsReleaseUnreadable`, which carries the same `#[source]` and
+  is raised in production, so the error chain stays covered.
+- Three `allow(dead_code)` attributes that no longer suppressed anything, on
+  `State::Cancelled`, `Stream` and `OutputLine`. Each carried a comment saying
+  the item was declared ahead of its consumer, which had stopped being true:
+  cancellation is bound to `Ctrl-C`, and the output pane styles both streams.
 
 ### Fixed
+- The output pane styles only the rows the viewport shows, rather than the
+  whole retained history on every frame. The loop redraws ten times a second
+  whether or not output arrived, so a full buffer meant cloning up to 5,000
+  strings per redraw to display about twenty rows — work proportional to the
+  backlog, on exactly the path a package installation exercises. Wrapped lines
+  keep the previous behaviour, since one logical line then occupies several
+  rows and only the widget can say which rows fall inside the viewport.
+- The confirmation dialog draws its border with `dialog_border_danger`, the
+  role `docs/ui.md` assigns it, rather than the yellow it built inline. It was
+  the one module that constructed styles at the call site instead of naming
+  them in `style.rs`, which is the drift the style table exists to prevent —
+  `choice_selected` and `choice_normal` were declared for this dialog and had
+  no callers.
 
 ### Security
 - File contents are written through stdin rather than as command arguments, so
