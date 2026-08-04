@@ -76,6 +76,22 @@ for_each_image! {
             "authorize-key onlyauser",
             "change-port",
             "change-port not-a-number",
+            // `run` with values: the same three ways an invocation can be
+            // wrong, now that any task is reachable through it. A task whose
+            // values are missing, one given a name it does not declare, and
+            // one given a value that fails the check the interactive form
+            // applies — the CLI never passes through the keystroke filter, so
+            // this is the only barrier between an argument and a system file.
+            "run firewall.allow-port",
+            "run firewall.allow-port porta=443",
+            "run firewall.allow-port port=99999",
+            "run firewall.allow-port port=443 protocol=sctp",
+            "run users.create user=has\\ a\\ space",
+            // Refused whatever the arguments: both apply a change that can end
+            // the session applying it, and only the interactive interface can
+            // hold one open to be confirmed.
+            "run ssh.allow-users users=root",
+            "run users.lock-root admin=alice",
         ] {
             assert_eq!(
                 common::exit_code_of(image, command),

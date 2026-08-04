@@ -110,22 +110,34 @@ Nesting is unbounded: a category may contain tasks, further categories, or
 both. Task identifiers stay globally unique and independent of position, so
 `run <task-id>` is unaffected by where a task sits in the tree.
 
-### `initd run <task-id>`
+### `initd run <task-id> [name=value ...]`
 
-Runs a task that takes no arguments. Task identifiers come from `initd list`.
+Runs any task, supplying the values it declared. Task identifiers come from
+`initd list`; running one with no values prints what it accepts, with defaults
+and hints.
 
-**Arguments:** `<task-id>` — required, e.g. `ssh.install`.
+**Arguments:** `<task-id>` — required, e.g. `ssh.install`. Then zero or more
+`name=value` pairs, in any order. A parameter with a default may be omitted; an
+explicit value always wins over one the task merely suggests.
 
-**Errors:** an unknown identifier exits `2`; a task unsupported on the running
-distribution exits `1`. A task that collects values exits `2` naming the values
-it needs. Refusing here is more use than failing later on a value nobody was
-asked for.
+Values are checked against the same rules the interactive form applies. A CLI
+argument never passes through the keystroke filter, so this is the only barrier
+between an argument and a system file.
 
-Two of those tasks have a subcommand that supplies their values —
-`authorize-key` and `change-port`. The rest are reachable only through the
-interactive interface today; the task table marks which. That is a limit of the
-CLI surface rather than of the tasks, except for `ssh.allow-users`, where it is
-deliberate: see the note below the table.
+**Errors:** an unknown identifier exits `2`, as does a name the task does not
+declare, a value that fails validation, and a missing value with no default —
+each naming what was wrong rather than restating the whole usage. A task
+unsupported on the running distribution exits `1`.
+
+`authorize-key` and `change-port` remain as their own subcommands, since both
+predate this and scripts use them.
+
+**Two tasks are refused here whatever arguments are given:** `ssh.allow-users`
+and `users.lock-root`. Both apply a change that can end the session applying
+it, and the interactive interface holds such a change open until the
+administrator proves from a second session that they can still get in,
+reverting on its own when they cannot. The CLI exits immediately, so it has no
+window to offer and nothing rolls a mistake back.
 
 ### `initd authorize-key <user> <key>`
 
@@ -159,22 +171,19 @@ than `sshd_config` decides the port in that case.
 ## Tasks
 
 Tasks are the unit of work shared by the CLI and the interactive interface.
-Those taking no arguments run through `initd run <task-id>`. Those that collect
-values need an interface that can ask for them: two have a dedicated
-subcommand, and the rest are marked *interactive* below.
+Every task runs through `initd run <task-id>`, with any values it needs given
+as `name=value` pairs.
 
-*Interactive* is a statement about the CLI surface, not about the task. Every
-one of them runs identically from the interactive interface, and a subcommand
-can be added without touching the task — except `ssh.allow-users`, which is
-interactive by design for the reason given under the table.
+Two are marked *interactive only* below, and that is a decision rather than a
+gap in the CLI: see the note under the table.
 
 ### Identity & Access
 
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
-| `users.create` | interactive | no | Creates an account with a home directory, no password, and membership of the group granting sudo on this distribution. |
-| `users.set-shell` | interactive | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
-| `users.lock-root` | interactive | yes | Expires the root account so no method admits it. Refuses unless another account exists, can escalate, and holds an authorised key. |
+| `users.create` | `run <id> name=value` | no | Creates an account with a home directory, no password, and membership of the group granting sudo on this distribution. |
+| `users.set-shell` | `run <id> name=value` | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
+| `users.lock-root` | interactive only | yes | Expires the root account so no method admits it. Refuses unless another account exists, can escalate, and holds an authorised key. |
 
 ### Remote Access — SSH
 
@@ -185,23 +194,23 @@ interactive by design for the reason given under the table.
 | `ssh.harden-strict` | `run ssh.harden-strict` | yes | Restricts key exchange, cipher, MAC and host key algorithms to a modern set, requires 3072-bit RSA keys, and disables TCP forwarding. Refuses when no authorised key exists. |
 | `ssh.authorize-key` | `authorize-key <user> <key>` | no | Adds a public key to a user's `authorized_keys`. |
 | `ssh.change-port` | `change-port <port>` | yes | Changes the port sshd listens on. |
-| `ssh.allow-users` | interactive interface only | yes | Restricts SSH login to named accounts. |
+| `ssh.allow-users` | interactive only | yes | Restricts SSH login to named accounts. |
 
 ### Remote Access — WireGuard
 
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
 | `wireguard.status` | `run wireguard.status` | no | Reports whether the tunnel is up and how many peers are configured. |
-| `wireguard.install` | interactive | no | Installs WireGuard, generates the server keys and writes `wg0.conf`. Refuses to overwrite an existing configuration. |
-| `wireguard.add-peer` | interactive | no | Generates a peer keypair, records it on the server, and prints the client configuration once. |
+| `wireguard.install` | `run <id> name=value` | no | Installs WireGuard, generates the server keys and writes `wg0.conf`. Refuses to overwrite an existing configuration. |
+| `wireguard.add-peer` | `run <id> name=value` | no | Generates a peer keypair, records it on the server, and prints the client configuration once. |
 
 ### Network
 
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
 | `firewall.status` | `run firewall.status` | no | Reports whether inbound filtering is active and which ports it admits. |
-| `firewall.enable` | interactive | yes | Denies inbound traffic by default, admitting established connections, loopback and the SSH port. |
-| `firewall.allow-port` | interactive | no | Admits inbound traffic on one port, for one protocol. |
+| `firewall.enable` | `run <id> name=value` | yes | Denies inbound traffic by default, admitting established connections, loopback and the SSH port. |
+| `firewall.allow-port` | `run <id> name=value` | no | Admits inbound traffic on one port, for one protocol. |
 | `sysctl.ip-forward` | `run sysctl.ip-forward` | no | Enables IP forwarding, now and across reboots. |
 | `sysctl.unprivileged-ports` | `run sysctl.unprivileged-ports` | no | Lets an unprivileged process bind 80 and 443. |
 
@@ -209,7 +218,7 @@ interactive by design for the reason given under the table.
 
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
-| `docker-rootless.install` | interactive | no | Installs the Docker engine under one account, with lingering enabled. Refuses an account with no subordinate id range. |
+| `docker-rootless.install` | `run <id> name=value` | no | Installs the Docker engine under one account, with lingering enabled. Refuses an account with no subordinate id range. |
 | `caddy.install` | `run caddy.install` | no | Installs Caddy and enables it. Writes no site configuration. |
 | `caddy.validate` | `run caddy.validate` | no | Asks Caddy whether its configuration parses. |
 | `caddy.security-headers` | `run caddy.security-headers` | yes | Defines a snippet setting HSTS, nosniff, frame-deny and a referrer policy. Rolls back if the result does not parse. |
@@ -219,21 +228,30 @@ interactive by design for the reason given under the table.
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
 | `fish.install` | `run fish.install` | no | Installs fish and registers it in `/etc/shells`. |
-| `zellij.install` | interactive | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. |
+| `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. |
 | `mise.install` | `run mise.install` | no | Installs mise. |
-| `rust.install` | interactive | no | Installs rustup and a stable toolchain for one account. |
+| `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
 
 ### Hardening
 
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
-| `fail2ban.install` | interactive | no | Watches the authentication log and bans addresses that fail repeatedly. Conflicts with `crowdsec.install`. |
+| `fail2ban.install` | `run <id> name=value` | no | Watches the authentication log and bans addresses that fail repeatedly. Conflicts with `crowdsec.install`. |
 | `crowdsec.install` | `run crowdsec.install` | yes | Bans addresses a reputation network has seen attacking others. Reports what this host sees in exchange. Conflicts with `fail2ban.install`. |
 | `updates.unattended-security` | `run updates.unattended-security` | no | Applies security updates automatically, never rebooting. Debian only. |
 
-### `ssh.allow-users` has no CLI form
+### Two tasks have no CLI form
 
-Deliberate, not an oversight. `AllowUsers` naming an account that does not
+Deliberate, not an oversight, and for the same reason in both cases.
+
+`users.lock-root` expires the root account. Every other change this tool makes
+is recoverable from a console; this one can require the hosting provider's
+rescue media. It refuses to run at all unless another account exists, can
+escalate and holds an authorised key — but those checks establish that a way
+back in *should* work, not that it does. Only a second session can prove that,
+and only the interactive interface can wait for one.
+
+`ssh.allow-users` is the other. `AllowUsers` naming an account that does not
 exist produces a configuration `sshd -t` accepts and that matches nobody, so
 every login is refused — and unlike a syntax error, nothing rolls it back. The
 interactive interface holds the change open until the administrator confirms

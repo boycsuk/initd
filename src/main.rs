@@ -36,7 +36,10 @@ fn run() -> Result<()> {
         Some("detect") => cmd_detect(),
         Some("privileges") => cmd_privileges(),
         Some("list") => cmd_list(),
-        Some("run") => cmd_run(args.get(1).map(String::as_str)),
+        // The task id is `args[1]`; the values start after it. Slicing from 1
+        // would hand the id back as a value and every task would report its own
+        // name as a malformed pair.
+        Some("run") => cmd_run(args.get(1).map(String::as_str), &args[2.min(args.len())..]),
         Some("authorize-key") => cmd_authorize_key(&args[1..]),
         Some("change-port") => cmd_change_port(args.get(1).map(String::as_str)),
         Some(other) => {
@@ -56,9 +59,11 @@ fn usage() {
     eprintln!("  detect                       show the detected distribution");
     eprintln!("  privileges                   show the privilege escalation mechanism");
     eprintln!("  list                         list the available tasks");
-    eprintln!("  run <task-id>                run a task that takes no arguments");
+    eprintln!("  run <task-id> [name=value]   run a task, supplying what it needs");
     eprintln!("  authorize-key <user> <key>   add a public key for a user");
     eprintln!("  change-port <port>           change the port sshd listens on");
+    eprintln!();
+    eprintln!("`run <task-id>` with no values prints what that task accepts.");
 }
 
 /// Executes a task against the detected system.
@@ -188,7 +193,7 @@ fn print_nodes(nodes: &[tasks::Node], family: distro::Family, id_width: usize, d
 }
 
 /// Runs a single task by identifier.
-fn cmd_run(id: Option<&str>) -> Result<()> {
+fn cmd_run(id: Option<&str>, rest: &[String]) -> Result<()> {
     let Some(id) = id else {
         eprintln!("run: a task id is required");
         usage();
@@ -201,23 +206,112 @@ fn cmd_run(id: Option<&str>) -> Result<()> {
         std::process::exit(2);
     };
 
-    // A task that collects values needs an interface that can ask for them.
-    // Refusing here is more use than failing later on a value nobody supplied.
-    //
-    // Not every such task has a subcommand: `ssh.allow-users` is deliberately
-    // interactive-only, because the CLI has no verification window and a
-    // mistyped account name there leaves a configuration sshd accepts, that
-    // matches nobody, and that nothing offers to undo.
-    if task.needs_input() {
-        let names: Vec<&str> = task.params().iter().map(|param| param.name).collect();
-        eprintln!("{id} needs values: {}", names.join(", "));
+    // Some tasks stay out of reach here whatever arguments are supplied. Both
+    // apply a change that can end the session applying it, and the interactive
+    // interface holds such a change open until the administrator proves from a
+    // second session that they can still get in — reverting on its own when
+    // they cannot. The CLI exits immediately, so it has no such window to
+    // offer, and a mistake here is one nothing rolls back.
+    if INTERACTIVE_ONLY.contains(&id) {
+        eprintln!("{id} runs only in the interactive interface");
         eprintln!(
-            "supply them through a subcommand where one exists, or run the task in the interactive interface"
+            "it applies a change that can end this session, and only the \
+             interactive interface can hold it open for you to confirm"
         );
         std::process::exit(2);
     }
 
-    execute(task.as_ref(), &ParamValues::new())
+    let values = collect_values(task.as_ref(), rest);
+
+    execute(task.as_ref(), &values)
+}
+
+/// Tasks the CLI refuses regardless of the arguments given.
+///
+/// Not a limitation of the argument parsing: each applies a change that can
+/// end the session applying it, and only the interactive interface can hold
+/// one open for confirmation and revert it unattended.
+const INTERACTIVE_ONLY: [&str; 2] = ["ssh.allow-users", "users.lock-root"];
+
+/// Reads `name=value` arguments into the values a task declared.
+///
+/// Validated against the task's own declaration rather than against a table
+/// kept beside it: a name the task does not declare is a typo that would
+/// otherwise be dropped silently, and a value that fails the same check the
+/// interactive form applies is one the CLI must refuse for the same reason.
+fn collect_values(task: &dyn tasks::Task, arguments: &[String]) -> ParamValues {
+    let declared = task.params();
+    let mut values = ParamValues::new();
+
+    for argument in arguments {
+        let Some((name, value)) = argument.split_once('=') else {
+            eprintln!("{argument} is not a name=value pair");
+            print_expected(task.id(), &declared);
+            std::process::exit(2);
+        };
+
+        let Some(param) = declared.iter().find(|param| param.name == name) else {
+            eprintln!("{} takes no parameter named {name}", task.id());
+            print_expected(task.id(), &declared);
+            std::process::exit(2);
+        };
+
+        // The same validation the interactive form runs. A CLI argument never
+        // passes through the keystroke filter, so this is the only barrier
+        // between it and a system file.
+        if let Err(reason) = param.kind.validate(value) {
+            eprintln!("{name}: {reason}");
+            std::process::exit(2);
+        }
+
+        values.set(param.name, value.to_owned());
+    }
+
+    // Checked after parsing rather than before, so a command naming three of
+    // four values is told which one is missing rather than being handed the
+    // whole list again.
+    let missing: Vec<&str> = declared
+        .iter()
+        .filter(|param| param.initial.is_empty() && values.get(param.name).is_err())
+        .map(|param| param.name)
+        .collect();
+
+    if !missing.is_empty() {
+        eprintln!("{} needs: {}", task.id(), missing.join(", "));
+        print_expected(task.id(), &declared);
+        std::process::exit(2);
+    }
+
+    // Defaults fill in last, so an explicit value always wins over one the
+    // task merely suggests.
+    for param in &declared {
+        if !param.initial.is_empty() && values.get(param.name).is_err() {
+            values.set(param.name, param.initial.clone());
+        }
+    }
+
+    values
+}
+
+/// Prints what a task accepts, with its hints.
+fn print_expected(id: &str, declared: &[tasks::params::Param]) {
+    eprintln!();
+    eprintln!("usage: initd run {id} [name=value ...]");
+
+    for param in declared {
+        let default = if param.initial.is_empty() {
+            String::new()
+        } else {
+            format!(" (default: {})", param.initial)
+        };
+
+        let hint = param
+            .hint
+            .as_ref()
+            .map_or(String::new(), |hint| format!(" — {hint}"));
+
+        eprintln!("  {}{default}{hint}", param.name);
+    }
 }
 
 /// Prints the privilege escalation mechanism resolved for this system.

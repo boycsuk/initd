@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `initd run` takes `name=value` pairs, so every task is reachable from a
+  script rather than only the two that had a subcommand of their own. Values
+  are validated against what the task declared, using the same rules the
+  interactive form applies — a CLI argument never passes through the keystroke
+  filter, so this is the only barrier between an argument and a system file. A
+  task run with no values prints what it accepts, with defaults and hints.
+- `ssh.allow-users` and `users.lock-root` are refused there whatever arguments
+  are given. Both apply a change that can end the session applying it, and the
+  interactive interface holds such a change open until the administrator proves
+  from a second session that they can still get in. The CLI exits immediately,
+  so it has no window to offer and nothing rolls a mistake back.
+
 ### Fixed
 - WireGuard's server configuration is created with its mode set before the
   private key is written into it. Writing first and tightening afterwards left
