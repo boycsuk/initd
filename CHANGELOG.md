@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Alpine, the third family — and the one that proves the abstraction, because
+  it diverges in more than names. OpenRC instead of systemd, busybox instead of
+  the shadow suite, `apk` instead of `apt` or `pacman`. Where the first two
+  disagree over whether a unit is called `ssh` or `sshd`, Alpine has no units
+  at all: `ServiceManager` there drives `rc-update` and `rc-service`, two
+  programs where systemd has one.
+- busybox implementations of both account capabilities. It ships no `getent`,
+  so the passwd database is read directly; `adduser` takes different flags from
+  `useradd` rather than the same ones spelled differently; and it carries
+  neither `usermod` nor `chage`, so the shadow package is installed on demand
+  the first time one is needed — verified in a container rather than assumed.
 - `initd run` takes `name=value` pairs, so every task is reachable from a
   script rather than only the two that had a subcommand of their own. Values
   are validated against what the task declared, using the same rules the

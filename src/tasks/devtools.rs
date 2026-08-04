@@ -19,7 +19,14 @@ use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families these tasks support.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+
+/// Families packaging the version manager and the Rust toolchain.
+///
+/// Alpine packages neither. Both are installable there by other means — their
+/// own installers — but this tool declines to run an installer it cannot
+/// verify, which is the same rule the release table follows.
+const PACKAGED_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
 
 /// Reports a step to the caller as a normal output line.
 fn report(progress: Progress<'_>, text: impl Into<String>) {
@@ -253,7 +260,7 @@ impl Task for InstallMise {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        PACKAGED_SUPPORTED
     }
 
     fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
@@ -322,7 +329,7 @@ impl Task for InstallRust {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        PACKAGED_SUPPORTED
     }
 
     fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {

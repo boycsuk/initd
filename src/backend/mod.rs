@@ -4,9 +4,12 @@
 //! family *and* translates logical names into real ones. Adding a distribution
 //! means adding one module here — never editing a task.
 
+pub mod alpine;
 pub mod arch;
+pub mod busybox_accounts;
 pub mod debian;
 pub mod nftables;
+pub mod openrc;
 pub mod procfs_sysctl;
 pub mod release_installer;
 pub mod shadow_accounts;
@@ -39,6 +42,8 @@ pub enum Capability {
     DockerRootless,
     /// The Caddy web server.
     Caddy,
+    /// The nftables front-end, which the firewall drives.
+    Nftables,
     /// The fish shell.
     Fish,
     /// The Zellij multiplexer.
@@ -140,6 +145,7 @@ pub fn for_family(family: Family) -> Box<dyn Backend> {
     match family {
         Family::Debian => Box::new(debian::DebianBackend::new()),
         Family::Arch => Box::new(arch::ArchBackend::new()),
+        Family::Alpine => Box::new(alpine::AlpineBackend::new()),
     }
 }
 

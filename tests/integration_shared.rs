@@ -436,7 +436,7 @@ for_each_image! {
 #[test]
 fn every_image_in_the_matrix_is_expanded_by_the_macro() {
     // Kept in step by hand with the `@image` lines in `for_each_image!`.
-    const EXPANDED: &[&str] = &["debian", "arch"];
+    const EXPANDED: &[&str] = &["debian", "arch", "alpine"];
 
     let matrix: Vec<&str> = common::IMAGES.iter().map(|image| image.family).collect();
 

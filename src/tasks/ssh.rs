@@ -17,7 +17,7 @@ use crate::tasks::sshd_config;
 use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families every SSH task supports.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
 
 /// Where a user's authorised keys live, relative to their home directory.
 const AUTHORIZED_KEYS_RELATIVE: &str = ".ssh/authorized_keys";

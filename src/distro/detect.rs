@@ -115,6 +115,10 @@ fn family_from_id(id: &str) -> Option<Family> {
     match id.to_ascii_lowercase().as_str() {
         "debian" | "ubuntu" => Some(Family::Debian),
         "arch" | "archarm" => Some(Family::Arch),
+        // `postmarketos` resolves through ID_LIKE rather than here: it reports
+        // its own ID and names alpine as what it is like, which is exactly the
+        // case ID_LIKE exists for.
+        "alpine" => Some(Family::Alpine),
         _ => None,
     }
 }
@@ -203,6 +207,25 @@ mod tests {
             .expect_err("a missing file must fail");
 
         assert!(matches!(err, Error::OsReleaseUnreadable { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn alpine_resolves_by_its_own_id() {
+        let distro = parse_fixture("alpine").expect("alpine must resolve");
+
+        assert_eq!(distro.family, Family::Alpine);
+        assert_eq!(distro.id, "alpine");
+    }
+
+    #[test]
+    fn an_alpine_derivative_resolves_through_id_like() {
+        // postmarketOS reports its own ID and names alpine as what it is like,
+        // which is the case ID_LIKE exists for. Resolving it proves the
+        // fallback reaches the third family and not only the first two.
+        let distro = parse_fixture("postmarketos").expect("postmarketos must resolve");
+
+        assert_eq!(distro.family, Family::Alpine);
+        assert_eq!(distro.id, "postmarketos", "the id it reported must survive");
     }
 
     #[test]

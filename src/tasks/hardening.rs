@@ -20,7 +20,13 @@ use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families supporting the log-parsing banner.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+
+/// Families packaging the reputation-network banner.
+///
+/// Alpine does not, so the task is shown unsupported there rather than being
+/// offered a package name `apk` would reject.
+const CROWDSEC_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
 
 /// Families supporting unattended upgrades.
 ///
@@ -177,7 +183,7 @@ impl Task for InstallCrowdsec {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        CROWDSEC_SUPPORTED
     }
 
     fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {

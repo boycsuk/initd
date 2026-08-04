@@ -6,7 +6,7 @@
 ## WHAT — Stack
 - Rust (latest stable, edition 2024) — single statically-linked binary
 - TUI: `ratatui` + `crossterm` (task tree browser with live command output)
-- Target: Linux servers, multi-distro (Debian/Ubuntu, RHEL/Fedora, Arch, SUSE, Alpine)
+- Target: Linux servers, multi-distro (Debian/Ubuntu, Arch and Alpine implemented; RHEL/SUSE admitted by the design)
 - Database: none — state lives in the host system itself
 
 ## WHAT — Versions
@@ -106,6 +106,8 @@ directions so it cannot drift.
 
 - **User-facing text lives in the i18n catalogue, never in the code that raises it.** `Error` variants and TUI strings carry structured data; `src/i18n/` renders them in the locale resolved from the environment. The catalogue is a closed enum rendered by an exhaustive `match`, with no external dependency: a missing translation is a compile error rather than a runtime lookup miss, and adding a language means adding one module instead of touching every call site. `fluent` and `rust-i18n` were rejected — both resolve at runtime and pull in dependency trees to audit, for a catalogue this small.
 
+- **Whether a locked password blocks a key depends on how the distribution *built* OpenSSH, not on how it is configured.** The `platform_locked_account()` check is compiled behind `!options.use_pam`: Debian and Arch build with PAM, so it is compiled out and a `!` hash admits a key; Alpine builds without it — `UsePAM` is not even a directive its `sshd -T` recognises — so the check runs and the same hash refuses everything. Found when an Alpine container refused a test account created by `adduser -D` despite it holding a valid key. `users.lock-root` uses expiry regardless, because that is the one mechanism meaning the same thing on all three.
+
 - **A secret is written into a file whose mode is already right, never tightened afterwards.** `wireguard.install` wrote `wg0.conf` and then chmodded it, leaving the server's private key world-readable for as long as the two calls took. Brief, and long enough for any account on the box. It surfaced from `wg genkey` warning about the same mistake in a test's own redirect — not from a mock, which has no opinion about modes. The pattern to keep: create the file empty, set the mode, then write. An empty file discloses nothing.
 
 - **Static musl binaries, not glibc.** A binary linked against a recent glibc fails on older servers — exactly the machines an administration tool needs to reach. musl links statically and runs anywhere, which matters more here than the marginal performance difference.
@@ -116,7 +118,7 @@ directions so it cannot drift.
 
 Absent by decision, not oversight. The design admits each without rework:
 
-- **RHEL, SUSE and Alpine families.** Adding one means adding a backend module, never editing a task. Alpine also needs an OpenRC implementation of `ServiceManager` alongside the systemd one.
+- **RHEL and SUSE families.** Adding one means adding a backend module, never editing a task.
 - **Remote execution over SSH.** The `Executor` trait exists precisely so this becomes a second implementation; `LocalExecutor` is the only one today.
 - **Release pipeline** — GitHub Releases, checksummed `curl | sh` installer. The musl targets build correctly (`cargo build --release --target x86_64-unknown-linux-musl` yields a ~789 KB static-pie binary), but nothing publishes them.
 - **General package administration.** Installing arbitrary packages is a

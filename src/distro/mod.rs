@@ -19,6 +19,12 @@ pub enum Family {
     Debian,
     /// Arch and derivatives: `pacman`, `sshd.service`.
     Arch,
+    /// Alpine and derivatives: `apk`, OpenRC, busybox.
+    ///
+    /// The family that diverges in more than names: no systemd, no shadow
+    /// suite, no GNU coreutils. Where the other two disagree over whether a
+    /// unit is called `ssh` or `sshd`, Alpine has no units at all.
+    Alpine,
 }
 
 impl Family {
@@ -27,6 +33,7 @@ impl Family {
         match self {
             Self::Debian => "debian",
             Self::Arch => "arch",
+            Self::Alpine => "alpine",
         }
     }
 }

@@ -35,13 +35,24 @@ pub enum LockMethod {
     /// `lock` call. A `!`-prefixed password hash — what `passwd -l` writes —
     /// is checked by PAM's auth phase, and public-key authentication never
     /// reaches that phase: `sshd` reads `authorized_keys` and never calls
-    /// `pam_authenticate`. OpenSSH's own locked-account check exists but is
-    /// compiled behind `!UsePAM`, and `UsePAM yes` is the default everywhere
-    /// this tool runs.
+    /// `pam_authenticate`. So on a PAM build, a locked password leaves
+    /// key-based login working — the opposite of what locking is asked for.
     ///
-    /// So a locked password alone leaves key-based root login working, which
-    /// is the opposite of what locking root is asked for. Expiry is recorded
-    /// in a different shadow field and is honoured by every method.
+    /// OpenSSH does carry its own `platform_locked_account()` check, but it is
+    /// compiled behind `!options.use_pam`. Whether it runs is therefore a
+    /// property of how the distribution *built* OpenSSH, not of its
+    /// configuration:
+    ///
+    /// - Debian and Arch build with PAM. `UsePAM yes` is the default, the
+    ///   check is compiled out, and a `!` hash admits a key.
+    /// - Alpine builds without it. `UsePAM` is not even a directive its `sshd
+    ///   -T` recognises, the check runs, and a `!` hash refuses every method —
+    ///   verified in a container, where an account created by `adduser -D` was
+    ///   refused with "account is locked" despite holding a valid key.
+    ///
+    /// Expiry is used regardless, because it is the only mechanism that means
+    /// the same thing on all three: it lives in a different shadow field and
+    /// is honoured whatever OpenSSH was built against.
     Expire,
 }
 

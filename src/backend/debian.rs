@@ -91,6 +91,9 @@ const MISE_PACKAGE: &str = "mise";
 /// can rely on.
 const RUST_PACKAGE: &str = "rustup";
 
+/// The nftables front-end on Debian.
+const NFTABLES_PACKAGE: &str = "nftables";
+
 /// The fail2ban package on Debian.
 const FAIL2BAN_PACKAGE: &str = "fail2ban";
 
@@ -155,6 +158,7 @@ impl Backend for DebianBackend {
             Capability::Zellij => ZELLIJ_PACKAGE,
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => RUST_PACKAGE,
+            Capability::Nftables => NFTABLES_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
             Capability::UnattendedUpgrades => UNATTENDED_PACKAGE,
@@ -171,6 +175,9 @@ impl Backend for DebianBackend {
             Capability::Caddy => CADDY_SERVICE,
             // None of these is a service.
             Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
+            // A front-end rather than a daemon: the ruleset lives in the
+            // kernel and `nft` only speaks to it.
+            Capability::Nftables => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
             // Driven by a timer the package ships, not by a unit of its own.
@@ -188,6 +195,7 @@ impl Backend for DebianBackend {
             Capability::Zellij => "",
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
+            Capability::Nftables => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
             Capability::UnattendedUpgrades => "/etc/apt/apt.conf.d",

@@ -6,7 +6,7 @@
 //! 443, and SSH needs whichever port it was moved to. Owned here, they are set
 //! once and asked about by name.
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::firewall::Protocol;
 use crate::domain::sysctl::Setting;
@@ -19,10 +19,9 @@ use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families these tasks support.
 ///
-/// Both ship nftables and read `/etc/sysctl.d/`. Alpine reaches the same
-/// parameters through the same file, so it joins this list once it has a
-/// backend at all.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+/// All three ship nftables and read `/etc/sysctl.d/`, which is read at boot by
+/// both systemd's `systemd-sysctl` and the OpenRC script Alpine uses.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
 
 /// The port SSH listens on unless it has been moved.
 ///
@@ -205,6 +204,18 @@ impl Task for EnableFirewall {
     ) -> Result<Outcome> {
         let port = values.port(Self::SSH_PORT)?;
         let firewall = backend.firewall();
+
+        // Installed rather than assumed. `nft` is packaged separately on every
+        // family implemented today, and a task that went straight to enabling
+        // would fail with "command not found" — which reads as a broken tool
+        // rather than as a missing package.
+        if !firewall.is_available(executor)? {
+            report(progress, format!("installing {}", firewall.name()));
+
+            backend
+                .packages()
+                .install(executor, backend.package_for(Capability::Nftables))?;
+        }
 
         report(progress, format!("using {}", firewall.name()));
 
@@ -517,7 +528,10 @@ mod tests {
     fn enabling_the_firewall_keeps_the_current_ssh_port_open() {
         // The session running this task arrives on that port. A default-deny
         // policy that did not admit it would end the session that asked for it.
-        let mock = MockExecutor::with_replies([Reply::ok("")]);
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"), // already available
+            Reply::ok(""),                // the ruleset
+        ]);
         let backend = for_family(Family::Debian);
 
         EnableFirewall
@@ -530,8 +544,9 @@ mod tests {
             .expect("enabling must succeed");
 
         let ruleset = mock
-            .single_command()
-            .stdin
+            .recorded()
+            .into_iter()
+            .find_map(|command| command.stdin)
             .expect("the ruleset travels on stdin");
 
         assert!(ruleset.contains("tcp dport 2222 accept"), "{ruleset}");
@@ -548,6 +563,34 @@ mod tests {
         assert!(
             consequences[0].check().is_none(),
             "an external warning offers no verification"
+        );
+    }
+
+    #[test]
+    fn the_firewall_front_end_is_installed_when_it_is_absent() {
+        // `nft` is packaged separately on every family. Going straight to
+        // enabling would fail with "command not found", which reads as a
+        // broken tool rather than as a missing package.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(127, "nft: not found"), // not available
+            Reply::ok(""),                         // install
+            Reply::ok(""),                         // the ruleset
+        ]);
+        let backend = for_family(Family::Debian);
+
+        EnableFirewall
+            .run(
+                &mock,
+                backend.as_ref(),
+                &port_values(EnableFirewall::SSH_PORT, 22),
+                &mut |_| {},
+            )
+            .expect("enabling must succeed");
+
+        assert!(
+            mock.recorded_lines().iter().any(|c| c.contains("nftables")),
+            "the package must be installed: {:?}",
+            mock.recorded_lines()
         );
     }
 

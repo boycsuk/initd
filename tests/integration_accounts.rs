@@ -12,6 +12,31 @@ mod common;
 
 use common::{IMAGES, Image, run_in_container, stdout_of};
 
+/// The group granting administrative rights on an image.
+///
+/// Three families, two answers: Debian grants sudo through `sudo`, while Arch
+/// and Alpine both use `wheel` — Alpine because it ships `doas`, whose default
+/// configuration grants that group.
+fn admin_group(image: &Image) -> &'static str {
+    if image.name.contains("debian") {
+        "sudo"
+    } else {
+        "wheel"
+    }
+}
+
+/// The command that creates an account on an image.
+///
+/// `useradd` comes from the shadow suite; busybox provides `adduser` instead,
+/// and its flags differ in meaning rather than in spelling.
+fn create_account(image: &Image) -> &'static str {
+    if image.name.contains("alpine") {
+        "adduser -D -H"
+    } else {
+        "useradd -m"
+    }
+}
+
 /// Runs a task and returns everything it printed, out and err together.
 ///
 /// Both streams, because a task that refuses reports why on stderr and a test
@@ -37,18 +62,21 @@ fn the_administrative_group_exists_under_the_name_the_backend_uses() {
     // and `wheel` on Arch — this asserts the system agrees, which is the half
     // no mock can check.
     for image in IMAGES {
-        let group = if image.name.contains("arch") {
-            "wheel"
-        } else {
-            "sudo"
-        };
-
-        let output = run_in_container(image, &format!("getent group {group}"));
+        // Read from the file rather than through `getent`: busybox ships none,
+        // which is the difference that makes account reading a capability.
+        let observed = run_task(
+            image,
+            &format!(
+                "grep -q '^{}:' /etc/group && echo PRESENT",
+                admin_group(image)
+            ),
+        );
 
         assert!(
-            output.status.success(),
-            "{} has no {group} group, so the backend names the wrong one",
-            image.name
+            observed.contains("PRESENT"),
+            "{} has no {} group, so the backend names the wrong one: {observed}",
+            image.name,
+            admin_group(image)
         );
     }
 }
@@ -63,17 +91,24 @@ fn a_locked_password_still_admits_a_key() {
     // as locked and `sshd` never consults that field for a public key. If this
     // ever stops being true, `users.lock-root` is doing more work than it
     // needs to — and if it stays true, the tool is right to use expiry.
+    // Read out of the shadow entry rather than through `passwd -S`, which is a
+    // shadow-utils flag busybox does not carry. The `!` prefix is what `-S`
+    // reports as `L`, and reading the field directly is portable across all
+    // three — and is what the busybox implementation does anyway.
     for image in IMAGES {
         let observed = run_task(
             image,
-            "useradd -m keyuser >/dev/null 2>&1; \
-             passwd -l keyuser >/dev/null 2>&1; \
-             passwd -S keyuser",
+            &format!(
+                "{} keyuser >/dev/null 2>&1; \
+                 passwd -l keyuser >/dev/null 2>&1; \
+                 grep '^keyuser:' /etc/shadow | cut -d: -f2",
+                create_account(image)
+            ),
         );
 
         assert!(
-            observed.contains("keyuser L") || observed.contains("keyuser LK"),
-            "{}: passwd -l must report the account as locked: {observed}",
+            observed.trim_start().starts_with('!'),
+            "{}: a locked password must be prefixed with !: {observed}",
             image.name
         );
     }
@@ -90,20 +125,30 @@ fn expiry_is_what_the_tool_writes_and_the_system_reads_back() {
     for image in IMAGES {
         let observed = run_task(
             image,
-            "useradd -m expired >/dev/null 2>&1; \
-             usermod --expiredate 1 expired; \
-             chage -l expired",
+            &format!(
+                "{install} {create} expired >/dev/null 2>&1; \
+                 usermod --expiredate 1 expired; \
+                 grep '^expired:' /etc/shadow | cut -d: -f8",
+                // busybox has neither `usermod` nor `chage`; Alpine leaves
+                // both to the shadow package, which the backend installs on
+                // demand for exactly this reason.
+                install = if image.name.contains("alpine") {
+                    "apk add --no-cache shadow >/dev/null 2>&1;"
+                } else {
+                    ""
+                },
+                create = create_account(image),
+            ),
         );
 
-        assert!(
-            observed.contains("Account expires"),
-            "{}: chage must report an expiry: {observed}",
-            image.name
-        );
-        assert!(
-            !observed.contains("Account expires\t: never")
-                && !observed.contains("Account expires		: never"),
-            "{}: an expired account must not read as never: {observed}",
+        // The eighth shadow field, which `shadow(5)` defines as the expiry.
+        // Read directly rather than through `chage`, which busybox does not
+        // ship at all — and which is why the busybox implementation reads this
+        // field too. Empty means never; `1` is 1970-01-02.
+        assert_eq!(
+            observed.trim(),
+            "1",
+            "{}: the expiry must read back as the date written: {observed}",
             image.name
         );
     }
@@ -119,18 +164,23 @@ fn group_membership_reads_back_as_whole_words() {
     // output format of a command this repository does not own, so it is
     // asserted against the real one.
     for image in IMAGES {
-        let group = if image.name.contains("arch") {
-            "wheel"
+        let group = admin_group(image);
+
+        // `addgroup <user> <group>` on busybox, `usermod -aG <group> <user>`
+        // on the shadow suite — the arguments are reversed, which is the kind
+        // of divergence that creates a group named after the user when it is
+        // got wrong.
+        let join = if image.name.contains("alpine") {
+            format!("addgroup member {group}")
         } else {
-            "sudo"
+            format!("usermod -aG {group} member")
         };
 
         let observed = run_task(
             image,
             &format!(
-                "useradd -m member >/dev/null 2>&1; \
-                 usermod -aG {group} member; \
-                 id -nG member"
+                "{} member >/dev/null 2>&1; {join}; id -nG member",
+                create_account(image)
             ),
         );
 
@@ -182,11 +232,7 @@ fn creating_an_administrator_lands_in_the_right_group_on_both_families() {
     // the distribution does not have, which is precisely the case that exits
     // zero and grants nothing.
     for image in IMAGES {
-        let group = if image.name.contains("arch") {
-            "wheel"
-        } else {
-            "sudo"
-        };
+        let group = admin_group(image);
 
         // `initdadmin` rather than anything shorter: Debian's base image
         // already ships a group named `operator`, and `useradd` refuses a name
@@ -204,10 +250,19 @@ fn creating_an_administrator_lands_in_the_right_group_on_both_families() {
         let observed = run_task(
             image,
             &format!(
-                "useradd -m -s /bin/sh initdadmin && \
-                 usermod -aG {group} initdadmin && \
+                "{create} -s /bin/sh initdadmin && {join} && \
                  id -nG initdadmin && \
-                 test -d /home/initdadmin && echo HOME_EXISTS"
+                 test -d /home/initdadmin && echo HOME_EXISTS",
+                create = if image.name.contains("alpine") {
+                    "adduser -D"
+                } else {
+                    "useradd -m"
+                },
+                join = if image.name.contains("alpine") {
+                    format!("addgroup initdadmin {group}")
+                } else {
+                    format!("usermod -aG {group} initdadmin")
+                },
             ),
         );
 

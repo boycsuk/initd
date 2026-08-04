@@ -15,8 +15,16 @@ use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
 
-/// Families these tasks support.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+/// Families the web server tasks support.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+
+/// Families the rootless container engine supports.
+///
+/// Alpine is absent because it has no per-user service manager at all: the
+/// engine runs under the account's own systemd instance, and OpenRC has no
+/// equivalent. That is a missing mechanism rather than a different spelling,
+/// so the task declares it unsupported instead of failing at run time.
+const ROOTLESS_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
 
 /// The user unit a rootless engine installs.
 const DOCKER_USER_SERVICE: &str = "docker.service";
@@ -85,7 +93,7 @@ impl Task for InstallDockerRootless {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        ROOTLESS_SUPPORTED
     }
 
     fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {

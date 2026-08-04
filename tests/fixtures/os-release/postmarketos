@@ -1,0 +1,6 @@
+NAME="postmarketOS"
+ID=postmarketos
+ID_LIKE="alpine"
+VERSION_ID=25.06
+PRETTY_NAME="postmarketOS v25.06"
+HOME_URL="https://postmarketos.org/"

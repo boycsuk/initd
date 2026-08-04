@@ -126,6 +126,13 @@ pub struct Image {
     /// Debian's base image ships no `sysctl` at all; Arch's does. A no-op on
     /// the family that needs nothing keeps both substitutable into one script.
     pub install_sysctl: &'static str,
+    /// Whether this image needs a statically linked binary.
+    ///
+    /// Alpine has no glibc, so the default build cannot start there at all —
+    /// the container reports `initd: not found`, which looks like a mounting
+    /// mistake. True here means the scenarios use the musl build and skip when
+    /// it has not been made.
+    pub needs_static_binary: bool,
     /// Prints something containing `needle` when OpenSSH is installed, so a
     /// scenario can confirm installation without knowing the query tool.
     pub query_ssh: &'static str,
@@ -145,6 +152,7 @@ pub const DEBIAN: Image = Image {
     install_systemd: "apt-get update -qq && apt-get install -y -qq systemd systemd-sysv",
     init_path: "/sbin/init",
     ssh_unit: "ssh.service",
+    needs_static_binary: false,
     install_nftables: "apt-get install -y -qq nftables",
     install_wireguard: "apt-get install -y -qq wireguard-tools",
     install_sysctl: "apt-get install -y -qq procps",
@@ -167,6 +175,7 @@ pub const ARCH: Image = Image {
     install_systemd: "true",
     init_path: "/usr/lib/systemd/systemd",
     ssh_unit: "sshd.service",
+    needs_static_binary: false,
     install_nftables: "pacman -S --needed --noconfirm nftables",
     install_wireguard: "pacman -S --needed --noconfirm wireguard-tools",
     // `sysctl` is in the base image here.
@@ -175,12 +184,42 @@ pub const ARCH: Image = Image {
     installed_needle: "openssh",
 };
 
+/// Alpine: `apk`, OpenRC, busybox.
+///
+/// The family that diverges in more than names, which is why it is worth the
+/// third container: no systemd, no shadow suite, no GNU coreutils.
+pub const ALPINE: Image = Image {
+    name: "alpine:3.23",
+    family: "alpine",
+    // `apk` fetches the index per call with `--no-cache`, so there is no
+    // separate refresh step to run.
+    refresh: "true",
+    install_ssh: "apk add --no-cache openssh",
+    // The same package, as on Arch: Alpine does not split client from server.
+    install_ssh_client: "apk add --no-cache openssh",
+    // busybox provides `adduser`; there is nothing to install.
+    install_useradd: "true",
+    install_tmux: "apk add --no-cache tmux",
+    // OpenRC rather than systemd, and the base image already has it.
+    install_systemd: "true",
+    init_path: "/sbin/init",
+    ssh_unit: "sshd",
+    // No glibc here, so the default build cannot start.
+    needs_static_binary: true,
+    install_nftables: "apk add --no-cache nftables",
+    install_wireguard: "apk add --no-cache wireguard-tools",
+    // busybox provides `sysctl`.
+    install_sysctl: "true",
+    query_ssh: "apk info -e openssh",
+    installed_needle: "openssh",
+};
+
 /// Every image the shared scenarios run against.
 ///
-/// Only families [`crate::distro::Family`] actually resolves belong here. RHEL,
-/// SUSE and Alpine are absent because their backends are, and a matrix entry
-/// without a backend would fail for code deliberately not written yet.
-pub const IMAGES: &[&Image] = &[&DEBIAN, &ARCH];
+/// Only families [`crate::distro::Family`] actually resolves belong here. RHEL
+/// and SUSE are absent because their backends are, and a matrix entry without a
+/// backend would fail for code deliberately not written yet.
+pub const IMAGES: &[&Image] = &[&DEBIAN, &ARCH, &ALPINE];
 
 /// A public key the hardening tasks accept, so the lockout guard lets them
 /// proceed. Every scenario that hardens needs one first.
@@ -209,12 +248,50 @@ pub fn binary_path() -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// The binary a given image can actually execute.
+///
+/// The default build links dynamically against glibc, which Alpine does not
+/// have — the container reports `initd: not found`, which reads as a mounting
+/// mistake rather than as what it is. This is the reason the project ships
+/// musl binaries at all, and the reason it is stated here: a scenario that
+/// mounted the glibc build on Alpine would fail for a linkage problem while
+/// appearing to test a task.
+///
+/// Falls back to the default build where no musl one has been made, so the
+/// glibc images keep working without one. Alpine scenarios skip instead —
+/// running them against a binary that cannot start proves nothing.
+pub fn binary_for(image: &Image) -> Option<String> {
+    if !image.needs_static_binary {
+        return Some(binary_path());
+    }
+
+    let mut path = std::env::current_exe().expect("the test binary must have a path");
+    // target/debug/deps/<test> -> target/x86_64-unknown-linux-musl/debug/initd
+    path.pop();
+    path.pop();
+    path.pop();
+    path.push("x86_64-unknown-linux-musl");
+    path.push("debug");
+    path.push("initd");
+
+    path.exists().then(|| path.to_string_lossy().into_owned())
+}
+
 /// Runs a shell command inside a fresh container, with the binary mounted.
 ///
 /// The binary is bind-mounted rather than copied so the container starts from
 /// the pristine image every time.
 pub fn run_in_container(image: &Image, script: &str) -> std::process::Output {
-    let binary = binary_path();
+    let binary = binary_for(image).unwrap_or_else(|| {
+        panic!(
+            "{} needs a statically linked binary, which has not been built. \
+             Run `cargo build --target x86_64-unknown-linux-musl` first — it \
+             needs musl-gcc, from `musl-tools` on Debian. Scenarios should call \
+             `require_runnable!(image)` so they skip rather than reach here.",
+            image.name
+        )
+    });
+
     let mount = format!("{binary}:/usr/local/bin/initd:ro");
 
     // The refresh step runs first so package installation works, offline-ish
@@ -288,7 +365,26 @@ pub const LOGIN_USER: &str = "initdtest";
 /// Two keys, two purposes, and conflating them is what makes hardening
 /// scenarios fail confusingly: [`TEST_KEY`] satisfies the guard so `ssh.harden`
 /// will proceed at all, while the generated pair is what actually logs in.
-pub const PREPARE_LOGIN_ACCOUNT: &str = "useradd -m -s /bin/sh initdtest >/dev/null 2>&1; \
+/// Creates the account with whichever tool the image provides.
+///
+/// `useradd` comes from the shadow suite and Alpine ships busybox, whose
+/// `adduser` takes different flags — `-D` for "no password" where the shadow
+/// suite means the same by passing none, and `-h` where it takes `-m`. Trying
+/// one and falling back keeps this a single string every scenario substitutes,
+/// rather than a branch each of them has to remember.
+/// The account also gets a password, which is not incidental. Alpine builds
+/// OpenSSH *without* PAM — `UsePAM` is not a directive its `sshd -T` even
+/// recognises — so `platform_locked_account()` is compiled in there, and an
+/// account whose hash is `!` is refused with "account is locked" despite
+/// holding a valid key. `adduser -D` leaves exactly that hash. Debian and Arch
+/// build with PAM, where the same check is compiled out and the account logs
+/// in regardless, which is why this only surfaced once Alpine joined the
+/// matrix.
+///
+/// The password is never used: every scenario authenticates with a key, and
+/// several of them disable password authentication outright.
+pub const PREPARE_LOGIN_ACCOUNT: &str = "(useradd -m -s /bin/sh initdtest || adduser -D -s /bin/sh initdtest) >/dev/null 2>&1; \
+     echo 'initdtest:initdtest' | chpasswd >/dev/null 2>&1; \
      su initdtest -c 'mkdir -p ~/.ssh && \
        ssh-keygen -t ed25519 -N \"\" -f ~/.ssh/id_ed25519 -q && \
        cp ~/.ssh/id_ed25519.pub ~/.ssh/authorized_keys && \
@@ -487,6 +583,25 @@ pub fn has_line(stdout: &str, expected: &str) -> bool {
     stdout.lines().any(|line| line.trim() == expected)
 }
 
+/// Skips a scenario on an image whose binary has not been built.
+///
+/// Alpine needs the musl build, since the default one links against glibc and
+/// cannot start there at all. Skipping is honest where failing would not be:
+/// the scenario has nothing to say about a binary that never ran.
+#[macro_export]
+macro_rules! require_runnable {
+    ($image:expr) => {
+        if common::binary_for($image).is_none() {
+            eprintln!(
+                "skipping {}: no static binary — build with \
+                 `cargo build --target x86_64-unknown-linux-musl`",
+                $image.name
+            );
+            return;
+        }
+    };
+}
+
 /// Skips the test body when Docker is unavailable — unless `INITD_REQUIRE_DOCKER`
 /// is set, in which case its absence is a failure.
 ///
@@ -543,6 +658,7 @@ macro_rules! for_each_image {
 
                 $crate::for_each_image!(@image debian, common::DEBIAN, $image, $body);
                 $crate::for_each_image!(@image arch, common::ARCH, $image, $body);
+                $crate::for_each_image!(@image alpine, common::ALPINE, $image, $body);
             }
         )*
     };
@@ -554,6 +670,11 @@ macro_rules! for_each_image {
         #[ignore = "requires docker"]
         fn $fname() {
             require_docker!();
+            // Applied once here rather than in every scenario: an image whose
+            // binary has not been built has nothing to say about a task, and
+            // reaching the body would fail on the mount rather than on the
+            // behaviour under test.
+            require_runnable!(&$konst);
 
             let $image: &common::Image = &$konst;
             $body

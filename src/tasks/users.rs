@@ -20,7 +20,7 @@ use crate::tasks::{Category, Node, Progress, Task};
 ///
 /// Both implemented families ship the shadow suite. Alpine will need an
 /// `AccountWriter` over busybox's `adduser` before it can be added.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
 
 /// The account whose lock is dangerous enough to warrant its own guard.
 const ROOT: &str = "root";

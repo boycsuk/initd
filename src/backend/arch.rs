@@ -82,6 +82,9 @@ const MISE_PACKAGE: &str = "mise";
 /// The Rust toolchain installer on Arch.
 const RUST_PACKAGE: &str = "rustup";
 
+/// The nftables front-end on Arch.
+const NFTABLES_PACKAGE: &str = "nftables";
+
 /// The fail2ban package on Arch.
 const FAIL2BAN_PACKAGE: &str = "fail2ban";
 
@@ -155,6 +158,7 @@ impl Backend for ArchBackend {
             Capability::Zellij => ZELLIJ_PACKAGE,
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => RUST_PACKAGE,
+            Capability::Nftables => NFTABLES_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
             Capability::UnattendedUpgrades => UNATTENDED_PACKAGE,
@@ -168,6 +172,9 @@ impl Backend for ArchBackend {
             Capability::DockerRootless => DOCKER_USER_UNIT,
             Capability::Caddy => CADDY_SERVICE,
             Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
+            // A front-end rather than a daemon: the ruleset lives in the
+            // kernel and `nft` only speaks to it.
+            Capability::Nftables => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
             Capability::UnattendedUpgrades => "",
@@ -184,6 +191,7 @@ impl Backend for ArchBackend {
             Capability::Zellij => "",
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
+            Capability::Nftables => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
             Capability::UnattendedUpgrades => "",
