@@ -227,6 +227,14 @@ fn validate_path(value: &str) -> std::result::Result<(), String> {
         return Err(format!("the path cannot contain {bad:?}"));
     }
 
+    // A `..` segment makes the written path differ from the one that was
+    // reviewed. Nothing here resolves symlinks or canonicalises, so the value
+    // recorded in a passwd entry would not be the one an administrator read
+    // back — refusing is cheaper than reasoning about where it lands.
+    if value.split('/').any(|segment| segment == "..") {
+        return Err("the path cannot contain '..'".to_owned());
+    }
+
     Ok(())
 }
 
@@ -257,6 +265,16 @@ fn validate_username(value: &str) -> std::result::Result<(), String> {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
     {
         return Err("a username may hold letters, digits, '_', '-' and '.'".to_owned());
+    }
+
+    // `.` and `..` pass every check above and are not names — they are path
+    // segments. `ssh.authorize-key` derives `/home/{user}/.ssh` from this
+    // value, so `..` there resolves to `/home/.ssh` and has root create a
+    // directory nobody asked for. The `/` that would make a longer traversal
+    // possible is already excluded by the character set; these two are what
+    // remain.
+    if value.chars().all(|c| c == '.') {
+        return Err("a username cannot be '.' or '..'".to_owned());
     }
 
     Ok(())

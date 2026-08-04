@@ -39,7 +39,7 @@ target_for_machine() {
 # missing `sha256sum` discovered halfway through is the one failure that could
 # tempt someone into installing unverified.
 require_tools() {
-    for tool in curl sha256sum install uname; do
+    for tool in curl sha256sum install uname mktemp; do
         command -v "$tool" >/dev/null 2>&1 || fail "$tool is required and was not found"
     done
 }

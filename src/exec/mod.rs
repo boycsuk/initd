@@ -160,6 +160,20 @@ mod tests {
     }
 
     #[test]
+    fn the_rendered_line_never_carries_stdin() {
+        // Secrets travel on stdin precisely so they stay out of argv, where
+        // `/proc/<pid>/cmdline` would publish them. The rendered line goes into
+        // error messages and the output pane, so it must not undo that — a
+        // WireGuard private key is fed this way.
+        let command = Command::new("wg")
+            .arg("pubkey")
+            .stdin("PRIVATE_KEY_THAT_MUST_NOT_APPEAR");
+
+        assert_eq!(command.to_string(), "wg pubkey");
+        assert!(!command.to_string().contains("PRIVATE_KEY"));
+    }
+
+    #[test]
     fn privileged_marks_the_command() {
         assert!(Command::new("pacman").privileged().needs_root);
     }

@@ -28,11 +28,13 @@ const SHADOW: &str = "/etc/shadow";
 /// Where the list of acceptable login shells lives.
 const SHELLS: &str = "/etc/shells";
 
-/// Field of a shadow entry holding the expiry date, counting from one.
+/// Index of the expiry field in a shadow entry, counting from zero.
 ///
-/// `shadow(5)` numbers the fields from one and the expiry is the eighth. Named
-/// because `cut -d: -f8` in isolation says nothing about which field that is.
-const SHADOW_EXPIRY_FIELD: &str = "8";
+/// `shadow(5)` numbers the fields from one and names the expiry as the eighth,
+/// so this is that minus one. Stated as an index rather than as a field number
+/// because it addresses a slice here, and the off-by-one between the two
+/// conventions is exactly the mistake worth naming.
+const SHADOW_EXPIRY_INDEX: usize = 7;
 
 /// Expiry written to lock an account, in days since the epoch.
 ///
@@ -188,14 +190,14 @@ impl AccountWriter for BusyboxAccountWriter {
     }
 
     fn is_locked(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
-        // No `chage`, so the shadow entry is read. The expiry field is empty
-        // when the account never expires, which is what distinguishes it from
-        // one expired at the epoch.
-        let command = Command::new("sh")
-            .args([
-                "-c",
-                &format!("grep '^{user}:' {SHADOW} | cut -d: -f{SHADOW_EXPIRY_FIELD}"),
-            ])
+        // No `chage`, so the shadow entry is read directly. Fetched whole and
+        // split here rather than piped through `cut` inside an `sh -c` string:
+        // interpolating a username into a shell command works only for as long
+        // as every caller validates it first, and this backend cannot see who
+        // its callers will be. An argv element cannot be reinterpreted as
+        // syntax, so the question stops depending on that.
+        let command = Command::new("grep")
+            .args([&format!("^{user}:"), SHADOW])
             .privileged();
 
         let output = executor.run(&command)?;
@@ -204,7 +206,16 @@ impl AccountWriter for BusyboxAccountWriter {
             return Ok(false);
         }
 
-        Ok(!output.stdout.trim().is_empty())
+        // The expiry is empty when the account never expires, which is what
+        // distinguishes it from one expired at the epoch.
+        let expiry = output
+            .stdout
+            .split(':')
+            .nth(SHADOW_EXPIRY_INDEX)
+            .unwrap_or("")
+            .trim();
+
+        Ok(!expiry.is_empty())
     }
 
     fn valid_shells(&self, executor: &dyn Executor) -> Result<Vec<String>> {
@@ -332,11 +343,21 @@ mod tests {
         );
     }
 
+    /// A shadow entry, as `/etc/shadow` holds it.
+    ///
+    /// Nine colon-separated fields; the eighth is the expiry. Written out in
+    /// full because the function now splits the line itself rather than
+    /// letting `cut` do it, so a test feeding only the field would be
+    /// exercising something the code no longer does.
+    fn shadow_entry(expiry: &str) -> String {
+        format!("root:!:19000:0:99999:7::{expiry}:\n")
+    }
+
     #[test]
     fn expiry_is_read_out_of_the_shadow_entry() {
         // No `chage` here, so the field is read directly. An empty eighth
         // field means the account never expires.
-        let mock = MockExecutor::with_replies([Reply::ok("1\n")]);
+        let mock = MockExecutor::with_replies([Reply::ok(shadow_entry("1"))]);
 
         assert!(
             BusyboxAccountWriter::new()
@@ -347,12 +368,32 @@ mod tests {
 
     #[test]
     fn an_empty_expiry_field_means_the_account_never_expires() {
-        let mock = MockExecutor::with_replies([Reply::ok("\n")]);
+        let mock = MockExecutor::with_replies([Reply::ok(shadow_entry(""))]);
 
         assert!(
             !BusyboxAccountWriter::new()
                 .is_locked(&mock, "root")
                 .expect("the query must succeed")
+        );
+    }
+
+    #[test]
+    fn a_username_never_reaches_a_shell() {
+        // The reason this stopped piping through `cut` in an `sh -c` string:
+        // interpolating a name into shell syntax is safe only while every
+        // caller validates it, and a backend cannot see its future callers.
+        let mock = MockExecutor::with_replies([Reply::ok(shadow_entry("1"))]);
+
+        BusyboxAccountWriter::new()
+            .is_locked(&mock, "root")
+            .expect("the query must succeed");
+
+        let command = mock.single_command();
+
+        assert_eq!(command.program, "grep");
+        assert!(
+            !command.args.iter().any(|arg| arg.contains('|')),
+            "no shell pipeline: {command:?}"
         );
     }
 

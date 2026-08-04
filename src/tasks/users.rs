@@ -282,12 +282,23 @@ impl Task for LockRoot {
             return Ok(Outcome::Done);
         }
 
+        // Read once more, immediately before the irreversible step. The checks
+        // above ran several privileged commands ago, and each of those is a
+        // moment in which the key could have been removed — by a second
+        // administrator, by another session of this tool, or by an edit made
+        // by hand. Every other task in this tree can afford that window;
+        // this one cannot, because the recovery from getting it wrong is the
+        // hosting provider's rescue console.
+        if !has_authorized_key(executor, backend, &admin)? {
+            return Err(Error::NoAuthorizedKey { user: admin });
+        }
+
         report(progress, "locking root".to_owned());
 
         // Expiry, not `passwd -l`. A `!`-prefixed hash is checked by PAM's
-        // auth phase, and public-key authentication never reaches it, so
-        // `passwd -l root` leaves root logging in with a key against an
-        // account the tool would report as locked.
+        // auth phase, and public-key authentication never reaches it on a PAM
+        // build, so `passwd -l root` would leave root logging in with a key
+        // against an account the tool reported as locked.
         backend
             .account_writer()
             .lock(executor, ROOT, LockMethod::Expire)?;
@@ -561,6 +572,8 @@ mod tests {
                 Reply::ok(""),                               // file exists
                 Reply::ok("ssh-ed25519 AAAAC3Nza key@host"), // holds a key
                 Reply::ok("Account expires\t: never"),       // not yet locked
+                Reply::ok(""),                               // re-check: exists
+                Reply::ok("ssh-ed25519 AAAAC3Nza key@host"), // re-check: still there
                 Reply::ok(""),                               // usermod
             ],
             &values(LockRoot::ADMIN, "alice"),
@@ -575,6 +588,36 @@ mod tests {
         assert!(
             !commands.iter().any(|c| c.contains("passwd -l")),
             "passwd -l leaves key authentication working: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_removed_between_the_check_and_the_lock_stops_it() {
+        // The window this closes: several privileged commands separate the
+        // prerequisite checks from the lock itself, and a second administrator
+        // — or another session of this tool — could remove the key in between.
+        // Every other task can afford that; recovery from this one is the
+        // provider's rescue console.
+        let (outcome, commands) = run(
+            &LockRoot,
+            Family::Debian,
+            vec![
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
+                Reply::ok("alice sudo"),
+                Reply::ok(""),                               // file exists
+                Reply::ok("ssh-ed25519 AAAAC3Nza key@host"), // holds a key
+                Reply::ok("Account expires\t: never"),       // not yet locked
+                Reply::failure(1, ""),                       // re-check: gone
+            ],
+            &values(LockRoot::ADMIN, "alice"),
+        );
+
+        let err = outcome.expect_err("a key that vanished must stop the lock");
+
+        assert!(matches!(err, Error::NoAuthorizedKey { .. }), "{err:?}");
+        assert!(
+            !commands.iter().any(|c| c.contains("--expiredate")),
+            "root must not be locked: {commands:?}"
         );
     }
 

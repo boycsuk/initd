@@ -48,6 +48,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it has no window to offer and nothing rolls a mistake back.
 
 ### Fixed
+- A username of `.` or `..` reached a filesystem path. `ssh.authorize-key`
+  derives `/home/{user}/.ssh` from the value, so `..` resolved to `/home/.ssh`
+  and had root create a directory nobody asked for. The `/` that would allow a
+  longer traversal was already excluded; these two were what remained. Paths
+  reject a `..` segment for the same reason — nothing here canonicalises, so
+  the path written would not be the one an administrator read back.
+- `is_locked` on busybox no longer interpolates a username into an `sh -c`
+  string. It was not reachable — the only callers pass the constant `root` —
+  but that safety depended on every future caller validating first, which is a
+  guarantee a backend cannot make about callers it cannot see. The shadow entry
+  is now fetched whole through argv and split in Rust.
+- `users.lock-root` re-reads the administrator's key immediately before locking
+  root. Several privileged commands separate the prerequisite checks from the
+  lock, and a second administrator — or another session of this tool — could
+  remove the key in between. Every other task can afford that window; recovery
+  from this one is the hosting provider's rescue console.
+
+### Fixed
 - WireGuard's server configuration is created with its mode set before the
   private key is written into it. Writing first and tightening afterwards left
   a window in which the key sat in a world-readable file — brief, but long
