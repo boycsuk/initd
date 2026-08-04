@@ -239,8 +239,24 @@ fn validate_username(value: &str) -> std::result::Result<(), String> {
         return Err("a username is required".to_owned());
     }
 
-    if value.contains(char::is_whitespace) {
-        return Err("a username cannot contain spaces".to_owned());
+    // A leading `-` makes the name an option rather than an operand. `useradd
+    // -m -s /bin/sh -o` reads `-o` as "allow a duplicate UID" and never
+    // creates an account called `-o`; `--system` would create one of a
+    // different kind entirely. Nothing downstream escapes arguments — they are
+    // passed as a vector, which prevents a *shell* injection but not this — so
+    // the barrier belongs here.
+    if value.starts_with('-') {
+        return Err("a username cannot begin with '-'".to_owned());
+    }
+
+    // The portable set from `useradd(8)`: a name outside it is one some tool in
+    // the chain will refuse anyway, and restricting it here means every value
+    // that reaches a command is one no argument parser can reinterpret.
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err("a username may hold letters, digits, '_', '-' and '.'".to_owned());
     }
 
     Ok(())
@@ -480,6 +496,45 @@ mod tests {
             .expect_err("a malformed key must be rejected");
 
         assert!(!error.is_empty(), "the reason must be stated");
+    }
+
+    #[test]
+    fn a_username_cannot_be_read_as_an_option() {
+        // Found by running the CLI, not by reading it: `initd run
+        // users.create user=-o` reached `useradd -m -s /bin/bash -o`, where
+        // `-o` is useradd's "allow a duplicate UID" flag and no account named
+        // `-o` is created. Arguments are passed as a vector, so no shell is
+        // involved — which stops an injection but not an argument being
+        // reinterpreted by the program receiving it.
+        assert!(ParamKind::Username.validate("-o").is_err());
+        assert!(ParamKind::Username.validate("--system").is_err());
+        assert!(ParamKind::Username.validate("-").is_err());
+    }
+
+    #[test]
+    fn ordinary_usernames_are_still_accepted() {
+        // The guard must not cost the names people actually use. A `-` inside
+        // the name is fine; only a leading one is an option.
+        for name in ["alice", "deploy-bot", "web_admin", "user.name", "node1"] {
+            assert!(
+                ParamKind::Username.validate(name).is_ok(),
+                "{name} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_username_holding_shell_metacharacters_is_rejected() {
+        // Nothing here reaches a shell today, but `busybox_accounts` builds an
+        // `sh -c` string from a username to read the shadow entry. Rejecting
+        // the characters that would matter there keeps that true regardless of
+        // which backend runs.
+        for hostile in ["alice;rm", "a$(id)", "a`id`", "a|b", "a&b", "../root"] {
+            assert!(
+                ParamKind::Username.validate(hostile).is_err(),
+                "{hostile} must be refused"
+            );
+        }
     }
 
     #[test]
