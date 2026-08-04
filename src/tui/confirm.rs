@@ -127,11 +127,53 @@ mod tests {
         assert!(confirm.warning.is_some());
     }
 
+    /// The columns the dialog's border occupies, read back from a real buffer.
+    ///
+    /// Asserting on the constants would only compare them with themselves; what
+    /// has to hold is that the drawn dialog is the size `docs/ui.md` states,
+    /// which is a property of `render` rather than of the numbers it reads.
+    fn drawn_bounds(width: u16, height: u16) -> (u16, u16) {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| Confirm::new("Change port", "Continue?").render(frame))
+            .expect("drawing must not fail");
+
+        let buffer = terminal.backend().buffer().clone();
+        let drawn: Vec<(u16, u16)> = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer[(x, y)].symbol() != " ")
+            .collect();
+
+        let columns = drawn.iter().map(|&(x, _)| x);
+        let rows = drawn.iter().map(|&(_, y)| y);
+
+        let span = |values: &mut dyn Iterator<Item = u16>| {
+            let (min, max) = values.fold((u16::MAX, 0), |(lo, hi), v| (lo.min(v), hi.max(v)));
+            max - min + 1
+        };
+
+        (span(&mut columns.into_iter()), span(&mut rows.into_iter()))
+    }
+
     #[test]
-    fn the_dialog_keeps_the_proportions_the_contract_states() {
-        // `docs/ui.md` specifies 60% x 40%; the styles and the centring are
-        // shared, but these two numbers belong to this dialog.
-        assert_eq!(WIDTH_PERCENT, 60);
-        assert_eq!(HEIGHT_PERCENT, 40);
+    fn the_dialog_takes_the_share_of_the_screen_the_contract_states() {
+        // `docs/ui.md` specifies 60% x 40%. Measured on the buffer, so a render
+        // that stopped threading these constants through would be caught.
+        let (width, height) = drawn_bounds(100, 50);
+
+        assert_eq!(width, 60, "60% of 100 columns");
+        assert_eq!(height, 20, "40% of 50 rows");
+    }
+
+    #[test]
+    fn the_dialog_stays_inside_a_small_terminal() {
+        // Centring clamps rather than overflowing; a dialog wider than the
+        // screen would render as nothing.
+        let (width, height) = drawn_bounds(40, 12);
+
+        assert!(width <= 40, "got {width}");
+        assert!(height <= 12, "got {height}");
     }
 }
