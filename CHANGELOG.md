@@ -408,6 +408,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation is bound to `Ctrl-C`, and the output pane styles both streams.
 
 ### Fixed
+- Centring a dialog on a proportion of the screen no longer overflows `u16`.
+  The multiplication ran at `u16`, so a terminal 1093 columns wide exceeded the
+  type at 60% — a panic in debug, and a silently wrapped width in release, the
+  profile this ships as. A wide terminal is what a proportional dialog is for,
+  so the overflow sat on the path the function exists to serve, and the dialog
+  it corrupts is the one gating destructive operations.
+- The confirmation dialog's proportions are measured on a rendered buffer
+  rather than asserted against the constants that produce them. Comparing a
+  constant with its own literal passes whatever `render` does, including
+  ignoring the constants altogether.
 - The output pane styles only the rows the viewport shows, rather than the
   whole retained history on every frame. The loop redraws ten times a second
   whether or not output arrived, so a full buffer meant cloning up to 5,000
@@ -423,6 +433,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no callers.
 
 ### Security
+- A directive absent from `sshd_config` is written before the first `Match`
+  block rather than appended. Everything after a `Match` line belongs to that
+  block, so a file ending in one — a common hardening pattern, jailing an
+  `sftp-only` group — silently scoped the new directive to whoever the block
+  matched. Measured against OpenSSH 10.0: `PermitRootLogin no` appended after
+  `Match User deployer` leaves `sshd -T` reporting `without-password` for every
+  other user. The task reported success and the server was not hardened, which
+  is the failure mode the tool exists to prevent. Replacing a directive that
+  already exists was already correct and is unchanged.
+- A public key containing a line break is rejected. `split_whitespace` treats
+  one like any other separator, so a value carrying it validated as a single
+  key and was then written verbatim into `authorized_keys` as two entries — the
+  second never approved. `AuthorizeKey` only trims the outer whitespace, and
+  the CLI hands its argument straight to the check without passing through the
+  interface's per-keystroke filter, so this was the only barrier. The sibling
+  check on usernames already rejected the same characters for the same reason.
 - File contents are written through stdin rather than as command arguments, so
   no shell escaping is needed and no input can be interpolated into a command
   line running as root.
