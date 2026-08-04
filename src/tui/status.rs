@@ -41,11 +41,7 @@ pub enum State {
     Failed,
     /// The last task was cancelled before it finished.
     ///
-    /// Unreachable until cancellation lands: a task runs to completion today,
-    /// with no key that interrupts it. The state is declared with its siblings
-    /// so the pill vocabulary is one readable list rather than a set grown one
-    /// variant at a time.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The operator interrupted a running task with `Ctrl-C`.
     Cancelled,
     /// A change is applied but not yet kept.
     Verify,

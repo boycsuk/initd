@@ -71,13 +71,6 @@ pub enum Error {
     /// The operation needs root and no escalation mechanism is available.
     NoPrivilegeEscalator,
 
-    /// I/O failure on a file of the administered system.
-    FileIo {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
     /// `sshd -t` rejected the configuration over a genuine syntax error.
     InvalidSshdConfig { details: String },
 
@@ -162,10 +155,6 @@ impl Error {
                 source: source.to_string(),
             },
             Self::NoPrivilegeEscalator => Msg::NoPrivilegeEscalator,
-            Self::FileIo { path, source } => Msg::FileIo {
-                path: path.display().to_string(),
-                source: source.to_string(),
-            },
             Self::InvalidSshdConfig { details } => Msg::InvalidSshdConfig {
                 details: details.clone(),
             },
@@ -230,8 +219,10 @@ mod tests {
     fn source_chain_is_preserved() {
         use std::error::Error as _;
 
-        let err = Error::FileIo {
-            path: PathBuf::from("/etc/ssh/sshd_config"),
+        // Any variant carrying `#[source]` proves the chain survives; this one
+        // is raised in production, so the test cannot outlive its subject.
+        let err = Error::OsReleaseUnreadable {
+            path: PathBuf::from("/etc/os-release"),
             source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
         };
         assert!(err.source().is_some(), "the io::Error source must survive");

@@ -99,12 +99,6 @@ pub enum Msg {
     // --- Privileges ---
     NoPrivilegeEscalator,
 
-    // --- Files ---
-    FileIo {
-        path: String,
-        source: String,
-    },
-
     // --- SSH ---
     InvalidSshdConfig {
         details: String,

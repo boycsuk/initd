@@ -92,10 +92,9 @@ impl fmt::Display for Command {
 
 /// Which stream a line of output came from.
 ///
-/// Consumed by the TUI's live output pane; built ahead of it deliberately, so
-/// that adding streaming later does not mean redesigning this trait.
+/// Consumed by the TUI's live output pane, which styles stderr apart from
+/// stdout so warnings stand out from progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub enum Stream {
     Stdout,
     Stderr,
@@ -103,7 +102,6 @@ pub enum Stream {
 
 /// A single line of output, tagged with its origin.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct OutputLine {
     pub stream: Stream,
     pub text: String,

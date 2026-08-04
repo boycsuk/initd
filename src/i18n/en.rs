@@ -36,9 +36,6 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NoPrivilegeEscalator => "this operation requires root privileges, but no escalation \
              mechanism (sudo, doas or run0) was found in PATH"
             .to_owned(),
-        Msg::FileIo { path, source } => {
-            format!("I/O error on {path}: {source}")
-        }
         Msg::InvalidSshdConfig { details } => {
             format!("the sshd configuration is invalid: {details}")
         }
