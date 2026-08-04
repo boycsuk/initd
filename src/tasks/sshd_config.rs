@@ -146,9 +146,11 @@ fn is_directive_line(line: &str, directive: &str) -> bool {
 
 /// Writes new configuration contents, validating before committing.
 ///
-/// The sequence is the one the SPEC requires: back up, write, validate, and
-/// restore the backup if validation rejects the result. The service is only
-/// reloaded by the caller once this returns successfully.
+/// The order is what makes a rejected configuration recoverable: back up,
+/// write, validate, and restore the backup if validation rejects the result.
+/// Validating before writing would say nothing about the file the daemon will
+/// actually read. The service is only reloaded by the caller once this returns
+/// successfully.
 pub fn write_validated(
     executor: &dyn Executor,
     backend: &dyn Backend,

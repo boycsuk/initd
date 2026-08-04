@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
@@ -13,6 +12,7 @@ use ratatui::widgets::{
 };
 
 use super::confirm::Confirm;
+use super::field::Field;
 use super::form::Form;
 use super::output::OutputPane;
 use super::status::{State, Status};
@@ -545,72 +545,44 @@ impl App {
             _ => form.disarm_cancel(),
         }
 
-        match key.code {
-            KeyCode::Tab | KeyCode::Down => form.focus_next(),
-            KeyCode::BackTab | KeyCode::Up => form.focus_previous(),
+        // Keys that move between fields act on the form; the rest act on
+        // whichever field has focus. Resolving which of the two a key means
+        // before touching either keeps the focus guard in one place instead of
+        // repeated around every editing key.
+        let edit: fn(&mut Field) = match key.code {
+            KeyCode::Tab | KeyCode::Down => {
+                form.focus_next();
+                return None;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.focus_previous();
+                return None;
+            }
             KeyCode::Enter => return self.submit_form(),
             // Readline's bindings win inside a text field.
-            KeyCode::Char('u') if control => {
-                if let Some(field) = form.focused_mut() {
-                    field.clear_before_cursor();
-                }
-            }
-            KeyCode::Char('k') if control => {
-                if let Some(field) = form.focused_mut() {
-                    field.clear_after_cursor();
-                }
-            }
-            KeyCode::Char('w') if control => {
-                if let Some(field) = form.focused_mut() {
-                    field.delete_word();
-                }
-            }
-            KeyCode::Char('a') if control => {
-                if let Some(field) = form.focused_mut() {
-                    field.home();
-                }
-            }
-            KeyCode::Char('e') if control => {
-                if let Some(field) = form.focused_mut() {
-                    field.end();
-                }
-            }
+            KeyCode::Char('u') if control => Field::clear_before_cursor,
+            KeyCode::Char('k') if control => Field::clear_after_cursor,
+            KeyCode::Char('w') if control => Field::delete_word,
+            KeyCode::Char('a') if control => Field::home,
+            KeyCode::Char('e') if control => Field::end,
             KeyCode::Char(character) if !control => {
                 if let Some(field) = form.focused_mut() {
                     field.insert(character);
                 }
+
+                return None;
             }
-            KeyCode::Backspace => {
-                if let Some(field) = form.focused_mut() {
-                    field.backspace();
-                }
-            }
-            KeyCode::Delete => {
-                if let Some(field) = form.focused_mut() {
-                    field.delete();
-                }
-            }
-            KeyCode::Left => {
-                if let Some(field) = form.focused_mut() {
-                    field.left();
-                }
-            }
-            KeyCode::Right => {
-                if let Some(field) = form.focused_mut() {
-                    field.right();
-                }
-            }
-            KeyCode::Home => {
-                if let Some(field) = form.focused_mut() {
-                    field.home();
-                }
-            }
-            KeyCode::End => {
-                if let Some(field) = form.focused_mut() {
-                    field.end();
-                }
-            }
-            _ => {}
+            KeyCode::Backspace => Field::backspace,
+            KeyCode::Delete => Field::delete,
+            KeyCode::Left => Field::left,
+            KeyCode::Right => Field::right,
+            KeyCode::Home => Field::home,
+            KeyCode::End => Field::end,
+            _ => return None,
+        };
+
+        if let Some(field) = form.focused_mut() {
+            edit(field);
         }
 
         None
@@ -961,7 +933,7 @@ impl App {
             };
 
             vec![
-                Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
+                Span::styled(" initd", style::HEADING),
                 separator(),
                 Span::styled(self.host.hostname.clone(), style::EMPHASIS),
                 Span::raw("  "),
@@ -971,7 +943,7 @@ impl App {
             ]
         } else {
             vec![
-                Span::styled(" initd", style::PANE_TITLE.add_modifier(Modifier::BOLD)),
+                Span::styled(" initd", style::HEADING),
                 Span::styled(format!(" {VERSION}"), style::BLOCK_SUBTITLE),
                 separator(),
                 Span::styled(self.host.hostname.clone(), style::EMPHASIS),
