@@ -69,6 +69,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships on.
 
 ### Added
+- The exit-code contract in `docs/cli.md` is verified against the binary.
+  Twelve documented cases across the three codes, none of which anything
+  checked — and the contract exists for automation, where a script that retries
+  on `1` and gives up on `2` depends entirely on the difference. Confirmed to
+  catch a violation by introducing one: changing the unknown-subcommand exit
+  from `2` to `1` fails the scenario, naming the case.
+- The documented port range is checked at both ends, with the values just
+  inside them, since an off-by-one in the comparison shows at exactly one of
+  the four. The valid ports are asserted by their message rather than their
+  exit code: with no openssh installed there is no `sshd_config` to edit, so
+  they fail afterwards for a reason unrelated to the range — reading the code
+  alone reported the tool as rejecting port 1, which it does not.
+- Detection is exercised against `/etc/os-release` files no image provides, by
+  mounting the existing fixtures over the real path. The unit tests parse those
+  same files and prove the parser; what they cannot prove is that the binary
+  reads the real path and resolves a backend from what it finds. Ubuntu is the
+  case that matters — its `ID` is not a family, so only `ID_LIKE` says which
+  backend to use, and getting it wrong makes every Ubuntu server unsupported.
+  Gentoo covers the other side: an unsupported distribution must be refused
+  naming what it found, since guessing a backend would run `apt` on a system
+  that has none.
 - Tests that drive the terminal interface as a user drives it, through tmux.
   ratatui needs a real terminal; a pipe renders nothing and `script(1)`
   captures nothing readable, because the interface lives in the alternate
