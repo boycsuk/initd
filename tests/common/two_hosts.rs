@@ -291,13 +291,18 @@ impl TwoHosts {
             .output();
 
         for _ in 0..30 {
+            // Its own pid file, not `pgrep`: procps is absent from Debian's
+            // base image, so a `pgrep` here never matches, the loop runs out,
+            // and the wait silently degrades into a fixed thirty-second sleep
+            // that happens to be long enough. sshd writes the file once it is
+            // listening, which is the condition being waited for anyway.
             let listening = Command::new("docker")
                 .args([
                     "exec",
                     &self.server,
                     "sh",
                     "-c",
-                    "pgrep -x sshd >/dev/null && echo up",
+                    "test -s /run/sshd.pid && echo up",
                 ])
                 .output();
 

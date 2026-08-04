@@ -34,6 +34,42 @@ for_each_image! {
         );
     }
 
+    /// `initd list` must print the task tree.
+    ///
+    /// The subcommand a script would use to discover what can be run, so its
+    /// output is a contract: identifiers that change silently break callers.
+    fn listing_prints_the_task_tree(image) {
+        let output = run_in_container(image, "initd list");
+        let stdout = stdout_of(&output);
+
+        assert!(output.status.success(), "list must succeed: {stdout}");
+        assert!(
+            stdout.contains("ssh.harden") && stdout.contains("ssh.install"),
+            "the tree must name its task identifiers: {stdout}"
+        );
+    }
+
+    /// `initd privileges` must report that root needs no escalation.
+    ///
+    /// A container runs as uid 0, which is the case where the answer must be
+    /// `none`: naming a mechanism there would mean the resolution ignored the
+    /// effective user and would make every privileged command run under a
+    /// `sudo` that is not needed and may not exist.
+    fn privileges_reports_that_root_needs_no_escalation(image) {
+        let output = run_in_container(image, "initd privileges");
+        let stdout = stdout_of(&output);
+
+        assert!(output.status.success(), "privileges must succeed: {stdout}");
+        assert!(
+            stdout.contains("effective uid: 0"),
+            "a container runs as root: {stdout}"
+        );
+        assert!(
+            stdout.contains("escalation: none"),
+            "root must need no escalation mechanism: {stdout}"
+        );
+    }
+
     /// Installing the SSH capability must install whatever this family calls
     /// the package.
     ///
