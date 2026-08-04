@@ -250,8 +250,17 @@ impl Task for InstallWireguard {
         let server_address = first_address(&subnet)?;
         let contents = server_config(&keys.private, &server_address, port);
 
-        files.write(executor, &config, &contents)?;
+        // The mode is set on the path *before* the private key is written into
+        // it. Writing first and tightening afterwards leaves a window in which
+        // the server's private key sits in a world-readable file — brief, but
+        // long enough for any account on the box, and `wg` warns about exactly
+        // this when it writes a key itself.
+        //
+        // Creating it empty is what makes the ordering possible: `set_mode`
+        // needs a path that exists, and an empty file discloses nothing.
+        files.write(executor, &config, "")?;
         files.set_mode(executor, &config, CONFIG_MODE)?;
+        files.write(executor, &config, &contents)?;
 
         report(progress, format!("wrote {config}"));
         report(progress, format!("server public key: {}", keys.public));
@@ -583,6 +592,61 @@ mod tests {
         // server believes it is alone on the tunnel.
         assert!(first_address("10.89.0.0").is_err());
         assert!(first_address("not-a-subnet").is_err());
+    }
+
+    #[test]
+    fn the_private_key_never_lands_in_a_world_readable_file() {
+        // The window this closes: writing the key and tightening the mode
+        // afterwards leaves the server's private key readable by every account
+        // on the box for as long as the two calls take. `wg` warns about
+        // exactly this when it writes a key itself, which is how it surfaced —
+        // in a container, from the tool's own stderr, not from a mock.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(1, ""), // no existing configuration
+            Reply::ok(""),         // install
+            Reply::ok(""),         // create the directory
+            Reply::ok(KEY),        // genkey
+            Reply::ok(KEY),        // genpsk
+            Reply::ok(KEY),        // pubkey
+            Reply::ok(""),         // create the file empty
+            Reply::ok(""),         // chmod
+            Reply::ok(""),         // backup before the real write
+            Reply::ok(""),         // write the configuration
+            Reply::ok(""),         // enable the unit
+        ]);
+        let backend = for_family(Family::Debian);
+
+        InstallWireguard
+            .run(
+                &mock,
+                backend.as_ref(),
+                &install_values("10.89.0.0/24", 51_820),
+                &mut |_| {},
+            )
+            .expect("the install must succeed");
+
+        let recorded = mock.recorded();
+
+        let tightened = recorded
+            .iter()
+            .position(|command| command.args.iter().any(|arg| arg == "600"))
+            .expect("the file must be tightened");
+
+        let key_written = recorded
+            .iter()
+            .position(|command| {
+                command
+                    .stdin
+                    .as_ref()
+                    .is_some_and(|stdin| stdin.contains("PrivateKey"))
+            })
+            .expect("the key must be written");
+
+        assert!(
+            tightened < key_written,
+            "the mode must be set before the key is written: {:?}",
+            mock.recorded_lines()
+        );
     }
 
     #[test]

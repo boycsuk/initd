@@ -110,6 +110,22 @@ pub struct Image {
     /// Arch's does. A no-op command rather than an `Option` keeps every field
     /// substitutable into the same script without branching.
     pub install_useradd: &'static str,
+    /// Installs the nftables front-end, which the firewall drives.
+    ///
+    /// Absent from both base images: filtering is a kernel feature and `nft`
+    /// is the userspace tool for reaching it, packaged separately.
+    pub install_nftables: &'static str,
+    /// Installs the WireGuard tools, which provide `wg`.
+    ///
+    /// Both families call the package `wireguard-tools`, which is coincidence
+    /// rather than a rule — Debian also has a `wireguard` metapackage that
+    /// pulls a DKMS module no current kernel needs.
+    pub install_wireguard: &'static str,
+    /// Installs `procps`, which provides `sysctl`.
+    ///
+    /// Debian's base image ships no `sysctl` at all; Arch's does. A no-op on
+    /// the family that needs nothing keeps both substitutable into one script.
+    pub install_sysctl: &'static str,
     /// Prints something containing `needle` when OpenSSH is installed, so a
     /// scenario can confirm installation without knowing the query tool.
     pub query_ssh: &'static str,
@@ -129,6 +145,9 @@ pub const DEBIAN: Image = Image {
     install_systemd: "apt-get update -qq && apt-get install -y -qq systemd systemd-sysv",
     init_path: "/sbin/init",
     ssh_unit: "ssh.service",
+    install_nftables: "apt-get install -y -qq nftables",
+    install_wireguard: "apt-get install -y -qq wireguard-tools",
+    install_sysctl: "apt-get install -y -qq procps",
     query_ssh: "dpkg-query -W -f='${Status}' openssh-server",
     installed_needle: "install ok installed",
 };
@@ -148,6 +167,10 @@ pub const ARCH: Image = Image {
     install_systemd: "true",
     init_path: "/usr/lib/systemd/systemd",
     ssh_unit: "sshd.service",
+    install_nftables: "pacman -S --needed --noconfirm nftables",
+    install_wireguard: "pacman -S --needed --noconfirm wireguard-tools",
+    // `sysctl` is in the base image here.
+    install_sysctl: "true",
     query_ssh: "pacman -Q openssh",
     installed_needle: "openssh",
 };

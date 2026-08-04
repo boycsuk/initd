@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- WireGuard's server configuration is created with its mode set before the
+  private key is written into it. Writing first and tightening afterwards left
+  a window in which the key sat in a world-readable file — brief, but long
+  enough for any account on the box. Found in a container, from `wg genkey`
+  warning about the same mistake in a test's own redirect; no mock would have
+  said anything.
+
 ### Added
 - Zellij's release table carries real digests, computed on 2026-08-04 from the
   archives at the URLs it holds. Two versions, so this project's release
