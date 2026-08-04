@@ -68,8 +68,13 @@ jobs:
       # family — the matrix synchronisation check, the helpers' own tests —
       # and a filter that runs less than it appears to is the one CI defect
       # that looks exactly like success.
+      # The systemd and old-client binaries are excluded because they have
+      # their own job: they need capabilities a runner may refuse, and they are
+      # slow enough to dominate this one.
       - name: Container tests (everything but the rolling image)
-        run: cargo nextest run --run-ignored all -E 'not test(::arch) and not binary(integration_arch)'
+        run: |
+          cargo nextest run --run-ignored all \
+            -E 'not test(::arch) and not binary(integration_arch) and not binary(integration_systemd) and not binary(integration_old_client)'
 
   rolling:
     name: Container tests on the rolling Arch image
@@ -93,8 +98,46 @@ jobs:
       - name: Build the binary the container tests mount
         run: cargo build
 
+      # Excludes the systemd and old-client binaries for the same reason the
+      # gate does: those run in their own job, Arch expansions included.
       - name: Container tests (Arch only)
-        run: cargo nextest run --run-ignored all -E 'test(arch)'
+        run: |
+          cargo nextest run --run-ignored all \
+            -E '(test(::arch) or binary(integration_arch)) and not binary(integration_systemd) and not binary(integration_old_client)'
+
+  systemd:
+    name: Container tests that need systemd as PID 1
+    runs-on: ubuntu-latest
+    # Never blocks a merge. These need `--privileged` and `--cgroupns=host`,
+    # which a runner is entitled to refuse; a host that will not grant them has
+    # not found a bug, and the tests skip rather than fail there. Gating merges
+    # on a capability outside the repository's control would make the suite
+    # unusable the day a runner image tightens it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Build the binary the container tests mount
+        run: cargo build
+
+      # Two containers each, an init system booted per test, and package
+      # installs inside both — far slower than the ephemeral scenarios, and
+      # the reason they are their own binaries rather than part of the matrix.
+      - name: systemd and old-client tests
+        run: |
+          cargo nextest run --run-ignored all \
+            -E 'binary(integration_systemd) or binary(integration_old_client)' \
+            --test-threads 2
 
   msrv:
     name: Build on the declared minimum Rust version

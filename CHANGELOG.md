@@ -69,6 +69,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships on.
 
 ### Added
+- Container tests that boot systemd as PID 1, so `systemctl` means what it
+  means on a host. `ssh.install` enables a unit and the ordinary containers
+  cannot run that step at all — they assert the package landed and let the
+  enable fail — so a task that installed correctly and enabled the wrong unit,
+  or none, passed every test there. The unit names diverge (`ssh.service`
+  against `sshd.service`) and that divergence had only ever been checked
+  against a mock. They also cover what a reload does: hardening must leave the
+  service running, not merely leave a file that parses.
+- `--cgroupns=host` alongside `--privileged`, found empirically: without it
+  systemd exits 255 immediately and logs nothing, which reads like a broken
+  image rather than a missing flag. These scenarios live in their own binary
+  and skip where a host will not grant those capabilities, since a rootless
+  Docker has not found a bug.
+- Tests that log in from a client older than the server — Debian 11's OpenSSH
+  8.4 against 10.0 and 10.4 — across two containers on a private network. The
+  single-container scenarios take client and server from one image and so from
+  one release, which leaves the question `ssh.harden-strict` actually raises
+  unanswered: an algorithm the server now insists on is one an older client may
+  never have learned. The strict tier is allowed to refuse such a client, since
+  refusing is that tier working; what is asserted is that the daemon *answers*,
+  rather than hanging or dying mid-handshake.
 - Connection tests that start a real daemon and authenticate against it, so
   the hardening tiers are measured by whether a client can still log in rather
   than by whether the file parses. `sshd -t` answers a different question than
@@ -118,6 +139,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to that family, and each states the reason: Arch covers the missing host keys
   that make every `sshd -t` inconclusive, Debian covers the packaging that
   makes it conclusive. Everything else was an invariant in disguise.
+- The systemd scenarios compare `systemctl` output line by line rather than by
+  substring. Written as a substring check, `is-active` reporting `inactive`
+  satisfied a test looking for `active`, and one passed against a container
+  where the package had failed to install — the precise case it existed to
+  catch. The states systemd reports are words that contain one another.
 - Scenarios that assert a written configuration is one sshd accepts now
   generate host keys first. The matrix surfaced this immediately: five
   scenarios passed on Debian and failed on Arch, because Debian's packaging
