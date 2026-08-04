@@ -5,10 +5,15 @@
 //! confirmation.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::Alignment;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+
+use super::{layout, style};
+
+/// The dialog's share of the screen, as `docs/ui.md` specifies it.
+const WIDTH_PERCENT: u16 = 60;
+const HEIGHT_PERCENT: u16 = 40;
 
 /// A pending confirmation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +54,7 @@ impl Confirm {
 
     /// Renders the dialog centred over the interface.
     pub fn render(&self, frame: &mut Frame) {
-        let area = centred_rect(60, 40, frame.area());
+        let area = layout::centred_percent(WIDTH_PERCENT, HEIGHT_PERCENT, frame.area());
 
         // Clear first, or the interface underneath shows through the dialog.
         frame.render_widget(Clear, area);
@@ -57,10 +62,7 @@ impl Confirm {
         let mut lines = vec![Line::from(self.body.clone()), Line::from("")];
 
         if let Some(ref warning) = self.warning {
-            lines.push(Line::styled(
-                warning.clone(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ));
+            lines.push(Line::styled(warning.clone(), style::DANGER_TEXT));
             lines.push(Line::from(""));
         }
 
@@ -71,7 +73,7 @@ impl Confirm {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(self.title.clone())
-                    .border_style(Style::default().fg(Color::Yellow)),
+                    .border_style(style::DIALOG_BORDER_DANGER),
             )
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Left);
@@ -81,15 +83,10 @@ impl Confirm {
 
     /// The yes/no line, with the current selection highlighted.
     fn choice_line(&self) -> Line<'static> {
-        let selected = Style::default()
-            .fg(Color::Black)
-            .bg(Color::White)
-            .add_modifier(Modifier::BOLD);
-
         let (yes, no) = if self.accepted {
-            (selected, Style::default())
+            (style::CHOICE_SELECTED, style::CHOICE_NORMAL)
         } else {
-            (Style::default(), selected)
+            (style::CHOICE_NORMAL, style::CHOICE_SELECTED)
         };
 
         Line::from(vec![
@@ -99,27 +96,6 @@ impl Confirm {
             Span::raw("      (Tab to switch, Enter to confirm, Esc to cancel)"),
         ])
     }
-}
-
-/// Computes a centred rectangle occupying the given percentage of the area.
-fn centred_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 #[cfg(test)]
@@ -152,13 +128,10 @@ mod tests {
     }
 
     #[test]
-    fn centred_rect_stays_inside_its_area() {
-        let area = Rect::new(0, 0, 100, 50);
-        let centred = centred_rect(60, 40, area);
-
-        assert!(centred.width <= area.width);
-        assert!(centred.height <= area.height);
-        assert!(centred.x + centred.width <= area.x + area.width);
-        assert!(centred.y + centred.height <= area.y + area.height);
+    fn the_dialog_keeps_the_proportions_the_contract_states() {
+        // `docs/ui.md` specifies 60% x 40%; the styles and the centring are
+        // shared, but these two numbers belong to this dialog.
+        assert_eq!(WIDTH_PERCENT, 60);
+        assert_eq!(HEIGHT_PERCENT, 40);
     }
 }

@@ -253,10 +253,10 @@ Two rules govern the table:
 reversing: reversal swaps per cell, so a red destructive marker on a reversed
 row would render as a red block and the row's meaning would invert with it.
 
-Roles for elements the interface does not draw yet — dialog borders, the gauge,
-result glyphs, search highlighting — are declared here and in source so the
-table stays one readable reference, and so a new call site picks a role instead
-of inventing a colour.
+Roles for elements the interface does not draw yet — the gauge, result glyphs,
+search highlighting — are declared here and in source so the table stays one
+readable reference, and so a new call site picks a role instead of inventing a
+colour.
 
 ## Keys
 
