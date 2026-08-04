@@ -112,7 +112,7 @@ directions so it cannot drift.
 
 - **Static musl binaries, not glibc.** A binary linked against a recent glibc fails on older servers — exactly the machines an administration tool needs to reach. musl links statically and runs anywhere, which matters more here than the marginal performance difference.
 
-- **The `curl | sh` installer verifies checksums before executing.** Piping a remote script into a shell runs unverified remote code, and this tool runs as root. Checksum verification against a published GitHub Release is the minimum mitigation; the release binaries are the source of truth, the install script is only a convenience wrapper. <!-- TODO: consider signing releases (minisign/cosign) once the release pipeline exists. -->
+- **The `curl | sh` installer verifies checksums before executing.** Piping a remote script into a shell runs unverified remote code, and this tool runs as root. Checksum verification against a published GitHub Release is the minimum mitigation; the release binaries are the source of truth, the install script is only a convenience wrapper. The check is exercised rather than assumed — `tests/integration_installer.rs` serves a release and replaces the binary after its digest was computed, so a script that verified nothing would fail there. What it does *not* defend against is stated in the script and the release notes: anyone able to publish a release writes both the binary and its digest. <!-- TODO: sign releases (minisign/cosign), which is what would close that. -->
 
 ## WHAT — Deliberately not built yet
 
@@ -120,7 +120,6 @@ Absent by decision, not oversight. The design admits each without rework:
 
 - **RHEL and SUSE families.** Adding one means adding a backend module, never editing a task.
 - **Remote execution over SSH.** The `Executor` trait exists precisely so this becomes a second implementation; `LocalExecutor` is the only one today.
-- **Release pipeline** — GitHub Releases, checksummed `curl | sh` installer. The musl targets build correctly (`cargo build --release --target x86_64-unknown-linux-musl` yields a ~789 KB static-pie binary), but nothing publishes them.
 - **General package administration.** Installing arbitrary packages is a
   different shape of task from the ones here: every task in the tree today
   names a capability the backend resolves, and a free-text package name has no

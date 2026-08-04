@@ -1,0 +1,168 @@
+# Publishes a tagged release: two static binaries and the checksums that make
+# the install script safe to pipe into a shell.
+#
+# Triggered by a tag rather than by a push to main, because publishing is a
+# decision. A pipeline that released on every merge would mean the difference
+# between "merged" and "published" stops existing, and the installer points at
+# whatever landed last.
+#
+# The checksums are the point of this file. `curl | sh` runs unverified remote
+# code as root; the install script fetches the digest published here and
+# refuses a binary that does not match it. That is a weaker guarantee than
+# signing — an attacker holding this repository's release permissions can write
+# both — and the release notes say so rather than implying otherwise. Signing
+# is the next step, and it is deliberately not pretended to be done.
+name: Release
+
+on:
+  push:
+    tags:
+      # Semantic version tags only. A tag naming anything else — a branch
+      # snapshot, an experiment — must not become a published release.
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The gate. A release that skipped the tests would publish a binary nothing
+  # verified, and the tag is the one artefact that cannot be quietly amended.
+  verify:
+    name: Verify before publishing
+    runs-on: ubuntu-latest
+    env:
+      INITD_REQUIRE_DOCKER: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - name: Build the static binary the container tests need
+        run: cargo build --target x86_64-unknown-linux-musl
+
+      - name: Test
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test
+          cargo test -- --ignored
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      # One failing architecture must not cancel the other: knowing both
+      # results is what says whether the problem is the code or the target.
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      # aarch64 needs a cross-linker; x86_64 does not, since rustc links musl
+      # self-contained for the host architecture.
+      - name: Install the cross-linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Asserted rather than assumed. A binary that turned out to be
+      # dynamically linked would run on the machine that built it and fail on
+      # every older server the project exists to reach — which is exactly the
+      # failure musl is chosen to avoid, and one no test on this runner would
+      # notice.
+      - name: Confirm the binary is static
+        run: |
+          binary="target/${{ matrix.target }}/release/initd"
+          file "$binary"
+          if ! file "$binary" | grep -q "static-pie linked"; then
+            echo "::error::$binary is not statically linked"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          binary="target/${{ matrix.target }}/release/initd"
+          name="initd-${{ matrix.target }}"
+          install -m 0755 "$binary" "$name"
+          # Digest of the file that is uploaded, computed from that file — not
+          # from the one in the target directory, which is a different path and
+          # an easy thing to get subtly wrong.
+          sha256sum "$name" > "$name.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: initd-${{ matrix.target }}
+          path: |
+            initd-${{ matrix.target }}
+            initd-${{ matrix.target }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # The only write this workflow needs. Narrowed because a release job runs
+      # with whatever it is granted, and it is the job an attacker would most
+      # like to reach.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect the checksums into one file
+        run: |
+          cd artifacts
+          # One file the install script can fetch, rather than one per
+          # architecture: the script does not know which it needs until it has
+          # asked the machine.
+          cat ./*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Static binaries for x86_64 and aarch64.
+
+          Verify before running:
+
+              sha256sum -c SHA256SUMS
+
+          The checksums are published by this repository's release workflow.
+          They protect against a corrupted or substituted download, not against
+          this repository itself — anyone able to publish a release can write
+          both the binary and its digest. Signed releases are not yet
+          implemented." \
+            artifacts/initd-* \
+            artifacts/SHA256SUMS

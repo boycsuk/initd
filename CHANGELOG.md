@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A release pipeline: a tag builds both static binaries, confirms each is
+  actually statically linked, and publishes them with their checksums. The
+  static check is asserted rather than assumed — a dynamically linked binary
+  would run on the machine that built it and fail on every older server the
+  project exists to reach, which is the failure musl is chosen to avoid and
+  one no test on the runner would notice.
+- An install script that verifies before it installs, and a scenario that
+  proves it: a release is served, the binary is replaced after its digest was
+  computed, and the script must refuse it. Reading the script for `sha256sum`
+  would pass whether or not the result was acted on. The control case — an
+  intact release installing — is there so a script that refused everything
+  could not look like a working check.
+- Both the script and the release notes state what checksums do not cover:
+  anyone able to publish a release writes the binary and its digest alike.
+  Signing would close that and is not implemented, so it is named rather than
+  implied.
 - Alpine, the third family — and the one that proves the abstraction, because
   it diverges in more than names. OpenRC instead of systemd, busybox instead of
   the shadow suite, `apk` instead of `apt` or `pacman`. Where the first two
