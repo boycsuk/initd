@@ -11,10 +11,21 @@
 //! The dividing question is: *would this assertion still be meaningful on a
 //! family that does not exist yet?* If yes, it is an invariant and belongs
 //! here.
+//!
+//! # One documented case with no scenario
+//!
+//! `docs/cli.md` states that a task unsupported on the running distribution
+//! exits `1`. Every task supports both families `Family` resolves, so that
+//! branch cannot be reached from any container: it is waiting on a
+//! distribution that does not exist yet, not on a test. It becomes reachable —
+//! and worth covering — with the first family a task declines, which is the
+//! same reason Alpine has no matrix entry.
 
 mod common;
 
-use common::{has_line, run_in_container, run_with_ssh_ready, stdout_of};
+use common::{
+    DEBIAN, has_line, run_in_container, run_with_os_release, run_with_ssh_ready, stdout_of,
+};
 
 for_each_image! {
     /// Detection must resolve the family the image actually is.
@@ -31,6 +42,105 @@ for_each_image! {
             stdout.contains(&format!("family:       {}", image.family)),
             "expected family {}: {stdout}",
             image.family
+        );
+    }
+
+    /// The three documented exit codes must mean what `docs/cli.md` says.
+    ///
+    /// The contract exists for automation — a script that retries on `1` and
+    /// gives up on `2` depends on the difference — and nothing verified it.
+    /// Every case here is one the documentation states, so a change to either
+    /// side that is not matched on the other fails this.
+    ///
+    /// Grouped into one scenario rather than a dozen because each starts a
+    /// container: as separate tests the cost would be a minute of pulls to
+    /// answer twelve questions worth one assertion each.
+    fn the_documented_exit_codes_hold(image) {
+        // Succeeding commands. Read-only ones, since a scenario asserting on
+        // the code should not depend on a task's side effects.
+        for command in ["detect", "privileges", "list"] {
+            assert_eq!(
+                common::exit_code_of(image, command),
+                0,
+                "`initd {command}` must succeed"
+            );
+        }
+
+        // Wrong invocation: an unknown subcommand, an unknown task, and every
+        // subcommand that needs arguments it was not given.
+        for command in [
+            "definitely-not-a-subcommand",
+            "run",
+            "run no.such.task",
+            "authorize-key",
+            "authorize-key onlyauser",
+            "change-port",
+            "change-port not-a-number",
+        ] {
+            assert_eq!(
+                common::exit_code_of(image, command),
+                2,
+                "`initd {command}` must exit 2 as a wrong invocation"
+            );
+        }
+
+        // Failure: the invocation is well-formed and the work cannot be done.
+        // The distinction from 2 is the whole point of having both.
+        for command in ["change-port 99999", "authorize-key root not-a-valid-key"] {
+            assert_eq!(
+                common::exit_code_of(image, command),
+                1,
+                "`initd {command}` must exit 1 as a failure"
+            );
+        }
+    }
+
+    /// The port range must be enforced at both ends.
+    ///
+    /// `docs/cli.md` puts the valid range at 1–65535, and the codes either
+    /// side of it differ: a non-numeric port is a wrong invocation (`2`), an
+    /// out-of-range one is a failure (`1`). Both boundaries are checked
+    /// together with the values just inside them, since an off-by-one in the
+    /// comparison would show at exactly one of the four.
+    ///
+    /// The valid ports are asserted by their message rather than their exit
+    /// code: with no openssh installed there is no `sshd_config` to edit, so
+    /// they fail afterwards for a reason that has nothing to do with the
+    /// range. Reading the code alone here would report the tool as rejecting
+    /// port 1.
+    fn the_port_range_is_enforced_at_both_ends(image) {
+        for out_of_range in ["0", "65536"] {
+            assert_eq!(
+                common::exit_code_of(image, &format!("change-port {out_of_range}")),
+                1,
+                "port {out_of_range} is outside 1-65535 and must be refused"
+            );
+        }
+
+        let output = run_with_ssh_ready(
+            image,
+            "initd change-port 1 2>&1 | head -1; initd change-port 65535 2>&1 | head -1",
+        );
+        let stdout = stdout_of(&output);
+
+        assert!(
+            !stdout.contains("invalid port"),
+            "1 and 65535 are inside the range and must not be refused: {stdout}"
+        );
+    }
+
+    /// An unknown task id must be refused before anything runs.
+    ///
+    /// `run` is the subcommand a script drives, and a typo in a task id must
+    /// not be indistinguishable from a task that ran and did nothing. The code
+    /// is checked above; this pins that it also says which id it did not know.
+    fn running_an_unknown_task_names_the_identifier(image) {
+        let output = run_in_container(image, "initd run ssh.hardne 2>&1");
+        let stdout = stdout_of(&output);
+
+        assert!(
+            stdout.contains("ssh.hardne"),
+            "the error must name the unknown identifier: {stdout}"
         );
     }
 
@@ -318,5 +428,64 @@ fn every_image_in_the_matrix_is_expanded_by_the_macro() {
         matrix, EXPANDED,
         "IMAGES and for_each_image! have drifted: add the missing family to \
          the macro's @image lines, or the scenarios will silently skip it"
+    );
+}
+
+/// A derivative must resolve to its parent family while keeping its own name.
+///
+/// Outside `for_each_image!`: the fixture *is* the distribution under test, so
+/// running it against both images would ask the same question twice while the
+/// image underneath is irrelevant.
+///
+/// This is the step the unit tests cannot reach. They parse the same file and
+/// prove the parser; what they cannot prove is that the binary reads
+/// `/etc/os-release` at the real path and resolves a backend from what it
+/// finds there. Ubuntu is the case that matters, since its `ID` is not a
+/// family and only `ID_LIKE` says which backend to use — get that wrong and
+/// every Ubuntu server is unsupported.
+#[test]
+#[ignore = "requires docker"]
+fn a_derivative_resolves_through_id_like_to_its_parent_family() {
+    require_docker!();
+
+    let output = run_with_os_release(&DEBIAN, "ubuntu2404", "initd detect");
+    let stdout = stdout_of(&output);
+
+    assert!(output.status.success(), "detect must succeed: {stdout}");
+    assert!(
+        stdout.contains("family:       debian"),
+        "Ubuntu must resolve to the debian family: {stdout}"
+    );
+    assert!(
+        stdout.contains("id:           ubuntu"),
+        "and must still report its own id, not its family's: {stdout}"
+    );
+}
+
+/// An unsupported distribution must be refused, not guessed at.
+///
+/// The alternative is worse than failing: picking a backend for a system whose
+/// package manager it does not have would run `apt` on Gentoo. The error names
+/// what it saw and what it supports, so the person reading it knows whether
+/// they hit a gap or a bug.
+#[test]
+#[ignore = "requires docker"]
+fn an_unsupported_distribution_is_refused_naming_what_it_found() {
+    require_docker!();
+
+    let output = run_with_os_release(&DEBIAN, "gentoo", "initd detect 2>&1; echo exit=$?");
+    let stdout = stdout_of(&output);
+
+    assert!(
+        stdout.contains("exit=1"),
+        "an unsupported distribution must exit 1: {stdout}"
+    );
+    assert!(
+        stdout.contains("gentoo"),
+        "the error must name the distribution it found: {stdout}"
+    );
+    assert!(
+        stdout.contains("debian") && stdout.contains("arch"),
+        "and the families it does support: {stdout}"
     );
 }

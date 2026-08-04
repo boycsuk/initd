@@ -396,6 +396,61 @@ pub fn run_and_ask_offered_methods(image: &Image, configure: &str) -> std::proce
     )
 }
 
+/// Runs a script in a container whose `/etc/os-release` is the named fixture.
+///
+/// Detection is unit-tested against these files directly, which proves the
+/// parser. What it cannot prove is that the binary reads the real path and
+/// resolves a backend from what it finds — the step between the parser and
+/// everything else. Mounting a fixture over `/etc/os-release` puts a
+/// distribution in front of the tool that no image provides: a derivative that
+/// must resolve through `ID_LIKE`, or one that must be refused outright.
+pub fn run_with_os_release(image: &Image, fixture: &str, script: &str) -> std::process::Output {
+    let binary = binary_path();
+    let mount = format!("{binary}:/usr/local/bin/initd:ro");
+
+    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/os-release")
+        .join(fixture);
+    let fixture_mount = format!("{}:/etc/os-release:ro", fixture_path.display());
+
+    Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "-v",
+            &mount,
+            "-v",
+            &fixture_mount,
+            image.name,
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .expect("docker run must execute")
+}
+
+/// Runs `initd <args>` in a fresh container and returns its exit code.
+///
+/// The code is echoed and read back rather than taken from the `Output`'s
+/// status, which belongs to `docker run` and to the shell wrapping it — a
+/// script that refreshes the package index first would report the refresh's
+/// result, not the command's. Echoing it is the only way to get the number the
+/// documented contract is about.
+///
+/// Output is discarded: these scenarios are about the code, and a subcommand
+/// that printed the right thing while exiting wrongly is the failure being
+/// looked for.
+pub fn exit_code_of(image: &Image, args: &str) -> i32 {
+    let output = run_in_container(image, &format!("initd {args} >/dev/null 2>&1; echo $?"));
+
+    stdout_of(&output)
+        .lines()
+        .last()
+        .and_then(|line| line.trim().parse().ok())
+        .unwrap_or(-1)
+}
+
 /// Convenience wrapper returning stdout as a string.
 pub fn stdout_of(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
