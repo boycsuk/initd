@@ -53,6 +53,7 @@
 #![allow(dead_code)]
 
 pub mod systemd;
+pub mod tui;
 pub mod two_hosts;
 
 use std::process::Command;
@@ -94,6 +95,14 @@ pub struct Image {
     /// `ssh.service` on Debian, `sshd.service` on Arch — the divergence the
     /// backend absorbs, and until now only ever checked against a mock.
     pub ssh_unit: &'static str,
+    /// Installs `tmux`, which the interface scenarios drive the TUI through.
+    ///
+    /// ratatui needs a real terminal, and the interface lives in the alternate
+    /// screen — so a pipe renders nothing and `script` captures nothing
+    /// readable once the program exits. tmux allocates a pty *and* can dump a
+    /// live pane, which is what makes the screen assertable while it is drawn.
+    /// It also keeps this to a shell tool rather than a new crate to audit.
+    pub install_tmux: &'static str,
     /// Installs whatever provides `useradd`, so a scenario can create the
     /// unprivileged account it logs in as.
     ///
@@ -116,6 +125,7 @@ pub const DEBIAN: Image = Image {
     install_ssh: "apt-get install -y -qq openssh-server",
     install_ssh_client: "apt-get install -y -qq openssh-client",
     install_useradd: "apt-get install -y -qq passwd",
+    install_tmux: "apt-get install -y -qq tmux",
     install_systemd: "apt-get update -qq && apt-get install -y -qq systemd systemd-sysv",
     init_path: "/sbin/init",
     ssh_unit: "ssh.service",
@@ -133,6 +143,7 @@ pub const ARCH: Image = Image {
     install_ssh_client: "pacman -S --needed --noconfirm openssh",
     // `useradd` is in the base image here, so there is nothing to install.
     install_useradd: "true",
+    install_tmux: "pacman -S --needed --noconfirm tmux",
     // Arch's base image already ships systemd.
     install_systemd: "true",
     init_path: "/usr/lib/systemd/systemd",
