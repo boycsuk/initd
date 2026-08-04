@@ -193,6 +193,19 @@ pub fn centred(width: u16, height: u16, area: Rect) -> Rect {
     centred
 }
 
+/// Centres a rectangle sized as a percentage of `area`.
+///
+/// The confirmation dialog is specified as a proportion of the screen rather
+/// than a cell size, so that a short question does not occupy a fixed block on
+/// a large terminal. Sizing in cells, the way the form and the help overlay do,
+/// would be a change to the contract in `docs/ui.md`.
+pub fn centred_percent(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let width = area.width * percent_x / 100;
+    let height = area.height * percent_y / 100;
+
+    centred(width, height, area)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +309,24 @@ mod tests {
 
         assert_eq!(dialog.width, 60);
         assert_eq!(dialog.height, 15);
+    }
+
+    #[test]
+    fn a_proportional_dialog_takes_its_share_of_the_screen() {
+        // The confirmation dialog is specified as a proportion rather than a
+        // cell size, so it must scale with the terminal.
+        let dialog = centred_percent(60, 40, area(100, 50));
+
+        assert_eq!(dialog.width, 60);
+        assert_eq!(dialog.height, 20);
+    }
+
+    #[test]
+    fn a_proportional_dialog_stays_inside_its_area() {
+        let screen = area(37, 13);
+        let dialog = centred_percent(60, 40, screen);
+
+        assert!(dialog.x + dialog.width <= screen.width);
+        assert!(dialog.y + dialog.height <= screen.height);
     }
 }
