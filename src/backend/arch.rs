@@ -19,6 +19,9 @@ const SSH_PACKAGE: &str = "openssh";
 /// The SSH unit on Arch — `sshd`, unlike Debian's `ssh`.
 const SSH_SERVICE: &str = "sshd.service";
 
+/// Where the OpenSSH server reads its configuration on Arch.
+const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
+
 /// Backend for the Arch family.
 pub struct ArchBackend {
     packages: PacmanPackages,
@@ -52,6 +55,12 @@ impl Backend for ArchBackend {
     fn service_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_SERVICE,
+        }
+    }
+
+    fn path_for(&self, capability: Capability) -> &'static str {
+        match capability {
+            Capability::Ssh => SSH_CONFIG,
         }
     }
 

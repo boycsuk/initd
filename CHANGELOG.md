@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Configuration paths resolve through the backend, like package and unit names
+  already did. `SSHD_CONFIG` was a constant in the task layer, which worked
+  only because the two families implemented today agree on
+  `/etc/ssh/sshd_config` — an agreement between two distributions rather than a
+  property of the capability. A path held in a task is a path no backend can
+  correct, and it was the last system-specific name living above that line. The
+  tests ask the backend for the path they assert on, so they follow whatever it
+  resolves rather than restating a second copy of it.
+
 ### Added
 - `ssh.harden-strict`, which narrows the key exchange, cipher, MAC and host key
   algorithms to a modern set, requires 3072-bit RSA keys and disables TCP

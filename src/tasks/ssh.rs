@@ -12,7 +12,7 @@ use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::algorithms;
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
-use crate::tasks::sshd_config::{self, SSHD_CONFIG};
+use crate::tasks::sshd_config;
 use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families every SSH task supports.
@@ -236,7 +236,7 @@ impl Task for HardenSsh {
         progress: Progress<'_>,
     ) -> Result<Outcome> {
         let files = backend.files();
-        let contents = files.read(executor, SSHD_CONFIG)?;
+        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
 
         // Disabling password authentication without a key in place is the
         // documented way administrators lock themselves out of a server.
@@ -329,7 +329,7 @@ impl Task for HardenSshStrict {
         progress: Progress<'_>,
     ) -> Result<Outcome> {
         let files = backend.files();
-        let contents = files.read(executor, SSHD_CONFIG)?;
+        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
 
         // Same guard as the safe tier. This task disables no password, but a
         // configuration that strands the administrator's client is just as
@@ -625,7 +625,7 @@ impl Task for ChangePort {
         }
 
         let files = backend.files();
-        let contents = files.read(executor, SSHD_CONFIG)?;
+        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
 
         // An unset Port directive means sshd is on its default of 22.
         let current = sshd_config::directive_value(&contents, "Port")
@@ -848,7 +848,7 @@ impl Task for RestrictUsers {
         }
 
         let files = backend.files();
-        let contents = files.read(executor, SSHD_CONFIG)?;
+        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
 
         // Holding a key is not the same as being able to log in. An account
         // the daemon already refuses cannot be the one way back in, and root

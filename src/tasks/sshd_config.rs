@@ -4,14 +4,10 @@
 //! validate before reloading, and both must restore their backup if the new
 //! configuration is rejected.
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Capability};
 use crate::domain::files::Backup;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
-
-/// Location of the server configuration. Identical across both families —
-/// unlike the package and unit names.
-pub const SSHD_CONFIG: &str = "/etc/ssh/sshd_config";
 
 /// Outcome of validating a configuration with `sshd -t`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,7 +179,8 @@ pub fn write_validated(
     backend: &dyn Backend,
     contents: &str,
 ) -> Result<Option<Backup>> {
-    let backup = backend.files().write(executor, SSHD_CONFIG, contents)?;
+    let path = backend.path_for(Capability::Ssh);
+    let backup = backend.files().write(executor, path, contents)?;
 
     match validate(executor)? {
         Validation::Valid | Validation::Inconclusive { .. } => Ok(backup),
@@ -418,7 +415,10 @@ mod tests {
         assert!(matches!(err, Error::InvalidSshdConfig { .. }), "{err:?}");
 
         let commands = mock.recorded_lines();
-        let restore = format!("cp -p {SSHD_CONFIG}.initd.bak {SSHD_CONFIG}");
+        // Asking the backend rather than a local constant keeps the assertion
+        // tied to the path the code under test actually resolves.
+        let path = backend.path_for(Capability::Ssh);
+        let restore = format!("cp -p {path}.initd.bak {path}");
         assert!(
             commands.contains(&restore),
             "the backup must be restored: {commands:?}"
@@ -437,7 +437,10 @@ mod tests {
 
         write_validated(&mock, backend.as_ref(), "Port 22\n").expect("a valid config must commit");
 
-        let restore = format!("cp -p {SSHD_CONFIG}.initd.bak {SSHD_CONFIG}");
+        // Asking the backend rather than a local constant keeps the assertion
+        // tied to the path the code under test actually resolves.
+        let path = backend.path_for(Capability::Ssh);
+        let restore = format!("cp -p {path}.initd.bak {path}");
         assert!(
             !mock.recorded_lines().contains(&restore),
             "a valid config must not be rolled back"
@@ -458,7 +461,10 @@ mod tests {
         write_validated(&mock, backend.as_ref(), "Port 22\n")
             .expect("an inconclusive validation must not fail the write");
 
-        let restore = format!("cp -p {SSHD_CONFIG}.initd.bak {SSHD_CONFIG}");
+        // Asking the backend rather than a local constant keeps the assertion
+        // tied to the path the code under test actually resolves.
+        let path = backend.path_for(Capability::Ssh);
+        let restore = format!("cp -p {path}.initd.bak {path}");
         assert!(!mock.recorded_lines().contains(&restore));
     }
 }

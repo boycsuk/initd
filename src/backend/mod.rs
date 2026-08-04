@@ -42,6 +42,16 @@ pub trait Backend {
     /// The service unit providing a capability on this distribution.
     fn service_for(&self, capability: Capability) -> &'static str;
 
+    /// The configuration file a capability reads on this distribution.
+    ///
+    /// Both families implemented today agree on `/etc/ssh/sshd_config`, so
+    /// this method looks redundant. It is not: the agreement is a fact about
+    /// these two distributions rather than a property of the capability, and a
+    /// path held in a task is a path no backend can correct. Package and unit
+    /// names already resolve here; paths were the one system-specific name
+    /// still living above this layer.
+    fn path_for(&self, capability: Capability) -> &'static str;
+
     fn packages(&self) -> &dyn PackageManager;
     fn services(&self) -> &dyn ServiceManager;
     fn files(&self) -> &dyn FileEditor;
@@ -80,5 +90,21 @@ mod tests {
 
         assert_eq!(debian.service_for(Capability::Ssh), "ssh.service");
         assert_eq!(arch.service_for(Capability::Ssh), "sshd.service");
+    }
+
+    #[test]
+    fn every_family_resolves_a_config_path() {
+        // The two families agree on this path today, so asserting the literal
+        // would only restate the constant. What must hold is that the question
+        // is answerable per family: a backend that returned an empty path
+        // would have every file operation silently address the wrong file.
+        for family in [Family::Debian, Family::Arch] {
+            let path = for_family(family).path_for(Capability::Ssh);
+
+            assert!(
+                path.starts_with('/'),
+                "{family} resolved a non-absolute config path: {path:?}"
+            );
+        }
     }
 }

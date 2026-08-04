@@ -19,6 +19,9 @@ const SSH_PACKAGE: &str = "openssh-server";
 /// The SSH unit on Debian — note it is `ssh`, not `sshd` as on Arch.
 const SSH_SERVICE: &str = "ssh.service";
 
+/// Where the OpenSSH server reads its configuration on Debian.
+const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
+
 /// Backend for the Debian family.
 pub struct DebianBackend {
     packages: AptPackages,
@@ -52,6 +55,12 @@ impl Backend for DebianBackend {
     fn service_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_SERVICE,
+        }
+    }
+
+    fn path_for(&self, capability: Capability) -> &'static str {
+        match capability {
+            Capability::Ssh => SSH_CONFIG,
         }
     }
 
