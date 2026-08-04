@@ -22,16 +22,26 @@
 //! the same one the backend claims. Naming it twice would let the test agree
 //! with itself while disagreeing with the tool.
 //!
+//! # The binaries, and why they are separate
+//!
+//! `integration_shared` and `integration_connection` run against ordinary
+//! ephemeral containers and cover most of the matrix. Two others exist because
+//! they need something the ephemeral ones cannot give:
+//!
+//! - `integration_systemd` boots systemd as PID 1, which is what makes
+//!   `systemctl enable` observable at all. It needs `--privileged` and
+//!   `--cgroupns=host`, so it skips where a host will not grant them.
+//! - `integration_old_client` puts an older client in a second container, to
+//!   ask whether hardening locks out a client several releases behind — the
+//!   question a single image cannot pose, since client and server there share
+//!   one OpenSSH release.
+//!
+//! Both are slow enough, and demanding enough of the host, to keep out of the
+//! shared matrix.
+//!
 //! # Known limitations
 //!
-//! systemd is not PID 1 in an ordinary container, so `systemctl enable` cannot
-//! be verified for real. These tests therefore assert on what *is* observable —
-//! the package being installed, files written, permissions applied — and the
-//! unit-level tests assert on the exact command built. Verifying the effect of
-//! `systemctl` would need systemd-enabled images and privileged containers,
-//! which is out of scope for this slice.
-//!
-//! `ssh.allow-users` has no coverage here either, for a different reason: it
+//! `ssh.allow-users` has no coverage here: it
 //! is deliberately interactive-only, so there is no subcommand to drive it
 //! from a container script. Widening the CLI surface to make it testable would
 //! reintroduce the very risk that keeping it out of the CLI avoids, so the gap
@@ -41,6 +51,9 @@
 // binary uses looks unused from here. That is inherent to sharing a module
 // across test binaries, not a sign of dead code.
 #![allow(dead_code)]
+
+pub mod systemd;
+pub mod two_hosts;
 
 use std::process::Command;
 
@@ -64,6 +77,23 @@ pub struct Image {
     /// decision rather than a fact about OpenSSH: Debian ships
     /// `openssh-client` apart from the server, Arch puts both in `openssh`.
     pub install_ssh_client: &'static str,
+    /// Makes the image bootable by systemd, run once before committing the
+    /// image the systemd scenarios boot.
+    ///
+    /// Debian's base image ships no init at all; Arch's already has one, so
+    /// there is nothing to install and this is a no-op.
+    pub install_systemd: &'static str,
+    /// Absolute path to the init this image boots.
+    ///
+    /// The one place in these tests a binary path is written out, because
+    /// `docker run` takes a command rather than something to resolve through
+    /// `PATH`, and the container has no shell of ours to resolve it in.
+    pub init_path: &'static str,
+    /// The systemd unit providing SSH here.
+    ///
+    /// `ssh.service` on Debian, `sshd.service` on Arch — the divergence the
+    /// backend absorbs, and until now only ever checked against a mock.
+    pub ssh_unit: &'static str,
     /// Installs whatever provides `useradd`, so a scenario can create the
     /// unprivileged account it logs in as.
     ///
@@ -86,6 +116,9 @@ pub const DEBIAN: Image = Image {
     install_ssh: "apt-get install -y -qq openssh-server",
     install_ssh_client: "apt-get install -y -qq openssh-client",
     install_useradd: "apt-get install -y -qq passwd",
+    install_systemd: "apt-get update -qq && apt-get install -y -qq systemd systemd-sysv",
+    init_path: "/sbin/init",
+    ssh_unit: "ssh.service",
     query_ssh: "dpkg-query -W -f='${Status}' openssh-server",
     installed_needle: "install ok installed",
 };
@@ -100,6 +133,10 @@ pub const ARCH: Image = Image {
     install_ssh_client: "pacman -S --needed --noconfirm openssh",
     // `useradd` is in the base image here, so there is nothing to install.
     install_useradd: "true",
+    // Arch's base image already ships systemd.
+    install_systemd: "true",
+    init_path: "/usr/lib/systemd/systemd",
+    ssh_unit: "sshd.service",
     query_ssh: "pacman -Q openssh",
     installed_needle: "openssh",
 };
@@ -217,7 +254,7 @@ pub const LOGIN_USER: &str = "initdtest";
 /// Two keys, two purposes, and conflating them is what makes hardening
 /// scenarios fail confusingly: [`TEST_KEY`] satisfies the guard so `ssh.harden`
 /// will proceed at all, while the generated pair is what actually logs in.
-const PREPARE_ACCOUNT: &str = "useradd -m -s /bin/sh initdtest >/dev/null 2>&1; \
+pub const PREPARE_LOGIN_ACCOUNT: &str = "useradd -m -s /bin/sh initdtest >/dev/null 2>&1; \
      su initdtest -c 'mkdir -p ~/.ssh && \
        ssh-keygen -t ed25519 -N \"\" -f ~/.ssh/id_ed25519 -q && \
        cp ~/.ssh/id_ed25519.pub ~/.ssh/authorized_keys && \
@@ -253,7 +290,7 @@ pub fn run_and_connect(image: &Image, configure: &str) -> std::process::Output {
              {install_useradd} >/dev/null 2>&1; \
              ssh-keygen -A >/dev/null 2>&1; \
              mkdir -p /root/.ssh /run/sshd; \
-             {PREPARE_ACCOUNT} \
+             {PREPARE_LOGIN_ACCOUNT} \
              initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
              {configure} >/dev/null 2>&1; \
              {SSHD_START} \
@@ -330,7 +367,7 @@ pub fn run_and_ask_offered_methods(image: &Image, configure: &str) -> std::proce
              {install_useradd} >/dev/null 2>&1; \
              ssh-keygen -A >/dev/null 2>&1; \
              mkdir -p /root/.ssh /run/sshd; \
-             {PREPARE_ACCOUNT} \
+             {PREPARE_LOGIN_ACCOUNT} \
              initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
              {configure} >/dev/null 2>&1; \
              {SSHD_START} \
