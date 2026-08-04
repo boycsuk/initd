@@ -114,6 +114,31 @@ TUI or CLI:
   - Acceptance: locking an already-locked root reports that, rather than
     failing or implying it did the work again.
 
+### WireGuard
+
+- As an **administrator**, I can see whether the tunnel is up and how many peers
+  are configured, so that I know the state before changing it.
+  - Acceptance: "configured but down" is distinct from "up". A configured
+    interface that is not running carries nothing.
+- As an **administrator**, I can install a WireGuard server, so that I can reach
+  private services without exposing them.
+  - Acceptance: installing over an existing configuration is refused. A new
+    server key silently invalidates every peer configured against the old one.
+  - Acceptance: the tool says that forwarding and an open UDP port are still
+    needed. Without them the tunnel establishes and carries nothing.
+- As an **administrator**, I can add a peer and get its configuration, so that a
+  device can connect.
+  - Acceptance: the client route covers IPv4 *and* IPv6. Routing only
+    `0.0.0.0/0` leaves the device's own IPv6 route in place, so traffic to a
+    dual-stack destination leaves outside the tunnel.
+  - Acceptance: each peer is authorised for exactly one address. A wider mask
+    would let any peer send as any other.
+  - Acceptance: an address another peer holds is refused. Two peers on one
+    address means the second to connect takes the first one's traffic.
+  - Acceptance: the peer's private key is shown once and never stored, so the
+    tool cannot leak later what it does not keep.
+  - Acceptance: adding a peer does not drop the tunnels already established.
+
 ### Firewall and kernel parameters
 
 - As an **administrator**, I can see whether the firewall is filtering and which

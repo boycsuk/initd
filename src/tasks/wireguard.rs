@@ -1,0 +1,745 @@
+//! WireGuard server and peers.
+//!
+//! Sourced from shell scripts that ran in production, with the bugs those
+//! scripts had fixed rather than reproduced. The three that mattered:
+//!
+//! - `AllowedIPs = 0.0.0.0/0` on a client without `::/0` leaks IPv6. The host
+//!   keeps its own IPv6 route, so traffic to a dual-stack destination leaves
+//!   outside the tunnel while the tunnel reports itself up.
+//! - Addresses were handed out by scanning `10.89.0.2` to `.254` inside a `/16`,
+//!   which exhausts at 253 peers with 65,000 free.
+//! - `PostUp` hard-coded `iptables`, which does nothing on an nftables-only
+//!   host — a VPN that connects and routes nothing.
+
+use std::fmt::Write as _;
+
+use crate::backend::{Backend, Capability};
+use crate::distro::Family;
+use crate::domain::sysctl::Setting;
+use crate::error::{Error, Result};
+use crate::exec::{Executor, OutputLine, Stream};
+use crate::tasks::consequence::{Check, Consequence, External, Protocol as WarnProtocol, Reason};
+use crate::tasks::params::{Param, ParamKind, ParamValues};
+use crate::tasks::revert::Outcome;
+use crate::tasks::{Category, Node, Progress, Task};
+
+/// Families these tasks support.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+
+/// The interface this tool manages.
+///
+/// Fixed rather than asked for: a second interface is a different topology,
+/// not a different value, and offering the name invites `wg0` to be typed into
+/// a tool that already manages one.
+const INTERFACE: &str = "wg0";
+
+/// The port WireGuard listens on unless told otherwise.
+const DEFAULT_PORT: u32 = 51_820;
+
+/// Mode for `wg0.conf`, which holds the server's private key.
+const CONFIG_MODE: u32 = 0o600;
+
+/// Mode for `/etc/wireguard`, which holds every key.
+const CONFIG_DIR_MODE: u32 = 0o700;
+
+/// Forwarding, without which the server routes nothing for its peers.
+const IP_FORWARD: Setting = Setting {
+    key: "net.ipv4.ip_forward",
+    value: "1",
+};
+
+/// Reports a step to the caller as a normal output line.
+fn report(progress: Progress<'_>, text: impl Into<String>) {
+    progress(OutputLine {
+        stream: Stream::Stdout,
+        text: text.into(),
+    });
+}
+
+/// Builds the WireGuard category.
+pub fn category() -> Category {
+    Category::new(
+        "WireGuard",
+        vec![
+            Node::Task(Box::new(WireguardStatus)),
+            Node::Task(Box::new(InstallWireguard)),
+            Node::Task(Box::new(AddPeer)),
+        ],
+    )
+}
+
+/// Reports whether the tunnel is up and who is on it.
+///
+/// Beside the firewall's own status task, and for the same reason: the state
+/// worth knowing before changing anything is the state the system is actually
+/// in, not the one the last run left behind.
+pub struct WireguardStatus;
+
+impl Task for WireguardStatus {
+    fn id(&self) -> &'static str {
+        "wireguard.status"
+    }
+
+    fn title(&self) -> &'static str {
+        "Show the WireGuard status"
+    }
+
+    fn description(&self) -> &'static str {
+        "Reports whether the tunnel interface is up and how many peers are \
+         configured. Changes nothing."
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let config = format!(
+            "{}/{INTERFACE}.conf",
+            backend.path_for(Capability::Wireguard)
+        );
+
+        if !backend.files().exists(executor, &config)? {
+            report(progress, "WireGuard is not configured".to_owned());
+
+            return Ok(Outcome::Done);
+        }
+
+        // Both are asked, because either alone misleads: a configured
+        // interface that is down carries nothing, and an interface that is up
+        // with no peers admits nobody.
+        if backend.wireguard().is_up(executor, INTERFACE)? {
+            report(progress, format!("{INTERFACE} is up"));
+        } else {
+            report(progress, format!("{INTERFACE} is configured but down"));
+        }
+
+        let peers = backend
+            .files()
+            .read(executor, &config)?
+            .lines()
+            .filter(|line| line.trim() == "[Peer]")
+            .count();
+
+        report(progress, format!("{peers} peer(s) configured"));
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Installs WireGuard and writes the server configuration.
+pub struct InstallWireguard;
+
+impl InstallWireguard {
+    /// Name of the parameter holding the tunnel subnet.
+    pub const SUBNET: &'static str = "subnet";
+    /// Name of the parameter holding the listening port.
+    pub const PORT: &'static str = "port";
+}
+
+impl Task for InstallWireguard {
+    fn id(&self) -> &'static str {
+        "wireguard.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install the WireGuard server"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs WireGuard, generates the server keys and writes wg0.conf. \
+         The tunnel carries no traffic until forwarding is enabled and the \
+         port is open."
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::SUBNET, "Tunnel subnet", ParamKind::Cidr)
+                .with_initial("10.89.0.0/24")
+                .with_hint("private range for the tunnel"),
+            Param::new(Self::PORT, "Listen port", ParamKind::Port)
+                .with_initial(DEFAULT_PORT.to_string())
+                .with_hint("UDP"),
+        ]
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+        let Ok(port) = values.port(Self::PORT) else {
+            return Vec::new();
+        };
+
+        vec![
+            // A tunnel without forwarding establishes, reports itself up, and
+            // routes nothing — the failure looks like a client problem.
+            Consequence::Invalidates {
+                task: "sysctl.ip-forward",
+                reason: Reason::RequiresSetting {
+                    setting: IP_FORWARD.key,
+                },
+                check: Some(Check {
+                    command: crate::exec::Command::new("sysctl").args(["-n", IP_FORWARD.key]),
+                    resolved_when_stdout_contains: IP_FORWARD.value.to_owned(),
+                }),
+            },
+            // UDP, and the distinction is the point: a TCP rule for this port
+            // admits none of WireGuard's traffic.
+            Consequence::Invalidates {
+                task: "firewall.allow-port",
+                reason: Reason::RequiresSetting {
+                    setting: "an inbound UDP rule for this port",
+                },
+                check: Some(Check {
+                    command: crate::exec::Command::new("nft")
+                        .args(["list", "table", "inet", "initd"])
+                        .privileged(),
+                    resolved_when_stdout_contains: format!("udp dport {port} accept"),
+                }),
+            },
+            Consequence::External {
+                note: External::ProviderFirewall {
+                    port,
+                    protocol: WarnProtocol::Udp,
+                },
+            },
+        ]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let subnet = values.get(Self::SUBNET)?.to_owned();
+        let port = values.port(Self::PORT)?;
+
+        let dir = backend.path_for(Capability::Wireguard);
+        let config = format!("{dir}/{INTERFACE}.conf");
+        let files = backend.files();
+
+        if files.exists(executor, &config)? {
+            // Overwriting would discard the server key every existing peer is
+            // configured against, and every one of them would stop connecting
+            // with no indication why.
+            return Err(Error::WireguardAlreadyConfigured { path: config });
+        }
+
+        report(progress, "installing wireguard-tools".to_owned());
+        backend
+            .packages()
+            .install(executor, backend.package_for(Capability::Wireguard))?;
+
+        // 0700 before anything is written into it: the directory holds private
+        // keys, and creating it world-readable even briefly is a window.
+        files.create_dir(executor, dir, CONFIG_DIR_MODE)?;
+
+        report(progress, "generating the server keys".to_owned());
+        let keys = backend.wireguard().generate_keypair(executor)?;
+
+        let server_address = first_address(&subnet)?;
+        let contents = server_config(&keys.private, &server_address, port);
+
+        files.write(executor, &config, &contents)?;
+        files.set_mode(executor, &config, CONFIG_MODE)?;
+
+        report(progress, format!("wrote {config}"));
+        report(progress, format!("server public key: {}", keys.public));
+
+        // Enabled but not started: starting it before forwarding and the
+        // firewall are in place produces a tunnel that comes up and carries
+        // nothing, which is harder to diagnose than one that is plainly off.
+        let unit = format!("{}{INTERFACE}", backend.service_for(Capability::Wireguard));
+        backend.services().enable_and_start(executor, &unit)?;
+
+        report(progress, format!("{unit} is enabled"));
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Adds a peer to the server and prints its configuration.
+pub struct AddPeer;
+
+impl AddPeer {
+    /// Name of the parameter holding the peer's name.
+    pub const NAME: &'static str = "name";
+    /// Name of the parameter holding the address to assign.
+    pub const ADDRESS: &'static str = "address";
+    /// Name of the parameter holding the server's public endpoint.
+    pub const ENDPOINT: &'static str = "endpoint";
+}
+
+impl Task for AddPeer {
+    fn id(&self) -> &'static str {
+        "wireguard.add-peer"
+    }
+
+    fn title(&self) -> &'static str {
+        "Add a WireGuard peer"
+    }
+
+    fn description(&self) -> &'static str {
+        "Generates a keypair for one peer, records it on the server, and prints \
+         the client configuration. The private key is printed once and never \
+         stored — this tool cannot show it again."
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::NAME, "Peer name", ParamKind::Username)
+                .with_hint("a label, recorded as a comment"),
+            Param::new(Self::ADDRESS, "Tunnel address", ParamKind::Ip)
+                .with_hint("one address inside the tunnel subnet"),
+            Param::new(Self::ENDPOINT, "Server endpoint", ParamKind::Endpoint)
+                .with_hint("the address:port peers dial, as seen from outside"),
+        ]
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let name = values.get(Self::NAME)?.to_owned();
+        let address = values.get(Self::ADDRESS)?.to_owned();
+        let endpoint = values.get(Self::ENDPOINT)?.to_owned();
+
+        let dir = backend.path_for(Capability::Wireguard);
+        let config = format!("{dir}/{INTERFACE}.conf");
+        let files = backend.files();
+
+        let existing = files.read(executor, &config)?;
+
+        // Two peers sharing an address is a tunnel where the second one to
+        // connect takes the first one's traffic, and neither reports an error.
+        if existing.contains(&format!("AllowedIPs = {address}/32")) {
+            return Err(Error::WireguardAddressTaken { address });
+        }
+
+        let keys = backend.wireguard().generate_keypair(executor)?;
+        let server_public = server_public_key(executor, backend, &existing)?;
+
+        let peer = peer_block(&name, &keys.public, &keys.preshared, &address);
+        files.write(executor, &config, &format!("{existing}{peer}"))?;
+
+        // `syncconf` rather than restarting: a restart drops every established
+        // tunnel, including the one an administrator may be connected through.
+        let unit = format!("{}{INTERFACE}", backend.service_for(Capability::Wireguard));
+        backend.services().reload(executor, &unit)?;
+
+        report(progress, format!("{name} added at {address}"));
+        report(progress, String::new());
+        report(
+            progress,
+            client_config(
+                &keys.private,
+                &keys.preshared,
+                &address,
+                &server_public,
+                &endpoint,
+            ),
+        );
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// The server's own configuration.
+fn server_config(private_key: &str, address: &str, port: u32) -> String {
+    // No PostUp or PostDown. The masquerade rule those usually carry is spelled
+    // differently for nftables and iptables, and a configuration that guesses
+    // wrong leaves a tunnel that connects and routes nothing. The firewall is
+    // modelled as its own capability precisely so this does not have to guess.
+    //
+    // SaveConfig is off so that the file stays what this tool wrote: with it
+    // on, wg-quick rewrites the file on shutdown and any comment naming a peer
+    // is lost.
+    format!(
+        "# Managed by initd.\n\
+         [Interface]\n\
+         Address = {address}\n\
+         ListenPort = {port}\n\
+         PrivateKey = {private_key}\n\
+         SaveConfig = false\n"
+    )
+}
+
+/// One peer's entry in the server configuration.
+fn peer_block(name: &str, public_key: &str, preshared: &str, address: &str) -> String {
+    let mut block = String::new();
+
+    // `/32` rather than the subnet: on the server, AllowedIPs is the list of
+    // addresses this peer is authorised to send from, so a wider mask lets one
+    // peer impersonate every other.
+    let _ = write!(
+        block,
+        "\n# {name}\n\
+         [Peer]\n\
+         PublicKey = {public_key}\n\
+         PresharedKey = {preshared}\n\
+         AllowedIPs = {address}/32\n"
+    );
+
+    block
+}
+
+/// The configuration a peer needs, printed once.
+fn client_config(
+    private_key: &str,
+    preshared: &str,
+    address: &str,
+    server_public: &str,
+    endpoint: &str,
+) -> String {
+    // `0.0.0.0/0, ::/0` together, never `0.0.0.0/0` alone. With only the IPv4
+    // route the host keeps its own IPv6 route, so traffic to a dual-stack
+    // destination leaves outside the tunnel while the tunnel reports itself up
+    // — the leak is invisible from the client's point of view.
+    format!(
+        "[Interface]\n\
+         PrivateKey = {private_key}\n\
+         Address = {address}/32\n\
+         \n\
+         [Peer]\n\
+         PublicKey = {server_public}\n\
+         PresharedKey = {preshared}\n\
+         Endpoint = {endpoint}\n\
+         AllowedIPs = 0.0.0.0/0, ::/0\n\
+         PersistentKeepalive = 25\n"
+    )
+}
+
+/// The server's public key, derived from the private key in its configuration.
+///
+/// Derived rather than stored: a public key kept in a second file can disagree
+/// with the private key in the first, and the peer configured from the stale
+/// one never completes a handshake.
+fn server_public_key(
+    executor: &dyn Executor,
+    backend: &dyn Backend,
+    config: &str,
+) -> Result<String> {
+    let private = config
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("PrivateKey"))
+        .and_then(|rest| rest.trim().strip_prefix('='))
+        .map(str::trim)
+        .ok_or(Error::WireguardNotConfigured)?;
+
+    backend.wireguard().public_key_of(executor, private)
+}
+
+/// The first usable address of a subnet, as the server's own.
+///
+/// `10.89.0.0/24` yields `10.89.0.1/24`: the mask is kept because the interface
+/// address carries it, and dropping it would make the server think it is alone
+/// on the tunnel.
+fn first_address(subnet: &str) -> Result<String> {
+    let (network, mask) = subnet.split_once('/').ok_or_else(|| Error::InvalidSubnet {
+        subnet: subnet.to_owned(),
+    })?;
+
+    let mut octets: Vec<&str> = network.split('.').collect();
+
+    if octets.len() != 4 {
+        return Err(Error::InvalidSubnet {
+            subnet: subnet.to_owned(),
+        });
+    }
+
+    octets[3] = "1";
+
+    Ok(format!("{}/{mask}", octets.join(".")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::for_family;
+    use crate::exec::mock::{MockExecutor, Reply};
+
+    /// A syntactically valid key, for tests that do not care which one.
+    const KEY: &str = "aGVsbG8gd29ybGQgdGhpcyBpcyA0NCBjaGFycyBrZXk=";
+
+    fn install_values(subnet: &str, port: u32) -> ParamValues {
+        let mut values = ParamValues::new();
+        values.set(InstallWireguard::SUBNET, subnet.to_owned());
+        values.set(InstallWireguard::PORT, port.to_string());
+        values
+    }
+
+    #[test]
+    fn the_status_distinguishes_configured_from_running() {
+        // Either alone misleads: a configured interface that is down carries
+        // nothing, and reporting only "configured" reads as working.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                         // the config exists
+            Reply::failure(1, "Unable to access"), // the interface is down
+            Reply::ok(format!("[Interface]\nPrivateKey = {KEY}\n\n[Peer]\n")),
+        ]);
+        let backend = for_family(Family::Debian);
+        let mut lines = Vec::new();
+
+        WireguardStatus
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |line| {
+                lines.push(line.text)
+            })
+            .expect("the status must succeed");
+
+        let output = lines.join("\n");
+
+        assert!(output.contains("configured but down"), "{output}");
+        assert!(output.contains("1 peer"), "{output}");
+    }
+
+    #[test]
+    fn the_status_of_an_unconfigured_host_says_so() {
+        let mock = MockExecutor::with_replies([Reply::failure(1, "")]);
+        let backend = for_family(Family::Debian);
+        let mut lines = Vec::new();
+
+        WireguardStatus
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |line| {
+                lines.push(line.text)
+            })
+            .expect("the status must succeed");
+
+        assert!(lines.join("\n").contains("not configured"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_client_route_covers_both_address_families() {
+        // The leak the source scripts had: `0.0.0.0/0` alone leaves the host's
+        // own IPv6 route in place, so traffic to a dual-stack destination goes
+        // outside the tunnel while the tunnel reports itself up.
+        let config = client_config(KEY, KEY, "10.89.0.2", KEY, "203.0.113.7:51820");
+
+        assert!(
+            config.contains("AllowedIPs = 0.0.0.0/0, ::/0"),
+            "an IPv4-only route leaks IPv6: {config}"
+        );
+    }
+
+    #[test]
+    fn a_peer_is_authorised_for_one_address_only() {
+        // On the server, AllowedIPs is what a peer may send *from*. A wider
+        // mask lets any peer impersonate every other.
+        let block = peer_block("laptop", KEY, KEY, "10.89.0.2");
+
+        assert!(block.contains("AllowedIPs = 10.89.0.2/32"), "{block}");
+        assert!(
+            !block.contains("/24") && !block.contains("/16"),
+            "a subnet mask here authorises impersonation: {block}"
+        );
+    }
+
+    #[test]
+    fn the_server_configuration_hard_codes_no_firewall_syntax() {
+        // The third bug: `PostUp = iptables ...` does nothing on an
+        // nftables-only host, leaving a tunnel that connects and routes
+        // nothing. The firewall is a capability precisely so this can be left
+        // out.
+        let config = server_config(KEY, "10.89.0.1/24", 51_820);
+
+        assert!(!config.contains("iptables"), "{config}");
+        assert!(!config.contains("PostUp"), "{config}");
+    }
+
+    #[test]
+    fn the_server_does_not_rewrite_its_own_configuration() {
+        // With SaveConfig on, wg-quick rewrites the file at shutdown and every
+        // comment naming a peer is lost.
+        let config = server_config(KEY, "10.89.0.1/24", 51_820);
+
+        assert!(config.contains("SaveConfig = false"), "{config}");
+    }
+
+    #[test]
+    fn the_server_takes_the_first_address_of_its_subnet() {
+        assert_eq!(first_address("10.89.0.0/24").unwrap(), "10.89.0.1/24");
+        assert_eq!(first_address("192.168.4.0/22").unwrap(), "192.168.4.1/22");
+    }
+
+    #[test]
+    fn a_subnet_without_a_mask_is_refused() {
+        // The address the interface carries includes its mask; without one the
+        // server believes it is alone on the tunnel.
+        assert!(first_address("10.89.0.0").is_err());
+        assert!(first_address("not-a-subnet").is_err());
+    }
+
+    #[test]
+    fn installing_over_an_existing_configuration_is_refused() {
+        // A new server key silently invalidates every peer configured against
+        // the old one, and each stops connecting with no indication why.
+        let mock = MockExecutor::with_replies([Reply::ok("")]);
+        let backend = for_family(Family::Debian);
+
+        let err = InstallWireguard
+            .run(
+                &mock,
+                backend.as_ref(),
+                &install_values("10.89.0.0/24", 51_820),
+                &mut |_| {},
+            )
+            .expect_err("an existing configuration must be refused");
+
+        assert!(
+            matches!(err, Error::WireguardAlreadyConfigured { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn installing_warns_that_forwarding_and_the_port_are_needed() {
+        // Both are what turn a tunnel that establishes into one that carries
+        // traffic, and neither is this task's to change.
+        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+
+        let named: Vec<_> = consequences.iter().filter_map(|c| c.task()).collect();
+
+        assert!(named.contains(&"sysctl.ip-forward"), "{named:?}");
+        assert!(named.contains(&"firewall.allow-port"), "{named:?}");
+    }
+
+    #[test]
+    fn the_firewall_warning_names_udp() {
+        // A TCP rule for this port admits none of WireGuard's traffic while
+        // looking, in a listing, very much like it should.
+        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+
+        let firewall = consequences
+            .iter()
+            .find(|c| c.task() == Some("firewall.allow-port"))
+            .expect("the firewall must be named");
+
+        let check = firewall.check().expect("a local rule is answerable");
+
+        assert_eq!(
+            check.resolved_when_stdout_contains,
+            "udp dport 51820 accept"
+        );
+    }
+
+    #[test]
+    fn the_provider_warning_cannot_be_verified() {
+        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+
+        let external: Vec<_> = consequences.iter().filter(|c| c.is_external()).collect();
+
+        assert_eq!(external.len(), 1, "{consequences:?}");
+        assert!(external[0].check().is_none());
+    }
+
+    #[test]
+    fn a_peer_cannot_take_an_address_another_holds() {
+        // Two peers on one address is a tunnel where the second to connect
+        // takes the first one's traffic, and neither reports an error.
+        let existing = format!(
+            "[Interface]\nPrivateKey = {KEY}\n\n# laptop\n[Peer]\nAllowedIPs = 10.89.0.2/32\n"
+        );
+
+        let mock = MockExecutor::with_replies([Reply::ok(existing)]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(AddPeer::NAME, "phone".to_owned());
+        values.set(AddPeer::ADDRESS, "10.89.0.2".to_owned());
+        values.set(AddPeer::ENDPOINT, "203.0.113.7:51820".to_owned());
+
+        let err = AddPeer
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect_err("a taken address must be refused");
+
+        assert!(
+            matches!(err, Error::WireguardAddressTaken { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn the_server_public_key_is_derived_rather_than_stored() {
+        // A public key kept in a second file can disagree with the private key
+        // in the first, and a peer configured from the stale one never
+        // completes a handshake.
+        let mock = MockExecutor::with_replies([Reply::ok(KEY)]);
+        let backend = for_family(Family::Debian);
+        let config = format!("[Interface]\nPrivateKey = {KEY}\n");
+
+        let public =
+            server_public_key(&mock, backend.as_ref(), &config).expect("the key must be derivable");
+
+        assert_eq!(public, KEY);
+        assert!(
+            mock.single_command().stdin.is_some(),
+            "the private key belongs on stdin"
+        );
+    }
+
+    #[test]
+    fn a_configuration_without_a_private_key_is_an_error() {
+        let mock = MockExecutor::new();
+        let backend = for_family(Family::Debian);
+
+        let err = server_public_key(&mock, backend.as_ref(), "[Interface]\n")
+            .expect_err("a configuration with no key must fail");
+
+        assert!(matches!(err, Error::WireguardNotConfigured), "{err:?}");
+    }
+
+    #[test]
+    fn adding_a_peer_reloads_rather_than_restarts() {
+        // A restart drops every established tunnel, including the one the
+        // administrator may be connected through.
+        let existing = format!("[Interface]\nPrivateKey = {KEY}\n");
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok(existing), // read the config
+            Reply::ok(KEY),      // genkey
+            Reply::ok(KEY),      // genpsk
+            Reply::ok(KEY),      // pubkey for the peer
+            Reply::ok(KEY),      // pubkey for the server
+            Reply::ok(""),       // backup
+            Reply::ok(""),       // write
+            Reply::ok(""),       // reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(AddPeer::NAME, "laptop".to_owned());
+        values.set(AddPeer::ADDRESS, "10.89.0.2".to_owned());
+        values.set(AddPeer::ENDPOINT, "203.0.113.7:51820".to_owned());
+
+        AddPeer
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect("adding a peer must succeed");
+
+        let commands = mock.recorded_lines();
+
+        assert!(
+            commands.iter().any(|c| c.contains("reload")),
+            "{commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("restart")),
+            "a restart drops every tunnel: {commands:?}"
+        );
+    }
+}

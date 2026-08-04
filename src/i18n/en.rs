@@ -82,6 +82,25 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::UnknownSysctl { key } => {
             format!("this kernel has no parameter named {key}")
         }
+        Msg::InvalidWireguardKey { reason } => {
+            format!("invalid WireGuard key: {reason}")
+        }
+        // Says what overwriting would cost, since the file looks replaceable.
+        Msg::WireguardAlreadyConfigured { path } => {
+            format!(
+                "{path} already exists; replacing it would generate a new server key                  and every existing peer would stop connecting"
+            )
+        }
+        Msg::WireguardNotConfigured => {
+            "WireGuard has no server configuration; run              wireguard.install first"
+                .to_owned()
+        }
+        Msg::WireguardAddressTaken { address } => {
+            format!("another peer already uses {address}")
+        }
+        Msg::InvalidSubnet { subnet } => {
+            format!("{subnet} is not a subnet in CIDR notation")
+        }
         Msg::AccountExists { user } => {
             format!("the account {user} already exists")
         }

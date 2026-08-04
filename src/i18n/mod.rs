@@ -131,6 +131,19 @@ pub enum Msg {
     UnknownSysctl {
         key: String,
     },
+    InvalidWireguardKey {
+        reason: String,
+    },
+    WireguardAlreadyConfigured {
+        path: String,
+    },
+    WireguardNotConfigured,
+    WireguardAddressTaken {
+        address: String,
+    },
+    InvalidSubnet {
+        subnet: String,
+    },
     AccountExists {
         user: String,
     },

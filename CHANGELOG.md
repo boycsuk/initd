@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WireGuard: install a server, add peers, and report the tunnel's state. Sits
+  under Remote Access beside SSH, which is what that category was named for —
+  SSH grants shell access and WireGuard grants network access.
+- `WireguardTools`, a capability for key material and interface state. Private
+  keys are fed on stdin and never as arguments: `/proc/<pid>/cmdline` is
+  readable by every account on the host, so an argument publishes the key for
+  as long as the process lives.
+- Keys are length-checked on the way out of `wg`. A key short by one character
+  — the `=` padding lost to an over-eager trim — produces a configuration that
+  parses and against which no handshake ever completes, so the failure appears
+  as a tunnel that silently does not work.
+- Client configurations route `0.0.0.0/0, ::/0` together. Routing only IPv4
+  leaves the device's own IPv6 route in place, so traffic to a dual-stack
+  destination leaves outside the tunnel while the tunnel reports itself up.
+  This was a real leak in the scripts this task was sourced from.
+- Peers are authorised for a single `/32`. On the server `AllowedIPs` is the
+  set of addresses a peer may send *from*, so a subnet mask there lets any peer
+  impersonate every other.
+- The server configuration carries no `PostUp`. The masquerade rule usually
+  written there is spelled differently for nftables and iptables, and guessing
+  wrong leaves a tunnel that connects and routes nothing — the firewall is a
+  capability precisely so this does not have to guess.
+- Installing over an existing configuration is refused rather than overwriting
+  it: a fresh server key invalidates every peer configured against the old one,
+  and each stops connecting with no indication why. Adding a peer reloads
+  rather than restarts, since a restart drops every established tunnel
+  including the administrator's own.
 - Firewall and kernel parameters, as their own top-level area. They belong to
   no component and every component needs them: WireGuard needs forwarding and
   an open UDP port, rootless Docker needs unprivileged ports, Caddy needs 80

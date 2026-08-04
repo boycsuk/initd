@@ -11,6 +11,7 @@ pub mod firewall;
 pub mod packages;
 pub mod services;
 pub mod sysctl;
+pub mod wireguard;
 
 pub use account_writer::AccountWriter;
 pub use accounts::AccountReader;
@@ -19,3 +20,4 @@ pub use firewall::FirewallManager;
 pub use packages::PackageManager;
 pub use services::{ServiceManager, ServiceState};
 pub use sysctl::SysctlManager;
+pub use wireguard::WireguardTools;

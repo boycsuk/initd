@@ -145,6 +145,32 @@ pub enum Error {
     /// session for an account whose shell is not listed.
     ShellNotListed { shell: String },
 
+    /// WireGuard is already configured on this host.
+    ///
+    /// Refused rather than overwritten: a new server key silently invalidates
+    /// every peer configured against the old one, and each of them stops
+    /// connecting with no indication why.
+    WireguardAlreadyConfigured { path: String },
+
+    /// WireGuard has no configuration to read.
+    WireguardNotConfigured,
+
+    /// Another peer already holds this tunnel address.
+    ///
+    /// Two peers on one address is a tunnel where the second to connect takes
+    /// the first one's traffic, and neither reports an error.
+    WireguardAddressTaken { address: String },
+
+    /// A subnet could not be parsed.
+    InvalidSubnet { subnet: String },
+
+    /// A WireGuard key is not one.
+    ///
+    /// Checked because a truncated key parses and never completes a handshake:
+    /// the failure appears as a tunnel that silently does not work rather than
+    /// as an error where it was introduced.
+    InvalidWireguardKey { reason: String },
+
     /// A kernel parameter this system does not have.
     ///
     /// Named rather than reported as a generic command failure: the usual
@@ -231,6 +257,19 @@ impl Error {
                 group: group.clone(),
             },
             Self::UnknownSysctl { key } => Msg::UnknownSysctl { key: key.clone() },
+            Self::InvalidWireguardKey { reason } => Msg::InvalidWireguardKey {
+                reason: reason.clone(),
+            },
+            Self::WireguardAlreadyConfigured { path } => {
+                Msg::WireguardAlreadyConfigured { path: path.clone() }
+            }
+            Self::WireguardNotConfigured => Msg::WireguardNotConfigured,
+            Self::WireguardAddressTaken { address } => Msg::WireguardAddressTaken {
+                address: address.clone(),
+            },
+            Self::InvalidSubnet { subnet } => Msg::InvalidSubnet {
+                subnet: subnet.clone(),
+            },
             Self::AccountExists { user } => Msg::AccountExists { user: user.clone() },
             Self::NoSuchAccount { user } => Msg::NoSuchAccount { user: user.clone() },
             Self::GroupMembershipFailed { user, group } => Msg::GroupMembershipFailed {

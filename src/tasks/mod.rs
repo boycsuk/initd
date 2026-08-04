@@ -12,6 +12,7 @@ pub mod revert;
 pub mod ssh;
 pub mod sshd_config;
 pub mod users;
+pub mod wireguard;
 
 use crate::backend::Backend;
 use crate::distro::Family;
@@ -164,7 +165,10 @@ pub fn tree() -> Vec<Node> {
         )),
         Node::Category(Category::new(
             "Remote Access",
-            vec![Node::Category(ssh::category())],
+            vec![
+                Node::Category(ssh::category()),
+                Node::Category(wireguard::category()),
+            ],
         )),
         // Its own top-level area rather than a child of Remote Access: the
         // firewall and the kernel parameters are what every other component

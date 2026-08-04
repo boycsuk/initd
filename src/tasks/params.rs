@@ -29,6 +29,12 @@ pub enum ParamKind {
     PublicKey,
     /// An absolute filesystem path, such as a login shell.
     Path,
+    /// An IPv4 subnet in CIDR notation, as `10.89.0.0/24`.
+    Cidr,
+    /// A single IPv4 address.
+    Ip,
+    /// An `address:port` a peer dials.
+    Endpoint,
     /// A transport protocol: `tcp` or `udp`.
     ///
     /// A closed choice rather than free text, because the two are not
@@ -63,6 +69,10 @@ impl ParamKind {
                 !character.is_control()
             }
             Self::Protocol => character.is_ascii_alphabetic(),
+            // Hostnames are admitted in an endpoint, so letters and `-` too.
+            Self::Cidr | Self::Ip | Self::Endpoint => {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '/' | ':' | '-')
+            }
         }
     }
 
@@ -78,6 +88,9 @@ impl ParamKind {
             Self::PublicKey => validate_public_key(value),
             Self::Path => validate_path(value),
             Self::Protocol => validate_protocol(value),
+            Self::Cidr => validate_cidr(value),
+            Self::Ip => validate_ip(value),
+            Self::Endpoint => validate_endpoint(value),
         }
     }
 }
@@ -103,6 +116,58 @@ fn validate_port(value: &str) -> std::result::Result<(), String> {
 /// Shared with the tasks that act on a port, so the range is stated once
 /// rather than re-derived beside every check.
 pub const MAX_PORT: u32 = 65_535;
+
+/// Rejects anything that is not a dotted-quad IPv4 address.
+fn validate_ip(value: &str) -> std::result::Result<(), String> {
+    if value.is_empty() {
+        return Err("an address is required".to_owned());
+    }
+
+    let octets: Vec<&str> = value.split('.').collect();
+
+    if octets.len() != 4 {
+        return Err("an address has four parts, as 10.89.0.2".to_owned());
+    }
+
+    for octet in octets {
+        match octet.parse::<u16>() {
+            Ok(n) if n <= 255 => {}
+            _ => return Err(format!("{octet} is not between 0 and 255")),
+        }
+    }
+
+    Ok(())
+}
+
+/// Rejects anything that is not an IPv4 subnet in CIDR notation.
+fn validate_cidr(value: &str) -> std::result::Result<(), String> {
+    let Some((network, mask)) = value.split_once('/') else {
+        return Err("a subnet carries its mask, as 10.89.0.0/24".to_owned());
+    };
+
+    validate_ip(network)?;
+
+    match mask.parse::<u16>() {
+        // Below /8 is a subnet larger than any private range, and /31 and /32
+        // leave no room for a peer beside the server.
+        Ok(bits) if (8..=30).contains(&bits) => Ok(()),
+        Ok(bits) => Err(format!("/{bits} leaves no usable range for peers")),
+        Err(_) => Err("the mask is a number, as /24".to_owned()),
+    }
+}
+
+/// Rejects anything that could not be dialled as `address:port`.
+fn validate_endpoint(value: &str) -> std::result::Result<(), String> {
+    let Some((host, port)) = value.rsplit_once(':') else {
+        return Err("an endpoint carries its port, as 203.0.113.7:51820".to_owned());
+    };
+
+    if host.is_empty() {
+        return Err("the address is missing".to_owned());
+    }
+
+    validate_port(port)
+}
 
 /// Rejects anything that is not a transport protocol this tool can write.
 fn validate_protocol(value: &str) -> std::result::Result<(), String> {

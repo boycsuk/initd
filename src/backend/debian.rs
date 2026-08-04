@@ -10,11 +10,12 @@ use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
+use super::wg_tools::WgTools;
 use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
-    SysctlManager,
+    SysctlManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -28,6 +29,22 @@ const SSH_SERVICE: &str = "ssh.service";
 /// Where the OpenSSH server reads its configuration on Debian.
 const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
 
+/// The WireGuard tools on Debian.
+///
+/// `wireguard-tools` rather than `wireguard`: the latter is a metapackage that
+/// also pulls the DKMS module, which is dead weight on any kernel since 5.6
+/// where WireGuard is built in.
+const WIREGUARD_PACKAGE: &str = "wireguard-tools";
+
+/// The unit template that brings an interface up.
+///
+/// Instantiated per interface — `wg-quick@wg0.service` — which is why the
+/// interface name is appended by the task rather than baked in here.
+const WIREGUARD_SERVICE: &str = "wg-quick@";
+
+/// Where WireGuard keeps its configuration.
+const WIREGUARD_CONFIG: &str = "/etc/wireguard";
+
 /// The group granting sudo on Debian — `wheel` on Arch and RHEL.
 const ADMIN_GROUP: &str = "sudo";
 
@@ -40,6 +57,7 @@ pub struct DebianBackend {
     account_writer: ShadowAccounts,
     firewall: Nftables,
     sysctl: ProcfsSysctl,
+    wireguard: WgTools,
 }
 
 impl DebianBackend {
@@ -52,6 +70,7 @@ impl DebianBackend {
             account_writer: ShadowAccounts::new(),
             firewall: Nftables::new(),
             sysctl: ProcfsSysctl::new(),
+            wireguard: WgTools::new(),
         }
     }
 }
@@ -64,18 +83,21 @@ impl Backend for DebianBackend {
     fn package_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
+            Capability::Wireguard => WIREGUARD_PACKAGE,
         }
     }
 
     fn service_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_SERVICE,
+            Capability::Wireguard => WIREGUARD_SERVICE,
         }
     }
 
     fn path_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_CONFIG,
+            Capability::Wireguard => WIREGUARD_CONFIG,
         }
     }
 
@@ -109,6 +131,10 @@ impl Backend for DebianBackend {
 
     fn sysctl(&self) -> &dyn SysctlManager {
         &self.sysctl
+    }
+
+    fn wireguard(&self) -> &dyn WireguardTools {
+        &self.wireguard
     }
 }
 

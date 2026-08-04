@@ -12,11 +12,12 @@ pub mod shadow_accounts;
 pub mod systemd;
 pub mod unix_accounts;
 pub mod unix_files;
+pub mod wg_tools;
 
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
-    SysctlManager,
+    SysctlManager, WireguardTools,
 };
 
 /// A capability that tasks request by name, without knowing what it is called
@@ -29,6 +30,9 @@ use crate::domain::{
 pub enum Capability {
     /// The OpenSSH server.
     Ssh,
+    /// WireGuard, whose tools and kernel module ship together on both families
+    /// implemented today but under different package names.
+    Wireguard,
 }
 
 /// Everything a task needs from the distribution it runs on.
@@ -80,6 +84,9 @@ pub trait Backend {
 
     /// Kernel parameters.
     fn sysctl(&self) -> &dyn SysctlManager;
+
+    /// WireGuard key material and interface state.
+    fn wireguard(&self) -> &dyn WireguardTools;
 }
 
 /// Builds the backend for a detected family.

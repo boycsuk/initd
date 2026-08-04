@@ -10,11 +10,12 @@ use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
+use super::wg_tools::WgTools;
 use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
-    SysctlManager,
+    SysctlManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -27,6 +28,19 @@ const SSH_SERVICE: &str = "sshd.service";
 
 /// Where the OpenSSH server reads its configuration on Arch.
 const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
+
+/// The WireGuard tools on Arch.
+///
+/// Same name as Debian's, which is coincidence rather than a rule: Arch never
+/// shipped a `wireguard` metapackage at all, having only ever supported
+/// kernels with the module built in.
+const WIREGUARD_PACKAGE: &str = "wireguard-tools";
+
+/// The unit template that brings an interface up.
+const WIREGUARD_SERVICE: &str = "wg-quick@";
+
+/// Where WireGuard keeps its configuration.
+const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 
 /// The group granting sudo on Arch — `sudo` on Debian.
 ///
@@ -44,6 +58,7 @@ pub struct ArchBackend {
     account_writer: ShadowAccounts,
     firewall: Nftables,
     sysctl: ProcfsSysctl,
+    wireguard: WgTools,
 }
 
 impl ArchBackend {
@@ -56,6 +71,7 @@ impl ArchBackend {
             account_writer: ShadowAccounts::new(),
             firewall: Nftables::new(),
             sysctl: ProcfsSysctl::new(),
+            wireguard: WgTools::new(),
         }
     }
 }
@@ -68,18 +84,21 @@ impl Backend for ArchBackend {
     fn package_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
+            Capability::Wireguard => WIREGUARD_PACKAGE,
         }
     }
 
     fn service_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_SERVICE,
+            Capability::Wireguard => WIREGUARD_SERVICE,
         }
     }
 
     fn path_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_CONFIG,
+            Capability::Wireguard => WIREGUARD_CONFIG,
         }
     }
 
@@ -113,6 +132,10 @@ impl Backend for ArchBackend {
 
     fn sysctl(&self) -> &dyn SysctlManager {
         &self.sysctl
+    }
+
+    fn wireguard(&self) -> &dyn WireguardTools {
+        &self.wireguard
     }
 }
 
