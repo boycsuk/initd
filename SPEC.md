@@ -11,14 +11,16 @@
 > two things below that are known to be incomplete. Delete it once those are
 > closed.
 >
-> **Known incomplete:**
-> - `zellij.install` on Debian ships an empty release table, so it refuses to
->   install anything. Each entry is a promise that this project verified that
->   artefact, and a plausible-looking wrong digest is worse than none. Real
->   SHA-256 digests are needed before that path works.
-> - The container tests (91, ignored by default) have not been run against the
->   tasks added here. Everything below is verified against mocks; nothing in
->   phases 1-5 has been observed on a real Debian or Arch host.
+> **Both gaps this file named are closed.** Zellij's release table carries four
+> verified digests, and the container suite covers accounts, the firewall,
+> WireGuard, rootless containers and the web server on real Debian and Arch —
+> 110 scenarios, which found nine navigation failures and one security defect
+> the mocks could not see.
+>
+> **What remains outside a container:** `sulogin` behaviour after locking root
+> needs a VM with a real console, and the nftables listing format needs
+> `--cap-add=NET_ADMIN` (that scenario skips and says so). Neither is pretended
+> to be covered.
 
 ## Why this document exists
 
