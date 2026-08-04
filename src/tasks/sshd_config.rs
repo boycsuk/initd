@@ -93,11 +93,26 @@ fn classify(executor: &dyn Executor, command: &Command) -> Result<Validation> {
 /// Existing lines for the directive are commented out rather than deleted, so
 /// the previous value stays visible to whoever reads the file later. A
 /// commented-out original is also what an administrator expects to find.
+///
+/// A directive absent from the file is written before the first `Match` line
+/// rather than at the end. Everything following a `Match` belongs to that
+/// block, so appending would scope the directive to whoever the block matches
+/// instead of to the server. Measured against OpenSSH 10.0: `PermitRootLogin
+/// no` written after `Match User deployer` leaves `sshd -T` reporting
+/// `without-password` for every other user, so a task that reported success
+/// would have hardened nobody but `deployer`.
 pub fn set_directive(contents: &str, directive: &str, value: &str) -> String {
     let mut result = String::with_capacity(contents.len() + 64);
     let mut replaced = false;
 
     for line in contents.lines() {
+        // The first `Match` ends the global section. A directive not seen by
+        // now has to be written here, while it still applies to everyone.
+        if !replaced && is_match_line(line) {
+            result.push_str(&format!("{directive} {value}\n"));
+            replaced = true;
+        }
+
         if is_directive_line(line, directive) {
             // Keep the original as a comment, then write the new value in its
             // place so ordering relative to Match blocks is preserved.
@@ -120,6 +135,18 @@ pub fn set_directive(contents: &str, directive: &str, value: &str) -> String {
     }
 
     result
+}
+
+/// Whether a line opens a `Match` block.
+///
+/// Keywords are case-insensitive, and a commented-out `Match` opens nothing.
+fn is_match_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+
+    trimmed
+        .split_whitespace()
+        .next()
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("match"))
 }
 
 /// Reads the effective value of a directive, ignoring commented-out lines.
@@ -179,6 +206,40 @@ mod tests {
 
     #[test]
     fn appends_a_directive_that_is_absent() {
+        let result = set_directive("Port 22\n", "PermitRootLogin", "no");
+
+        assert_eq!(result, "Port 22\nPermitRootLogin no\n");
+    }
+
+    #[test]
+    fn a_new_directive_lands_before_the_first_match_block() {
+        // Everything after a `Match` line belongs to that block, so appending a
+        // directive to a file ending in one silently scopes it to whoever the
+        // block matches. Measured against OpenSSH 10.0: with `PermitRootLogin
+        // no` written after `Match User deployer`, `sshd -T` reports
+        // `without-password` for every other user — the hardening the task
+        // reported as applied does not apply to them.
+        let contents = "Port 22\nMatch User deployer\n    X11Forwarding yes\n";
+        let result = set_directive(contents, "PermitRootLogin", "no");
+
+        let directive = result
+            .lines()
+            .position(|line| line.starts_with("PermitRootLogin"))
+            .expect("the directive must be written");
+        let match_block = result
+            .lines()
+            .position(|line| line.starts_with("Match "))
+            .expect("the Match block must survive");
+
+        assert!(
+            directive < match_block,
+            "a global directive must precede the first Match block, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn a_new_directive_is_appended_when_there_is_no_match_block() {
+        // Without a block to fall into, the end of the file is global.
         let result = set_directive("Port 22\n", "PermitRootLogin", "no");
 
         assert_eq!(result, "Port 22\nPermitRootLogin no\n");
