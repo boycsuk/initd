@@ -1,13 +1,24 @@
 # SPEC — Server administration beyond SSH
 
-> Status: **proposal, pending implementation**. Written 2026-08-04 from two
-> research passes (tooling landscape + per-component settings) and a review of
+> Status: **all five phases shipped**, 2026-08-04. Written from two research
+> passes (tooling landscape + per-component settings) and a review of
 > `boycsuk/naisudotfun`, whose shell scripts are the field evidence behind
 > several decisions here.
 >
-> This file is a working document, not a portable contract. When a phase lands,
-> its contract moves to `docs/` and the phase section here is reduced to a
-> pointer. Delete this file when every phase has shipped.
+> The behavioural contract now lives in `docs/user-stories.md` and the
+> reasoning in `CHANGELOG.md`. What this file still carries that they do not:
+> the research those decisions came from, the alternatives rejected, and the
+> two things below that are known to be incomplete. Delete it once those are
+> closed.
+>
+> **Known incomplete:**
+> - `zellij.install` on Debian ships an empty release table, so it refuses to
+>   install anything. Each entry is a promise that this project verified that
+>   artefact, and a plausible-looking wrong digest is worse than none. Real
+>   SHA-256 digests are needed before that path works.
+> - The container tests (91, ignored by default) have not been run against the
+>   tasks added here. Everything below is verified against mocks; nothing in
+>   phases 1-5 has been observed on a real Debian or Arch host.
 
 ## Why this document exists
 
