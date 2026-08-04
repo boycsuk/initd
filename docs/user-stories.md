@@ -67,7 +67,7 @@ TUI or CLI:
 - As an **administrator**, I can see which distribution `initd` detected so
   that I know it will use the right commands for my system.
   - Acceptance: `initd detect` prints the distribution name, its id, its
-    version and the resolved family (`debian` or `arch`).
+    version and the resolved family (`debian`, `arch` or `alpine`).
   - Acceptance: on an unsupported distribution the command reports which
     family was missing instead of crashing.
 - As an **administrator**, I can see which privilege escalation mechanism will
@@ -93,8 +93,8 @@ TUI or CLI:
 - As an **administrator**, I can create an account that can administer the
   server, so that I do not have to work as root.
   - Acceptance: it joins whichever group grants sudo on this distribution —
-    `sudo` on Debian, `wheel` on Arch — and the membership is read back rather
-    than assumed, because the command reports success either way.
+    `sudo` on Debian, `wheel` on Arch and Alpine — and the membership is read
+    back rather than assumed, because the command reports success either way.
   - Acceptance: it is created without a password, so it can only be reached
     with a key.
   - Acceptance: an account that already exists is refused rather than adopted.
@@ -108,9 +108,11 @@ TUI or CLI:
     administrative group, and holds an authorised key. This is the one change
     the tool will not make on warning alone: it can require the hosting
     provider's rescue console to undo.
-  - Acceptance: the account is expired, not merely password-locked. A locked
-    password still admits a key, so `passwd -l` would report success and leave
-    root reachable.
+  - Acceptance: the account is expired, not merely password-locked. Whether a
+    locked password also blocks a key depends on how the distribution built
+    OpenSSH — it does on Alpine, which builds without PAM, and does not on
+    Debian or Arch, which do. Expiry is the one mechanism that means the same
+    thing everywhere.
   - Acceptance: locking an already-locked root reports that, rather than
     failing or implying it did the work again.
 
@@ -134,8 +136,8 @@ TUI or CLI:
     reported instead.
   - Acceptance: writing the policy is not treated as success — the timer that
     applies it is confirmed enabled.
-  - Platform exception: Debian only. Arch is a rolling release with no
-    equivalent, so the task is shown unsupported there rather than doing
+  - Platform exception: Debian only. Arch and Alpine are rolling releases with
+    no equivalent, so the task is shown unsupported there rather than doing
     something different under the same name.
 
 ### Developer environment
@@ -169,6 +171,10 @@ TUI or CLI:
     anything is installed, since no container could start.
   - Acceptance: the engine is confirmed running rather than assumed. Enabling a
     service reports that the command ran, not that the service came up.
+  - Platform exception: not on Alpine, which has no per-user service manager at
+    all. The engine runs under the account's own systemd instance and OpenRC
+    has no equivalent, so the task is shown unsupported rather than failing
+    partway through.
 - As an **administrator**, I can install a web server that obtains its own
   certificates.
   - Acceptance: the tool says the firewall must admit 80 and 443, and says
@@ -241,8 +247,9 @@ TUI or CLI:
 - As an **administrator**, I can install and enable the SSH server so that the
   machine accepts remote connections after a reboot.
   - Acceptance: the correct package for the distribution is installed
-    (`openssh-server` on Debian, `openssh` on Arch) and the correct unit is
-    enabled (`ssh.service` on Debian, `sshd.service` on Arch).
+    (`openssh-server` on Debian, `openssh` on Arch and Alpine) and the correct
+    service is enabled — `ssh.service`, `sshd.service`, or the `sshd` init
+    script where there are no units at all.
   - Acceptance: running it again on a machine that already has SSH does not
     reinstall the package.
 - As an **administrator**, I can harden the SSH configuration so that the
