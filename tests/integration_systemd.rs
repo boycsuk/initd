@@ -164,3 +164,49 @@ for_each_image! {
         );
     }
 }
+
+/// Changing the port must warn when Debian's socket unit owns it.
+///
+/// Outside `for_each_image!` on purpose: socket activation is a Debian
+/// arrangement. `ssh.socket` ships with that package and defines the listening
+/// port itself, so the `Port` the task writes has nothing to do until the unit
+/// is reconfigured — and silence there would be the worst outcome available:
+/// success reported, the file reading 2222, the daemon still answering on 22.
+///
+/// Arch's openssh ships `sshd.service`, `sshd@.service` and
+/// `sshdgenkeys.service`, and no socket unit at all, so the situation cannot
+/// arise there. Written first as a matrix scenario and moved once it failed on
+/// Arch for exactly that reason.
+///
+/// It lives in this binary rather than `integration_debian.rs` because it
+/// needs a privileged container, and that file runs in the CI job that cannot
+/// provide one — where it would have skipped silently every time.
+#[test]
+#[ignore = "requires docker"]
+fn changing_the_port_warns_when_debians_socket_unit_owns_it() {
+    require_docker!();
+
+    let container = systemd_container!(&common::DEBIAN, "socket");
+
+    // `/run/sshd` is recreated *after* the stop, with explicit ownership and
+    // mode. The unit declares `RuntimeDirectory=sshd` and
+    // `RuntimeDirectoryPreserve=no`, so systemd deletes that directory on stop
+    // and a `mkdir` beforehand is undone by the stop itself; recreated
+    // afterwards it needs 0755 root-owned or `sshd -t` rejects it as
+    // group-writable. Both abort the port change before it can warn about
+    // anything, which is how this failed twice while looking like a missing
+    // warning.
+    let output = container.exec(
+        "initd run ssh.install >/dev/null 2>&1; \
+         systemctl stop ssh.service >/dev/null 2>&1; \
+         systemctl enable --now ssh.socket >/dev/null 2>&1; \
+         mkdir -p /run/sshd && chmod 0755 /run/sshd && chown root:root /run/sshd; \
+         initd change-port 2222 2>&1",
+    );
+    let stdout = common::stdout_of(&output);
+
+    assert!(
+        stdout.contains("ssh.socket") && stdout.contains("will not take effect"),
+        "the port change must warn that ssh.socket owns the port: {stdout}"
+    );
+}

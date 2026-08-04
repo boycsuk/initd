@@ -69,6 +69,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships on.
 
 ### Added
+- Tests that drive the terminal interface as a user drives it, through tmux.
+  ratatui needs a real terminal; a pipe renders nothing and `script(1)`
+  captures nothing readable, because the interface lives in the alternate
+  screen and that is discarded on exit. tmux allocates the pty *and* dumps a
+  live pane, so the screen is asserted on while it is drawn — and it is a shell
+  tool rather than a crate, so nothing was added to audit.
+- Coverage of `Revert`, which was reachable from nowhere a test could get to.
+  There is no `initd revert` subcommand — deliberately, since a revert without
+  a verification window is what the CLI keeps out — so the interface is the
+  only route, and its three unit tests ran against a mock that cannot say
+  whether the restored file is the one that was there before. The scenarios
+  reach the verification window, press `R`, and compare the configuration byte
+  for byte with what preceded it; a second presses `K` and confirms the change
+  survives.
+- The verification window needs systemd, which is why this could not have been
+  written earlier. Without it `ssh.harden` writes the file, fails at
+  `systemctl reload`, and the task ends FAILED — and a failed task offers
+  nothing to keep or revert, so the window never opens.
+- Coverage of the `ssh.socket` warning, as Debian-specific behaviour rather
+  than a shared invariant. Socket activation moves the listening port out of
+  `sshd_config` into the socket unit, so the `Port` the task writes has no
+  effect until that unit is reconfigured; silence there would be the worst
+  outcome available — success reported, the file reading 2222, the daemon still
+  answering on 22. Written first as a matrix scenario and moved after it failed
+  on Arch: that package ships `sshd.service`, `sshd@.service` and
+  `sshdgenkeys.service`, and no socket unit at all, so the situation cannot
+  arise there. The warning is driven by the unit being active, which is why it
+  had never been exercised.
+- `initd list` and `initd privileges` are covered in the shared matrix. Both
+  had none: `list` prints the identifiers a script would call, and
+  `privileges` must answer `none` as root, since naming a mechanism there would
+  mean the resolution ignored the effective user.
 - Container tests that boot systemd as PID 1, so `systemctl` means what it
   means on a host. `ssh.install` enables a unit and the ordinary containers
   cannot run that step at all — they assert the package landed and let the
@@ -139,6 +171,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to that family, and each states the reason: Arch covers the missing host keys
   that make every `sshd -t` inconclusive, Debian covers the packaging that
   makes it conclusive. Everything else was an invariant in disguise.
+- The socket scenario recreates `/run/sshd` after stopping the service rather
+  than before, with explicit ownership and mode. The unit declares
+  `RuntimeDirectory=sshd` and `RuntimeDirectoryPreserve=no`, so systemd deletes
+  that directory on stop and a `mkdir` beforehand is undone by the stop itself;
+  recreated afterwards it needs 0755 root-owned or `sshd -t` rejects it as
+  group-writable. Both failures abort the port change before it can warn about
+  anything, which is how the scenario failed twice while looking like a missing
+  warning.
+- The two-host harness waits on sshd's pid file rather than calling `pgrep`,
+  which procps provides and Debian's base image does not ship. The call never
+  matched, so the loop ran to its limit and the wait was silently a fixed
+  thirty-second sleep that happened to be long enough. Found by checking every
+  external tool the scenarios invoke against both images, after two of them had
+  already turned out to be missing.
+- File comparisons in the interface scenarios compare hashes rather than
+  calling `diff` or `cmp`. Both live in diffutils, which Debian pulls in and
+  Arch's base image does not — so each failed the same way in turn: the missing
+  tool reports "differs", which failed the revert scenario whose revert had
+  actually worked, and *passed* the keep scenario, which asserts the files
+  differ and got that for free. Substituting one tool for another repeated the
+  bug; `sha256sum` is in coreutils and present in both. A scenario now pins the
+  comparison itself against a copy and a change, since a comparator that is
+  wrong in either direction is invisible in the scenarios that use it.
 - The systemd scenarios compare `systemctl` output line by line rather than by
   substring. Written as a substring check, `is-active` reporting `inactive`
   satisfied a test looking for `active`, and one passed against a container
