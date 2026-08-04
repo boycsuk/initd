@@ -35,6 +35,8 @@ pub enum ParamKind {
     Ip,
     /// An `address:port` a peer dials.
     Endpoint,
+    /// A release version, as `0.44.0`.
+    Version,
     /// A transport protocol: `tcp` or `udp`.
     ///
     /// A closed choice rather than free text, because the two are not
@@ -69,6 +71,7 @@ impl ParamKind {
                 !character.is_control()
             }
             Self::Protocol => character.is_ascii_alphabetic(),
+            Self::Version => character.is_ascii_digit() || character == '.',
             // Hostnames are admitted in an endpoint, so letters and `-` too.
             Self::Cidr | Self::Ip | Self::Endpoint => {
                 character.is_ascii_alphanumeric() || matches!(character, '.' | '/' | ':' | '-')
@@ -88,6 +91,7 @@ impl ParamKind {
             Self::PublicKey => validate_public_key(value),
             Self::Path => validate_path(value),
             Self::Protocol => validate_protocol(value),
+            Self::Version => validate_version(value),
             Self::Cidr => validate_cidr(value),
             Self::Ip => validate_ip(value),
             Self::Endpoint => validate_endpoint(value),
@@ -167,6 +171,24 @@ fn validate_endpoint(value: &str) -> std::result::Result<(), String> {
     }
 
     validate_port(port)
+}
+
+/// Rejects anything that could not name a release.
+fn validate_version(value: &str) -> std::result::Result<(), String> {
+    if value.is_empty() {
+        return Err("a version is required".to_owned());
+    }
+
+    // Shape only. Whether this build can verify the version is a question for
+    // the release table, and the task answers it when it runs.
+    if !value
+        .split('.')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    {
+        return Err("a version is digits separated by dots, as 0.44.0".to_owned());
+    }
+
+    Ok(())
 }
 
 /// Rejects anything that is not a transport protocol this tool can write.

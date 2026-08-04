@@ -6,6 +6,7 @@
 
 pub mod account_writer;
 pub mod accounts;
+pub mod binaries;
 pub mod files;
 pub mod firewall;
 pub mod packages;
@@ -16,6 +17,7 @@ pub mod wireguard;
 
 pub use account_writer::AccountWriter;
 pub use accounts::AccountReader;
+pub use binaries::BinaryInstaller;
 pub use files::FileEditor;
 pub use firewall::FirewallManager;
 pub use packages::PackageManager;

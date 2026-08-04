@@ -8,6 +8,7 @@ pub mod arch;
 pub mod debian;
 pub mod nftables;
 pub mod procfs_sysctl;
+pub mod release_installer;
 pub mod shadow_accounts;
 pub mod systemd;
 pub mod systemd_user;
@@ -17,8 +18,8 @@ pub mod wg_tools;
 
 use crate::distro::Family;
 use crate::domain::{
-    AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
-    SysctlManager, UserServiceManager, WireguardTools,
+    AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
+    ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
 };
 
 /// A capability that tasks request by name, without knowing what it is called
@@ -38,6 +39,14 @@ pub enum Capability {
     DockerRootless,
     /// The Caddy web server.
     Caddy,
+    /// The fish shell.
+    Fish,
+    /// The Zellij multiplexer.
+    Zellij,
+    /// The mise version manager.
+    Mise,
+    /// The Rust toolchain.
+    Rust,
 }
 
 /// Everything a task needs from the distribution it runs on.
@@ -52,7 +61,19 @@ pub trait Backend {
     fn family(&self) -> Family;
 
     /// The package providing a capability on this distribution.
+    ///
+    /// Empty when the distribution has no package for it, which
+    /// [`Backend::has_package_for`] is the readable way to ask.
     fn package_for(&self, capability: Capability) -> &'static str;
+
+    /// Whether this distribution packages a capability at all.
+    ///
+    /// Zellij is the case: Arch packages it and no Debian or Ubuntu suite does,
+    /// so one family installs from its repository and the other from a verified
+    /// release. A task asks this rather than asking which distribution it is on.
+    fn has_package_for(&self, capability: Capability) -> bool {
+        !self.package_for(capability).is_empty()
+    }
 
     /// The service unit providing a capability on this distribution.
     fn service_for(&self, capability: Capability) -> &'static str;
@@ -92,6 +113,13 @@ pub trait Backend {
 
     /// WireGuard key material and interface state.
     fn wireguard(&self) -> &dyn WireguardTools;
+
+    /// Binaries installed from a verified release rather than from a package.
+    ///
+    /// The gap this covers is a different installation *mechanism*, not a
+    /// different package name: Zellij is `pacman -S zellij` on Arch and has no
+    /// package at all in any Debian or Ubuntu suite.
+    fn binaries(&self) -> &dyn BinaryInstaller;
 
     /// Services belonging to one account rather than to the system.
     ///

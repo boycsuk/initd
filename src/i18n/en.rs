@@ -103,6 +103,17 @@ pub(super) fn render(message: &Msg) -> String {
                  so rootless containers cannot map their users"
             )
         }
+        // Stated as tampering rather than as a download problem, because that
+        // is what a mismatch means once the digest is pinned in this binary.
+        Msg::ChecksumMismatch { program, version } => {
+            format!(
+                "the {program} {version} archive did not match the checksum this build \
+                 expects; it was not installed"
+            )
+        }
+        Msg::UnknownRelease { version, known } => {
+            format!("this build cannot verify {version}; it knows: {known}")
+        }
         Msg::InvalidCaddyfile { details } => {
             format!("the Caddy configuration is invalid: {details}")
         }

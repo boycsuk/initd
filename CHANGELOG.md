@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A developer environment area: fish, Zellij, mise and the Rust toolchain.
+  Installing a tool is a system operation and takes no account — only changing
+  a login shell and activating a version manager are per-user, and those are
+  separate tasks. The split also keeps the destructive flag honest: putting a
+  binary on the box is not destructive, changing someone's login shell is.
+- `BinaryInstaller`, a capability for installing from a verified release. The
+  gap it covers is a different installation *mechanism*, not a different
+  package name: Arch packages Zellij and no Debian or Ubuntu suite does, so
+  `PackageManager` cannot express it. `Backend::has_package_for` is how a task
+  asks which mechanism applies without asking which distribution it is on.
+- Checksums are compiled into this build rather than fetched with the archive.
+  A digest served by the host serving the artefact proves only that the
+  transfer completed — an attacker who can replace one can replace the other.
+  A version this build carries no digest for is not installable, which is the
+  intended limit, and the archive is verified before it is extracted: one
+  unpacked and then checked has already written whatever it contained.
+- The Zellij release table ships empty. Every entry is a promise that this
+  project verified that artefact, and a plausible-looking wrong digest would be
+  worse than none — so the Debian path refuses to install anything until real
+  digests are filled in.
+- `fish.install` registers the shell at the path the system resolves rather
+  than a compiled-in one, since fish lives at different paths across
+  distributions and releases, and compares `/etc/shells` line by line —
+  `/bin/fish` is a substring of `/usr/bin/fish`.
+- `rust.install` warns that rustup installs no C linker. It is the most common
+  first-build failure and it surfaces at link time, long after the toolchain
+  reported itself installed.
+- `mise.install` warns that shell activation is a prompt hook, so a deploy
+  script or a systemd unit sees none of the versions mise manages — the tool
+  appears to work everywhere except where it matters.
 - Rootless Docker and Caddy, as a Services area. Both stop short of describing
   an application: the engine is provisioned and runs no containers, and Caddy
   is installed, validated and hardened without site configuration being

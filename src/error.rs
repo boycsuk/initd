@@ -159,6 +159,18 @@ pub enum Error {
     /// directory fails after that point.
     ServiceDidNotStart { service: String, user: String },
 
+    /// A downloaded archive did not match the digest this build carries.
+    ///
+    /// The one outcome of an install that means the artefact was not what was
+    /// expected, rather than that a command failed.
+    ChecksumMismatch { program: String, version: String },
+
+    /// A version this build carries no digest for.
+    ///
+    /// The intended limit of pinned checksums: what cannot be verified cannot
+    /// be installed.
+    UnknownRelease { version: String, known: String },
+
     /// Caddy rejected its configuration.
     InvalidCaddyfile { details: String },
 
@@ -282,6 +294,14 @@ impl Error {
             }
             Self::WireguardNotConfigured => Msg::WireguardNotConfigured,
             Self::NoSubordinateIds { user } => Msg::NoSubordinateIds { user: user.clone() },
+            Self::ChecksumMismatch { program, version } => Msg::ChecksumMismatch {
+                program: program.clone(),
+                version: version.clone(),
+            },
+            Self::UnknownRelease { version, known } => Msg::UnknownRelease {
+                version: version.clone(),
+                known: known.clone(),
+            },
             Self::InvalidCaddyfile { details } => Msg::InvalidCaddyfile {
                 details: details.clone(),
             },

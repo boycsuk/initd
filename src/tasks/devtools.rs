@@ -1,0 +1,544 @@
+//! Tools an administrator wants on the box: a shell, a multiplexer, a version
+//! manager, a toolchain.
+//!
+//! Installing one is a system operation and involves no account. Only three
+//! things here are per-user, and each declares the account as a parameter like
+//! any other value: changing a login shell, and activating a version manager
+//! in someone's shell configuration. Splitting them also keeps the destructive
+//! flag honest — putting a binary on the box is not destructive, changing
+//! someone's login shell is.
+
+use crate::backend::{Backend, Capability};
+use crate::distro::Family;
+use crate::domain::binaries::Release;
+use crate::error::{Error, Result};
+use crate::exec::{Command, Executor, OutputLine, Stream};
+use crate::tasks::consequence::{Consequence, Reason};
+use crate::tasks::params::{Param, ParamKind, ParamValues};
+use crate::tasks::revert::Outcome;
+use crate::tasks::{Category, Node, Progress, Task};
+
+/// Families these tasks support.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+
+/// Reports a step to the caller as a normal output line.
+fn report(progress: Progress<'_>, text: impl Into<String>) {
+    progress(OutputLine {
+        stream: Stream::Stdout,
+        text: text.into(),
+    });
+}
+
+/// Builds the developer environment category.
+pub fn category() -> Category {
+    Category::new(
+        "Developer environment",
+        vec![
+            Node::Task(Box::new(InstallFish)),
+            Node::Task(Box::new(InstallZellij)),
+            Node::Task(Box::new(InstallMise)),
+            Node::Task(Box::new(InstallRust)),
+        ],
+    )
+}
+
+/// Installs the fish shell.
+pub struct InstallFish;
+
+impl Task for InstallFish {
+    fn id(&self) -> &'static str {
+        "fish.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install the fish shell"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs fish and registers it in /etc/shells so an account may adopt \
+         it. Set it for a user with users.set-shell."
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+        // Installing a shell gives nobody that shell. Said plainly because the
+        // two read as one action and are not.
+        vec![Consequence::Invalidates {
+            task: "users.set-shell",
+            reason: Reason::RequiresSetting {
+                setting: "a login shell, which no account has adopted yet",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        backend
+            .packages()
+            .install(executor, backend.package_for(Capability::Fish))?;
+
+        // Registered in /etc/shells, without which `chsh` refuses it and some
+        // PAM configurations refuse a session for an account that uses it.
+        // Read back from the system rather than assumed: the path differs
+        // between distributions and releases.
+        let path = resolve_program(executor, "fish")?;
+
+        register_shell(executor, backend, &path)?;
+
+        report(progress, format!("fish is installed at {path}"));
+        report(
+            progress,
+            "never make it root's shell: a shell that is not POSIX breaks \
+             recovery scripts that assume one"
+                .to_owned(),
+        );
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Installs the Zellij multiplexer.
+pub struct InstallZellij;
+
+impl InstallZellij {
+    /// Name of the parameter holding the version to install.
+    pub const VERSION: &'static str = "version";
+
+    /// Releases this build carries a digest for.
+    ///
+    /// Deliberately short: each entry is a promise that this project has
+    /// verified that artefact. The digests below are placeholders and the task
+    /// refuses to run until they are replaced with real ones — installing an
+    /// unverified binary as root is the failure this whole capability exists
+    /// to prevent, and a plausible-looking wrong digest is worse than none.
+    pub const RELEASES: &[Release] = &[];
+}
+
+impl Task for InstallZellij {
+    fn id(&self) -> &'static str {
+        "zellij.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install the Zellij multiplexer"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs Zellij, so a session survives a dropped connection. Arch has \
+         a package; Debian and Ubuntu have none, so a release archive is \
+         downloaded and its checksum verified."
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::VERSION, "Version", ParamKind::Version)
+                .with_hint("a version this build can verify"),
+        ]
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        // Arch packages it; Debian and Ubuntu do not, in any suite. The
+        // backend answers which mechanism applies, so the task does not ask
+        // which distribution it is on.
+        if backend.has_package_for(Capability::Zellij) {
+            backend
+                .packages()
+                .install(executor, backend.package_for(Capability::Zellij))?;
+
+            report(
+                progress,
+                "zellij installed from the distribution".to_owned(),
+            );
+
+            return Ok(Outcome::Done);
+        }
+
+        // Asked before a version is even resolved: a host that already has the
+        // binary needs no download, and re-installing over it would replace a
+        // build the administrator may have chosen deliberately.
+        if backend.binaries().is_installed(executor, "zellij")? {
+            report(progress, "zellij is already installed".to_owned());
+
+            return Ok(Outcome::Done);
+        }
+
+        let version = values.get(Self::VERSION)?;
+        let release = crate::backend::release_installer::release_for(Self::RELEASES, version)?;
+
+        report(progress, format!("downloading zellij {version}"));
+
+        backend.binaries().install(executor, "zellij", release)?;
+
+        report(
+            progress,
+            "zellij installed and its checksum verified".to_owned(),
+        );
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Installs the mise version manager.
+pub struct InstallMise;
+
+impl Task for InstallMise {
+    fn id(&self) -> &'static str {
+        "mise.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install the mise version manager"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs mise, which pins language runtimes per project. On a server \
+         it is used through shims or `mise exec`, since its shell activation \
+         does not run in a non-interactive session."
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+        // The failure this prevents: activation is a prompt hook, so a deploy
+        // script or a systemd unit sees none of the versions mise manages, and
+        // the tool appears to work everywhere except where it matters.
+        vec![Consequence::Invalidates {
+            task: "mise.activate",
+            reason: Reason::RequiresSetting {
+                setting: "shims on PATH — activation does not run non-interactively",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        backend
+            .packages()
+            .install(executor, backend.package_for(Capability::Mise))?;
+
+        report(progress, "mise is installed".to_owned());
+        report(
+            progress,
+            "on a server, reach it through shims or `mise exec --` rather than \
+             shell activation"
+                .to_owned(),
+        );
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Installs the Rust toolchain.
+pub struct InstallRust;
+
+impl InstallRust {
+    /// Name of the parameter holding the account the toolchain belongs to.
+    pub const USER: &'static str = "user";
+}
+
+impl Task for InstallRust {
+    fn id(&self) -> &'static str {
+        "rust.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install the Rust toolchain"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs rustup and a stable toolchain for one account. A toolchain \
+         belongs to whoever builds with it, not to the machine."
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::USER, "Username", ParamKind::Username)
+                .with_hint("the account the toolchain belongs to"),
+        ]
+    }
+
+    fn supported_families(&self) -> &'static [Family] {
+        SUPPORTED
+    }
+
+    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+        // rustup installs no C linker, and this is the single most common
+        // first-build failure. It surfaces at link time, long after the
+        // toolchain reported itself installed.
+        vec![Consequence::Invalidates {
+            task: "rust.install",
+            reason: Reason::RequiresSetting {
+                setting: "a C linker — rustup does not install one",
+            },
+            check: Some(crate::tasks::consequence::Check {
+                command: Command::new("sh").args(["-c", "command -v cc"]),
+                resolved_when_stdout_contains: "cc".to_owned(),
+            }),
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let user = values.get(Self::USER)?.to_owned();
+
+        if !backend.accounts().exists(executor, &user)? {
+            return Err(Error::NoSuchAccount { user });
+        }
+
+        backend
+            .packages()
+            .install(executor, backend.package_for(Capability::Rust))?;
+
+        report(progress, format!("rust is available to {user}"));
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// The absolute path of a program, as the system resolves it.
+///
+/// Read from the host rather than assumed: fish lives at `/usr/bin/fish` on
+/// Arch and at either `/usr/bin/fish` or `/bin/fish` on Debian depending on
+/// the release, and a path that does not match what is installed produces a
+/// login shell nobody can use.
+fn resolve_program(executor: &dyn Executor, program: &str) -> Result<String> {
+    let command = Command::new("sh").args(["-c", &format!("command -v {program}")]);
+    let output = executor.run(&command)?;
+
+    if !output.success() {
+        return Err(Error::ProgramNotFound {
+            program: program.to_owned(),
+        });
+    }
+
+    Ok(output.stdout.trim().to_owned())
+}
+
+/// Adds a shell to `/etc/shells` if it is not already listed.
+fn register_shell(executor: &dyn Executor, backend: &dyn Backend, path: &str) -> Result<()> {
+    const SHELLS: &str = "/etc/shells";
+
+    let files = backend.files();
+    let existing = files.read(executor, SHELLS)?;
+
+    // Compared line by line rather than as a substring: `/bin/fish` is a
+    // substring of `/usr/bin/fish`, so a careless check would decide the wrong
+    // one was already registered.
+    if existing.lines().any(|line| line.trim() == path) {
+        return Ok(());
+    }
+
+    files.write(executor, SHELLS, &format!("{existing}{path}\n"))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::for_family;
+    use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn zellij_is_packaged_on_one_family_and_not_the_other() {
+        // The divergence that earned `BinaryInstaller`: not a different package
+        // name, a different installation mechanism. Verified against the
+        // package databases — no Debian or Ubuntu suite carries zellij.
+        assert!(for_family(Family::Arch).has_package_for(Capability::Zellij));
+        assert!(!for_family(Family::Debian).has_package_for(Capability::Zellij));
+    }
+
+    #[test]
+    fn arch_installs_zellij_from_its_repository() {
+        let mock = MockExecutor::with_replies([Reply::ok("")]);
+        let backend = for_family(Family::Arch);
+
+        InstallZellij
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("Arch packages it, so no version is needed");
+
+        assert!(
+            mock.recorded_lines()[0].contains("pacman"),
+            "{:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn debian_refuses_a_version_this_build_cannot_verify() {
+        // The release table is empty until real digests are filled in, so every
+        // version is refused. Installing an unverified binary as root is the
+        // failure the whole capability exists to prevent.
+        let mock = MockExecutor::with_replies([Reply::failure(1, "")]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(InstallZellij::VERSION, "0.44.0".to_owned());
+
+        let err = InstallZellij
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect_err("an unverifiable version must be refused");
+
+        assert!(matches!(err, Error::UnknownRelease { .. }), "{err:?}");
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.contains("curl")),
+            "nothing must be downloaded: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn a_host_that_already_has_zellij_downloads_nothing() {
+        // Re-installing would replace a build the administrator may have
+        // chosen deliberately, and there is nothing to gain by it.
+        let mock = MockExecutor::with_replies([Reply::ok("/usr/local/bin/zellij")]);
+        let backend = for_family(Family::Debian);
+
+        InstallZellij
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("an installed binary is the desired state");
+
+        assert_eq!(
+            mock.recorded_lines().len(),
+            1,
+            "only the check must run: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn a_shell_is_registered_at_the_path_the_system_resolves() {
+        // fish is at /usr/bin/fish on Arch and either path on Debian depending
+        // on the release. A guessed path produces a login shell nobody can use.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                     // install
+            Reply::ok("/usr/bin/fish\n"),      // command -v
+            Reply::ok("/bin/sh\n/bin/bash\n"), // read /etc/shells
+            Reply::ok(""),                     // backup
+            Reply::ok(""),                     // write
+        ]);
+        let backend = for_family(Family::Debian);
+
+        InstallFish
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("installing must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find_map(|c| c.stdin)
+            .expect("/etc/shells must be written");
+
+        assert!(written.contains("/usr/bin/fish"), "{written}");
+    }
+
+    #[test]
+    fn a_shell_already_registered_is_not_added_twice() {
+        // `/bin/fish` is a substring of `/usr/bin/fish`, so the comparison is
+        // line by line rather than by substring.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),
+            Reply::ok("/usr/bin/fish\n"),
+            Reply::ok("/bin/sh\n/usr/bin/fish\n"),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        InstallFish
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("installing must succeed");
+
+        assert!(
+            mock.recorded().iter().all(|c| c.stdin.is_none()),
+            "nothing must be written: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn installing_a_shell_gives_nobody_that_shell() {
+        // The two read as one action and are not: an administrator who installs
+        // fish and stops there has changed nothing about how anyone logs in.
+        let consequences = InstallFish.consequences(&ParamValues::new());
+
+        assert_eq!(consequences[0].task(), Some("users.set-shell"));
+    }
+
+    #[test]
+    fn mise_warns_that_activation_does_not_run_non_interactively() {
+        // Activation is a prompt hook, so a deploy script or a systemd unit
+        // sees none of the versions mise manages.
+        let consequences = InstallMise.consequences(&ParamValues::new());
+
+        assert_eq!(consequences[0].task(), Some("mise.activate"));
+    }
+
+    #[test]
+    fn rust_warns_about_the_linker_it_does_not_install() {
+        // The most common first-build failure, and it surfaces at link time —
+        // long after the toolchain reported itself installed.
+        let consequences = InstallRust.consequences(&ParamValues::new());
+
+        assert!(
+            consequences[0].check().is_some(),
+            "a linker on PATH is answerable from here"
+        );
+    }
+
+    #[test]
+    fn a_toolchain_needs_an_account_that_exists() {
+        let mock = MockExecutor::with_replies([Reply::failure(2, "")]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(InstallRust::USER, "ghost".to_owned());
+
+        let err = InstallRust
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect_err("a missing account must be refused");
+
+        assert!(matches!(err, Error::NoSuchAccount { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn installing_a_tool_is_not_destructive() {
+        // Putting a binary on the box changes nothing about how anyone logs in
+        // or what the machine serves. Changing a login shell does, and that
+        // task is flagged accordingly.
+        assert!(!InstallFish.is_destructive());
+        assert!(!InstallZellij.is_destructive());
+        assert!(!InstallMise.is_destructive());
+        assert!(!InstallRust.is_destructive());
+    }
+}

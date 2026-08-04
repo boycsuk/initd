@@ -144,6 +144,14 @@ pub enum Msg {
     InvalidCaddyfile {
         details: String,
     },
+    ChecksumMismatch {
+        program: String,
+        version: String,
+    },
+    UnknownRelease {
+        version: String,
+        known: String,
+    },
     ServiceDidNotStart {
         service: String,
         user: String,

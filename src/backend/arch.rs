@@ -6,6 +6,7 @@
 
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
+use super::release_installer::ReleaseInstaller;
 use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::systemd_user::SystemdUserServices;
@@ -15,8 +16,8 @@ use super::wg_tools::WgTools;
 use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
-    AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
-    SysctlManager, UserServiceManager, WireguardTools,
+    AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
+    ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -68,6 +69,19 @@ const CADDY_SERVICE: &str = "caddy.service";
 /// provides the rootless engine.
 const CADDY_CONFIG: &str = "/etc/caddy/Caddyfile";
 
+/// The fish shell package on Arch.
+const FISH_PACKAGE: &str = "fish";
+
+/// Zellij on Arch, which packages it in `extra` — unlike Debian, which has no
+/// package for it in any suite.
+const ZELLIJ_PACKAGE: &str = "zellij";
+
+/// The mise package on Arch.
+const MISE_PACKAGE: &str = "mise";
+
+/// The Rust toolchain installer on Arch.
+const RUST_PACKAGE: &str = "rustup";
+
 /// The group granting sudo on Arch — `sudo` on Debian.
 ///
 /// Asking for `sudo` here is the silent failure the capability exists to
@@ -86,6 +100,7 @@ pub struct ArchBackend {
     sysctl: ProcfsSysctl,
     wireguard: WgTools,
     user_services: SystemdUserServices,
+    binaries: ReleaseInstaller,
 }
 
 impl ArchBackend {
@@ -100,6 +115,7 @@ impl ArchBackend {
             sysctl: ProcfsSysctl::new(),
             wireguard: WgTools::new(),
             user_services: SystemdUserServices::new(),
+            binaries: ReleaseInstaller::new(),
         }
     }
 }
@@ -115,6 +131,10 @@ impl Backend for ArchBackend {
             Capability::Wireguard => WIREGUARD_PACKAGE,
             Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGE,
             Capability::Caddy => CADDY_PACKAGE,
+            Capability::Fish => FISH_PACKAGE,
+            Capability::Zellij => ZELLIJ_PACKAGE,
+            Capability::Mise => MISE_PACKAGE,
+            Capability::Rust => RUST_PACKAGE,
         }
     }
 
@@ -124,6 +144,7 @@ impl Backend for ArchBackend {
             Capability::Wireguard => WIREGUARD_SERVICE,
             Capability::DockerRootless => DOCKER_USER_UNIT,
             Capability::Caddy => CADDY_SERVICE,
+            Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
         }
     }
 
@@ -133,6 +154,10 @@ impl Backend for ArchBackend {
             Capability::Wireguard => WIREGUARD_CONFIG,
             Capability::DockerRootless => DOCKER_CONFIG,
             Capability::Caddy => CADDY_CONFIG,
+            Capability::Fish => "/etc/fish/config.fish",
+            Capability::Zellij => "",
+            Capability::Mise => "/etc/mise/config.toml",
+            Capability::Rust => "",
         }
     }
 
@@ -174,6 +199,10 @@ impl Backend for ArchBackend {
 
     fn user_services(&self) -> &dyn UserServiceManager {
         &self.user_services
+    }
+
+    fn binaries(&self) -> &dyn BinaryInstaller {
+        &self.binaries
     }
 }
 

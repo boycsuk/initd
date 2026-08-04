@@ -114,6 +114,25 @@ TUI or CLI:
   - Acceptance: locking an already-locked root reports that, rather than
     failing or implying it did the work again.
 
+### Developer environment
+
+- As an **administrator**, I can install a shell, a multiplexer, a version
+  manager or a language toolchain, so that the box has the tools I work with.
+  - Acceptance: installing a tool is not treated as destructive — it changes
+    nothing about how anyone logs in or what the machine serves.
+  - Acceptance: installing a shell registers it in `/etc/shells` at the path
+    the system actually resolves, and says plainly that no account has adopted
+    it yet.
+- As an **administrator**, I can install a tool my distribution does not
+  package, without trusting the download.
+  - Acceptance: the checksum is compiled into this build, not fetched alongside
+    the archive. One served by the same host proves only that the transfer
+    finished.
+  - Acceptance: a version this build carries no digest for is refused, and the
+    versions it does know are named.
+  - Acceptance: the archive is verified before it is extracted.
+  - Acceptance: a host that already has the binary downloads nothing.
+
 ### Containers and web server
 
 - As an **administrator**, I can install a container engine that runs as an
