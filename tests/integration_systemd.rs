@@ -18,6 +18,27 @@ mod common;
 
 use common::systemd::SystemdContainer;
 
+/// Shell that waits for a unit to finish reloading before it is asked about.
+///
+/// A reload is not instantaneous. Asked immediately after one, `systemctl
+/// is-active` answers `reloading` — a healthy state that is neither `active`
+/// nor a failure, so an assertion looking for `active` rejects a service that
+/// is working. Observed on a CI runner, never here: a slower, busier machine
+/// is what makes the window wide enough to hit, and every local run finished
+/// the reload before the next command started.
+///
+/// Bounded at six seconds rather than waiting indefinitely, so a unit that
+/// genuinely never settles fails the assertion instead of hanging the job
+/// until the runner kills it.
+fn wait_until_settled(unit: &str) -> String {
+    format!(
+        "for _ in $(seq 30); do \
+           systemctl is-active --quiet {unit} && break; \
+           sleep 0.2; \
+         done;"
+    )
+}
+
 /// Boots a container or skips the test.
 ///
 /// A host that will not run privileged containers cannot answer these
@@ -121,8 +142,10 @@ for_each_image! {
             "initd run ssh.install >/dev/null 2>&1; \
              initd authorize-key root '{key}' >/dev/null 2>&1; \
              initd run ssh.harden >/dev/null 2>&1; \
+             {wait} \
              systemctl is-active {unit}",
             key = common::TEST_KEY,
+            wait = wait_until_settled(image.ssh_unit),
             unit = image.ssh_unit
         ));
         let stdout = common::stdout_of(&output);
@@ -146,8 +169,10 @@ for_each_image! {
         let output = container.exec(&format!(
             "initd run ssh.install >/dev/null 2>&1; \
              initd change-port 2222 >/dev/null 2>&1; \
+             {wait} \
              systemctl is-active {unit}; \
              grep '^Port' /etc/ssh/sshd_config",
+            wait = wait_until_settled(image.ssh_unit),
             unit = image.ssh_unit
         ));
         let stdout = common::stdout_of(&output);
