@@ -165,6 +165,17 @@ pub enum Error {
     /// expected, rather than that a command failed.
     ChecksumMismatch { program: String, version: String },
 
+    /// A release has no artefact for this machine's architecture.
+    ///
+    /// Refused rather than served another machine's binary, which is the same
+    /// limit pinned digests impose on versions: what cannot be verified for
+    /// *this* host is not installed on it.
+    UnsupportedArchitecture {
+        program: String,
+        version: String,
+        arch: String,
+    },
+
     /// A version this build carries no digest for.
     ///
     /// The intended limit of pinned checksums: what cannot be verified cannot
@@ -304,6 +315,15 @@ impl Error {
             Self::ChecksumMismatch { program, version } => Msg::ChecksumMismatch {
                 program: program.clone(),
                 version: version.clone(),
+            },
+            Self::UnsupportedArchitecture {
+                program,
+                version,
+                arch,
+            } => Msg::UnsupportedArchitecture {
+                program: program.clone(),
+                version: version.clone(),
+                arch: arch.clone(),
             },
             Self::UnknownRelease { version, known } => Msg::UnknownRelease {
                 version: version.clone(),

@@ -111,6 +111,15 @@ pub(super) fn render(message: &Msg) -> String {
                  expects; it was not installed"
             )
         }
+        // Names the architecture, since the usual cause is a host this
+        // project has not published a build for rather than a mistake.
+        Msg::UnsupportedArchitecture {
+            program,
+            version,
+            arch,
+        } => {
+            format!("this build has no verified {program} {version} for {arch}")
+        }
         Msg::UnknownRelease { version, known } => {
             format!("this build cannot verify {version}; it knows: {known}")
         }

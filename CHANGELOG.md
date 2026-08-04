@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Zellij's release table carries real digests, computed on 2026-08-04 from the
+  archives at the URLs it holds. Two versions, so this project's release
+  cadence does not decide which upstream version an administrator may install.
+- A release names one artefact per architecture rather than one digest. The
+  digest belongs to the *artefact*: the aarch64 and x86_64 builds of one
+  release hash differently, so a single digest would have failed verification
+  on whichever of the two machines this project targets it was not computed
+  from — and failed looking like tampering rather than like a modelling
+  mistake. The architecture is read from the host with `uname -m` rather than
+  resolved at compile time, since a remote executor would administer a machine
+  that is not this one.
+- A `rust-toolchain.toml` pinning what CLAUDE.md already promised: the stable
+  version and both musl targets. It notes that rustup installs no C linker,
+  which is this project's most common first-build failure and the one thing a
+  toolchain file cannot fix.
 - Brute-force protection and unattended security updates. Defence in depth
   rather than a gap being plugged: `ssh.harden` already writes `MaxAuthTries 3`
   and `LoginGraceTime 30`, and with key-only authentication a password cannot

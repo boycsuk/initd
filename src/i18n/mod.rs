@@ -155,6 +155,11 @@ pub enum Msg {
         version: String,
         known: String,
     },
+    UnsupportedArchitecture {
+        program: String,
+        version: String,
+        arch: String,
+    },
     ServiceDidNotStart {
         service: String,
         user: String,

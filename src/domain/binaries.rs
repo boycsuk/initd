@@ -20,12 +20,37 @@ use crate::exec::Executor;
 pub struct Release {
     /// Upstream version, as the operator selects it.
     pub version: &'static str,
+    /// Path of the binary inside the archive.
+    pub archive_member: &'static str,
+    /// One artefact per architecture this project ships for.
+    ///
+    /// Separate because the digest is a property of the *artefact*, not of the
+    /// version: an aarch64 archive and an x86_64 archive of the same release
+    /// hash differently, so a single digest would fail verification on one of
+    /// the two machines this tool targets.
+    pub artefacts: &'static [Artefact],
+}
+
+/// One downloadable build of a release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Artefact {
+    /// Machine name as `uname -m` reports it.
+    pub arch: &'static str,
     /// Where the archive is fetched from.
     pub url: &'static str,
     /// SHA-256 of the archive, compiled in rather than fetched.
     pub sha256: &'static str,
-    /// Path of the binary inside the archive.
-    pub archive_member: &'static str,
+}
+
+impl Release {
+    /// The artefact for a machine, if this release has one.
+    ///
+    /// An architecture with no artefact is not installable rather than being
+    /// served someone else's binary — the same limit pinned digests impose on
+    /// versions.
+    pub fn artefact_for(&self, arch: &str) -> Option<&'static Artefact> {
+        self.artefacts.iter().find(|artefact| artefact.arch == arch)
+    }
 }
 
 /// Installs binaries from verified release archives.

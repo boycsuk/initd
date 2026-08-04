@@ -1,0 +1,19 @@
+# Pins what CLAUDE.md already promises, so a clone builds the same way this one
+# does rather than against whatever toolchain happens to be default.
+#
+# The musl targets are listed because the release build in CLAUDE.md names
+# them, and rustup installing them on demand is what keeps `cargo build
+# --target` from failing on a fresh machine for a reason unrelated to the code.
+#
+# Note that rustup installs no C linker. `x86_64-unknown-linux-musl` needs
+# `musl-gcc`, from the `musl-tools` package on Debian and `musl` on Arch —
+# without it the release build fails at link time, long after the toolchain
+# reports itself complete. That is the most common first-build failure in this
+# project and it is not something a toolchain file can fix.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]

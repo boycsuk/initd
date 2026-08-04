@@ -10,7 +10,7 @@
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
-use crate::domain::binaries::Release;
+use crate::domain::binaries::{Artefact, Release};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Consequence, Reason};
@@ -115,12 +115,49 @@ impl InstallZellij {
 
     /// Releases this build carries a digest for.
     ///
-    /// Deliberately short: each entry is a promise that this project has
-    /// verified that artefact. The digests below are placeholders and the task
-    /// refuses to run until they are replaced with real ones — installing an
-    /// unverified binary as root is the failure this whole capability exists
-    /// to prevent, and a plausible-looking wrong digest is worse than none.
-    pub const RELEASES: &[Release] = &[];
+    /// Deliberately short: each entry is a promise that this project verified
+    /// that artefact, so the table grows by someone downloading a release and
+    /// computing its digest rather than by copying a number from a page.
+    ///
+    /// Both digests below were computed from the archives at these URLs on
+    /// 2026-08-04. Two versions rather than one so that this project's release
+    /// cadence does not decide which upstream version an administrator may
+    /// install; two architectures because the digest belongs to the artefact,
+    /// and the two builds of one release hash differently.
+    pub const RELEASES: &[Release] = &[
+        Release {
+            version: "0.44.3",
+            archive_member: "zellij",
+            artefacts: &[
+                Artefact {
+                    arch: "x86_64",
+                    url: "https://github.com/zellij-org/zellij/releases/download/v0.44.3/zellij-x86_64-unknown-linux-musl.tar.gz",
+                    sha256: "0f7c346788627f506c0a28296517768633cff24fc822a739f8264b640ecad751",
+                },
+                Artefact {
+                    arch: "aarch64",
+                    url: "https://github.com/zellij-org/zellij/releases/download/v0.44.3/zellij-aarch64-unknown-linux-musl.tar.gz",
+                    sha256: "15e6534d42644d66973d136c590c49739dcfd6a1a2a0d3d917973f16c81b45fb",
+                },
+            ],
+        },
+        Release {
+            version: "0.43.1",
+            archive_member: "zellij",
+            artefacts: &[
+                Artefact {
+                    arch: "x86_64",
+                    url: "https://github.com/zellij-org/zellij/releases/download/v0.43.1/zellij-x86_64-unknown-linux-musl.tar.gz",
+                    sha256: "541d98efef5558293ef85ad9acd29e4d920b6e881513b9e77255d8207020d75a",
+                },
+                Artefact {
+                    arch: "aarch64",
+                    url: "https://github.com/zellij-org/zellij/releases/download/v0.43.1/zellij-aarch64-unknown-linux-musl.tar.gz",
+                    sha256: "32321ad5f61c2c62d156162d1df95dc823666f84e4a0d7cd79b0fef02930b165",
+                },
+            ],
+        },
+    ];
 }
 
 impl Task for InstallZellij {
@@ -397,6 +434,67 @@ mod tests {
     }
 
     #[test]
+    fn every_published_release_has_a_build_for_both_targets() {
+        // The two architectures this project ships for. A release listed with
+        // only one leaves the other machine refused at install time, long
+        // after the version looked available.
+        for release in InstallZellij::RELEASES {
+            for arch in ["x86_64", "aarch64"] {
+                let artefact = release
+                    .artefact_for(arch)
+                    .unwrap_or_else(|| panic!("{} has no {arch} build", release.version));
+
+                assert_eq!(artefact.sha256.len(), 64, "{artefact:?}");
+                assert!(
+                    artefact.sha256.chars().all(|c| c.is_ascii_hexdigit()),
+                    "a digest is hex: {artefact:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_url_names_the_version_and_architecture_it_carries() {
+        // The pairing that silently breaks: a digest computed from one archive
+        // beside a URL pointing at another. Verification would fail and read
+        // as tampering rather than as a typo.
+        for release in InstallZellij::RELEASES {
+            for artefact in release.artefacts {
+                assert!(
+                    artefact.url.contains(release.version),
+                    "{artefact:?} does not name {}",
+                    release.version
+                );
+                assert!(
+                    artefact.url.contains(artefact.arch),
+                    "{artefact:?} does not name its architecture"
+                );
+                assert!(
+                    artefact.url.starts_with("https://"),
+                    "an unencrypted download would defeat the digest: {artefact:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_two_artefacts_share_a_digest() {
+        // Copying a digest between rows is the mistake this catches: every
+        // archive here is a distinct build, so a repeat means one row was
+        // filled in from another rather than from the file it names.
+        let digests: Vec<&str> = InstallZellij::RELEASES
+            .iter()
+            .flat_map(|release| release.artefacts.iter().map(|a| a.sha256))
+            .collect();
+
+        let mut unique = digests.clone();
+        unique.sort_unstable();
+        unique.dedup();
+
+        assert_eq!(digests.len(), unique.len(), "duplicate digest: {digests:?}");
+    }
+
+    #[test]
     fn debian_refuses_a_version_this_build_cannot_verify() {
         // The release table is empty until real digests are filled in, so every
         // version is refused. Installing an unverified binary as root is the
@@ -405,7 +503,7 @@ mod tests {
         let backend = for_family(Family::Debian);
 
         let mut values = ParamValues::new();
-        values.set(InstallZellij::VERSION, "0.44.0".to_owned());
+        values.set(InstallZellij::VERSION, "0.1.0".to_owned());
 
         let err = InstallZellij
             .run(&mock, backend.as_ref(), &values, &mut |_| {})
