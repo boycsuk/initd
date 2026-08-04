@@ -91,6 +91,21 @@ const MISE_PACKAGE: &str = "mise";
 /// can rely on.
 const RUST_PACKAGE: &str = "rustup";
 
+/// The fail2ban package on Debian.
+const FAIL2BAN_PACKAGE: &str = "fail2ban";
+
+/// The fail2ban unit on Debian.
+const FAIL2BAN_SERVICE: &str = "fail2ban.service";
+
+/// The CrowdSec package on Debian.
+const CROWDSEC_PACKAGE: &str = "crowdsec";
+
+/// The CrowdSec unit on Debian.
+const CROWDSEC_SERVICE: &str = "crowdsec.service";
+
+/// Debian's unattended upgrades.
+const UNATTENDED_PACKAGE: &str = "unattended-upgrades";
+
 /// The group granting sudo on Debian — `wheel` on Arch and RHEL.
 const ADMIN_GROUP: &str = "sudo";
 
@@ -140,6 +155,9 @@ impl Backend for DebianBackend {
             Capability::Zellij => ZELLIJ_PACKAGE,
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => RUST_PACKAGE,
+            Capability::Fail2ban => FAIL2BAN_PACKAGE,
+            Capability::Crowdsec => CROWDSEC_PACKAGE,
+            Capability::UnattendedUpgrades => UNATTENDED_PACKAGE,
         }
     }
 
@@ -153,6 +171,10 @@ impl Backend for DebianBackend {
             Capability::Caddy => CADDY_SERVICE,
             // None of these is a service.
             Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
+            Capability::Fail2ban => FAIL2BAN_SERVICE,
+            Capability::Crowdsec => CROWDSEC_SERVICE,
+            // Driven by a timer the package ships, not by a unit of its own.
+            Capability::UnattendedUpgrades => "",
         }
     }
 
@@ -166,6 +188,9 @@ impl Backend for DebianBackend {
             Capability::Zellij => "",
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
+            Capability::Fail2ban => "/etc/fail2ban/jail.d",
+            Capability::Crowdsec => "/etc/crowdsec",
+            Capability::UnattendedUpgrades => "/etc/apt/apt.conf.d",
         }
     }
 

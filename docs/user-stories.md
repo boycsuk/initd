@@ -114,6 +114,30 @@ TUI or CLI:
   - Acceptance: locking an already-locked root reports that, rather than
     failing or implying it did the work again.
 
+### Hardening
+
+- As an **administrator**, I can ban addresses that repeatedly fail to log in,
+  so that the log stays readable and an attacker loses their cheapest option.
+  - Acceptance: the two banners on offer each name the other as a conflict.
+    Both write ban rules through the firewall and neither observes the other's,
+    so a host running both bans twice and unbans unpredictably.
+  - Acceptance: the jail watches the port SSH is on, named explicitly — the
+    service name resolves to 22 whatever the daemon is listening on.
+  - Acceptance: the reputation-network option is confirmed before it starts,
+    since it reports what this host sees to a third party.
+  - Acceptance: it says plainly that its agent decides and does not block; a
+    bouncer is what enforces.
+- As an **administrator**, I can have security updates applied without waiting
+  for someone to log in.
+  - Acceptance: it never reboots on its own. A tool that reboots a server on
+    its own schedule is one nobody can plan around, so the need for a reboot is
+    reported instead.
+  - Acceptance: writing the policy is not treated as success — the timer that
+    applies it is confirmed enabled.
+  - Platform exception: Debian only. Arch is a rolling release with no
+    equivalent, so the task is shown unsupported there rather than doing
+    something different under the same name.
+
 ### Developer environment
 
 - As an **administrator**, I can install a shell, a multiplexer, a version

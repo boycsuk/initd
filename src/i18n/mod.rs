@@ -144,6 +144,9 @@ pub enum Msg {
     InvalidCaddyfile {
         details: String,
     },
+    TimerNotEnabled {
+        timer: String,
+    },
     ChecksumMismatch {
         program: String,
         version: String,

@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Brute-force protection and unattended security updates. Defence in depth
+  rather than a gap being plugged: `ssh.harden` already writes `MaxAuthTries 3`
+  and `LoginGraceTime 30`, and with key-only authentication a password cannot
+  be brute-forced at all — so neither banner is required for a hardened host,
+  and neither is installed by default.
+- fail2ban and CrowdSec both ship, each declaring the other as a `Conflicts`.
+  The choice is the administrator's because the trade-off is theirs: one parses
+  local logs and reports nothing anywhere, the other consults a reputation
+  network and in exchange reports what this host sees. Running both is a host
+  that bans twice and unbans unpredictably, since neither observes the other's
+  rules — which is what the variant exists to say.
+- The fail2ban jail names the SSH port explicitly. `port = ssh` resolves
+  through `/etc/services` and therefore means 22 whatever the daemon is
+  actually listening on, so a moved port leaves the jail watching one nobody
+  knocks on.
+- CrowdSec says plainly that its agent decides and does not block: without a
+  bouncer nothing enforces, which reads as a working install right up until an
+  attack is not stopped. Installing it is confirmed first, since it sends data
+  off the machine.
+- `updates.unattended-security` never reboots on its own. A tool that reboots a
+  server on its own schedule is one nobody can plan around, so the need for one
+  is declared as a consequence instead. Writing the policy is not treated as
+  success either — the package ships a debconf question whose answer decides
+  whether the timer runs at all, so the timer is confirmed enabled.
+- Unattended upgrades declare Debian only. Arch is a rolling release with no
+  equivalent, and inventing a different operation under the same task id would
+  make the two families silently disagree about what the task does.
 - A developer environment area: fish, Zellij, mise and the Rust toolchain.
   Installing a tool is a system operation and takes no account — only changing
   a login shell and activating a version manager are per-user, and those are

@@ -171,6 +171,13 @@ pub enum Error {
     /// be installed.
     UnknownRelease { version: String, known: String },
 
+    /// A timer the task depends on is not enabled.
+    ///
+    /// Writing a policy file does not start anything: the package ships a
+    /// debconf question whose answer decides whether the timer runs at all, so
+    /// a policy alone can sit on a host that never applies it.
+    TimerNotEnabled { timer: String },
+
     /// Caddy rejected its configuration.
     InvalidCaddyfile { details: String },
 
@@ -301,6 +308,9 @@ impl Error {
             Self::UnknownRelease { version, known } => Msg::UnknownRelease {
                 version: version.clone(),
                 known: known.clone(),
+            },
+            Self::TimerNotEnabled { timer } => Msg::TimerNotEnabled {
+                timer: timer.clone(),
             },
             Self::InvalidCaddyfile { details } => Msg::InvalidCaddyfile {
                 details: details.clone(),

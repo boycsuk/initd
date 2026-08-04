@@ -82,6 +82,26 @@ const MISE_PACKAGE: &str = "mise";
 /// The Rust toolchain installer on Arch.
 const RUST_PACKAGE: &str = "rustup";
 
+/// The fail2ban package on Arch.
+const FAIL2BAN_PACKAGE: &str = "fail2ban";
+
+/// The fail2ban unit on Arch.
+const FAIL2BAN_SERVICE: &str = "fail2ban.service";
+
+/// The CrowdSec package on Arch.
+const CROWDSEC_PACKAGE: &str = "crowdsec";
+
+/// The CrowdSec unit on Arch.
+const CROWDSEC_SERVICE: &str = "crowdsec.service";
+
+/// Arch has no unattended-upgrades equivalent.
+///
+/// A rolling release upgrades everything or nothing, so applying updates
+/// unattended means pulling whatever landed today — including changes that
+/// need manual intervention. The task declares Debian only rather than
+/// inventing a different operation under the same name.
+const UNATTENDED_PACKAGE: &str = "";
+
 /// The group granting sudo on Arch — `sudo` on Debian.
 ///
 /// Asking for `sudo` here is the silent failure the capability exists to
@@ -135,6 +155,9 @@ impl Backend for ArchBackend {
             Capability::Zellij => ZELLIJ_PACKAGE,
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => RUST_PACKAGE,
+            Capability::Fail2ban => FAIL2BAN_PACKAGE,
+            Capability::Crowdsec => CROWDSEC_PACKAGE,
+            Capability::UnattendedUpgrades => UNATTENDED_PACKAGE,
         }
     }
 
@@ -145,6 +168,9 @@ impl Backend for ArchBackend {
             Capability::DockerRootless => DOCKER_USER_UNIT,
             Capability::Caddy => CADDY_SERVICE,
             Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
+            Capability::Fail2ban => FAIL2BAN_SERVICE,
+            Capability::Crowdsec => CROWDSEC_SERVICE,
+            Capability::UnattendedUpgrades => "",
         }
     }
 
@@ -158,6 +184,9 @@ impl Backend for ArchBackend {
             Capability::Zellij => "",
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
+            Capability::Fail2ban => "/etc/fail2ban/jail.d",
+            Capability::Crowdsec => "/etc/crowdsec",
+            Capability::UnattendedUpgrades => "",
         }
     }
 

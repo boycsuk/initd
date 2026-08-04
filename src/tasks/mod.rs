@@ -7,6 +7,7 @@
 pub mod algorithms;
 pub mod consequence;
 pub mod devtools;
+pub mod hardening;
 pub mod network;
 pub mod params;
 pub mod revert;
@@ -178,6 +179,7 @@ pub fn tree() -> Vec<Node> {
         Node::Category(network::category()),
         Node::Category(services::category()),
         Node::Category(devtools::category()),
+        Node::Category(hardening::category()),
     ]
 }
 

@@ -47,6 +47,12 @@ pub enum Capability {
     Mise,
     /// The Rust toolchain.
     Rust,
+    /// The fail2ban log-parsing banner.
+    Fail2ban,
+    /// The CrowdSec reputation-network banner.
+    Crowdsec,
+    /// Debian's unattended-upgrades.
+    UnattendedUpgrades,
 }
 
 /// Everything a task needs from the distribution it runs on.
