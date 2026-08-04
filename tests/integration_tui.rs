@@ -67,7 +67,13 @@ const PREPARE_FOR_HARDENING: &str = concat!(
 /// Written once because every verification-window scenario needs it, and a
 /// scenario that got the path wrong would sit on the wrong task and still
 /// look plausible.
+///
+/// The leading `Down` is Identity & Access, which sorts above Remote Access:
+/// the tree grew that area after these scenarios were written, and the title
+/// assertion below is what turned the silent misnavigation into a failure that
+/// named itself.
 fn run_hardening(tui: &Tui) {
+    tui.press("Down"); // Identity & Access -> Remote Access
     tui.press("Enter"); // Remote Access
     tui.press("Enter"); // SSH
     tui.press("Down"); // Service -> Configuration
@@ -127,6 +133,8 @@ for_each_image! {
     fn enter_opens_a_category_and_the_breadcrumb_follows(image) {
         let tui = tui!(image, "drill", "true");
 
+        // Identity & Access sorts first, so one Down reaches Remote Access.
+        tui.press("Down");
         tui.press("Enter");
         let after_one = tui.screen();
         assert!(
@@ -150,6 +158,10 @@ for_each_image! {
     fn escape_returns_to_the_parent_instead_of_quitting(image) {
         let tui = tui!(image, "escape", "true");
 
+        // Down first so the descent starts from Remote Access, which has a
+        // second level to overshoot into — the point of the scenario is two
+        // levels down and two back.
+        tui.press("Down");
         tui.press("Enter");
         tui.press("Enter");
         tui.press("Escape");

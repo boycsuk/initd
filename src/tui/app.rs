@@ -2263,7 +2263,10 @@ mod tests {
         }
 
         // Descend to a level of real tasks, where the flags are visible.
-        enter_first_category(&mut app);
+        // Named rather than reached by position: this walks to SSH's
+        // Configuration group specifically, and a category added above it
+        // would otherwise redirect the walk somewhere with a different shape.
+        enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
         app.list_state.select(Some(1));
         app.enter_category(1);
@@ -2276,7 +2279,7 @@ mod tests {
         // The wide layout, where the tree takes its fixed width and long task
         // titles have to be truncated rather than clipped.
         let mut wide = test_app(Family::Debian);
-        enter_first_category(&mut wide);
+        enter_named_category(&mut wide, "Remote Access");
         enter_first_category(&mut wide);
         enter_first_category(&mut wide);
 
@@ -2287,7 +2290,7 @@ mod tests {
 
         // Output streaming, with the pane focused.
         let mut running = test_app(Family::Debian);
-        enter_first_category(&mut running);
+        enter_named_category(&mut running, "Remote Access");
         enter_first_category(&mut running);
         enter_first_category(&mut running);
         pretend_running(&mut running);
