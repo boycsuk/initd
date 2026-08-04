@@ -29,6 +29,12 @@ pub enum ParamKind {
     PublicKey,
     /// An absolute filesystem path, such as a login shell.
     Path,
+    /// A transport protocol: `tcp` or `udp`.
+    ///
+    /// A closed choice rather than free text, because the two are not
+    /// interchangeable and a typo would open the wrong one silently — a `tcp`
+    /// rule admits nothing for WireGuard.
+    Protocol,
 }
 
 /// Characters that would change the meaning of the line a value is written
@@ -56,6 +62,7 @@ impl ParamKind {
             Self::Username | Self::UsernameList | Self::PublicKey | Self::Path => {
                 !character.is_control()
             }
+            Self::Protocol => character.is_ascii_alphabetic(),
         }
     }
 
@@ -70,6 +77,7 @@ impl ParamKind {
             Self::UsernameList => validate_username_list(value),
             Self::PublicKey => validate_public_key(value),
             Self::Path => validate_path(value),
+            Self::Protocol => validate_protocol(value),
         }
     }
 }
@@ -95,6 +103,15 @@ fn validate_port(value: &str) -> std::result::Result<(), String> {
 /// Shared with the tasks that act on a port, so the range is stated once
 /// rather than re-derived beside every check.
 pub const MAX_PORT: u32 = 65_535;
+
+/// Rejects anything that is not a transport protocol this tool can write.
+fn validate_protocol(value: &str) -> std::result::Result<(), String> {
+    match value {
+        "tcp" | "udp" => Ok(()),
+        "" => Err("a protocol is required".to_owned()),
+        _ => Err("the protocol must be tcp or udp".to_owned()),
+    }
+}
 
 /// Rejects anything that is not a usable absolute path.
 ///

@@ -79,6 +79,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::MissingGroup { group } => {
             format!("the group {group} does not exist on this system")
         }
+        Msg::UnknownSysctl { key } => {
+            format!("this kernel has no parameter named {key}")
+        }
         Msg::AccountExists { user } => {
             format!("the account {user} already exists")
         }

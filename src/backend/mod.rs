@@ -6,13 +6,18 @@
 
 pub mod arch;
 pub mod debian;
+pub mod nftables;
+pub mod procfs_sysctl;
 pub mod shadow_accounts;
 pub mod systemd;
 pub mod unix_accounts;
 pub mod unix_files;
 
 use crate::distro::Family;
-use crate::domain::{AccountReader, AccountWriter, FileEditor, PackageManager, ServiceManager};
+use crate::domain::{
+    AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
+    SysctlManager,
+};
 
 /// A capability that tasks request by name, without knowing what it is called
 /// on the running system.
@@ -65,6 +70,16 @@ pub trait Backend {
     fn files(&self) -> &dyn FileEditor;
     fn accounts(&self) -> &dyn AccountReader;
     fn account_writer(&self) -> &dyn AccountWriter;
+
+    /// Inbound packet filtering.
+    ///
+    /// One implementation today. `ufw` is deliberately absent: it wraps
+    /// whichever backend is installed, so driving both it and `nft` on one host
+    /// is how a rule becomes invisible to the tool that did not write it.
+    fn firewall(&self) -> &dyn FirewallManager;
+
+    /// Kernel parameters.
+    fn sysctl(&self) -> &dyn SysctlManager;
 }
 
 /// Builds the backend for a detected family.

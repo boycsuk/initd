@@ -4,13 +4,18 @@
 //! also ships `ssh.socket` alongside `ssh.service`, which matters when
 //! changing the port — see the SSH port task.
 
+use super::nftables::Nftables;
+use super::procfs_sysctl::ProcfsSysctl;
 use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
 use super::{Backend, Capability};
 use crate::distro::Family;
-use crate::domain::{AccountReader, AccountWriter, FileEditor, PackageManager, ServiceManager};
+use crate::domain::{
+    AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
+    SysctlManager,
+};
 use crate::error::Result;
 use crate::exec::{Command, Executor};
 
@@ -33,6 +38,8 @@ pub struct DebianBackend {
     files: UnixFiles,
     accounts: UnixAccounts,
     account_writer: ShadowAccounts,
+    firewall: Nftables,
+    sysctl: ProcfsSysctl,
 }
 
 impl DebianBackend {
@@ -43,6 +50,8 @@ impl DebianBackend {
             files: UnixFiles::new(),
             accounts: UnixAccounts::new(),
             account_writer: ShadowAccounts::new(),
+            firewall: Nftables::new(),
+            sysctl: ProcfsSysctl::new(),
         }
     }
 }
@@ -92,6 +101,14 @@ impl Backend for DebianBackend {
 
     fn account_writer(&self) -> &dyn AccountWriter {
         &self.account_writer
+    }
+
+    fn firewall(&self) -> &dyn FirewallManager {
+        &self.firewall
+    }
+
+    fn sysctl(&self) -> &dyn SysctlManager {
+        &self.sysctl
     }
 }
 

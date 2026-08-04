@@ -114,6 +114,28 @@ TUI or CLI:
   - Acceptance: locking an already-locked root reports that, rather than
     failing or implying it did the work again.
 
+### Firewall and kernel parameters
+
+- As an **administrator**, I can see whether the firewall is filtering and which
+  ports it admits, so that I know what is reachable before I change anything.
+  - Acceptance: "not filtering" and "filtering nothing" are reported
+    differently. They look alike in a listing and mean opposite things.
+- As an **administrator**, I can turn on default-deny inbound filtering without
+  losing the session I am running it from.
+  - Acceptance: the SSH port is admitted by the same ruleset that installs the
+    policy, not by a second command afterwards.
+  - Acceptance: established connections and loopback keep working, so the host
+    can still reach its own package mirror and talk to itself.
+- As an **administrator**, I can open a port, naming its protocol.
+  - Acceptance: a rule for TCP does not admit UDP. WireGuard is UDP, and a
+    TCP rule for its port admits none of its traffic.
+- As an **administrator**, I can enable IP forwarding and unprivileged port
+  binding, so that a VPN can route and a rootless container engine can serve.
+  - Acceptance: applied immediately *and* across reboots. Either alone reports
+    success over a system that does not behave as described.
+  - Acceptance: a parameter already holding the value says so rather than
+    silently doing nothing.
+
 ### SSH server
 
 - As an **administrator**, I can install and enable the SSH server so that the

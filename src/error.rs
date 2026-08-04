@@ -145,6 +145,13 @@ pub enum Error {
     /// session for an account whose shell is not listed.
     ShellNotListed { shell: String },
 
+    /// A kernel parameter this system does not have.
+    ///
+    /// Named rather than reported as a generic command failure: the usual
+    /// cause is a module that is not loaded, and the parameter is what says
+    /// which one.
+    UnknownSysctl { key: String },
+
     /// A group an account was to be added to does not exist.
     ///
     /// Raised rather than letting `usermod -aG` succeed against a group the
@@ -223,6 +230,7 @@ impl Error {
             Self::MissingGroup { group } => Msg::MissingGroup {
                 group: group.clone(),
             },
+            Self::UnknownSysctl { key } => Msg::UnknownSysctl { key: key.clone() },
             Self::AccountExists { user } => Msg::AccountExists { user: user.clone() },
             Self::NoSuchAccount { user } => Msg::NoSuchAccount { user: user.clone() },
             Self::GroupMembershipFailed { user, group } => Msg::GroupMembershipFailed {

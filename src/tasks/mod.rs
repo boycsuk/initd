@@ -6,6 +6,7 @@
 
 pub mod algorithms;
 pub mod consequence;
+pub mod network;
 pub mod params;
 pub mod revert;
 pub mod ssh;
@@ -165,6 +166,10 @@ pub fn tree() -> Vec<Node> {
             "Remote Access",
             vec![Node::Category(ssh::category())],
         )),
+        // Its own top-level area rather than a child of Remote Access: the
+        // firewall and the kernel parameters are what every other component
+        // depends on, and belong to none of them.
+        Node::Category(network::category()),
     ]
 }
 

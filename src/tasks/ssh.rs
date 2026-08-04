@@ -8,9 +8,9 @@ use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::files::Backup;
 use crate::error::{Error, Lockout, Result};
-use crate::exec::{Executor, OutputLine, Stream};
+use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::algorithms;
-use crate::tasks::consequence::{Consequence, External, Protocol, Reason};
+use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
@@ -634,10 +634,16 @@ impl Task for ChangePort {
                     from: from.clone(),
                     to: to.clone(),
                 },
-                // Deliberately no check yet: `firewall.allow-port` does not
-                // exist, so there is no rule to query. It arrives with the
-                // task, rather than being guessed at now.
-                check: None,
+                // Verifiable now that the firewall is modelled: the rule either
+                // names the new port or it does not, and the ruleset is the
+                // only honest answer. The needle is the whole rule rather than
+                // the bare number, since `2222` also appears in `22220`.
+                check: Some(Check {
+                    command: Command::new("nft")
+                        .args(["list", "table", "inet", "initd"])
+                        .privileged(),
+                    resolved_when_stdout_contains: format!("tcp dport {to} accept"),
+                }),
             },
             Consequence::External {
                 note: External::ProviderFirewall {
@@ -2106,17 +2112,34 @@ mod tests {
             .find(|c| c.task() == Some("firewall.allow-port"))
             .expect("changing the port must name the firewall");
 
-        assert_eq!(
-            *firewall,
+        assert!(matches!(
+            firewall,
             Consequence::Invalidates {
-                task: "firewall.allow-port",
-                reason: Reason::PortChanged {
-                    from: "22".to_owned(),
-                    to: "2222".to_owned(),
-                },
-                check: None,
-            }
-        );
+                reason: Reason::PortChanged { from, to },
+                ..
+            } if from == "22" && to == "2222"
+        ));
+    }
+
+    #[test]
+    fn the_firewall_warning_can_be_verified() {
+        // The firewall is on this host, so the tool can settle this one rather
+        // than only reporting it — unlike the provider's edge firewall.
+        let consequences = ChangePort.consequences(&port_values(2222));
+
+        let firewall = consequences
+            .iter()
+            .find(|c| c.task() == Some("firewall.allow-port"))
+            .expect("changing the port must name the firewall");
+
+        let check = firewall
+            .check()
+            .expect("a rule on this host is answerable from it");
+
+        // The whole rule, not the bare number: `2222` is also a substring of
+        // `22220`, and this project has been bitten before by a needle that
+        // matched the wrong answer.
+        assert_eq!(check.resolved_when_stdout_contains, "tcp dport 2222 accept");
     }
 
     #[test]

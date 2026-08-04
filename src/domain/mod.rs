@@ -7,11 +7,15 @@
 pub mod account_writer;
 pub mod accounts;
 pub mod files;
+pub mod firewall;
 pub mod packages;
 pub mod services;
+pub mod sysctl;
 
 pub use account_writer::AccountWriter;
 pub use accounts::AccountReader;
 pub use files::FileEditor;
+pub use firewall::FirewallManager;
 pub use packages::PackageManager;
 pub use services::{ServiceManager, ServiceState};
+pub use sysctl::SysctlManager;

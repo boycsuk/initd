@@ -128,6 +128,9 @@ pub enum Msg {
     MissingGroup {
         group: String,
     },
+    UnknownSysctl {
+        key: String,
+    },
     AccountExists {
         user: String,
     },

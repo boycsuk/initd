@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Firewall and kernel parameters, as their own top-level area. They belong to
+  no component and every component needs them: WireGuard needs forwarding and
+  an open UDP port, rootless Docker needs unprivileged ports, Caddy needs 80
+  and 443, SSH needs whichever port it was moved to.
+- `FirewallManager` and `SysctlManager` capabilities, with `nftables` and
+  `sysctl` implementations. `ufw` is deliberately not a sibling implementation:
+  it wraps whichever backend is installed, so driving both it and `nft` on one
+  host is how a rule becomes invisible to the tool that did not write it.
+- Enabling the firewall admits the SSH port in the same ruleset that installs
+  the default-deny policy. Applying the policy first and the rule second leaves
+  a window in which everything is denied, and the session issuing the second
+  command does not survive it. Established connections and loopback are kept
+  for the same reason: without them the host cannot reach its own package
+  mirror or talk to itself.
+- Rules live in a table named for this tool rather than in `filter`, which the
+  distribution also writes to, and cover `inet` rather than `ip` — a rule added
+  only to IPv4 leaves the same port reachable over IPv6.
+- Kernel parameters are written to a drop-in of this tool's own rather than
+  appended to `/etc/sysctl.conf`. A repeated setting replaces its line instead
+  of accumulating contradictory ones whose winner is whichever is read last.
+  The runtime value is applied first, so a parameter this kernel does not have
+  fails before a file is written that would make every subsequent boot log an
+  error.
+- `ssh.change-port` now carries a verifiable consequence rather than a bare
+  warning: `firewall.allow-port` exists, so the ruleset can be asked whether it
+  names the new port. The needle is the whole rule — `2222` is a substring of
+  `22220`.
 - Account administration: create an administrative user, change a login shell,
   and lock the root account. First area outside SSH, and first entry under a
   second top-level category, since the rest of the tool depends on there being
