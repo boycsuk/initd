@@ -199,11 +199,27 @@ pub fn centred(width: u16, height: u16, area: Rect) -> Rect {
 /// than a cell size, so that a short question does not occupy a fixed block on
 /// a large terminal. Sizing in cells, the way the form and the help overlay do,
 /// would be a change to the contract in `docs/ui.md`.
+///
+/// The arithmetic widens to `u32` before multiplying: a terminal 1093 columns
+/// wide overflows `u16` at 60%, which panics in debug and wraps silently in
+/// release — the profile this ships as. Wide terminals are what a proportional
+/// dialog is for, so the overflow sits on the path the function exists to
+/// serve.
 pub fn centred_percent(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let width = area.width * percent_x / 100;
-    let height = area.height * percent_y / 100;
+    let scale = |extent: u16, percent: u16| {
+        let scaled = u32::from(extent) * u32::from(percent) / 100;
 
-    centred(width, height, area)
+        // The result is a fraction of `extent`, which is a `u16`, so it cannot
+        // exceed one — except for a percentage above 100, which no caller has
+        // and which the clamp in `centred` would absorb anyway.
+        u16::try_from(scaled).unwrap_or(extent)
+    };
+
+    centred(
+        scale(area.width, percent_x),
+        scale(area.height, percent_y),
+        area,
+    )
 }
 
 #[cfg(test)]
@@ -328,5 +344,25 @@ mod tests {
 
         assert!(dialog.x + dialog.width <= screen.width);
         assert!(dialog.y + dialog.height <= screen.height);
+    }
+
+    #[test]
+    fn a_very_wide_terminal_does_not_overflow_the_arithmetic() {
+        // 1093 columns x 60% exceeds `u16`, which panics in debug and wraps
+        // silently in release. A wide terminal is precisely what a
+        // proportional dialog is for, so the case is on the path, not at its
+        // edge.
+        let dialog = centred_percent(60, 40, area(2000, 1000));
+
+        assert_eq!(dialog.width, 1200);
+        assert_eq!(dialog.height, 400);
+    }
+
+    #[test]
+    fn the_widest_possible_terminal_is_still_proportional() {
+        let dialog = centred_percent(60, 40, area(u16::MAX, u16::MAX));
+
+        assert_eq!(dialog.width, 39321);
+        assert_eq!(dialog.height, 26214);
     }
 }
