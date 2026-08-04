@@ -27,13 +27,12 @@
 - Audit: `cargo deny check`
 
 ## WHAT — Structure
-<!-- TODO: refine as the code lands. Intended layout: -->
 - `src/main.rs` — entry point: dispatches to TUI (no args) or CLI subcommand
 - `src/error.rs` — domain error type; carries structured data only, never display text
 - `src/i18n/` — message catalogue + locale resolution (dependency-free; every user-facing string goes through it)
 - `src/distro/` — `/etc/os-release` detection and family resolution
-- `src/backend/` — one module per distro family, each implementing the domain traits (`PackageManager`, …), plus the shared `systemd` and `unix_files` implementations
-- `src/domain/` — capability traits: packages, services, files
+- `src/backend/` — one module per distro family, each resolving the names a capability has there, plus the implementations they share: `systemd` and `systemd_user`, `unix_files`, `unix_accounts` and `shadow_accounts`, `nftables`, `procfs_sysctl`, `wg_tools`, `release_installer`
+- `src/domain/` — capability traits: packages, services and user services, files, account reading and writing, firewall, sysctl, WireGuard, verified binaries
 - `src/tasks/` — the task tree exposed by the TUI (each task is typed Rust, declares supported distros)
 - `src/tui/` — `ratatui` rendering, navigation, execution output pane
 - `src/exec/` — `Executor` trait + `LocalExecutor` (the single choke point for running commands), `MockExecutor` and `PrivilegeEscalator`
@@ -75,6 +74,14 @@ Reach the graph two ways over the same `graphify-out/graph.json`:
 
 One-time setup — run `/graphify .` once to build `graphify-out/graph.json` (the MCP server stays unavailable until then). You do NOT need to run `graphify install`: the graph-first `PreToolUse` nudge ships centrally as `prefer-graphify.{sh,ps1}` and is merged into this project's hooks by `--serena` (gated on the graph existing, so it's silent until you build it). Heed the nudge when you see it: the graph answers structure questions faster than scanning files. `graphify-out/` is gitignored build output.
 
+## WHAT — Task areas
+
+Twenty-eight tasks across six areas: identity and access, remote access (SSH
+and WireGuard), network (firewall and kernel parameters), services (rootless
+containers, web server), the developer environment, and hardening. `docs/cli.md`
+lists every one, and a test compares that list against the tree in both
+directions so it cannot drift.
+
 ## WHY — Architectural decisions
 
 - **Distro differences are resolved by a per-family backend behind a trait, not by conditionals inside each task.** Detection reads `/etc/os-release` once at startup and resolves a backend (Debian/RHEL/Arch/SUSE/Alpine). Tasks call the trait and stay distro-agnostic. Adding a distro must mean adding one module, never editing every task — with N tasks, per-task branching would repeat the same `match` N times and each new distro would touch all of them.
@@ -99,6 +106,8 @@ One-time setup — run `/graphify .` once to build `graphify-out/graph.json` (th
 
 - **User-facing text lives in the i18n catalogue, never in the code that raises it.** `Error` variants and TUI strings carry structured data; `src/i18n/` renders them in the locale resolved from the environment. The catalogue is a closed enum rendered by an exhaustive `match`, with no external dependency: a missing translation is a compile error rather than a runtime lookup miss, and adding a language means adding one module instead of touching every call site. `fluent` and `rust-i18n` were rejected — both resolve at runtime and pull in dependency trees to audit, for a catalogue this small.
 
+- **A secret is written into a file whose mode is already right, never tightened afterwards.** `wireguard.install` wrote `wg0.conf` and then chmodded it, leaving the server's private key world-readable for as long as the two calls took. Brief, and long enough for any account on the box. It surfaced from `wg genkey` warning about the same mistake in a test's own redirect — not from a mock, which has no opinion about modes. The pattern to keep: create the file empty, set the mode, then write. An empty file discloses nothing.
+
 - **Static musl binaries, not glibc.** A binary linked against a recent glibc fails on older servers — exactly the machines an administration tool needs to reach. musl links statically and runs anywhere, which matters more here than the marginal performance difference.
 
 - **The `curl | sh` installer verifies checksums before executing.** Piping a remote script into a shell runs unverified remote code, and this tool runs as root. Checksum verification against a published GitHub Release is the minimum mitigation; the release binaries are the source of truth, the install script is only a convenience wrapper. <!-- TODO: consider signing releases (minisign/cosign) once the release pipeline exists. -->
@@ -110,7 +119,12 @@ Absent by decision, not oversight. The design admits each without rework:
 - **RHEL, SUSE and Alpine families.** Adding one means adding a backend module, never editing a task. Alpine also needs an OpenRC implementation of `ServiceManager` alongside the systemd one.
 - **Remote execution over SSH.** The `Executor` trait exists precisely so this becomes a second implementation; `LocalExecutor` is the only one today.
 - **Release pipeline** — GitHub Releases, checksummed `curl | sh` installer. The musl targets build correctly (`cargo build --release --target x86_64-unknown-linux-musl` yields a ~789 KB static-pie binary), but nothing publishes them.
-- **Administration tasks beyond SSH** (users, firewall, general packages).
+- **General package administration.** Installing arbitrary packages is a
+  different shape of task from the ones here: every task in the tree today
+  names a capability the backend resolves, and a free-text package name has no
+  backend to resolve it against.
+- **A second WireGuard interface.** `wg0` is fixed rather than asked for,
+  because a second interface is a different topology and not a different value.
 
 ## HOW — Conventions
 Detailed conventions live in `.claude/rules/` (those with a `paths:` field load only for matching files; the rest load every session):
