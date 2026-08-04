@@ -138,6 +138,16 @@ pub enum Msg {
         path: String,
     },
     WireguardNotConfigured,
+    NoSubordinateIds {
+        user: String,
+    },
+    InvalidCaddyfile {
+        details: String,
+    },
+    ServiceDidNotStart {
+        service: String,
+        user: String,
+    },
     WireguardAddressTaken {
         address: String,
     },

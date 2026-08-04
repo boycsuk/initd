@@ -145,6 +145,23 @@ pub enum Error {
     /// session for an account whose shell is not listed.
     ShellNotListed { shell: String },
 
+    /// An account has no subordinate UID/GID range.
+    ///
+    /// A rootless engine maps container users onto that range, so an account
+    /// without one cannot start a single container. Checked before installing
+    /// rather than after, since the install would otherwise be wasted.
+    NoSubordinateIds { user: String },
+
+    /// A user service was enabled and is not running.
+    ///
+    /// `enable --now` exiting zero says the command ran, not that the service
+    /// came up: a rootless engine that cannot map its ids or reach its runtime
+    /// directory fails after that point.
+    ServiceDidNotStart { service: String, user: String },
+
+    /// Caddy rejected its configuration.
+    InvalidCaddyfile { details: String },
+
     /// WireGuard is already configured on this host.
     ///
     /// Refused rather than overwritten: a new server key silently invalidates
@@ -264,6 +281,14 @@ impl Error {
                 Msg::WireguardAlreadyConfigured { path: path.clone() }
             }
             Self::WireguardNotConfigured => Msg::WireguardNotConfigured,
+            Self::NoSubordinateIds { user } => Msg::NoSubordinateIds { user: user.clone() },
+            Self::InvalidCaddyfile { details } => Msg::InvalidCaddyfile {
+                details: details.clone(),
+            },
+            Self::ServiceDidNotStart { service, user } => Msg::ServiceDidNotStart {
+                service: service.clone(),
+                user: user.clone(),
+            },
             Self::WireguardAddressTaken { address } => Msg::WireguardAddressTaken {
                 address: address.clone(),
             },

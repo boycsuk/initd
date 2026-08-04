@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Rootless Docker and Caddy, as a Services area. Both stop short of describing
+  an application: the engine is provisioned and runs no containers, and Caddy
+  is installed, validated and hardened without site configuration being
+  written. A `reverse_proxy` block describes an application topology, which is
+  where the self-hosting panels live and where this tool deliberately does not.
+- `UserServiceManager`, a capability for services belonging to an account
+  rather than to the system. The two managers cannot see each other, so a
+  rootless engine is not reachable through the existing `ServiceManager` at
+  all. Lingering is enabled before the engine starts: without it the engine
+  stops when the account's last session ends, and a user unit wanted by
+  `default.target` is not brought back by anything at boot.
+- The engine is confirmed running rather than assumed. `enable --now` exiting
+  zero says the command ran, and a rootless engine that cannot map its ids or
+  reach its runtime directory fails after that point — reporting success there
+  would send the administrator to look at their containers.
+- An account with no subordinate id range is refused before anything is
+  installed, since a rootless engine maps container users onto that range and
+  without one no container starts.
+- The rootless package diverges: Debian's distribution package does not carry
+  `dockerd-rootless-setuptool.sh` at all, while Arch's `docker` does. A single
+  name would leave one family with an install that has nothing to run.
+- Caddy's security headers are a snippet to import rather than a global block.
+  Applying headers to every site silently would change how an application
+  already deployed here behaves, and this tool does not edit site
+  configuration. `X-Forwarded-*` is left alone: Caddy sets those itself and
+  overwriting them breaks client-IP detection downstream.
+- The Caddyfile is validated by asking Caddy rather than by reading the file —
+  directive order in a Caddyfile is not its source order — and a snippet that
+  does not parse is rolled back, since a broken configuration takes every site
+  down at the next reload.
 - WireGuard: install a server, add peers, and report the tunnel's state. Sits
   under Remote Access beside SSH, which is what that category was named for —
   SSH grants shell access and WireGuard grants network access.

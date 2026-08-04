@@ -88,12 +88,31 @@ pub(super) fn render(message: &Msg) -> String {
         // Says what overwriting would cost, since the file looks replaceable.
         Msg::WireguardAlreadyConfigured { path } => {
             format!(
-                "{path} already exists; replacing it would generate a new server key                  and every existing peer would stop connecting"
+                "{path} already exists; replacing it would generate a new server key \
+                 and every existing peer would stop connecting"
             )
         }
         Msg::WireguardNotConfigured => {
-            "WireGuard has no server configuration; run              wireguard.install first"
-                .to_owned()
+            "WireGuard has no server configuration; run wireguard.install first".to_owned()
+        }
+        // Names the files, because the fix is to add a line to them and the
+        // usual cause is an account created before the convention existed.
+        Msg::NoSubordinateIds { user } => {
+            format!(
+                "{user} has no subordinate id range in /etc/subuid and /etc/subgid, \
+                 so rootless containers cannot map their users"
+            )
+        }
+        Msg::InvalidCaddyfile { details } => {
+            format!("the Caddy configuration is invalid: {details}")
+        }
+        // Names where to look, since a user service's log is not where an
+        // administrator would look first.
+        Msg::ServiceDidNotStart { service, user } => {
+            format!(
+                "{service} was enabled but is not running for {user}; see \
+                 `journalctl --user -u {service}` as that account"
+            )
         }
         Msg::WireguardAddressTaken { address } => {
             format!("another peer already uses {address}")

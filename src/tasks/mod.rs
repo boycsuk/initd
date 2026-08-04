@@ -9,6 +9,7 @@ pub mod consequence;
 pub mod network;
 pub mod params;
 pub mod revert;
+pub mod services;
 pub mod ssh;
 pub mod sshd_config;
 pub mod users;
@@ -174,6 +175,7 @@ pub fn tree() -> Vec<Node> {
         // firewall and the kernel parameters are what every other component
         // depends on, and belong to none of them.
         Node::Category(network::category()),
+        Node::Category(services::category()),
     ]
 }
 

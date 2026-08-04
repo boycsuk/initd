@@ -8,6 +8,7 @@ use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
+use super::systemd_user::SystemdUserServices;
 use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
 use super::wg_tools::WgTools;
@@ -15,7 +16,7 @@ use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
-    SysctlManager, WireguardTools,
+    SysctlManager, UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -42,6 +43,31 @@ const WIREGUARD_SERVICE: &str = "wg-quick@";
 /// Where WireGuard keeps its configuration.
 const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 
+/// The rootless Docker extras on Arch.
+///
+/// `docker` carries `dockerd-rootless-setuptool.sh` itself here — there is no
+/// separate extras package, which is exactly the kind of divergence the
+/// capability indirection exists for.
+const DOCKER_ROOTLESS_PACKAGE: &str = "docker";
+
+/// The rootless engine's user unit.
+const DOCKER_USER_UNIT: &str = "docker.service";
+
+/// Where the rootless engine keeps its daemon configuration.
+const DOCKER_CONFIG: &str = ".config/docker/daemon.json";
+
+/// The Caddy package on Arch.
+const CADDY_PACKAGE: &str = "caddy";
+
+/// The Caddy unit on Arch.
+const CADDY_SERVICE: &str = "caddy.service";
+
+/// Where Caddy reads its configuration on Arch.
+///
+/// `/etc/caddy/Caddyfile` on both families today, unlike the package that
+/// provides the rootless engine.
+const CADDY_CONFIG: &str = "/etc/caddy/Caddyfile";
+
 /// The group granting sudo on Arch — `sudo` on Debian.
 ///
 /// Asking for `sudo` here is the silent failure the capability exists to
@@ -59,6 +85,7 @@ pub struct ArchBackend {
     firewall: Nftables,
     sysctl: ProcfsSysctl,
     wireguard: WgTools,
+    user_services: SystemdUserServices,
 }
 
 impl ArchBackend {
@@ -72,6 +99,7 @@ impl ArchBackend {
             firewall: Nftables::new(),
             sysctl: ProcfsSysctl::new(),
             wireguard: WgTools::new(),
+            user_services: SystemdUserServices::new(),
         }
     }
 }
@@ -85,6 +113,8 @@ impl Backend for ArchBackend {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
             Capability::Wireguard => WIREGUARD_PACKAGE,
+            Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGE,
+            Capability::Caddy => CADDY_PACKAGE,
         }
     }
 
@@ -92,6 +122,8 @@ impl Backend for ArchBackend {
         match capability {
             Capability::Ssh => SSH_SERVICE,
             Capability::Wireguard => WIREGUARD_SERVICE,
+            Capability::DockerRootless => DOCKER_USER_UNIT,
+            Capability::Caddy => CADDY_SERVICE,
         }
     }
 
@@ -99,6 +131,8 @@ impl Backend for ArchBackend {
         match capability {
             Capability::Ssh => SSH_CONFIG,
             Capability::Wireguard => WIREGUARD_CONFIG,
+            Capability::DockerRootless => DOCKER_CONFIG,
+            Capability::Caddy => CADDY_CONFIG,
         }
     }
 
@@ -136,6 +170,10 @@ impl Backend for ArchBackend {
 
     fn wireguard(&self) -> &dyn WireguardTools {
         &self.wireguard
+    }
+
+    fn user_services(&self) -> &dyn UserServiceManager {
+        &self.user_services
     }
 }
 

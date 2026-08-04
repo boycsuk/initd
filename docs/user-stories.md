@@ -114,6 +114,38 @@ TUI or CLI:
   - Acceptance: locking an already-locked root reports that, rather than
     failing or implying it did the work again.
 
+### Containers and web server
+
+- As an **administrator**, I can install a container engine that runs as an
+  ordinary account rather than as root, so that a container escape lands in a
+  user instead of on the machine.
+  - Acceptance: the account is allowed to keep services running with no session
+    open. Without that the engine stops at logout and nothing restarts it after
+    a reboot.
+  - Acceptance: an account with no subordinate id range is refused before
+    anything is installed, since no container could start.
+  - Acceptance: the engine is confirmed running rather than assumed. Enabling a
+    service reports that the command ran, not that the service came up.
+- As an **administrator**, I can install a web server that obtains its own
+  certificates.
+  - Acceptance: the tool says the firewall must admit 80 and 443, and says
+    separately that the name has to resolve here before a certificate can be
+    issued — the second is reported, never checked, because nothing on this
+    host can see it.
+- As an **administrator**, I can check the web server's configuration parses
+  before a reload acts on it.
+  - Acceptance: the server is asked, rather than the file being read. Directive
+    order in a Caddyfile is not its source order.
+- As an **administrator**, I can add hardening response headers, so that every
+  site I opt in gets them.
+  - Acceptance: they are offered as a snippet to import, not applied globally.
+    Applying them to every site silently would change how an already-deployed
+    application behaves.
+  - Acceptance: forwarding headers are left alone — the server sets those, and
+    overwriting them breaks client-IP detection.
+  - Acceptance: a change that does not parse is rolled back, since a broken
+    configuration takes every site down at the next reload.
+
 ### WireGuard
 
 - As an **administrator**, I can see whether the tunnel is up and how many peers

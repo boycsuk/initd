@@ -10,6 +10,7 @@ pub mod nftables;
 pub mod procfs_sysctl;
 pub mod shadow_accounts;
 pub mod systemd;
+pub mod systemd_user;
 pub mod unix_accounts;
 pub mod unix_files;
 pub mod wg_tools;
@@ -17,7 +18,7 @@ pub mod wg_tools;
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, FileEditor, FirewallManager, PackageManager, ServiceManager,
-    SysctlManager, WireguardTools,
+    SysctlManager, UserServiceManager, WireguardTools,
 };
 
 /// A capability that tasks request by name, without knowing what it is called
@@ -33,6 +34,10 @@ pub enum Capability {
     /// WireGuard, whose tools and kernel module ship together on both families
     /// implemented today but under different package names.
     Wireguard,
+    /// The rootless Docker engine.
+    DockerRootless,
+    /// The Caddy web server.
+    Caddy,
 }
 
 /// Everything a task needs from the distribution it runs on.
@@ -87,6 +92,13 @@ pub trait Backend {
 
     /// WireGuard key material and interface state.
     fn wireguard(&self) -> &dyn WireguardTools;
+
+    /// Services belonging to one account rather than to the system.
+    ///
+    /// Separate from [`Backend::services`] because the two managers cannot see
+    /// each other: a rootless engine runs under the account's own manager, and
+    /// the system one has no view of it.
+    fn user_services(&self) -> &dyn UserServiceManager;
 }
 
 /// Builds the backend for a detected family.
