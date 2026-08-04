@@ -736,6 +736,16 @@ pub fn is_valid_public_key(line: &str) -> Result<()> {
         reason: reason.to_owned(),
     };
 
+    // Before anything else: `split_whitespace` treats a line break like any
+    // other separator, so a value carrying one would validate as a single key
+    // and then be written verbatim as two entries in `authorized_keys` — the
+    // second of them never approved. `AuthorizeKey` only trims the outer
+    // whitespace, and the CLI hands its argument straight here without passing
+    // through the interface's per-keystroke filter, so this is the barrier.
+    if line.contains(['\n', '\r']) {
+        return Err(invalid("a key cannot span more than one line"));
+    }
+
     let mut parts = line.split_whitespace();
     let key_type = parts.next().ok_or_else(|| invalid("the line is empty"))?;
 
@@ -1068,6 +1078,32 @@ mod tests {
                 "{bad:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn rejects_a_key_smuggling_a_second_line() {
+        // `split_whitespace` treats a newline like any other separator, so a
+        // value carrying one reads as a single key while `authorized_keys`
+        // receives two entries — the second one nobody approved. The CLI hands
+        // its argument straight to this check, so it is the only barrier.
+        let smuggled = format!(
+            "{TEST_KEY}\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcH attacker"
+        );
+
+        assert!(
+            is_valid_public_key(&smuggled).is_err(),
+            "a value spanning two lines is two keys, not one"
+        );
+    }
+
+    #[test]
+    fn rejects_a_key_carrying_a_carriage_return() {
+        // sshd splits on \r as well, so it smuggles an entry the same way.
+        let smuggled = format!(
+            "{TEST_KEY}\rssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcH attacker"
+        );
+
+        assert!(is_valid_public_key(&smuggled).is_err());
     }
 
     #[test]
