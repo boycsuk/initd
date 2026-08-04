@@ -88,6 +88,32 @@ TUI or CLI:
     showing the current location and a way back to the parent.
   - CLI exception: the whole tree is printed at once, indented by level.
 
+### Accounts
+
+- As an **administrator**, I can create an account that can administer the
+  server, so that I do not have to work as root.
+  - Acceptance: it joins whichever group grants sudo on this distribution —
+    `sudo` on Debian, `wheel` on Arch — and the membership is read back rather
+    than assumed, because the command reports success either way.
+  - Acceptance: it is created without a password, so it can only be reached
+    with a key.
+  - Acceptance: an account that already exists is refused rather than adopted.
+- As an **administrator**, I can change an account's login shell, so that a
+  user gets the shell they prefer.
+  - Acceptance: a shell absent from `/etc/shells` is refused before anything is
+    written, since the system would refuse it afterwards.
+- As an **administrator**, I can lock the root account, so that it cannot be
+  logged into at all.
+  - Acceptance: refused unless another account already exists, is in the
+    administrative group, and holds an authorised key. This is the one change
+    the tool will not make on warning alone: it can require the hosting
+    provider's rescue console to undo.
+  - Acceptance: the account is expired, not merely password-locked. A locked
+    password still admits a key, so `passwd -l` would report success and leave
+    root reachable.
+  - Acceptance: locking an already-locked root reports that, rather than
+    failing or implying it did the work again.
+
 ### SSH server
 
 - As an **administrator**, I can install and enable the SSH server so that the

@@ -10,6 +10,7 @@ pub mod params;
 pub mod revert;
 pub mod ssh;
 pub mod sshd_config;
+pub mod users;
 
 use crate::backend::Backend;
 use crate::distro::Family;
@@ -151,10 +152,20 @@ impl Category {
 /// `Remote Access` is named for what its members do rather than for a protocol:
 /// SSH grants shell access and WireGuard, once it lands, grants network access.
 pub fn tree() -> Vec<Node> {
-    vec![Node::Category(Category::new(
-        "Remote Access",
-        vec![Node::Category(ssh::category())],
-    ))]
+    vec![
+        // Identity comes first because the rest depends on there being a safe
+        // way in: authorising a key for an account that does not exist yet is
+        // the wrong order, and locking root before either is how a machine
+        // becomes unreachable.
+        Node::Category(Category::new(
+            "Identity & Access",
+            vec![Node::Category(users::category())],
+        )),
+        Node::Category(Category::new(
+            "Remote Access",
+            vec![Node::Category(ssh::category())],
+        )),
+    ]
 }
 
 /// Finds a task by its identifier, at any depth of the tree.
@@ -271,10 +282,17 @@ mod tests {
 
     #[test]
     fn task_count_totals_every_depth() {
-        let Some(Node::Category(root)) = tree().into_iter().next() else {
-            panic!("the tree must start with a category");
-        };
+        // Summed across the roots rather than read off the first one: the tree
+        // grew a second top-level category, and a count that only walked one
+        // would report a shrinking total every time an area is added.
+        let counted: usize = tree()
+            .into_iter()
+            .map(|node| match node {
+                Node::Task(_) => 1,
+                Node::Category(category) => category.task_count(),
+            })
+            .sum();
 
-        assert_eq!(root.task_count(), all_tasks().len());
+        assert_eq!(counted, all_tasks().len());
     }
 }

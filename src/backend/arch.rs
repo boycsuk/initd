@@ -4,12 +4,13 @@
 //! and they differ independently: the package drops the `-server` suffix while
 //! the unit gains a `d`.
 
+use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
 use super::{Backend, Capability};
 use crate::distro::Family;
-use crate::domain::{AccountReader, FileEditor, PackageManager, ServiceManager};
+use crate::domain::{AccountReader, AccountWriter, FileEditor, PackageManager, ServiceManager};
 use crate::error::Result;
 use crate::exec::{Command, Executor};
 
@@ -22,12 +23,20 @@ const SSH_SERVICE: &str = "sshd.service";
 /// Where the OpenSSH server reads its configuration on Arch.
 const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
 
+/// The group granting sudo on Arch — `sudo` on Debian.
+///
+/// Asking for `sudo` here is the silent failure the capability exists to
+/// prevent: the group is absent, `usermod -aG` still exits zero, and the
+/// account ends up unable to escalate while appearing provisioned.
+const ADMIN_GROUP: &str = "wheel";
+
 /// Backend for the Arch family.
 pub struct ArchBackend {
     packages: PacmanPackages,
     services: SystemdServices,
     files: UnixFiles,
     accounts: UnixAccounts,
+    account_writer: ShadowAccounts,
 }
 
 impl ArchBackend {
@@ -37,6 +46,7 @@ impl ArchBackend {
             services: SystemdServices::new(),
             files: UnixFiles::new(),
             accounts: UnixAccounts::new(),
+            account_writer: ShadowAccounts::new(),
         }
     }
 }
@@ -76,8 +86,16 @@ impl Backend for ArchBackend {
         &self.files
     }
 
+    fn admin_group(&self) -> &'static str {
+        ADMIN_GROUP
+    }
+
     fn accounts(&self) -> &dyn AccountReader {
         &self.accounts
+    }
+
+    fn account_writer(&self) -> &dyn AccountWriter {
+        &self.account_writer
     }
 }
 

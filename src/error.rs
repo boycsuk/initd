@@ -107,6 +107,53 @@ pub enum Error {
     /// changing something nobody asked it to.
     MissingParameter { name: String },
 
+    /// An account that was to be created already exists.
+    ///
+    /// Refused rather than treated as success: the existing account may have a
+    /// password, a different shell or no administrative rights, and quietly
+    /// adopting it would report a provisioning that never happened.
+    AccountExists { user: String },
+
+    /// An account a task needs does not exist.
+    NoSuchAccount { user: String },
+
+    /// Adding an account to a group appeared to succeed and did not.
+    ///
+    /// `usermod` exiting zero says the command ran, not that the membership
+    /// took. Read back because this account is often about to become the only
+    /// way onto the machine.
+    GroupMembershipFailed { user: String, group: String },
+
+    /// The account nominated as the way back in cannot escalate.
+    NotAnAdministrator { user: String, group: String },
+
+    /// The account nominated as the way back in has no authorised key.
+    ///
+    /// It is created without a password by design, so a key is the only thing
+    /// that can authenticate it.
+    NoAuthorizedKey { user: String },
+
+    /// Root was nominated as the account that must remain usable.
+    ///
+    /// Naming the account about to be locked as the reason it is safe to lock
+    /// it is circular, and would pass every other check.
+    AdminCannotBeRoot,
+
+    /// A login shell is not listed in `/etc/shells`.
+    ///
+    /// `chsh` refuses one that is absent, and some PAM configurations refuse a
+    /// session for an account whose shell is not listed.
+    ShellNotListed { shell: String },
+
+    /// A group an account was to be added to does not exist.
+    ///
+    /// Raised rather than letting `usermod -aG` succeed against a group the
+    /// system does not have: it exits zero and grants nothing, so the account
+    /// looks provisioned and cannot escalate. The administrative group is
+    /// `sudo` on Debian and `wheel` on Arch, which is exactly when this
+    /// happens.
+    MissingGroup { group: String },
+
     /// The task is not supported on the detected family.
     TaskUnsupported { task: String, family: String },
 
@@ -173,6 +220,24 @@ impl Error {
             },
             Self::InvalidPort { port } => Msg::InvalidPort { port: *port },
             Self::MissingParameter { name } => Msg::MissingParameter { name: name.clone() },
+            Self::MissingGroup { group } => Msg::MissingGroup {
+                group: group.clone(),
+            },
+            Self::AccountExists { user } => Msg::AccountExists { user: user.clone() },
+            Self::NoSuchAccount { user } => Msg::NoSuchAccount { user: user.clone() },
+            Self::GroupMembershipFailed { user, group } => Msg::GroupMembershipFailed {
+                user: user.clone(),
+                group: group.clone(),
+            },
+            Self::NotAnAdministrator { user, group } => Msg::NotAnAdministrator {
+                user: user.clone(),
+                group: group.clone(),
+            },
+            Self::NoAuthorizedKey { user } => Msg::NoAuthorizedKey { user: user.clone() },
+            Self::AdminCannotBeRoot => Msg::AdminCannotBeRoot,
+            Self::ShellNotListed { shell } => Msg::ShellNotListed {
+                shell: shell.clone(),
+            },
             Self::TaskVanished { task } => Msg::TaskVanished { task: task.clone() },
             Self::TaskUnsupported { task, family } => Msg::TaskUnsupported {
                 task: task.clone(),

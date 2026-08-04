@@ -1536,6 +1536,22 @@ mod tests {
         )
     }
 
+    /// Descends into the named category of the level currently shown.
+    ///
+    /// Used where the test is about a specific area rather than about the
+    /// drill-down itself, so that a new category added above it does not
+    /// silently redirect the walk.
+    fn enter_named_category(app: &mut App, title: &str) {
+        let index = app
+            .current_level()
+            .iter()
+            .position(|node| matches!(node, Node::Category(c) if c.title == title))
+            .unwrap_or_else(|| panic!("the level must contain {title}"));
+
+        app.list_state.select(Some(index));
+        app.enter_category(index);
+    }
+
     /// Descends into the first category of the level currently shown.
     fn enter_first_category(app: &mut App) {
         let index = app
@@ -1659,10 +1675,12 @@ mod tests {
     #[test]
     fn a_deeply_nested_task_is_reachable() {
         // Remote Access > SSH > Service > install: three descents before a task
-        // appears, which is what the drill-down has to support.
+        // appears, which is what the drill-down has to support. Named rather
+        // than reached by position, so adding a category above it moves the
+        // path without failing the test for the wrong reason.
         let mut app = test_app(Family::Debian);
 
-        enter_first_category(&mut app);
+        enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
         enter_first_category(&mut app);
 
@@ -1675,7 +1693,7 @@ mod tests {
         let mut app = test_app(Family::Debian);
         assert_eq!(app.breadcrumb(), "Tasks");
 
-        enter_first_category(&mut app);
+        enter_named_category(&mut app, "Remote Access");
         assert_eq!(app.breadcrumb(), "Remote Access");
 
         enter_first_category(&mut app);
@@ -1732,7 +1750,7 @@ mod tests {
         // j and k mean "next" and "previous" in both panes; focus is what says
         // which one they act on.
         let mut app = test_app(Family::Debian);
-        enter_first_category(&mut app);
+        enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
         enter_first_category(&mut app);
 
@@ -1812,7 +1830,7 @@ mod tests {
         let rows = render_to_rows(&mut app, 80, 24);
 
         assert!(
-            rows[2].contains("Remote Access"),
+            rows[2].contains("Identity & Access"),
             "the selected row must still be drawn: {:?}",
             rows[2]
         );
@@ -2392,7 +2410,7 @@ mod tests {
         // "Install and enable the SSH server" overflows a 34-cell tree pane,
         // which is what a wide terminal actually renders.
         let mut app = test_app(Family::Debian);
-        enter_first_category(&mut app);
+        enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
         enter_first_category(&mut app);
 
@@ -2429,7 +2447,7 @@ mod tests {
         // Remote Access > SSH > Configuration overflows a 34-cell tree pane,
         // which is the case that surfaced this rule.
         let mut app = test_app(Family::Debian);
-        enter_first_category(&mut app);
+        enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
         app.list_state.select(Some(1));
         app.enter_category(1);
@@ -2892,7 +2910,7 @@ mod tests {
         let on_category = render_to_rows(&mut app, 80, 24)[23].clone();
         assert!(on_category.contains("open"), "got {on_category}");
 
-        enter_first_category(&mut app);
+        enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
         enter_first_category(&mut app);
 

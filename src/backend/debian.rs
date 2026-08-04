@@ -4,12 +4,13 @@
 //! also ships `ssh.socket` alongside `ssh.service`, which matters when
 //! changing the port — see the SSH port task.
 
+use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::unix_accounts::UnixAccounts;
 use super::unix_files::UnixFiles;
 use super::{Backend, Capability};
 use crate::distro::Family;
-use crate::domain::{AccountReader, FileEditor, PackageManager, ServiceManager};
+use crate::domain::{AccountReader, AccountWriter, FileEditor, PackageManager, ServiceManager};
 use crate::error::Result;
 use crate::exec::{Command, Executor};
 
@@ -22,12 +23,16 @@ const SSH_SERVICE: &str = "ssh.service";
 /// Where the OpenSSH server reads its configuration on Debian.
 const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
 
+/// The group granting sudo on Debian — `wheel` on Arch and RHEL.
+const ADMIN_GROUP: &str = "sudo";
+
 /// Backend for the Debian family.
 pub struct DebianBackend {
     packages: AptPackages,
     services: SystemdServices,
     files: UnixFiles,
     accounts: UnixAccounts,
+    account_writer: ShadowAccounts,
 }
 
 impl DebianBackend {
@@ -37,6 +42,7 @@ impl DebianBackend {
             services: SystemdServices::new(),
             files: UnixFiles::new(),
             accounts: UnixAccounts::new(),
+            account_writer: ShadowAccounts::new(),
         }
     }
 }
@@ -76,8 +82,16 @@ impl Backend for DebianBackend {
         &self.files
     }
 
+    fn admin_group(&self) -> &'static str {
+        ADMIN_GROUP
+    }
+
     fn accounts(&self) -> &dyn AccountReader {
         &self.accounts
+    }
+
+    fn account_writer(&self) -> &dyn AccountWriter {
+        &self.account_writer
     }
 }
 

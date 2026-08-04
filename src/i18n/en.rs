@@ -73,6 +73,38 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskUnsupported { task, family } => {
             format!("task {task} is not supported on {family}")
         }
+        // Names the group, because the answer is almost always that this
+        // distribution calls it something else: Debian grants sudo through
+        // `sudo`, Arch and RHEL through `wheel`.
+        Msg::MissingGroup { group } => {
+            format!("the group {group} does not exist on this system")
+        }
+        Msg::AccountExists { user } => {
+            format!("the account {user} already exists")
+        }
+        Msg::NoSuchAccount { user } => {
+            format!("there is no account named {user}")
+        }
+        Msg::GroupMembershipFailed { user, group } => {
+            format!("{user} was not added to {group}, though the command reported success")
+        }
+        // Names the group, since the usual cause is that this distribution
+        // calls it something else.
+        Msg::NotAnAdministrator { user, group } => {
+            format!("{user} is not in {group}, so it cannot escalate once root is locked")
+        }
+        Msg::NoAuthorizedKey { user } => {
+            format!(
+                "{user} has no authorised key, so it cannot log in — it was created \
+                 without a password"
+            )
+        }
+        Msg::AdminCannotBeRoot => "root cannot be the account that stays usable: it is the \
+             one being locked"
+            .to_owned(),
+        Msg::ShellNotListed { shell } => {
+            format!("{shell} is not listed in /etc/shells, so the system will refuse it")
+        }
         Msg::ConsequencePortChanged { task, from, to } => {
             format!("{task} still refers to port {from}, not {to}")
         }

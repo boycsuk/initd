@@ -125,6 +125,30 @@ pub enum Msg {
     TaskVanished {
         task: String,
     },
+    MissingGroup {
+        group: String,
+    },
+    AccountExists {
+        user: String,
+    },
+    NoSuchAccount {
+        user: String,
+    },
+    GroupMembershipFailed {
+        user: String,
+        group: String,
+    },
+    NotAnAdministrator {
+        user: String,
+        group: String,
+    },
+    NoAuthorizedKey {
+        user: String,
+    },
+    AdminCannotBeRoot,
+    ShellNotListed {
+        shell: String,
+    },
 
     // --- Tasks ---
     TaskUnsupported {

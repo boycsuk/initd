@@ -4,11 +4,13 @@
 //! they run on. Package names, unit names and command syntax live exclusively
 //! in the per-family backends.
 
+pub mod account_writer;
 pub mod accounts;
 pub mod files;
 pub mod packages;
 pub mod services;
 
+pub use account_writer::AccountWriter;
 pub use accounts::AccountReader;
 pub use files::FileEditor;
 pub use packages::PackageManager;

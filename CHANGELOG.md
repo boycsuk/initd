@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Account administration: create an administrative user, change a login shell,
+  and lock the root account. First area outside SSH, and first entry under a
+  second top-level category, since the rest of the tool depends on there being
+  a safe way in before anything is hardened.
+- `AccountWriter`, a capability for creating and modifying accounts, alongside
+  the existing read-only `AccountReader`. Split because the two differ in
+  privilege and in what implements them: reading the passwd database is
+  unprivileged and universal, while the shadow suite that creates and expires
+  accounts is absent from busybox.
+- The backend resolves the group that grants sudo — `sudo` on Debian, `wheel`
+  on Arch. `usermod -aG sudo` on Arch exits zero against a group the system
+  does not have, so asking for the wrong name costs nothing at the time and
+  produces an account that looks provisioned and cannot escalate. Membership is
+  read back after it is granted for the same reason.
+- `users.lock-root` expires the account rather than locking its password. A
+  `!`-prefixed hash is checked in PAM's auth phase and public-key
+  authentication never reaches it — `sshd` reads `authorized_keys` without
+  calling `pam_authenticate`, and OpenSSH's own locked-account check is
+  compiled behind `!UsePAM` while `UsePAM yes` is the default. So `passwd -l
+  root`, which is what this task is usually written as, reports success and
+  leaves root logging in with a key.
+- `users.lock-root` refuses to run unless another account exists, is in the
+  administrative group, and holds a non-empty `authorized_keys`. The only task
+  in the tool that blocks rather than warning: every other change here is
+  recoverable, and this one can require the provider's rescue console. A file
+  holding only comments does not count as a key, since it authorises nobody
+  while passing a check for its own existence.
+- `ParamKind::Path` for absolute paths, rejecting relative ones rather than
+  resolving them — what they resolve against depends on the working directory
+  of whatever runs the command, and a login shell is recorded verbatim.
 - Tasks declare what they invalidate elsewhere, and the interface states it
   after the task succeeds. `src/tasks/revert.rs` already named the case in a
   comment — "a firewall that was never opened on the new port" — as a reason

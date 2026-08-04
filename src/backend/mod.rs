@@ -6,12 +6,13 @@
 
 pub mod arch;
 pub mod debian;
+pub mod shadow_accounts;
 pub mod systemd;
 pub mod unix_accounts;
 pub mod unix_files;
 
 use crate::distro::Family;
-use crate::domain::{AccountReader, FileEditor, PackageManager, ServiceManager};
+use crate::domain::{AccountReader, AccountWriter, FileEditor, PackageManager, ServiceManager};
 
 /// A capability that tasks request by name, without knowing what it is called
 /// on the running system.
@@ -52,10 +53,18 @@ pub trait Backend {
     /// still living above this layer.
     fn path_for(&self, capability: Capability) -> &'static str;
 
+    /// The group that grants administrative rights on this distribution.
+    ///
+    /// `sudo` on Debian, `wheel` on Arch and RHEL. The divergence matters more
+    /// than most: `usermod -aG sudo` on Arch exits zero and grants nothing,
+    /// leaving an account that looks provisioned and cannot escalate.
+    fn admin_group(&self) -> &'static str;
+
     fn packages(&self) -> &dyn PackageManager;
     fn services(&self) -> &dyn ServiceManager;
     fn files(&self) -> &dyn FileEditor;
     fn accounts(&self) -> &dyn AccountReader;
+    fn account_writer(&self) -> &dyn AccountWriter;
 }
 
 /// Builds the backend for a detected family.
@@ -90,6 +99,16 @@ mod tests {
 
         assert_eq!(debian.service_for(Capability::Ssh), "ssh.service");
         assert_eq!(arch.service_for(Capability::Ssh), "sshd.service");
+    }
+
+    #[test]
+    fn the_administrative_group_differs_by_family() {
+        // The divergence that makes this a backend concern rather than a
+        // constant in a task: asking for the wrong one costs nothing at the
+        // time. `usermod -aG sudo` on Arch exits zero and grants nothing, so
+        // the account looks provisioned right up until it needs to escalate.
+        assert_eq!(for_family(Family::Debian).admin_group(), "sudo");
+        assert_eq!(for_family(Family::Arch).admin_group(), "wheel");
     }
 
     #[test]

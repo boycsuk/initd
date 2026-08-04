@@ -27,6 +27,8 @@ pub enum ParamKind {
     UsernameList,
     /// An OpenSSH public key, in `authorized_keys` format.
     PublicKey,
+    /// An absolute filesystem path, such as a login shell.
+    Path,
 }
 
 /// Characters that would change the meaning of the line a value is written
@@ -51,7 +53,9 @@ impl ParamKind {
             // A key is pasted far more often than typed, and its base64 body
             // and comment between them admit almost anything printable. A list
             // of usernames needs the space that separates its entries.
-            Self::Username | Self::UsernameList | Self::PublicKey => !character.is_control(),
+            Self::Username | Self::UsernameList | Self::PublicKey | Self::Path => {
+                !character.is_control()
+            }
         }
     }
 
@@ -65,6 +69,7 @@ impl ParamKind {
             Self::Username => validate_username(value),
             Self::UsernameList => validate_username_list(value),
             Self::PublicKey => validate_public_key(value),
+            Self::Path => validate_path(value),
         }
     }
 }
@@ -90,6 +95,36 @@ fn validate_port(value: &str) -> std::result::Result<(), String> {
 /// Shared with the tasks that act on a port, so the range is stated once
 /// rather than re-derived beside every check.
 pub const MAX_PORT: u32 = 65_535;
+
+/// Rejects anything that is not a usable absolute path.
+///
+/// A shape check, not an existence check: whether the path is a real shell is
+/// a question for the host, and [`crate::tasks::users::SetShell`] answers it
+/// against `/etc/shells` when it runs.
+fn validate_path(value: &str) -> std::result::Result<(), String> {
+    if value.is_empty() {
+        return Err("a path is required".to_owned());
+    }
+
+    // Relative paths are refused rather than resolved: what they resolve
+    // against depends on the working directory of whatever runs the command,
+    // and a login shell is recorded verbatim in the passwd entry.
+    if !value.starts_with('/') {
+        return Err("the path must be absolute".to_owned());
+    }
+
+    if value.contains(char::is_whitespace) {
+        return Err("a path cannot contain spaces".to_owned());
+    }
+
+    // Same reasoning as every other value written into a system file: nothing
+    // escapes these, and the CLI never passes through the keystroke filter.
+    if let Some(bad) = value.chars().find(|c| CONFIG_UNSAFE.contains(c)) {
+        return Err(format!("the path cannot contain {bad:?}"));
+    }
+
+    Ok(())
+}
 
 /// Rejects a username that could not name an account.
 ///
@@ -341,6 +376,31 @@ mod tests {
             .expect_err("a malformed key must be rejected");
 
         assert!(!error.is_empty(), "the reason must be stated");
+    }
+
+    #[test]
+    fn a_relative_path_is_rejected() {
+        // What a relative path resolves against depends on the working
+        // directory of whatever runs the command, and a login shell is
+        // recorded verbatim in the passwd entry.
+        assert!(ParamKind::Path.validate("/usr/bin/fish").is_ok());
+        assert!(ParamKind::Path.validate("usr/bin/fish").is_err());
+        assert!(ParamKind::Path.validate("./fish").is_err());
+        assert!(ParamKind::Path.validate("").is_err());
+    }
+
+    #[test]
+    fn a_path_rejects_a_value_that_would_change_the_line() {
+        // Same barrier as every other value written into a system file:
+        // nothing escapes these, and the CLI never passes through the
+        // keystroke filter.
+        assert!(
+            ParamKind::Path
+                .validate("/bin/sh\nPermitRootLogin yes")
+                .is_err()
+        );
+        assert!(ParamKind::Path.validate("/bin/sh #comment").is_err());
+        assert!(ParamKind::Path.validate("/usr/local/bin/my shell").is_err());
     }
 
     #[test]
