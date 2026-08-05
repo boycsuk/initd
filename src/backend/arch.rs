@@ -119,7 +119,6 @@ pub struct ArchBackend {
     files: UnixFiles,
     accounts: UnixAccounts,
     account_writer: ShadowAccounts,
-    firewall: Nftables,
     sysctl: ProcfsSysctl,
     wireguard: WgTools,
     user_services: SystemdUserServices,
@@ -134,7 +133,6 @@ impl ArchBackend {
             files: UnixFiles::new(),
             accounts: UnixAccounts::new(),
             account_writer: ShadowAccounts::new(),
-            firewall: Nftables::new(),
             sysctl: ProcfsSysctl::new(),
             wireguard: WgTools::new(),
             user_services: SystemdUserServices::new(),
@@ -222,8 +220,10 @@ impl Backend for ArchBackend {
         &self.account_writer
     }
 
-    fn firewall(&self) -> &dyn FirewallManager {
-        &self.firewall
+    fn firewalls(&self) -> &[&dyn FirewallManager] {
+        const FIREWALLS: &[&dyn FirewallManager] = &[&Nftables::new()];
+
+        FIREWALLS
     }
 
     fn sysctl(&self) -> &dyn SysctlManager {

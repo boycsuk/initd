@@ -6,11 +6,11 @@
 //! 443, and SSH needs whichever port it was moved to. Owned here, they are set
 //! once and asked about by name.
 
-use crate::backend::{Backend, Capability};
+use crate::backend::{Backend, Capability, firewall_for};
 use crate::distro::Family;
 use crate::domain::firewall::Protocol;
 use crate::domain::sysctl::Setting;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
@@ -111,16 +111,28 @@ impl Task for FirewallStatus {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
-        let firewall = backend.firewall();
+        // Resolved rather than assumed: a host may have a front-end installed
+        // and never have run it, and reporting on one that is not there would
+        // describe a ruleset nothing is enforcing. On RHEL this also decides
+        // *which* front-end answers, since firewalld and `nft` cannot both be
+        // driven.
+        let Some(firewall) = firewall_for(backend, executor)? else {
+            // Names what was looked for rather than only that nothing answered:
+            // on RHEL two front-ends were tried, and "no firewall" would leave
+            // an administrator guessing which.
+            let tried: Vec<&str> = backend
+                .firewalls()
+                .iter()
+                .map(|firewall| firewall.name())
+                .collect();
 
-        // Asked rather than assumed: a host may have the command installed and
-        // never have run it, and reporting on a front-end that is not there
-        // would describe a ruleset nothing is enforcing.
-        if !firewall.is_available(executor)? {
-            report(progress, format!("{} is not installed", firewall.name()));
+            report(
+                progress,
+                format!("none of these is installed: {}", tried.join(", ")),
+            );
 
             return Ok(Outcome::Done);
-        }
+        };
 
         let state = firewall.state(executor)?;
 
@@ -206,19 +218,33 @@ impl Task for EnableFirewall {
         progress: Progress<'_>,
     ) -> Result<Outcome> {
         let port = values.port(Self::SSH_PORT)?;
-        let firewall = backend.firewall();
-
         // Installed rather than assumed. `nft` is packaged separately on every
         // family implemented today, and a task that went straight to enabling
         // would fail with "command not found" — which reads as a broken tool
         // rather than as a missing package.
-        if !firewall.is_available(executor)? {
-            report(progress, format!("installing {}", firewall.name()));
+        //
+        // What is installed is the *last* candidate rather than the first: the
+        // order in `firewalls()` runs from the front-end a family presents by
+        // default to the one an administrator has to choose, and nothing here
+        // should install firewalld onto a host whose administrator removed it.
+        // Where a family offers one candidate this is that one.
+        let firewall = match firewall_for(backend, executor)? {
+            Some(firewall) => firewall,
+            None => {
+                let fallback = *backend
+                    .firewalls()
+                    .last()
+                    .ok_or(Error::NoFirewallFrontEnd)?;
 
-            backend
-                .packages()
-                .install(executor, backend.package_for(Capability::Nftables))?;
-        }
+                report(progress, format!("installing {}", fallback.name()));
+
+                backend
+                    .packages()
+                    .install(executor, backend.package_for(Capability::Nftables))?;
+
+                fallback
+            }
+        };
 
         report(progress, format!("using {}", firewall.name()));
 
@@ -307,7 +333,11 @@ impl Task for AllowPort {
             _ => Protocol::Tcp,
         };
 
-        backend.firewall().allow(executor, port, protocol)?;
+        // A port opened on a front-end that is not the one filtering is a port
+        // that stays closed, so this resolves rather than assuming.
+        let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
+
+        firewall.allow(executor, port, protocol)?;
 
         report(
             progress,
@@ -607,7 +637,11 @@ mod tests {
 
         let (outcome, commands) = run(
             &AllowPort,
-            vec![Reply::failure(1, "no such table"), Reply::ok("")],
+            vec![
+                Reply::ok("nftables v1.0.9"),
+                Reply::failure(1, "no such table"),
+                Reply::ok(""),
+            ],
             &values,
         );
 
@@ -629,7 +663,13 @@ mod tests {
 
         let (outcome, commands) = run(
             &AllowPort,
-            vec![Reply::failure(1, "no such table"), Reply::ok("")],
+            vec![
+                // The front-end is resolved before anything is written: a port
+                // opened on one that is not filtering stays closed.
+                Reply::ok("nftables v1.0.9"),
+                Reply::failure(1, "no such table"),
+                Reply::ok(""),
+            ],
             &values,
         );
 

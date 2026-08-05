@@ -89,7 +89,6 @@ pub struct AlpineBackend {
     files: UnixFiles,
     accounts: BusyboxAccounts,
     account_writer: BusyboxAccountWriter,
-    firewall: Nftables,
     sysctl: ProcfsSysctl,
     wireguard: WgTools,
     user_services: SystemdUserServices,
@@ -104,7 +103,6 @@ impl AlpineBackend {
             files: UnixFiles::new(),
             accounts: BusyboxAccounts::new(),
             account_writer: BusyboxAccountWriter::new(),
-            firewall: Nftables::new(),
             sysctl: ProcfsSysctl::new(),
             wireguard: WgTools::new(),
             // Alpine has no per-user service manager at all. The
@@ -201,8 +199,10 @@ impl Backend for AlpineBackend {
         &self.account_writer
     }
 
-    fn firewall(&self) -> &dyn FirewallManager {
-        &self.firewall
+    fn firewalls(&self) -> &[&dyn FirewallManager] {
+        const FIREWALLS: &[&dyn FirewallManager] = &[&Nftables::new()];
+
+        FIREWALLS
     }
 
     fn sysctl(&self) -> &dyn SysctlManager {

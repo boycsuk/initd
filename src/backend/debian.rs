@@ -119,7 +119,6 @@ pub struct DebianBackend {
     files: UnixFiles,
     accounts: UnixAccounts,
     account_writer: ShadowAccounts,
-    firewall: Nftables,
     sysctl: ProcfsSysctl,
     wireguard: WgTools,
     user_services: SystemdUserServices,
@@ -134,7 +133,6 @@ impl DebianBackend {
             files: UnixFiles::new(),
             accounts: UnixAccounts::new(),
             account_writer: ShadowAccounts::new(),
-            firewall: Nftables::new(),
             sysctl: ProcfsSysctl::new(),
             wireguard: WgTools::new(),
             user_services: SystemdUserServices::new(),
@@ -226,8 +224,13 @@ impl Backend for DebianBackend {
         &self.account_writer
     }
 
-    fn firewall(&self) -> &dyn FirewallManager {
-        &self.firewall
+    fn firewalls(&self) -> &[&dyn FirewallManager] {
+        // One candidate: Debian presents nftables and, where `ufw` is active,
+        // the nftables implementation reports itself unavailable rather than
+        // fighting it.
+        const FIREWALLS: &[&dyn FirewallManager] = &[&Nftables::new()];
+
+        FIREWALLS
     }
 
     fn sysctl(&self) -> &dyn SysctlManager {

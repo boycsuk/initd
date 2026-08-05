@@ -79,6 +79,8 @@ pub enum Msg {
         id_like: Option<String>,
     },
 
+    NoFirewallFrontEnd,
+
     // --- Command execution ---
     ProgramNotFound {
         program: String,

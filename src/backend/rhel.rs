@@ -13,6 +13,7 @@
 //! third-party repository the tool cannot vouch for — EPEL is the case, and the
 //! reasoning is recorded on each constant below.
 
+use super::firewalld::Firewalld;
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
@@ -184,7 +185,6 @@ pub struct RhelBackend {
     files: UnixFiles,
     accounts: UnixAccounts,
     account_writer: ShadowAccounts,
-    firewall: Nftables,
     sysctl: ProcfsSysctl,
     wireguard: WgTools,
     user_services: SystemdUserServices,
@@ -199,7 +199,6 @@ impl RhelBackend {
             files: UnixFiles::new(),
             accounts: UnixAccounts::new(),
             account_writer: ShadowAccounts::new(),
-            firewall: Nftables::new(),
             sysctl: ProcfsSysctl::new(),
             wireguard: WgTools::new(),
             user_services: SystemdUserServices::new(),
@@ -289,8 +288,19 @@ impl Backend for RhelBackend {
         &self.account_writer
     }
 
-    fn firewall(&self) -> &dyn FirewallManager {
-        &self.firewall
+    fn firewalls(&self) -> &[&dyn FirewallManager] {
+        // The only family offering two, and the order matters: firewalld is
+        // installed and running on a stock RHEL host, so it is what holds the
+        // ruleset and must be asked first. nftables is the fallback for a host
+        // where the administrator removed firewalld to drive `nft` directly —
+        // an ordinary state of the same distribution, not a broken one.
+        //
+        // They are never both driven. A table of this tool's own with a drop
+        // policy would override what firewalld admits, leaving `firewall-cmd`
+        // reporting success on a port that stays closed.
+        const FIREWALLS: &[&dyn FirewallManager] = &[&Firewalld::new(), &Nftables::new()];
+
+        FIREWALLS
     }
 
     fn sysctl(&self) -> &dyn SysctlManager {

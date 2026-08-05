@@ -8,6 +8,7 @@ pub mod alpine;
 pub mod arch;
 pub mod busybox_accounts;
 pub mod debian;
+pub mod firewalld;
 pub mod nftables;
 pub mod openrc;
 pub mod procfs_sysctl;
@@ -25,6 +26,8 @@ use crate::domain::{
     AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
     ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
 };
+use crate::error::Result;
+use crate::exec::Executor;
 
 /// A capability that tasks request by name, without knowing what it is called
 /// on the running system.
@@ -113,12 +116,26 @@ pub trait Backend {
     fn accounts(&self) -> &dyn AccountReader;
     fn account_writer(&self) -> &dyn AccountWriter;
 
-    /// Inbound packet filtering.
+    /// The inbound filtering front-ends this family may present, in the order
+    /// they should be tried.
     ///
-    /// One implementation today. `ufw` is deliberately absent: it wraps
+    /// A list rather than one implementation, because which front-end holds a
+    /// host's ruleset is a property of the host and not of the family. RHEL
+    /// installs and runs firewalld by default, and an administrator is free to
+    /// remove it and drive `nft` directly; both are ordinary states of the same
+    /// distribution.
+    ///
+    /// They are alternatives and never layers. nftables evaluates every chain
+    /// registered on a hook, and while `accept` passes a packet to the next
+    /// chain, `drop` takes effect at once — so this tool's own table with a drop
+    /// policy would override whatever firewalld admits, and a port opened with
+    /// `firewall-cmd` would report success and stay closed. [`firewall_for`]
+    /// picks exactly one.
+    ///
+    /// `ufw` is deliberately absent for the same reason it always was: it wraps
     /// whichever backend is installed, so driving both it and `nft` on one host
     /// is how a rule becomes invisible to the tool that did not write it.
-    fn firewall(&self) -> &dyn FirewallManager;
+    fn firewalls(&self) -> &[&dyn FirewallManager];
 
     /// Kernel parameters.
     fn sysctl(&self) -> &dyn SysctlManager;
@@ -141,6 +158,31 @@ pub trait Backend {
     fn user_services(&self) -> &dyn UserServiceManager;
 }
 
+/// Resolves which filtering front-end holds this host's ruleset.
+///
+/// Asks each candidate the family offers, in order, and returns the first that
+/// reports itself present. The question is put to the host rather than answered
+/// from the family because both answers are ordinary states of the same
+/// distribution: a RHEL server runs firewalld out of the box, and one where the
+/// administrator removed it drives `nft` directly.
+///
+/// Returns `None` when no candidate is available, which the caller reports
+/// rather than working around — a firewall task on a host with no front-end has
+/// nothing to drive, and picking one anyway would mean issuing commands to a
+/// program that is not installed.
+pub fn firewall_for<'a>(
+    backend: &'a dyn Backend,
+    executor: &dyn Executor,
+) -> Result<Option<&'a dyn FirewallManager>> {
+    for firewall in backend.firewalls() {
+        if firewall.is_available(executor)? {
+            return Ok(Some(*firewall));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Builds the backend for a detected family.
 pub fn for_family(family: Family) -> Box<dyn Backend> {
     match family {
@@ -154,6 +196,7 @@ pub fn for_family(family: Family) -> Box<dyn Backend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::mock::{MockExecutor, Reply};
 
     #[test]
     fn each_family_resolves_to_its_own_backend() {
@@ -163,6 +206,67 @@ mod tests {
         // untested here for exactly that reason.
         for &family in Family::ALL {
             assert_eq!(for_family(family).family(), family);
+        }
+    }
+
+    #[test]
+    fn rhel_prefers_firewalld_over_driving_nft_itself() {
+        // The order is what keeps the two from being layered. A stock RHEL host
+        // runs firewalld, and a table of this tool's own with a drop policy
+        // would override it — leaving `firewall-cmd` reporting success on a
+        // port that stays closed.
+        let backend = for_family(Family::Rhel);
+        let mock = MockExecutor::with_replies([Reply::ok("running")]);
+
+        let firewall = firewall_for(backend.as_ref(), &mock)
+            .expect("resolution must succeed")
+            .expect("a running firewalld must be chosen");
+
+        assert_eq!(firewall.name(), "firewalld");
+    }
+
+    #[test]
+    fn rhel_falls_back_to_nftables_where_firewalld_is_not_running() {
+        // An ordinary state of the same distribution, not a broken one: an
+        // administrator is free to remove firewalld and drive `nft` directly.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(252, "not running"),
+            Reply::ok("nftables v1.0.9"),
+        ]);
+        let backend = for_family(Family::Rhel);
+
+        let firewall = firewall_for(backend.as_ref(), &mock)
+            .expect("resolution must succeed")
+            .expect("nftables must answer where firewalld does not");
+
+        assert_eq!(firewall.name(), "nftables");
+    }
+
+    #[test]
+    fn a_host_with_no_front_end_resolves_to_none() {
+        // Reported rather than worked around: picking one anyway would mean
+        // issuing commands to a program that is not installed.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(252, "not running"),
+            Reply::failure(127, "nft: command not found"),
+        ]);
+        let backend = for_family(Family::Rhel);
+
+        let firewall = firewall_for(backend.as_ref(), &mock).expect("resolution must succeed");
+
+        assert!(firewall.is_none());
+    }
+
+    #[test]
+    fn every_family_offers_at_least_one_front_end() {
+        // A family offering none would make every firewall task unreachable
+        // there, which is a gap `firewalls()` can express and nothing else
+        // would catch.
+        for &family in Family::ALL {
+            assert!(
+                !for_family(family).firewalls().is_empty(),
+                "{family} offers no filtering front-end"
+            );
         }
     }
 

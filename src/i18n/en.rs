@@ -14,8 +14,11 @@ pub(super) fn render(message: &Msg) -> String {
             let like = id_like.as_deref().unwrap_or("(none)");
             format!(
                 "unsupported distribution: ID={id}, ID_LIKE={like}. \
-                 Supported families: debian, arch"
+                 Supported families: debian, arch, alpine, rhel"
             )
+        }
+        Msg::NoFirewallFrontEnd => {
+            "no inbound filtering front-end is installed on this host".to_owned()
         }
         Msg::ProgramNotFound { program } => {
             format!("executable {program} was not found in PATH")

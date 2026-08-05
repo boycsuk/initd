@@ -48,6 +48,13 @@ pub enum Error {
     /// The distribution was identified but belongs to no supported family.
     UnsupportedDistro { id: String, id_like: Option<String> },
 
+    /// No inbound filtering front-end is present on this host.
+    ///
+    /// Carries nothing: which front-ends were tried is a property of the
+    /// family, and naming them in the error would put a list here that the
+    /// backend already owns.
+    NoFirewallFrontEnd,
+
     /// The executable is not in `PATH`.
     ProgramNotFound { program: String },
 
@@ -262,6 +269,7 @@ impl Error {
                 id: id.clone(),
                 id_like: id_like.clone(),
             },
+            Self::NoFirewallFrontEnd => Msg::NoFirewallFrontEnd,
             Self::ProgramNotFound { program } => Msg::ProgramNotFound {
                 program: program.clone(),
             },

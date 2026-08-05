@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- firewalld, the front-end RHEL installs and runs out of the box, and with it
+  the recognition that a family may present more than one. `Backend::firewall`
+  became `firewalls`, a list tried in order, and which of them holds a host's
+  ruleset is asked of the host rather than answered from the family — a RHEL
+  server runs firewalld, and one where the administrator removed it drives
+  `nft` directly, and both are ordinary states of the same distribution. The
+  backends stay `const fn`: nothing about their construction changed, only what
+  the firewall accessor returns.
+- Three things about firewalld have no equivalent in the nftables
+  implementation, and each is read from its documentation rather than inferred.
+  There is no turning filtering on — it filters whenever it runs, and its
+  default zone already rejects what it was not told to admit — so `enable`
+  writes the ports with `firewall-offline-cmd` and starts the daemon after,
+  which is why it cannot lock anybody out. A port may be open without being a
+  port: RHEL admits SSH as the *service* `ssh`, so an implementation asking
+  `--query-port` alone would answer "closed" for a reachable port on a stock
+  machine, and this asks about services too, honouring ranges. And
+  `--complete-reload` is never issued, because it drops connection state and
+  ends established sessions; the runtime-and-permanent pair avoids even
+  `--reload`, which would discard what was never persisted.
 - RHEL and its rebuilds — Rocky, AlmaLinux, CentOS Stream, Fedora — as the
   fourth family. Mechanically it is the closest to Arch: systemd, `wheel`, the
   shadow suite, so every shared implementation applies unchanged and the module
@@ -85,6 +105,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it has no window to offer and nothing rolls a mistake back.
 
 ### Fixed
+- The two firewall front-ends are now alternatives rather than layers, which
+  they had to become before RHEL could enable a firewall at all. nftables
+  evaluates every chain registered on a hook, and while `accept` passes a packet
+  along, `drop` takes effect at once — so this tool's own table with a drop
+  policy overrides whatever firewalld admits. An administrator would open a port
+  with `firewall-cmd`, be told it succeeded, and find it closed: the tool
+  contradicting the system's own, in silence. Confirmed by inverting the
+  resolution order and watching the test name the wrong front-end.
+- The unsupported-distribution message named two families where there are four.
 - A username of `.` or `..` reached a filesystem path. `ssh.authorize-key`
   derives `/home/{user}/.ssh` from the value, so `..` resolved to `/home/.ssh`
   and had root create a directory nobody asked for. The `/` that would allow a
