@@ -492,8 +492,11 @@ fn an_unsupported_distribution_is_refused_naming_what_it_found() {
     let output = run_with_os_release(&DEBIAN, "gentoo", "initd detect 2>&1; echo exit=$?");
     let stdout = stdout_of(&output);
 
+    // A whole line, not a substring: `exit=1` is a prefix of `exit=127`, which
+    // is what the shell reports when the binary was never mounted. That would
+    // pass this as proof the distribution was refused, having run nothing.
     assert!(
-        stdout.contains("exit=1"),
+        common::has_line(&stdout, "exit=1"),
         "an unsupported distribution must exit 1: {stdout}"
     );
     assert!(

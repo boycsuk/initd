@@ -50,7 +50,7 @@ fn the_probe_passes_where_doas_would_not_have_asked() {
     );
 
     assert!(
-        stdout_of(&out).contains("probe=0"),
+        common::has_line(&stdout_of(&out), "probe=0"),
         "a nopass rule must probe clean, or every command pays for a handoff: {}",
         stdout_of(&out)
     );
@@ -72,8 +72,13 @@ fn the_probe_fails_where_doas_is_about_to_ask() {
         ),
     );
 
+    // A whole-line comparison, not a substring: `probe=1` is a prefix of
+    // `probe=127`, which is what `su` reports when `doas` is not installed at
+    // all. A container whose `apk add doas` failed would otherwise pass this
+    // as proof the probe works, having probed nothing — the same shape as the
+    // `inactive` containing `active` bug this suite already learned once.
     assert!(
-        stdout_of(&out).contains("probe=1"),
+        common::has_line(&stdout_of(&out), "probe=1"),
         "a rule wanting a password must probe non-zero, or the handoff never \
          happens and the prompt lands under the interface: {}",
         stdout_of(&out)

@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- An address is validated as an address rather than as four numbers.
+  `validate_ip` parsed each octet with `str::parse`, which admits what the
+  integer parser admits: a leading `+`, and leading zeros without limit. So
+  `010.0.0.1`, `+1.0.0.1` and `0000000010.0.0.1` were all accepted and written
+  verbatim into `wg0.conf` — where a leading zero reads as octal to some
+  tooling, making the address reviewed and the address in effect different
+  addresses. `Ipv4Addr::from_str` refuses all three, costs no dependency, and
+  the four-part count is still checked first so the message can name the actual
+  mistake. Table-driven tests now cover `Ip`, `Cidr`, `Endpoint`, `Version` and
+  `Protocol`, five kinds that had no validation test at all; the `Cidr` table
+  pins `/8` and `/30` because an off-by-one at either edge of the documented
+  range was invisible to a test that only tried `/24`.
+- A new `authorized_keys` is restricted before it holds a key. The file was
+  written and *then* chmodded, which is the pattern `wg0.conf` was already
+  fixed for: `tee` creates a file with the shell's umask, so the key sat
+  world-readable for as long as the two privileged commands took. Brief, and
+  long enough for a local account to read it — or to hold it open and influence
+  which keys sshd honours. A new file is now created empty, restricted, and
+  only then written; an existing one is appended to and never truncated, since
+  the keys already in it are other people's access. Pinned by a test asserting
+  the *order*, because one asserting the final mode passes against both.
 - Ctrl-C stops the task it says it stops. The flag the interface raised was
   never read: `Running::start` built it, cloned it, and dropped the clone, so
   the task ran to completion while the interface reported `CANCELLED` — the

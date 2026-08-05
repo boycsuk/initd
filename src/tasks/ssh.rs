@@ -2044,7 +2044,9 @@ mod tests {
             .iter()
             .position(|c| {
                 c.program == "tee"
-                    && c.stdin.as_deref().is_some_and(|data| data.contains(TEST_KEY))
+                    && c.stdin
+                        .as_deref()
+                        .is_some_and(|data| data.contains(TEST_KEY))
             })
             .expect("the key must be written");
 
