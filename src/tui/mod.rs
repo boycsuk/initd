@@ -63,12 +63,11 @@ pub fn restore() -> Result<()> {
 /// terminal's colours leave raw ANSI RGB values printed inside the restored
 /// interface.
 ///
-/// Nothing calls this now that the interface authenticates once at startup and
-/// runs tasks on a thread. It stays because that arrangement rests on a
-/// timestamp `doas` and `run0` do not provide — for those, or if sudo's
-/// timestamp expires mid-session, handing the terminal over is still the only
-/// way to let a helper prompt.
-#[allow(dead_code)]
+/// This is how a helper prompts mid-session. Authenticating once at startup
+/// covers `sudo` while its timestamp lasts — five minutes on Arch, which a
+/// long task outlives — and covers `doas` and `run0` not at all, since neither
+/// has a timestamp to establish. When the executor finds a prompt is coming it
+/// asks the interface for the terminal, and this is what lends it.
 pub fn with_terminal_released<T>(
     terminal: &mut Tui,
     action: impl FnOnce() -> Result<T>,
@@ -132,9 +131,11 @@ pub fn run() -> Result<()> {
     // own prompt on an ordinary terminal, and the timestamp it establishes
     // covers the commands the tasks go on to run.
     //
-    // A refusal is not fatal. The operator may have cancelled the prompt, or
-    // the mechanism may not support this at all, and either way privileged
-    // commands still work — they just prompt when they run.
+    // A refusal is not fatal, but not because the prompt simply moves: under
+    // the interface it would be drawn inside the alternate screen in raw mode,
+    // where it cannot be read or answered. What makes it survivable is that
+    // the executor asks for the terminal before any helper prompts, so this is
+    // the fast path rather than the only one.
     preauthenticate(escalator.as_ref());
 
     let executor = crate::exec::local::LocalExecutor::new(escalator);

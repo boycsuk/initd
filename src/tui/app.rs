@@ -85,6 +85,17 @@ impl Pane {
     }
 }
 
+/// A helper's request for the terminal, waiting to be served.
+///
+/// Carries the reply channel so that whoever takes the request is obliged to
+/// answer it: a worker thread is blocked on the other end.
+struct AuthRequest {
+    program: String,
+    args: Vec<String>,
+    mechanism: String,
+    reply: std::sync::mpsc::Sender<bool>,
+}
+
 /// The running application.
 ///
 /// Navigation is drill-down: exactly one level of the tree is on screen at a
@@ -111,6 +122,11 @@ pub struct App {
     /// The parameter form, while one is being filled in.
     form: Option<Form>,
     confirm: Option<Confirm>,
+    /// A helper waiting for the terminal, until the next turn of the loop.
+    ///
+    /// Held rather than served where it arrives: draining happens without the
+    /// terminal in hand, and restoring the screen needs it.
+    pending_auth: Option<AuthRequest>,
     /// Values collected from the form, held until the task actually runs.
     ///
     /// A destructive task with parameters passes through the form and then the
@@ -160,6 +176,7 @@ impl App {
             host,
             backend,
             executor: Box::new(executor),
+            pending_auth: None,
             tree: tasks::tree(),
             path: Vec::new(),
             cursor_stack: Vec::new(),
@@ -245,6 +262,10 @@ impl App {
             // countdown that has already run out.
             self.poll_running();
             self.expire_verification();
+
+            // Before drawing, not after: the frame this loop is about to paint
+            // would land on top of the helper's prompt.
+            self.serve_pending_auth(terminal)?;
 
             terminal
                 .draw(|frame| self.render(frame))
@@ -755,23 +776,119 @@ impl App {
         };
 
         let mut outcome = None;
+        // Collected rather than applied inside the loop, which holds a mutable
+        // borrow of `running`. Order is preserved either way: the lines a task
+        // wrote before asking are pushed as they are drained.
+        let mut requests = Vec::new();
 
         for update in running.drain() {
             match update {
                 Update::Line(line) => self.output.push(line),
+                Update::NeedsAuthentication {
+                    program,
+                    args,
+                    mechanism,
+                    reply,
+                } => requests.push(AuthRequest {
+                    program,
+                    args,
+                    mechanism,
+                    reply,
+                }),
                 Update::Finished(result) => outcome = Some(result),
             }
+        }
+
+        // Read while the borrow is still in hand, so the requests below can
+        // take `self` mutably.
+        let cancelled = running.is_cancelling();
+        let id = running.task_id;
+
+        for request in requests {
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: Lang::from_env().render(&crate::i18n::Msg::AuthenticationRequested {
+                    mechanism: request.mechanism.clone(),
+                }),
+            });
+
+            self.supersede_pending_auth(request);
         }
 
         let Some(outcome) = outcome else {
             return;
         };
 
-        let cancelled = running.is_cancelling();
-        let id = running.task_id;
         self.running = None;
 
         self.finish_run(id, outcome, cancelled);
+    }
+
+    /// Records a request for the terminal, answering any it displaces.
+    ///
+    /// A second request while one is outstanding would strand the thread
+    /// waiting on the first, so the displaced one is refused rather than
+    /// dropped. One task authenticates once at a time in practice; this keeps
+    /// that something the code states rather than something it relies on.
+    fn supersede_pending_auth(&mut self, request: AuthRequest) {
+        if let Some(superseded) = self.pending_auth.replace(request) {
+            let _ = superseded.reply.send(false);
+        }
+    }
+
+    /// Hands the terminal to a helper that needs to prompt, and answers.
+    ///
+    /// The reply is sent on every path, including the one where restoring the
+    /// terminal fails: a worker thread is blocked on the other end, and
+    /// letting it wait for the deadline instead of telling it no would stall a
+    /// task for five minutes over an error already in hand.
+    ///
+    /// A send failure is ignored, as elsewhere: it means the thread is gone,
+    /// which is not this loop's problem to solve.
+    fn serve_pending_auth(&mut self, terminal: &mut Tui) -> Result<()> {
+        let Some(request) = self.pending_auth.take() else {
+            return Ok(());
+        };
+
+        let outcome = super::with_terminal_released(terminal, || {
+            // Every stream inherited: the helper has to reach the terminal to
+            // prompt, and on sudo the timestamp it writes is keyed by it.
+            let status = std::process::Command::new(&request.program)
+                .args(&request.args)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .map_err(|source| crate::error::Error::CommandIo {
+                    command: request.program.clone(),
+                    source,
+                })?;
+
+            Ok(status.success())
+        });
+
+        let granted = match &outcome {
+            Ok(granted) => *granted,
+            Err(_) => false,
+        };
+
+        let _ = request.reply.send(granted);
+
+        if granted {
+            self.output.push(OutputLine {
+                stream: Stream::Stdout,
+                text: Lang::from_env().render(&crate::i18n::Msg::AuthenticationGranted),
+            });
+        } else {
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: Lang::from_env().render(&crate::i18n::Msg::AuthenticationRefused {
+                    mechanism: request.mechanism.clone(),
+                }),
+            });
+        }
+
+        outcome.map(|_| ())
     }
 
     /// Records how a finished task ended.
@@ -2640,6 +2757,35 @@ mod tests {
         ));
 
         assert_eq!(app.pill(), State::Input);
+    }
+
+    #[test]
+    fn a_superseded_authentication_request_is_refused_rather_than_dropped() {
+        // Both requests have a thread blocked on them. Overwriting the first
+        // without answering would leave that thread waiting out the deadline.
+        let mut app = test_app(Family::Debian);
+        let (first, first_answer) = std::sync::mpsc::channel();
+        let (second, _second_answer) = std::sync::mpsc::channel();
+
+        app.pending_auth = Some(AuthRequest {
+            program: "sudo".to_owned(),
+            args: vec!["-v".to_owned()],
+            mechanism: "sudo".to_owned(),
+            reply: first,
+        });
+
+        app.supersede_pending_auth(AuthRequest {
+            program: "sudo".to_owned(),
+            args: vec!["-v".to_owned()],
+            mechanism: "sudo".to_owned(),
+            reply: second,
+        });
+
+        assert_eq!(
+            first_answer.try_recv(),
+            Ok(false),
+            "the superseded request must be answered, not abandoned"
+        );
     }
 
     #[test]

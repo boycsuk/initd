@@ -187,6 +187,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confirmation is the live question once both are up. Both orderings are pinned
   by tests that were watched to fail when the branches are swapped.
 
+### Fixed
+- A helper asking for a password mid-session prompted where nobody could
+  answer it. Authenticating once at startup covers `sudo` while its timestamp
+  lasts — five minutes on Arch, which a long task outlives — and covers `doas`
+  and `run0` not at all, since neither has one to establish; on an Alpine box
+  carrying `doas` and no `sudo`, the *first* privileged command already
+  prompted. Reproduced rather than reasoned about: the prompt is written into
+  the alternate screen in raw mode, so the interface simply appears to hang.
+  The executor now asks whether a prompt is coming before each privileged
+  command — `sudo -n -v` and `doas -n true` answer without raising one, and
+  `run0` or an unknown helper answers "assume so", because guessing wrong in
+  that direction is what strands somebody at a prompt they cannot see — and
+  requests the terminal when the answer is yes. `with_terminal_released` had
+  been sitting unused since the interface moved tasks onto a thread; it is
+  what lends the terminal back. Detecting the failure afterwards was rejected:
+  `doas` without `persist` does not fail, it blocks, so there is nothing to
+  detect. So was re-running the task, which for a non-idempotent one would
+  double-apply what already ran.
+- `doas`'s exit codes were measured on alpine:3.23 rather than assumed — 0
+  under `permit nopass`, 1 when a password is wanted — because the probe is
+  only worth having if it answers the question it claims to. A first reading of
+  them was wrong in the safe direction and caught: `exit=0` was the `head` at
+  the end of the pipe, not `doas`.
+
 ### Removed
 - `Executor::run_streaming`, both its implementations, and the `spawn_reader`
   it existed to drive. Nothing called it: the live output pane is fed by the

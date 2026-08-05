@@ -95,6 +95,18 @@ pub enum Error {
     /// The operation needs root and no escalation mechanism is available.
     NoPrivilegeEscalator,
 
+    /// The operator declined the password prompt, or got it wrong.
+    ///
+    /// Separate from a failed command because the command never ran: nothing
+    /// was changed, so this ends a task rather than leaving it half applied.
+    AuthenticationRefused { mechanism: String },
+
+    /// Nobody answered the request for the terminal.
+    ///
+    /// The interface is gone, or took longer than the deadline. Distinct from
+    /// a refusal, which is an answer.
+    AuthenticationUnavailable { mechanism: String },
+
     /// `sshd -t` rejected the configuration over a genuine syntax error.
     InvalidSshdConfig { details: String },
 
@@ -319,6 +331,12 @@ impl Error {
                 source: source.to_string(),
             },
             Self::NoPrivilegeEscalator => Msg::NoPrivilegeEscalator,
+            Self::AuthenticationRefused { mechanism } => Msg::AuthenticationRefused {
+                mechanism: mechanism.clone(),
+            },
+            Self::AuthenticationUnavailable { mechanism } => Msg::AuthenticationUnavailable {
+                mechanism: mechanism.clone(),
+            },
             Self::InvalidSshdConfig { details } => Msg::InvalidSshdConfig {
                 details: details.clone(),
             },

@@ -109,6 +109,18 @@ pub enum Msg {
 
     // --- Privileges ---
     NoPrivilegeEscalator,
+    AuthenticationRefused {
+        mechanism: String,
+    },
+    AuthenticationUnavailable {
+        mechanism: String,
+    },
+    /// Written to the output pane just before the terminal is handed over, so
+    /// the gap the prompt leaves in the transcript is explained.
+    AuthenticationRequested {
+        mechanism: String,
+    },
+    AuthenticationGranted,
 
     // --- SSH ---
     InvalidSshdConfig {

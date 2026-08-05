@@ -56,6 +56,16 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NoPrivilegeEscalator => "this operation requires root privileges, but no escalation \
              mechanism (sudo, doas or run0) was found in PATH"
             .to_owned(),
+        Msg::AuthenticationRefused { mechanism } => {
+            format!("{mechanism} was not given a valid password, so nothing was run")
+        }
+        Msg::AuthenticationUnavailable { mechanism } => {
+            format!("nothing answered the request to authenticate with {mechanism}")
+        }
+        Msg::AuthenticationRequested { mechanism } => {
+            format!("{mechanism} needs a password — the interface is standing aside for it")
+        }
+        Msg::AuthenticationGranted => "authenticated; carrying on".to_owned(),
         Msg::InvalidSshdConfig { details } => {
             format!("the sshd configuration is invalid: {details}")
         }

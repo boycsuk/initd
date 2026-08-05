@@ -6,19 +6,95 @@
 use std::process::{Command as StdCommand, Stdio};
 use std::thread;
 
-use super::{Command, Executor, Output};
+use super::{Command, Executor, Output, TerminalBroker};
 use crate::error::{Error, Result};
-use crate::exec::privilege::PrivilegeEscalator;
+use crate::exec::privilege::{AuthNeed, PrivilegeEscalator};
 
 /// Runs commands on the machine `initd` is running on.
 pub struct LocalExecutor {
     escalator: Box<dyn PrivilegeEscalator>,
+    /// Where to ask for the terminal when a helper is about to prompt.
+    ///
+    /// `None` on the command line, where the terminal is already ordinary and
+    /// `sudo` can draw its own prompt — the interface is the only caller that
+    /// has taken the screen away.
+    broker: Option<Box<dyn TerminalBroker>>,
 }
 
 impl LocalExecutor {
     /// Builds an executor using the given escalation mechanism.
     pub fn new(escalator: Box<dyn PrivilegeEscalator>) -> Self {
-        Self { escalator }
+        Self {
+            escalator,
+            broker: None,
+        }
+    }
+
+    /// Builds an executor that can ask for the terminal before a prompt.
+    pub fn with_broker(
+        escalator: Box<dyn PrivilegeEscalator>,
+        broker: Box<dyn TerminalBroker>,
+    ) -> Self {
+        Self {
+            escalator,
+            broker: Some(broker),
+        }
+    }
+
+    /// Hands the terminal over if the helper is about to ask for a password.
+    ///
+    /// Asked *before* the command rather than recovered from afterwards,
+    /// because `doas` without `persist` does not fail — it blocks on a prompt
+    /// nobody can see, so there is no failure to detect. The probe is spawned
+    /// here rather than through [`Executor::run`], which would recurse.
+    fn ensure_authenticated(&self, command: &Command) -> Result<()> {
+        if !command.needs_root {
+            return Ok(());
+        }
+
+        let Some(broker) = self.broker.as_ref() else {
+            return Ok(());
+        };
+
+        match self.escalator.auth_need() {
+            AuthNeed::Never => return Ok(()),
+            AuthNeed::Probe { program, args } => {
+                if self.probe_succeeds(&program, &args) {
+                    return Ok(());
+                }
+            }
+            AuthNeed::Always => {}
+        }
+
+        let (program, args) = match self.escalator.preauth_command() {
+            Some(pair) => pair,
+            // Nothing to authenticate with on its own, so the terminal is
+            // released around a no-op privileged command instead: it is the
+            // real command's prompt, drawn where it can be answered.
+            None => self.escalator.wrap(&Command::new("true").privileged())?,
+        };
+
+        if broker.authenticate(&program, &args)? {
+            Ok(())
+        } else {
+            Err(Error::AuthenticationRefused {
+                mechanism: self.escalator.name().to_owned(),
+            })
+        }
+    }
+
+    /// Whether the non-interactive probe reports the helper will not prompt.
+    ///
+    /// A probe that cannot even be spawned answers "it will prompt": assuming
+    /// otherwise is what leaves an operator at a prompt they cannot see.
+    fn probe_succeeds(&self, program: &str, args: &[String]) -> bool {
+        StdCommand::new(program)
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .status()
+            .is_ok_and(|status| status.success())
     }
 
     /// Applies privilege escalation when the command needs it.
@@ -55,6 +131,11 @@ impl LocalExecutor {
 
 impl Executor for LocalExecutor {
     fn run(&self, command: &Command) -> Result<Output> {
+        // Before the command, never after: a helper that is going to prompt
+        // does so on a terminal the interface still owns, and the prompt is
+        // then invisible and unanswerable.
+        self.ensure_authenticated(command)?;
+
         let (program, args) = self.resolve(command)?;
 
         let mut child = StdCommand::new(&program)
@@ -195,5 +276,121 @@ mod tests {
             .expect_err("a missing binary must fail");
 
         assert!(matches!(err, Error::ProgramNotFound { .. }), "{err:?}");
+    }
+
+    /// A broker that answers as scripted and records that it was asked.
+    ///
+    /// The counter is shared rather than borrowed: `Box<dyn TerminalBroker>`
+    /// is `'static`, so the test cannot hand out a reference to a local.
+    #[derive(Debug)]
+    struct ScriptedBroker {
+        grants: bool,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ScriptedBroker {
+        fn new(grants: bool) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+            (
+                Self {
+                    grants,
+                    asked: std::sync::Arc::clone(&asked),
+                },
+                asked,
+            )
+        }
+    }
+
+    impl TerminalBroker for ScriptedBroker {
+        fn authenticate(&self, _program: &str, _args: &[String]) -> Result<bool> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.grants)
+        }
+    }
+
+    /// How many times the broker was asked.
+    fn times_asked(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// An escalator that always claims a prompt is coming, without spawning
+    /// anything — so the test does not depend on sudo being installed.
+    #[derive(Debug)]
+    struct AlwaysPrompts;
+
+    impl PrivilegeEscalator for AlwaysPrompts {
+        fn wrap(&self, command: &Command) -> Result<(String, Vec<String>)> {
+            Ok((command.program.clone(), command.args.clone()))
+        }
+
+        fn name(&self) -> &str {
+            "always-prompts"
+        }
+
+        fn auth_need(&self) -> crate::exec::privilege::AuthNeed {
+            crate::exec::privilege::AuthNeed::Always
+        }
+
+        fn preauth_command(&self) -> Option<(String, Vec<String>)> {
+            Some(("true".to_owned(), Vec::new()))
+        }
+    }
+
+    #[test]
+    fn an_unprivileged_command_never_asks_for_the_terminal() {
+        let (broker, asked) = ScriptedBroker::new(true);
+        let executor = LocalExecutor::with_broker(Box::new(AlwaysPrompts), Box::new(broker));
+
+        executor
+            .run(&Command::new("echo").arg("hello"))
+            .expect("echo must run");
+
+        assert_eq!(times_asked(&asked), 0);
+    }
+
+    #[test]
+    fn a_refused_password_stops_the_command_from_running() {
+        // The property that matters: a command whose authentication was
+        // declined must not run at all. Running it anyway would prompt again
+        // on a terminal the interface owns, which is the bug being fixed.
+        let (broker, asked) = ScriptedBroker::new(false);
+        let executor = LocalExecutor::with_broker(Box::new(AlwaysPrompts), Box::new(broker));
+
+        let err = executor
+            .run(&Command::new("echo").arg("hello").privileged())
+            .expect_err("a refused password must fail the command");
+
+        assert!(
+            matches!(err, Error::AuthenticationRefused { .. }),
+            "{err:?}"
+        );
+        assert_eq!(times_asked(&asked), 1);
+    }
+
+    #[test]
+    fn a_granted_password_lets_the_command_through() {
+        let (broker, asked) = ScriptedBroker::new(true);
+        let executor = LocalExecutor::with_broker(Box::new(AlwaysPrompts), Box::new(broker));
+
+        let out = executor
+            .run(&Command::new("echo").arg("hello").privileged())
+            .expect("echo must run once authenticated");
+
+        assert_eq!(out.stdout.trim(), "hello");
+        assert_eq!(times_asked(&asked), 1);
+    }
+
+    #[test]
+    fn without_a_broker_a_privileged_command_behaves_as_it_always_did() {
+        // The command line has an ordinary terminal, so sudo can prompt on its
+        // own and nothing should change there.
+        let executor = LocalExecutor::new(Box::new(NoEscalation));
+
+        let out = executor
+            .run(&Command::new("echo").arg("hello").privileged())
+            .expect("echo must run");
+
+        assert_eq!(out.stdout.trim(), "hello");
     }
 }

@@ -128,6 +128,27 @@ pub trait Executor {
     fn run(&self, command: &Command) -> Result<Output>;
 }
 
+/// Somewhere the terminal can be borrowed from so a helper may prompt.
+///
+/// Deliberately *not* a method on [`Executor`]. The interface owns the
+/// terminal and runs tasks on another thread, so the executor cannot restore
+/// it itself; it has to ask. Putting that on `Executor` would oblige the mock
+/// and the future SSH implementation to answer a question neither has — an SSH
+/// executor authenticates over the transport, not by clearing a local screen.
+///
+/// `Send` because the implementation crosses into the worker thread. That is a
+/// bound on this trait alone: what travels is the program and its arguments,
+/// never the escalator or the executor, both of which stay where they were
+/// built.
+pub trait TerminalBroker: Send {
+    /// Runs an authentication command with the terminal handed back.
+    ///
+    /// Answers whether authentication succeeded. `Ok(false)` is an operator
+    /// who declined or typed the wrong password — ordinary, and not an error
+    /// in the sense the caller should retry.
+    fn authenticate(&self, program: &str, args: &[String]) -> Result<bool>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

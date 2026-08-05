@@ -17,10 +17,36 @@ use crate::error::{Error, Result};
 /// `sudo` comes first as the most widely deployed; `run0` last because it
 /// requires systemd and behaves differently enough (polkit agent, separate
 /// TTY) that it is a fallback rather than a default.
-const CANDIDATES: [&str; 3] = [SUDO, "doas", "run0"];
+const CANDIDATES: [&str; 3] = [SUDO, DOAS, RUN0];
 
 /// The one helper that can authenticate ahead of the work.
 const SUDO: &str = "sudo";
+
+/// Alpine's helper, which authenticates per invocation unless `doas.conf`
+/// carries `persist`.
+const DOAS: &str = "doas";
+
+/// systemd's helper, which defers to polkit for both prompt and caching.
+///
+/// Named for the candidate list rather than matched on: it takes the same
+/// branch as an unknown helper, since neither can be asked whether it will
+/// prompt.
+const RUN0: &str = "run0";
+
+/// Whether a mechanism will prompt before a privileged command runs.
+///
+/// The distinction exists because a prompt drawn while the interface holds the
+/// terminal is unusable: raw mode disables echo and the alternate screen hides
+/// it. Knowing *before* spawning lets the caller hand the terminal over first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthNeed {
+    /// Never prompts. The process is already root, or nothing can escalate.
+    Never,
+    /// Ask this command; success means no prompt is coming.
+    Probe { program: String, args: Vec<String> },
+    /// Cannot be asked, so the terminal is handed over regardless.
+    Always,
+}
 
 /// Wraps a command so it runs with root privileges.
 pub trait PrivilegeEscalator: fmt::Debug {
@@ -42,6 +68,17 @@ pub trait PrivilegeEscalator: fmt::Debug {
     /// drive.
     fn preauth_command(&self) -> Option<(String, Vec<String>)> {
         None
+    }
+
+    /// Whether a privileged command is about to prompt.
+    ///
+    /// Defaults to [`AuthNeed::Never`] only for mechanisms that genuinely
+    /// cannot prompt. A mechanism that might is answered [`AuthNeed::Always`]
+    /// instead: claiming "will not prompt" for something that does is the
+    /// error that strands an operator at an invisible password prompt, so the
+    /// safe direction is to hand the terminal over needlessly.
+    fn auth_need(&self) -> AuthNeed {
+        AuthNeed::Never
     }
 }
 
@@ -92,6 +129,31 @@ impl PrivilegeEscalator for HelperEscalation {
         // Only sudo has a validate flag. doas authenticates per invocation with
         // no client-side refresh, and run0 defers to polkit.
         (self.program == SUDO).then(|| (self.program.clone(), vec!["-v".to_owned()]))
+    }
+
+    fn auth_need(&self) -> AuthNeed {
+        match self.program.as_str() {
+            // `sudo -n -v` answers whether the timestamp is still valid without
+            // prompting, which is the question, since Arch expires it after
+            // five minutes and a long task outlives that.
+            SUDO => AuthNeed::Probe {
+                program: self.program.clone(),
+                args: vec!["-n".to_owned(), "-v".to_owned()],
+            },
+            // Alpine's opendoas takes `-n` — confirmed against its usage line,
+            // and its exit codes measured on alpine:3.23: 0 under `permit
+            // nopass`, 1 when a password is wanted. There is no validate flag,
+            // so the probe runs `true` rather than nothing.
+            DOAS => AuthNeed::Probe {
+                program: self.program.clone(),
+                args: vec!["-n".to_owned(), "true".to_owned()],
+            },
+            // polkit owns run0's prompt and its caching, and run0 allocates a
+            // pty of its own, so there is nothing here to ask. An unrecognised
+            // helper answers the same way rather than `Never`: a wrong "will
+            // not prompt" is what strands an operator at a hidden prompt.
+            _ => AuthNeed::Always,
+        }
     }
 }
 
@@ -231,5 +293,66 @@ mod tests {
         // Never panics regardless of environment: worst case it is the
         // Unavailable variant, which fails only when root is actually needed.
         assert!(!detect().name().is_empty());
+    }
+
+    #[test]
+    fn sudo_is_asked_whether_its_timestamp_is_still_valid() {
+        let need = HelperEscalation::new(SUDO).auth_need();
+
+        assert_eq!(
+            need,
+            AuthNeed::Probe {
+                program: SUDO.to_owned(),
+                args: vec!["-n".to_owned(), "-v".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn doas_is_probed_rather_than_assumed_to_be_silent() {
+        // The case this mechanism exists for: Alpine ships doas and no sudo,
+        // so nothing authenticates at startup and the first privileged command
+        // is the one that prompts. Its exit codes were measured on alpine:3.23
+        // — 0 under `permit nopass`, 1 when a password is wanted.
+        let need = HelperEscalation::new(DOAS).auth_need();
+
+        assert_eq!(
+            need,
+            AuthNeed::Probe {
+                program: DOAS.to_owned(),
+                args: vec!["-n".to_owned(), "true".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn run0_and_unknown_helpers_hand_the_terminal_over_regardless() {
+        // polkit owns run0's prompt, so there is nothing to ask. An unknown
+        // helper answers the same way on purpose: the dangerous direction is
+        // claiming a mechanism will not prompt when it will.
+        assert_eq!(HelperEscalation::new(RUN0).auth_need(), AuthNeed::Always);
+        assert_eq!(
+            HelperEscalation::new("something-else").auth_need(),
+            AuthNeed::Always
+        );
+    }
+
+    #[test]
+    fn a_mechanism_that_cannot_prompt_is_never_asked() {
+        assert_eq!(NoEscalation.auth_need(), AuthNeed::Never);
+        assert_eq!(UnavailableEscalation.auth_need(), AuthNeed::Never);
+    }
+
+    #[test]
+    fn every_candidate_reports_a_need() {
+        // Guards the table against a candidate being added to the list and
+        // forgotten in `auth_need`, which would silence the handoff for it.
+        for candidate in CANDIDATES {
+            assert_ne!(
+                HelperEscalation::new(candidate).auth_need(),
+                AuthNeed::Never,
+                "{candidate} must not claim it will never prompt"
+            );
+        }
     }
 }

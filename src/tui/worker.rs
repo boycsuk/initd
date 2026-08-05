@@ -17,13 +17,13 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::distro::Distro;
 use crate::error::Error;
-use crate::exec::OutputLine;
+use crate::exec::{OutputLine, TerminalBroker};
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
 
@@ -32,8 +32,62 @@ use crate::tasks::revert::Outcome;
 pub enum Update {
     /// A line the task produced.
     Line(OutputLine),
+    /// A helper is about to prompt and needs the terminal back.
+    ///
+    /// The thread blocks on `reply` until the interface has restored the
+    /// screen, run this command and answered whether it worked. It carries its
+    /// own channel rather than being answered through shared state so that a
+    /// superseded request can be refused explicitly instead of stranding the
+    /// thread that sent it.
+    NeedsAuthentication {
+        program: String,
+        args: Vec<String>,
+        mechanism: String,
+        reply: Sender<bool>,
+    },
     /// The task finished, for better or worse.
     Finished(Result<Outcome, Error>),
+}
+
+/// How long the worker waits for the interface to answer an authentication
+/// request.
+///
+/// Long enough to find a password manager, short enough that an interface that
+/// died does not leave the thread waiting for a reply that is never coming.
+const AUTH_DEADLINE: Duration = Duration::from_secs(300);
+
+/// Asks the interface for the terminal on the worker thread's behalf.
+///
+/// Holds a clone of the update channel, which is the only thing that crosses
+/// the thread boundary — the escalator and the executor stay where they were
+/// built, as the module doc requires.
+struct ChannelBroker {
+    updates: Sender<Update>,
+    mechanism: String,
+    deadline: Duration,
+}
+
+impl TerminalBroker for ChannelBroker {
+    fn authenticate(&self, program: &str, args: &[String]) -> Result<bool, Error> {
+        let (reply, answer) = channel();
+
+        let unavailable = || Error::AuthenticationUnavailable {
+            mechanism: self.mechanism.clone(),
+        };
+
+        self.updates
+            .send(Update::NeedsAuthentication {
+                program: program.to_owned(),
+                args: args.to_vec(),
+                mechanism: self.mechanism.clone(),
+                reply,
+            })
+            .map_err(|_| unavailable())?;
+
+        answer
+            .recv_timeout(self.deadline)
+            .map_err(|_| unavailable())
+    }
 }
 
 /// The spinner's frames.
@@ -83,7 +137,14 @@ impl Running {
             // the call, so it owns what it needs, and the backend resolves one
             // repository URL from the distribution's own `ID`.
             let backend = crate::backend::for_distro(&distro);
-            let executor = crate::exec::local::LocalExecutor::new(crate::exec::privilege::detect());
+            let escalator = crate::exec::privilege::detect();
+            let broker = ChannelBroker {
+                updates: sender.clone(),
+                mechanism: escalator.name().to_owned(),
+                deadline: AUTH_DEADLINE,
+            };
+            let executor =
+                crate::exec::local::LocalExecutor::with_broker(escalator, Box::new(broker));
 
             let Some(task) = crate::tasks::find(task_id) else {
                 // Unreachable through the interface, which only offers tasks
@@ -194,12 +255,23 @@ mod tests {
     /// Waits for the task to finish, returning everything it reported.
     ///
     /// Bounded so a hung task fails the test rather than hanging the suite.
+    ///
+    /// Refuses any request for the terminal, because a caller that drains
+    /// without answering leaves the thread blocked until the deadline — the
+    /// same obligation the interface carries, and the reason these tests
+    /// stand in for it rather than merely reading the channel.
     fn collect(running: &mut Running) -> Vec<Update> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut all = Vec::new();
 
         while Instant::now() < deadline {
-            all.extend(running.drain());
+            for update in running.drain() {
+                if let Update::NeedsAuthentication { reply, .. } = &update {
+                    let _ = reply.send(false);
+                }
+
+                all.push(update);
+            }
 
             if all.iter().any(is_finished) {
                 return all;
@@ -313,5 +385,118 @@ mod tests {
 
         assert!(running.is_cancelling());
         assert!(running.cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_request_for_the_terminal_carries_what_should_be_run() {
+        let (sender, updates) = channel();
+        let broker = ChannelBroker {
+            updates: sender,
+            mechanism: "doas".to_owned(),
+            deadline: Duration::from_secs(5),
+        };
+
+        // The interface's side: answer whatever arrives, on another thread,
+        // since `authenticate` blocks until it does.
+        let answering = thread::spawn(move || match updates.recv() {
+            Ok(Update::NeedsAuthentication {
+                program,
+                args,
+                mechanism,
+                reply,
+            }) => {
+                let _ = reply.send(true);
+                (program, args, mechanism)
+            }
+            other => panic!("expected an authentication request, got {other:?}"),
+        });
+
+        let granted = broker
+            .authenticate("doas", &["-n".to_owned(), "true".to_owned()])
+            .expect("the request is answered");
+
+        let (program, args, mechanism) = answering.join().expect("the answering thread finishes");
+
+        assert!(granted);
+        assert_eq!(program, "doas");
+        assert_eq!(args, ["-n", "true"]);
+        assert_eq!(mechanism, "doas");
+    }
+
+    #[test]
+    fn a_refusal_is_reported_as_one_rather_than_as_a_failure() {
+        let (sender, updates) = channel();
+        let broker = ChannelBroker {
+            updates: sender,
+            mechanism: "sudo".to_owned(),
+            deadline: Duration::from_secs(5),
+        };
+
+        let answering = thread::spawn(move || {
+            if let Ok(Update::NeedsAuthentication { reply, .. }) = updates.recv() {
+                let _ = reply.send(false);
+            }
+        });
+
+        let granted = broker
+            .authenticate("sudo", &["-v".to_owned()])
+            .expect("a refusal is an answer, not an error");
+
+        answering.join().expect("the answering thread finishes");
+
+        assert!(!granted);
+    }
+
+    #[test]
+    fn a_request_nobody_answers_gives_up_instead_of_blocking() {
+        // The interface died, or never got to the request. Waiting forever
+        // would wedge the task thread; the deadline is what bounds it.
+        let (sender, updates) = channel();
+        let broker = ChannelBroker {
+            updates: sender,
+            mechanism: "sudo".to_owned(),
+            deadline: Duration::from_millis(50),
+        };
+
+        // Held rather than dropped, so this exercises the timeout and not the
+        // disconnect that a dropped receiver would cause.
+        let _updates = updates;
+
+        let err = broker
+            .authenticate("sudo", &["-v".to_owned()])
+            .expect_err("an unanswered request must not block forever");
+
+        assert!(
+            matches!(err, Error::AuthenticationUnavailable { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_vanished_interface_gives_up_at_once() {
+        let (sender, updates) = channel();
+        let broker = ChannelBroker {
+            updates: sender,
+            mechanism: "sudo".to_owned(),
+            // Long enough that reaching it would mean the disconnect was
+            // missed and the test waited instead.
+            deadline: Duration::from_secs(60),
+        };
+
+        drop(updates);
+
+        let started = Instant::now();
+        let err = broker
+            .authenticate("sudo", &["-v".to_owned()])
+            .expect_err("a gone interface cannot answer");
+
+        assert!(
+            matches!(err, Error::AuthenticationUnavailable { .. }),
+            "{err:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a disconnect must be noticed rather than waited out"
+        );
     }
 }
