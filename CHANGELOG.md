@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The permissions were whatever the repository defaulted to, and each container
   job pulls four distribution images.
 
+### Changed
+- `MockExecutor` can be strict about commands nobody scripted, and the tests
+  whose subject is the *sequence* now are. An unscripted command previously
+  answered `Reply::default()` — success with empty output — so a task that grew
+  a step got a fabricated success from every test written before that step
+  existed: not merely unasserted, but asserted to have worked by a test that
+  had never heard of it. It found real drift immediately. The WireGuard secret
+  test scripted eleven commands against a task that runs fourteen, because each
+  `write` is a `test -e`, a `cp -p` and a `tee`; three were being absorbed
+  silently and the comments naming which reply belonged to which command had
+  drifted onto the wrong ones. `write_validated`'s rollback test was worse: only
+  a comment tied its failing reply to `sshd -t`, and a command inserted anywhere
+  ahead of it would have slid that failure onto `tee` — validation would then
+  "pass", nothing would roll back, and the test would go on asserting a rollback
+  it had caused by accident. `unused_replies()` covers the other direction, a
+  task that stopped running a command the script still claims.
+
 ### Fixed
 - Losing the session puts an unconfirmed change back, which is the case the
   verification window exists for rather than an edge of it. The countdown lived

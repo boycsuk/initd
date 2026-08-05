@@ -54,6 +54,20 @@ impl Default for Reply {
 pub struct MockExecutor {
     recorded: RefCell<Vec<Command>>,
     replies: RefCell<VecDeque<Reply>>,
+    /// Whether a command the test never scripted is an error.
+    ///
+    /// Off by default, which is what the existing tests rely on: most script
+    /// only the calls they assert about and let the rest answer success.
+    ///
+    /// The cost of that leniency is worth naming, because it is why this flag
+    /// exists. An unscripted command returns `Reply::default()`, which is
+    /// *success with empty output* — so a task that grows a step gets a
+    /// fabricated success from every test written before it, and all of them
+    /// keep passing. The step is not merely unasserted; it is asserted to have
+    /// worked, by a test that has never heard of it. Turning this on for a
+    /// sequence-sensitive test makes the queue a statement about what the task
+    /// runs rather than a convenience.
+    strict: bool,
 }
 
 impl MockExecutor {
@@ -70,6 +84,23 @@ impl MockExecutor {
         Self {
             recorded: RefCell::new(Vec::new()),
             replies: RefCell::new(replies.into_iter().collect()),
+            strict: false,
+        }
+    }
+
+    /// A mock that fails the test if the task runs a command it did not script.
+    ///
+    /// For tests whose subject is the *sequence* — which commands run, and in
+    /// what order — rather than the outcome of one of them. Under
+    /// [`Self::with_replies`] a command nobody scripted answers success, so
+    /// such a test goes on passing after the task grows a step it has never
+    /// seen. Here that is a failure naming the command, which is the point:
+    /// the queue becomes the claim.
+    pub fn with_exact_replies(replies: impl IntoIterator<Item = Reply>) -> Self {
+        Self {
+            recorded: RefCell::new(Vec::new()),
+            replies: RefCell::new(replies.into_iter().collect()),
+            strict: true,
         }
     }
 
@@ -108,9 +139,32 @@ impl MockExecutor {
     }
 
     /// Records a command and takes the next scripted reply.
+    ///
+    /// Panicking under `strict` is the intended behaviour of a test double:
+    /// it fails the test that owns it, with the command that was not expected
+    /// and the ones that came before it.
     fn record(&self, command: &Command) -> Reply {
         self.recorded.borrow_mut().push(command.clone());
-        self.replies.borrow_mut().pop_front().unwrap_or_default()
+
+        let reply = self.replies.borrow_mut().pop_front();
+
+        match reply {
+            Some(reply) => reply,
+            None if self.strict => panic!(
+                "unscripted command `{command}`; the script ran out after: {:?}",
+                self.recorded_lines()
+            ),
+            None => Reply::default(),
+        }
+    }
+
+    /// How many scripted replies were never used.
+    ///
+    /// The other direction of the same question: a task that stops running a
+    /// command leaves its reply behind, and a test asserting only on what did
+    /// run cannot notice. Zero means the script and the task agree.
+    pub fn unused_replies(&self) -> usize {
+        self.replies.borrow().len()
     }
 }
 
@@ -167,6 +221,39 @@ mod tests {
         let extra = mock.run(&Command::new("b")).expect("runs");
 
         assert!(extra.success(), "unscripted calls default to success");
+    }
+
+    #[test]
+    #[should_panic(expected = "unscripted command")]
+    fn a_strict_mock_refuses_a_command_nobody_scripted() {
+        // The failure this buys: under the lenient mock an unscripted command
+        // answers success, so a task that grows a step is *asserted to have
+        // succeeded* by every test written before that step existed.
+        let mock = MockExecutor::with_exact_replies([Reply::ok("scripted")]);
+
+        mock.run(&Command::new("a")).expect("runs");
+        let _ = mock.run(&Command::new("systemctl").arg("daemon-reload"));
+    }
+
+    #[test]
+    fn a_strict_mock_allows_exactly_what_it_scripted() {
+        // The other direction, so the check cannot pass by refusing everything.
+        let mock = MockExecutor::with_exact_replies([Reply::ok("one"), Reply::ok("two")]);
+
+        assert_eq!(mock.run(&Command::new("a")).expect("runs").stdout, "one");
+        assert_eq!(mock.run(&Command::new("b")).expect("runs").stdout, "two");
+        assert_eq!(mock.unused_replies(), 0);
+    }
+
+    #[test]
+    fn leftover_replies_are_countable() {
+        // A task that stops running a command leaves its reply behind, which a
+        // test asserting only on what did run cannot otherwise notice.
+        let mock = MockExecutor::with_exact_replies([Reply::ok("one"), Reply::ok("two")]);
+
+        mock.run(&Command::new("a")).expect("runs");
+
+        assert_eq!(mock.unused_replies(), 1);
     }
 
     #[test]

@@ -601,18 +601,32 @@ mod tests {
         // on the box for as long as the two calls take. `wg` warns about
         // exactly this when it writes a key itself, which is how it surfaced —
         // in a container, from the tool's own stderr, not from a mock.
-        let mock = MockExecutor::with_replies([
-            Reply::failure(1, ""), // no existing configuration
-            Reply::ok(""),         // install
-            Reply::ok(""),         // create the directory
-            Reply::ok(KEY),        // genkey
-            Reply::ok(KEY),        // genpsk
-            Reply::ok(KEY),        // pubkey
-            Reply::ok(""),         // create the file empty
-            Reply::ok(""),         // chmod
-            Reply::ok(""),         // backup before the real write
-            Reply::ok(""),         // write the configuration
-            Reply::ok(""),         // enable the unit
+        //
+        // Strict, because the subject here is the sequence. Under the lenient
+        // mock a command inserted between the chmod and the write would answer
+        // success from nowhere and this test would go on passing, having
+        // stopped describing what the task does.
+        // Every command the task actually runs, in order. Writing it out is
+        // the point of the strict mock: the previous script named eleven
+        // commands and the task ran fourteen, because each `write` is itself a
+        // `test -e`, a `cp -p` backup and a `tee`. Those three were absorbed
+        // as fabricated successes, and the comments beside the replies had
+        // drifted onto the wrong commands without anything noticing.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::failure(1, ""), // test -e: no existing configuration
+            Reply::ok(""),         // apt-get install
+            Reply::ok(""),         // install -d: the directory
+            Reply::ok(KEY),        // wg genkey
+            Reply::ok(KEY),        // wg genpsk
+            Reply::ok(KEY),        // wg pubkey
+            Reply::ok(""),         // test -e, opening the empty write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: create the file empty
+            Reply::ok(""),         // chmod 600, before any secret exists
+            Reply::ok(""),         // test -e, opening the real write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: the configuration, with the key
+            Reply::ok(""),         // systemctl enable
         ]);
         let backend = for_family(Family::Debian);
 
@@ -645,6 +659,15 @@ mod tests {
         assert!(
             tightened < key_written,
             "the mode must be set before the key is written: {:?}",
+            mock.recorded_lines()
+        );
+
+        // The other direction: a leftover reply means the task stopped running
+        // a command this test still claims it runs.
+        assert_eq!(
+            mock.unused_replies(),
+            0,
+            "the script must describe the task exactly: {:?}",
             mock.recorded_lines()
         );
     }

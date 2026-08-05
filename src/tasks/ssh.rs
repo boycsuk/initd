@@ -2012,16 +2012,21 @@ mod tests {
         // fix is the one `wg0.conf` already carries — create empty, restrict,
         // then write — and a test that only checks the mode at the end passes
         // against both orders.
-        let mock = MockExecutor::with_replies([
+        // Strict: the subject is the order, so a command appearing between the
+        // chmod and the write must fail this rather than answer success from
+        // nowhere.
+        let mock = MockExecutor::with_exact_replies([
             Reply::ok(""),         // install -d
             Reply::ok(""),         // chown dir
-            Reply::failure(1, ""), // authorized_keys absent
-            Reply::ok(""),         // test -e inside the empty write
-            Reply::ok(""),         // tee (empty)
-            Reply::ok(""),         // chmod
+            Reply::failure(1, ""), // test -e: authorized_keys absent
+            Reply::ok(""),         // test -e, opening the empty write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: create it empty
+            Reply::ok(""),         // chmod 600, before any key exists
             Reply::ok(""),         // chown file
-            Reply::ok(""),         // test -e inside the real write
-            Reply::ok(""),         // tee (the key)
+            Reply::ok(""),         // test -e, opening the real write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: the key
         ]);
         let backend = for_family(Family::Debian);
 
