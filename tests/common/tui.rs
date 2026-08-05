@@ -18,6 +18,10 @@
 //! container before these tests were written, which is why they sit on
 //! [`SystemdContainer`] rather than an ephemeral one.
 
+// Only `integration_tui` drives this module, and every test binary that says
+// `mod common;` compiles it whole — so in the other nine it is dead by
+// construction. That is the cost of sharing a module across binaries, not a
+// sign of a helper nobody calls.
 #![allow(dead_code)]
 
 use super::Image;

@@ -25,6 +25,10 @@
 //! unit names also diverge — `ssh.service` on Debian, `sshd.service` on Arch —
 //! and that divergence has only ever been checked against a mock.
 
+// Only `integration_systemd` and `integration_tui` reach this module, and every
+// test binary that says `mod common;` compiles it whole — so in the other eight
+// it is dead by construction. That is the cost of sharing a module across
+// binaries, not a sign of a helper nobody calls.
 #![allow(dead_code)]
 
 use std::process::{Command, Output};

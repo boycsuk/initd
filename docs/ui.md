@@ -146,7 +146,12 @@ Meaning is carried by a glyph, never by colour alone, so a monochrome or
 |--------|---------|
 | `›` | The row opens onto another level |
 | `!` | The task is destructive and asks for confirmation |
+| `…` | The task collects parameters before it runs |
 | `·` | The task is not supported on this host |
+
+A row carries at most one flag, and they rank in that order: a task that is
+both destructive and parameterised shows `!`, since the warning outranks the
+notice.
 
 ## Status row
 
@@ -163,12 +168,17 @@ the word carries the meaning alone when colour is absent.
 | `CANCELLED` | The last task was interrupted before it finished |
 | `VERIFY` | A change is applied but not yet kept |
 | `CONFIRM` | A confirmation dialog is open |
+| `INPUT` | A parameter form is open, collecting input before the task runs |
 | `UNSUPPORTED` | The selected task cannot run on this host |
 
-Two of these describe the cursor rather than the past and therefore override
-whatever the last action left behind: `CONFIRM` while a dialog is open, and
-`UNSUPPORTED` when the selected row cannot run here. The pill must always state
-what pressing `Enter` would do now.
+Three of these describe the cursor rather than the past and therefore override
+whatever the last action left behind: `CONFIRM` while a dialog is open, `INPUT`
+while a form is, and `UNSUPPORTED` when the selected row cannot run here. The
+pill must always state what pressing `Enter` would do now.
+
+`CONFIRM` outranks `INPUT` where both apply: a destructive task collects its
+parameters first and confirms after, so once the confirmation is up it is the
+live question.
 
 ### Transient messages
 
@@ -244,8 +254,8 @@ Two rules govern the table:
 | `search_match` | Black on yellow | The matched substring in a filtered row |
 | `status_ready` | Black on green + bold | The `READY` and `DONE` pills |
 | `status_busy` | Black on yellow + bold | The `RUNNING` and `VERIFY` pills |
-| `status_error` | Black on red + bold | The `FAILED` and `CONFIRM` pills |
-| `status_input` | Black on blue + bold | The `INPUT` and `SEARCH` pills |
+| `status_error` | Black on red + bold | The `FAILED`, `CANCELLED` and `CONFIRM` pills |
+| `status_input` | Black on blue + bold | The `INPUT` pill |
 | `status_inert` | Black on white + bold | The `UNSUPPORTED` pill |
 | `keybar_key` | Reset + bold | The key glyph in the key bar |
 | `keybar_label` | White + dim | Its description |

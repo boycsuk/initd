@@ -18,6 +18,10 @@
 //! script, because the client has to reach the server by name while both are
 //! up. Both are removed on drop, as is the network.
 
+// Only `integration_old_client` builds these hosts, and every test binary that
+// says `mod common;` compiles this module whole — so in the other nine it is
+// dead by construction. That is the cost of sharing a module across binaries,
+// not a sign of a helper nobody calls.
 #![allow(dead_code)]
 
 use std::process::{Command, Output};

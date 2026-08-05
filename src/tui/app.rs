@@ -1238,9 +1238,17 @@ impl App {
     /// describe the cursor rather than the past and therefore win: a dialog is
     /// open, or the row under the cursor cannot run here. The pill is the one
     /// place that always states what pressing Enter would do.
+    ///
+    /// The confirmation outranks the form for the same reason the row flag
+    /// does: a destructive task collects its parameters first and confirms
+    /// after, so once both are open the confirmation is the live question.
     fn pill(&self) -> State {
         if self.confirm.is_some() {
             return State::Confirm;
+        }
+
+        if self.form.is_some() {
+            return State::Input;
         }
 
         match self.selected_node() {
@@ -1382,6 +1390,9 @@ fn row(node: &Node, family: crate::distro::Family, width: usize) -> Line<'static
         ),
         Node::Task(task) => {
             let supported = task.supports(family);
+            // Destructive outranks input: a task that asks for a port before
+            // wiping something is first of all the one that wipes something,
+            // and only one flag fits the column.
             let (text_style, flag, flag_style) = if !supported {
                 (
                     style::DISABLED,
@@ -1390,6 +1401,8 @@ fn row(node: &Node, family: crate::distro::Family, width: usize) -> Line<'static
                 )
             } else if task.is_destructive() {
                 (style::NORMAL, style::MARKER_DANGER, style::FLAG_DANGER)
+            } else if !task.params().is_empty() {
+                (style::NORMAL, style::MARKER_INPUT, style::FLAG_INPUT)
             } else {
                 (style::NORMAL, "", style::NORMAL)
             };
@@ -2561,6 +2574,72 @@ mod tests {
             body.contains(style::MARKER_DANGER),
             "a destructive task must carry its marker: {body}"
         );
+    }
+
+    #[test]
+    fn a_task_that_collects_parameters_is_flagged_in_the_tree() {
+        // The operator has to be able to tell, before pressing Enter, which
+        // tasks stop to ask and which run straight away.
+        let task = crate::tasks::find("users.create").expect("users.create must exist");
+        let node = Node::Task(task);
+
+        let line = row(&node, Family::Debian, 60);
+        let drawn: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            drawn.contains(style::MARKER_INPUT),
+            "a task with parameters must carry its marker: {drawn}"
+        );
+    }
+
+    #[test]
+    fn a_destructive_task_with_parameters_keeps_the_danger_flag() {
+        // Only one flag fits the column, and the destructive one is the
+        // warning that matters: losing it to the input marker would hide the
+        // very thing the operator must not miss.
+        let task = crate::tasks::find("ssh.change-port").expect("ssh.change-port must exist");
+        assert!(
+            !task.params().is_empty() && task.is_destructive(),
+            "this test is only meaningful while the task is both destructive and parameterised"
+        );
+
+        let node = Node::Task(task);
+        let line = row(&node, Family::Debian, 60);
+        let drawn: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            drawn.contains(style::MARKER_DANGER),
+            "danger must outrank input: {drawn}"
+        );
+        assert!(
+            !drawn.contains(style::MARKER_INPUT),
+            "the two flags must not both be drawn: {drawn}"
+        );
+    }
+
+    #[test]
+    fn an_open_form_says_the_tool_is_waiting_for_input() {
+        // The pill is the one place that always states what the interface is
+        // doing; a form open with a READY pill would misreport it.
+        let mut app = test_app(Family::Debian);
+        assert_eq!(app.pill(), State::Ready);
+
+        app.form = Some(Form::new(
+            "Create a user",
+            crate::tasks::find("users.create")
+                .expect("users.create must exist")
+                .params(),
+        ));
+
+        assert_eq!(app.pill(), State::Input);
     }
 
     #[test]

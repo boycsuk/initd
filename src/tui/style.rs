@@ -16,10 +16,10 @@
 //!
 //! The table is declared whole rather than grown entry by entry, so that the
 //! roles stay a single readable reference and a new call site picks one instead
-//! of inventing a colour. Entries the interface does not draw yet — dialog
-//! borders, the gauge, result glyphs — are therefore allowed to be unused; the
-//! alternative is scattering their definitions across later commits, which is
-//! exactly the drift this module exists to prevent.
+//! of inventing a colour. Entries the interface does not draw yet — the gauge,
+//! result glyphs, the search highlight — are therefore allowed to be unused;
+//! the alternative is scattering their definitions across later commits, which
+//! is exactly the drift this module exists to prevent.
 #![allow(dead_code)]
 
 use ratatui::style::{Color, Modifier, Style};
@@ -182,7 +182,7 @@ pub const STATUS_BUSY: Style = pair(Color::Black, Color::Yellow).add_modifier(Mo
 /// The `FAILED` and `CONFIRM` pills.
 pub const STATUS_ERROR: Style = pair(Color::Black, Color::Red).add_modifier(Modifier::BOLD);
 
-/// The `INPUT` and `SEARCH` pills.
+/// The `INPUT` pill.
 pub const STATUS_INPUT: Style = pair(Color::Black, Color::Blue).add_modifier(Modifier::BOLD);
 
 /// The `UNSUPPORTED` pill.

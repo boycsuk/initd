@@ -176,12 +176,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interactive interface holds such a change open until the administrator proves
   from a second session that they can still get in. The CLI exits immediately,
   so it has no window to offer and nothing rolls a mistake back.
+- A task that stops to ask for parameters now says so before it is run: the `…`
+  marker on its row, and an `INPUT` pill while the form is open. The styles for
+  both had been defined since the table was written and drawn nowhere, so a
+  task that opens a form looked exactly like one that runs on Enter — the one
+  thing the row flags exist to distinguish. Only one flag fits the column, and
+  destructive outranks input in it for the same reason `CONFIRM` outranks
+  `INPUT` in the pill: a destructive task collects its parameters first and
+  confirms after, so the warning is what the operator must not miss and the
+  confirmation is the live question once both are up. Both orderings are pinned
+  by tests that were watched to fail when the branches are swapped.
 
 ### Removed
+- `Executor::run_streaming`, both its implementations, and the `spawn_reader`
+  it existed to drive. Nothing called it: the live output pane is fed by the
+  `Progress` callback each task writes its own steps to, not by lines drained
+  from a process's pipes, and its doc-comment claimed the opposite. It survived
+  because a trait method is never reported as dead — the implementations count
+  as uses of it — so the compiler was not going to raise this one. The stdin
+  helpers beside it stay: `run` uses them.
 - `SPEC.md`. What it specified is built, and `docs/` carries the contract now —
   a second description of the same system is one that drifts from it.
 
 ### Fixed
+- Four comments that described the code as it no longer was: the layout module
+  named `centred` among the geometry nothing draws yet, though six call sites
+  do; the style table listed dialog borders among the entries the interface
+  does not draw, though both are drawn; and `status_input` was documented, in
+  the code and in `docs/ui.md`, as serving a `SEARCH` pill that has never
+  existed, while the same table omitted `CANCELLED` from the error pill. Each
+  was the kind of stale note that makes the next reader mistrust the rest, and
+  the first two were what hid a drawn-nowhere style behind a plausible excuse.
+- The three shared test helpers that carry a file-level `allow(dead_code)` now
+  say why they need one: each integration binary compiles `tests/common` whole,
+  so a module only one of them drives is dead in the other nine by
+  construction. Without the note the attribute reads as a warning silenced
+  rather than a fact about how Rust builds test binaries.
 - The confirmation dialog could lose its answers. Body, warning and choice were
   one stacked paragraph, so a description long enough to fill the dialog pushed
   `Yes` and `No` past the bottom border, where they were not truncated but

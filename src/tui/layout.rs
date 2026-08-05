@@ -9,9 +9,8 @@
 //!
 //! Like the style table beside it, the geometry is stated whole: the sizes a
 //! screen may take are a single reference rather than numbers rediscovered at
-//! each call site. [`detail_height`] and [`centred`] describe splits the
-//! interface does not draw yet — the detail/output division and modal dialogs —
-//! and are unused until it does.
+//! each call site. [`detail_height`] describes a split the interface does not
+//! draw yet — the detail/output division — and is unused until it does.
 #![allow(dead_code)]
 
 use ratatui::layout::{Constraint, Flex, Layout, Rect};

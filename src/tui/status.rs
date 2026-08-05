@@ -47,6 +47,8 @@ pub enum State {
     Verify,
     /// A confirmation dialog is open.
     Confirm,
+    /// A parameter form is open, collecting input before the task runs.
+    Input,
     /// The selected task cannot run on this host.
     Unsupported,
 }
@@ -62,6 +64,7 @@ impl State {
             Self::Cancelled => "CANCELLED",
             Self::Verify => "VERIFY",
             Self::Confirm => "CONFIRM",
+            Self::Input => "INPUT",
             Self::Unsupported => "UNSUPPORTED",
         }
     }
@@ -74,6 +77,9 @@ impl State {
             // is still waiting to be told it worked.
             Self::Running | Self::Verify => style::STATUS_BUSY,
             Self::Failed | Self::Cancelled | Self::Confirm => style::STATUS_ERROR,
+            // Collecting input is neither an error nor progress: the tool is
+            // waiting on the operator, not on a command.
+            Self::Input => style::STATUS_INPUT,
             Self::Unsupported => style::STATUS_INERT,
         }
     }
