@@ -9,6 +9,7 @@
 //! the same way whether it arrived from a keystroke or an argument.
 
 use std::collections::HashMap;
+use std::str::FromStr as _;
 
 use crate::error::{Error, Result};
 
@@ -122,22 +123,27 @@ fn validate_port(value: &str) -> std::result::Result<(), String> {
 pub const MAX_PORT: u32 = 65_535;
 
 /// Rejects anything that is not a dotted-quad IPv4 address.
+///
+/// Parsed by the standard library rather than octet by octet. A hand-rolled
+/// check that parses each part with `str::parse` admits what the integer parser
+/// admits, which is more than an address: a leading `+`, and leading zeros
+/// without limit. That is not pedantry — `010.0.0.1` passed, and this value is
+/// written verbatim into `wg0.conf`, where a leading zero is read as octal by
+/// some tooling. The address reviewed and the address in effect would differ.
 fn validate_ip(value: &str) -> std::result::Result<(), String> {
     if value.is_empty() {
         return Err("an address is required".to_owned());
     }
 
-    let octets: Vec<&str> = value.split('.').collect();
-
-    if octets.len() != 4 {
+    // The count is checked first so the message can name the actual mistake:
+    // `Ipv4Addr` refuses "10.0.0" and "1.2.3.4.5" alike, and "four parts" is
+    // the useful thing to say about both.
+    if value.split('.').count() != 4 {
         return Err("an address has four parts, as 10.89.0.2".to_owned());
     }
 
-    for octet in octets {
-        match octet.parse::<u16>() {
-            Ok(n) if n <= 255 => {}
-            _ => return Err(format!("{octet} is not between 0 and 255")),
-        }
+    if std::net::Ipv4Addr::from_str(value).is_err() {
+        return Err(format!("{value} is not an address, as 10.89.0.2"));
     }
 
     Ok(())
@@ -596,5 +602,123 @@ mod tests {
         let values = ParamValues::new();
 
         assert!(values.get("port").is_err());
+    }
+
+    /// Runs a table of `(value, should_pass)` through one kind.
+    ///
+    /// The failure names the kind, the value and the direction, because a
+    /// table that only says "assertion failed" makes the reader find the row.
+    fn check_table(kind: ParamKind, table: &[(&str, bool)]) {
+        for &(value, should_pass) in table {
+            let result = kind.validate(value);
+
+            assert_eq!(
+                result.is_ok(),
+                should_pass,
+                "{kind:?} {} accept {value:?}, got {result:?}",
+                if should_pass { "must" } else { "must not" },
+            );
+        }
+    }
+
+    #[test]
+    fn an_address_is_an_address_and_not_merely_four_numbers() {
+        // The bug this pins: parsing each octet with `str::parse` admitted what
+        // the integer parser admits — a leading `+`, and leading zeros without
+        // limit. `010.0.0.1` reached `wg0.conf`, where a leading zero reads as
+        // octal to some tooling, so the address reviewed and the address in
+        // effect were not the same address.
+        check_table(
+            ParamKind::Ip,
+            &[
+                ("10.89.0.2", true),
+                ("0.0.0.0", true),
+                ("255.255.255.255", true),
+                ("010.0.0.1", false),
+                ("+1.0.0.1", false),
+                ("0000000010.0.0.1", false),
+                ("10.0.0.0001", false),
+                ("256.0.0.1", false),
+                ("-1.0.0.1", false),
+                ("10.0.0", false),
+                ("10.0.0.1.2", false),
+                ("10.0.0.a", false),
+                ("10.0.0. 1", false),
+                ("", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_subnet_carries_a_mask_that_leaves_room_for_peers() {
+        // The boundaries are the point: /8 and /30 are the edges of the range
+        // the comment beside them names, and an off-by-one at either end is
+        // invisible to a test that only tries /24.
+        check_table(
+            ParamKind::Cidr,
+            &[
+                ("10.89.0.0/24", true),
+                ("10.0.0.0/8", true),
+                ("10.89.0.0/30", true),
+                ("10.89.0.0/7", false),
+                ("10.89.0.0/31", false),
+                ("10.89.0.0/32", false),
+                // The address half is validated too, so the octal trap cannot
+                // come back through the subnet field.
+                ("010.89.0.0/24", false),
+                ("10.89.0.0", false),
+                ("10.89.0.0/", false),
+                ("10.89.0.0/x", false),
+                ("", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn an_endpoint_is_dialled_as_address_and_port() {
+        check_table(
+            ParamKind::Endpoint,
+            &[
+                ("203.0.113.7:51820", true),
+                ("vpn.example.org:51820", true),
+                ("203.0.113.7:0", false),
+                ("203.0.113.7:65536", false),
+                ("203.0.113.7:", false),
+                (":51820", false),
+                ("203.0.113.7", false),
+                ("", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_version_is_digits_and_dots_with_nothing_missing() {
+        check_table(
+            ParamKind::Version,
+            &[
+                ("0.44.0", true),
+                ("1", true),
+                ("1..2", false),
+                (".1", false),
+                ("1.", false),
+                ("v1.2.3", false),
+                ("1.2.3-rc1", false),
+                ("", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_protocol_is_one_of_the_two_this_tool_writes() {
+        check_table(
+            ParamKind::Protocol,
+            &[
+                ("tcp", true),
+                ("udp", true),
+                ("TCP", false),
+                ("sctp", false),
+                ("", false),
+            ],
+        );
     }
 }
