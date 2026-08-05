@@ -527,7 +527,9 @@ impl Task for AuthorizeKey {
         files.create_dir(executor, &ssh_dir, SSH_DIR_MODE)?;
         files.set_owner(executor, &ssh_dir, &user)?;
 
-        let existing = if files.exists(executor, &path)? {
+        let present = files.exists(executor, &path)?;
+
+        let existing = if present {
             files.read(executor, &path)?
         } else {
             String::new()
@@ -549,9 +551,29 @@ impl Task for AuthorizeKey {
         updated.push_str(key);
         updated.push('\n');
 
+        // A new file is created empty, restricted, and only then written. The
+        // other order leaves the file world-readable for as long as the two
+        // privileged commands take — brief, and long enough for any account on
+        // the box to read it or, worse, to hold it open and influence which
+        // keys sshd honours. An empty file discloses nothing, which is what
+        // makes the ordering possible. Same lesson as `wg0.conf`.
+        //
+        // An existing file keeps its own mode: it was created this way, and
+        // rewriting it is what the append below is for.
+        if !present {
+            files.write(executor, &path, "")?;
+            files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
+            files.set_owner(executor, &path, &user)?;
+        }
+
         files.write(executor, &path, &updated)?;
-        files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
-        files.set_owner(executor, &path, &user)?;
+
+        // Re-stated for a file that already existed, since a file left by
+        // something else may carry a mode sshd refuses to read.
+        if present {
+            files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
+            files.set_owner(executor, &path, &user)?;
+        }
 
         report(progress, "Key authorised");
 
@@ -1978,6 +2000,96 @@ mod tests {
                 .any(|c| c == "chmod 600 /root/.ssh/authorized_keys"),
             "authorized_keys must be 600: {commands:?}"
         );
+    }
+
+    #[test]
+    fn a_new_authorized_keys_is_restricted_before_it_holds_a_key() {
+        // The property, and the reason it is asserted on the order rather than
+        // on the final mode: `tee` creates a file with the shell's umask, so
+        // writing the key first leaves it world-readable until the chmod lands
+        // one privileged command later. A local account can read it in that
+        // window, or hold it open and influence which keys sshd honours. The
+        // fix is the one `wg0.conf` already carries — create empty, restrict,
+        // then write — and a test that only checks the mode at the end passes
+        // against both orders.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),         // install -d
+            Reply::ok(""),         // chown dir
+            Reply::failure(1, ""), // authorized_keys absent
+            Reply::ok(""),         // test -e inside the empty write
+            Reply::ok(""),         // tee (empty)
+            Reply::ok(""),         // chmod
+            Reply::ok(""),         // chown file
+            Reply::ok(""),         // test -e inside the real write
+            Reply::ok(""),         // tee (the key)
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let commands = mock.recorded_lines();
+        let chmod = commands
+            .iter()
+            .position(|c| c == "chmod 600 /root/.ssh/authorized_keys")
+            .expect("the file must be restricted");
+        let wrote_key = mock
+            .recorded()
+            .iter()
+            .position(|c| {
+                c.program == "tee"
+                    && c.stdin.as_deref().is_some_and(|data| data.contains(TEST_KEY))
+            })
+            .expect("the key must be written");
+
+        assert!(
+            chmod < wrote_key,
+            "the mode must be set before the key is written: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn an_existing_authorized_keys_keeps_the_keys_already_in_it() {
+        // The other direction of the same change: a file that already exists
+        // is appended to, never truncated first — the keys in it are other
+        // people's access.
+        const OTHER_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther other@host";
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),        // install -d
+            Reply::ok(""),        // chown dir
+            Reply::ok(""),        // authorized_keys exists
+            Reply::ok(OTHER_KEY), // holding somebody else's key
+            Reply::ok(""),        // test -e inside write
+            Reply::ok(""),        // tee
+            Reply::ok(""),        // chmod
+            Reply::ok(""),        // chown file
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let written = mock
+            .recorded()
+            .iter()
+            .find_map(|c| (c.program == "tee").then(|| c.stdin.clone()).flatten())
+            .expect("the file must be written");
+
+        assert!(written.contains(OTHER_KEY), "{written:?}");
+        assert!(written.contains(TEST_KEY), "{written:?}");
     }
 
     #[test]
