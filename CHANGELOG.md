@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SELinux, as a domain trait rather than a check inside a task. It is not a
+  different spelling of anything the other families have — it is a second
+  authority that can refuse what the first permitted, and its failure has the
+  shape this project treats as worst: a daemon told to listen on an unlabelled
+  port does not report a permission problem, it fails to start, from a file
+  that is valid, was written successfully, and that `sshd -t` approved. So
+  `ssh.change-port` labels the port through `semanage` *before* the reload —
+  labelling afterwards would be labelling a port nothing is listening on, which
+  a test pins by failing when the two are swapped. Whether anything enforces is
+  asked of the host rather than answered from the family, since RHEL ships it
+  enabled and administrators disable it; the three families without a policy
+  answer from a constant and run no command at all.
+- Caddy and mise reach RHEL through the release table, which needed no family
+  dimension to do it: Caddy is Go and mise is musl, so one artefact per
+  architecture serves every family, and the digests were computed from those
+  archives on 2026-08-05 rather than copied from a page. `mise.install` needed
+  code as well as a table — it called the package manager unconditionally, so
+  on a family whose package name is empty it would have asked `dnf` to install
+  nothing at all. Zellij needed neither: only the list saying which families
+  may run it.
+- A Caddy installed from a release enables no service, and says so. A package
+  brings a unit with it and an archive is a binary; writing a unit here would
+  invent one the distribution does not know about and will not replace when
+  Caddy is eventually packaged.
 - RHEL enters the container matrix, through Rocky, and the backend written
   against a mock is observed for the first time. Every command in its image
   entry was run against the base image before being written down, which
@@ -124,6 +148,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interactive interface holds such a change open until the administrator proves
   from a second session that they can still get in. The CLI exits immediately,
   so it has no window to offer and nothing rolls a mistake back.
+
+### Removed
+- `SPEC.md`. What it specified is built, and `docs/` carries the contract now —
+  a second description of the same system is one that drifts from it.
 
 ### Fixed
 - The confirmation dialog could lose its answers. Body, warning and choice were

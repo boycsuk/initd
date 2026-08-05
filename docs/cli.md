@@ -219,7 +219,7 @@ gap in the CLI: see the note under the table.
 | Task id | Invocation | Destructive | Summary |
 |---------|-----------|-------------|---------|
 | `docker-rootless.install` | `run <id> name=value` | no | Installs the Docker engine under one account, with lingering enabled. Refuses an account with no subordinate id range. |
-| `caddy.install` | `run caddy.install` | no | Installs Caddy and enables it. Writes no site configuration. |
+| `caddy.install` | `run caddy.install` | no | Installs Caddy. From the distribution where one packages it, and it is enabled; otherwise from a checksum-verified release, and no service is enabled because there is no unit to enable. Writes no site configuration either way. |
 | `caddy.validate` | `run caddy.validate` | no | Asks Caddy whether its configuration parses. |
 | `caddy.security-headers` | `run caddy.security-headers` | yes | Defines a snippet setting HSTS, nosniff, frame-deny and a referrer policy. Rolls back if the result does not parse. |
 
@@ -229,7 +229,7 @@ gap in the CLI: see the note under the table.
 |---------|-----------|-------------|---------|
 | `fish.install` | `run fish.install` | no | Installs fish and registers it in `/etc/shells`. |
 | `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. |
-| `mise.install` | `run mise.install` | no | Installs mise. |
+| `mise.install` | `run mise.install` | no | Installs mise. From the distribution where one packages it, otherwise from a checksum-verified release. |
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
 
 ### Hardening

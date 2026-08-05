@@ -367,46 +367,12 @@ mod tests {
              system-wide rather than to one application contradicting it",
         ),
         (
-            "caddy.install",
-            Family::Rhel,
-            "no package outside third-party repositories. EPEL carries it and \
-             the project documents a COPR as official, but the COPR's signing \
-             key lives on the host serving the packages, is on no keyserver, \
-             and dnf states its contents are held to no security level. The \
-             verifiable route is the checksummed release, which needs a table \
-             entry this build does not have yet",
-        ),
-        (
-            "caddy.validate",
-            Family::Rhel,
-            "nothing to validate until caddy.install can put a binary there",
-        ),
-        (
-            "caddy.security-headers",
-            Family::Rhel,
-            "same as caddy.validate: no installed server to configure",
-        ),
-        (
             "fish.install",
             Family::Rhel,
             "EPEL-only, and unlike Caddy there is no verifiable alternative — \
              fish publishes source rather than static binaries, and its own \
              documentation points RHEL users at the openSUSE Build Service \
              rather than at EPEL",
-        ),
-        (
-            "zellij.install",
-            Family::Rhel,
-            "unpackaged across Fedora and every EPEL branch. The release table \
-             has no family dimension and needs none — being musl, the artefact \
-             is byte for byte the one Debian already installs",
-        ),
-        (
-            "mise.install",
-            Family::Rhel,
-            "unpackaged likewise. Its own RPM repository serves one flat path \
-             for every architecture and EL release, so the musl release is the \
-             sounder route — pending a table entry",
         ),
         (
             "rust.install",

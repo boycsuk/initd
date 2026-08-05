@@ -14,6 +14,7 @@ pub mod openrc;
 pub mod procfs_sysctl;
 pub mod release_installer;
 pub mod rhel;
+pub mod semanage;
 pub mod shadow_accounts;
 pub mod systemd;
 pub mod systemd_user;
@@ -24,7 +25,7 @@ pub mod wg_tools;
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
-    ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
+    SelinuxManager, ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::Executor;
@@ -139,6 +140,19 @@ pub trait Backend {
 
     /// Kernel parameters.
     fn sysctl(&self) -> &dyn SysctlManager;
+
+    /// The mandatory access control layer, where the family has one.
+    ///
+    /// Separate from every other capability because it is not a different
+    /// spelling of something — it is a second authority that can refuse what
+    /// the first permitted. A port SELinux has not labelled is one a valid,
+    /// successfully written configuration cannot make the daemon bind, and
+    /// `sshd -t` approves the file either way.
+    ///
+    /// Families without one return an implementation that reports nothing
+    /// enforcing, so a task asks the same question everywhere rather than
+    /// branching on the distribution.
+    fn selinux(&self) -> &dyn SelinuxManager;
 
     /// WireGuard key material and interface state.
     fn wireguard(&self) -> &dyn WireguardTools;

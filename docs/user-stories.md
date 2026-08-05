@@ -357,8 +357,10 @@ TUI or CLI:
   server is not exposed on the default port.
   - Acceptance: the change is validated before the service is reloaded, and
     rolled back if the resulting configuration is invalid.
-  - Acceptance: I am warned that a firewall or SELinux may still block the new
-    port.
+  - Acceptance: where the host enforces SELinux, the new port is labelled for
+    SSH before the daemon is reloaded, so it can bind it. Where nothing
+    enforces, nothing is run.
+  - Acceptance: I am warned that a firewall may still block the new port.
   - Acceptance: on Debian, I am warned when `ssh.socket` is active, because the
     socket — not `sshd_config` — decides the port in that case.
 

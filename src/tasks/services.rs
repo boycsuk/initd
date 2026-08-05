@@ -8,6 +8,7 @@
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
+use crate::domain::binaries::{Artefact, Release};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason};
@@ -16,7 +17,13 @@ use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families the web server tasks support.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+///
+/// All four, though not by the same mechanism: three package Caddy and RHEL
+/// installs the checksummed release, which is one artefact per architecture
+/// because Caddy is Go and links against nothing. The two configuration tasks
+/// are unaffected by which route put the binary there — the Caddyfile is the
+/// same file either way.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
 
 /// Families the rootless container engine supports.
 ///
@@ -186,6 +193,38 @@ impl Task for InstallDockerRootless {
 /// Installs the Caddy web server.
 pub struct InstallCaddy;
 
+impl InstallCaddy {
+    /// Releases this build carries a digest for.
+    ///
+    /// Computed from the archives at these URLs on 2026-08-05, by the rule the
+    /// other tables follow: a digest served by the host serving the artefact
+    /// proves only that the transfer completed.
+    ///
+    /// Caddy is Go, so the published binary depends on no system library and
+    /// one artefact per architecture serves every family — the same property
+    /// that makes Zellij's musl build reusable. Note the release publishes
+    /// `.deb` packages but no `.rpm`: the RPMs upstream points RHEL users at
+    /// come from a COPR whose signing key sits on the host serving the
+    /// packages, is on no keyserver, and which `dnf` warns is held to no
+    /// security level. The tarball is the route that can be verified.
+    pub const RELEASES: &[Release] = &[Release {
+        version: "2.11.4",
+        archive_member: "caddy",
+        artefacts: &[
+            Artefact {
+                arch: "x86_64",
+                url: "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz",
+                sha256: "527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9",
+            },
+            Artefact {
+                arch: "aarch64",
+                url: "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_arm64.tar.gz",
+                sha256: "52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904",
+            },
+        ],
+    }];
+}
+
 impl Task for InstallCaddy {
     fn id(&self) -> &'static str {
         "caddy.install"
@@ -242,15 +281,43 @@ impl Task for InstallCaddy {
     ) -> Result<Outcome> {
         report(progress, "installing caddy".to_owned());
 
-        backend
-            .packages()
-            .install(executor, backend.package_for(Capability::Caddy))?;
+        // A package brings a unit with it; a release archive is a binary and
+        // nothing else. Where the family has no package the binary is installed
+        // and the difference is stated, rather than a unit being written here —
+        // a unit file this tool invented would be one the distribution does not
+        // know about and would not replace when Caddy is later packaged.
+        if backend.has_package_for(Capability::Caddy) {
+            backend
+                .packages()
+                .install(executor, backend.package_for(Capability::Caddy))?;
 
-        backend
-            .services()
-            .enable_and_start(executor, backend.service_for(Capability::Caddy))?;
+            backend
+                .services()
+                .enable_and_start(executor, backend.service_for(Capability::Caddy))?;
 
-        report(progress, "caddy is enabled".to_owned());
+            report(progress, "caddy is enabled".to_owned());
+        } else {
+            let release = crate::backend::release_installer::release_for(
+                Self::RELEASES,
+                Self::RELEASES
+                    .first()
+                    .map(|release| release.version)
+                    .unwrap_or_default(),
+            )?;
+
+            backend.binaries().install(executor, "caddy", release)?;
+
+            report(
+                progress,
+                format!("caddy {} is installed at /usr/local/bin", release.version),
+            );
+            report(
+                progress,
+                "no service was enabled: this family has no Caddy package, so \
+                 there is no unit to enable and nothing here invents one"
+                    .to_owned(),
+            );
+        }
         report(
             progress,
             format!("it will answer on {HTTP_PORT} and {HTTPS_PORT} once the firewall admits them"),

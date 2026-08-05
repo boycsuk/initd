@@ -720,11 +720,30 @@ impl Task for ChangePort {
         // nothing. Detect and warn rather than silently reconfiguring units.
         warn_if_socket_activated(executor, backend, progress)?;
 
+        // Before the reload, not after: SELinux confines which ports the
+        // daemon's own domain may bind, so a reload onto an unlabelled port
+        // leaves a daemon that will not start — from a file that is valid,
+        // was written successfully, and that `sshd -t` approved. Labelling
+        // afterwards would be labelling a port nothing is listening on.
+        //
+        // Asked of the host rather than of the family: RHEL ships SELinux
+        // enabled and administrators disable it, and where nothing enforces
+        // this costs one command that answers by exit code.
+        if backend.selinux().is_enforcing(executor)? {
+            report(progress, format!("Labelling port {port} for SELinux..."));
+
+            backend.selinux().allow_ssh_port(
+                executor,
+                port,
+                crate::domain::firewall::Protocol::Tcp,
+            )?;
+        }
+
         report(
             progress,
             format!(
-                "Port set to {port}. If a firewall or SELinux is active, the \
-                 new port may need to be opened before it can be reached."
+                "Port set to {port}. If a firewall is active, the new port may \
+                 need to be opened before it can be reached."
             ),
         );
 
@@ -2071,6 +2090,111 @@ mod tests {
             .expect("the config must be written");
 
         assert!(written.contains("Port 2222"));
+    }
+
+    #[test]
+    fn an_enforcing_host_gets_the_port_labelled_before_the_reload() {
+        // The ordering is the whole point. SELinux confines which ports the
+        // daemon may bind, so a reload onto an unlabelled port leaves a daemon
+        // that will not start — from a file `sshd -t` approved.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::failure(3, ""),  // ssh.socket is-active
+            Reply::failure(1, ""),  // ssh.socket is-enabled
+            Reply::ok(""),          // selinuxenabled
+            Reply::ok(""),          // semanage port -a
+            Reply::ok(""),          // reload
+        ]);
+        let backend = for_family(Family::Rhel);
+
+        ChangePort
+            .run(&mock, backend.as_ref(), &port_values(2222), &mut |_| {})
+            .expect("changing the port must succeed");
+
+        let lines = mock.recorded_lines();
+        let labelled = lines
+            .iter()
+            .position(|line| line.contains("semanage"))
+            .expect("the port must be labelled: {lines:?}");
+        let reloaded = lines
+            .iter()
+            .position(|line| line.contains("reload"))
+            .expect("the daemon must be reloaded: {lines:?}");
+
+        assert!(
+            labelled < reloaded,
+            "the label must precede the reload: {lines:?}"
+        );
+        assert!(
+            lines[labelled].contains("2222") && lines[labelled].contains("ssh_port_t"),
+            "the new port must be labelled for SSH: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_that_does_not_enforce_is_not_asked_to_label_anything() {
+        // `selinuxenabled` exits non-zero on a RHEL host whose administrator
+        // turned SELinux off, and running `semanage` there would fail on a
+        // policy that is not managed — reported as an error the administrator
+        // would have to interpret, over a port that needed no label.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::failure(3, ""),  // ssh.socket is-active
+            Reply::failure(1, ""),  // ssh.socket is-enabled
+            Reply::failure(1, ""),  // selinuxenabled: disabled
+            Reply::ok(""),          // reload
+        ]);
+        let backend = for_family(Family::Rhel);
+
+        ChangePort
+            .run(&mock, backend.as_ref(), &port_values(2222), &mut |_| {})
+            .expect("changing the port must succeed");
+
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|line| line.contains("semanage")),
+            "{:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn a_family_without_selinux_runs_no_check_at_all() {
+        // The three families that have no policy answer from a constant, so
+        // the task's question costs them nothing — no command, no process.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::failure(3, ""),  // ssh.socket is-active
+            Reply::failure(1, ""),  // ssh.socket is-enabled
+            Reply::ok(""),          // reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        ChangePort
+            .run(&mock, backend.as_ref(), &port_values(2222), &mut |_| {})
+            .expect("changing the port must succeed");
+
+        let lines = mock.recorded_lines();
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("selinuxenabled") || line.contains("semanage")),
+            "{lines:?}"
+        );
     }
 
     #[test]

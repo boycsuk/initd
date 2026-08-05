@@ -19,13 +19,38 @@ use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families these tasks support.
+///
+/// RHEL is absent, and only fish is left using this. It is packaged in EPEL —
+/// a repository Red Hat does not support, whose `epel-release` is not in any
+/// Red Hat repository, and which Red Hat's own RHEL 10 Extensions is
+/// documented as conflicting with. fish publishes no static binary either, and
+/// its own documentation points RHEL users at the openSUSE Build Service, so
+/// there is no route here this tool could verify.
 const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
 
-/// Families packaging the version manager and the Rust toolchain.
+/// Families the multiplexer reaches, by either mechanism.
 ///
-/// Alpine packages neither. Both are installable there by other means — their
-/// own installers — but this tool declines to run an installer it cannot
-/// verify, which is the same rule the release table follows.
+/// Arch packages it, and everyone else installs the checksummed musl release —
+/// the same artefact, since it links against nothing.
+const RELEASE_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
+
+/// Families the version manager reaches, by either mechanism.
+///
+/// Debian and Arch package it; RHEL does not and installs the checksummed musl
+/// release instead, which is the same artefact. Alpine is the one absence, and
+/// not for want of a package: its own release is glibc-linked where every other
+/// family's is musl, so there is nothing here this tool could verify and run.
+const MISE_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Rhel];
+
+/// Families packaging the Rust toolchain manager.
+///
+/// Neither Alpine nor RHEL. Both could reach `rustup-init`, which is published
+/// with a checksum per architecture — but only from the archive path that pins
+/// a version. The current-release path serves a new binary on every rustup
+/// release, so a digest compiled into this build would invalidate itself, and
+/// pinning a version means choosing which rustup an administrator may install.
+/// Neither is decided here yet, so the capability stays where a package
+/// provides it.
 const PACKAGED_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
 
 /// Reports a step to the caller as a normal output line.
@@ -190,7 +215,7 @@ impl Task for InstallZellij {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        RELEASE_SUPPORTED
     }
 
     fn run(
@@ -244,6 +269,39 @@ impl Task for InstallZellij {
 /// Installs the mise version manager.
 pub struct InstallMise;
 
+impl InstallMise {
+    /// Releases this build carries a digest for.
+    ///
+    /// Computed from the archives at these URLs on 2026-08-05, by the same rule
+    /// the Zellij table follows: a digest served by the host serving the
+    /// artefact proves only that the transfer completed.
+    ///
+    /// The musl builds rather than the gnu ones, and the archive member is a
+    /// path rather than a bare name — `mise/bin/mise`, read out of the tarball
+    /// rather than guessed, since an installer that extracted the wrong member
+    /// would fail after the digest had already been checked.
+    ///
+    /// mise does publish an RPM repository, which this declines: its `baseurl`
+    /// carries neither `$basearch` nor an EL version, so one flat path serves
+    /// every architecture and release.
+    pub const RELEASES: &[Release] = &[Release {
+        version: "2026.8.2",
+        archive_member: "mise/bin/mise",
+        artefacts: &[
+            Artefact {
+                arch: "x86_64",
+                url: "https://github.com/jdx/mise/releases/download/v2026.8.2/mise-v2026.8.2-linux-x64-musl.tar.gz",
+                sha256: "065b34faf429b4b58e1bf510f5ef42f3729b8d4f04b70d2d20aa6afea2527027",
+            },
+            Artefact {
+                arch: "aarch64",
+                url: "https://github.com/jdx/mise/releases/download/v2026.8.2/mise-v2026.8.2-linux-arm64-musl.tar.gz",
+                sha256: "3cf8b7d81d6405ffde72d529af5541b6b107d36101ca6b5a44c1242ff275a876",
+            },
+        ],
+    }];
+}
+
 impl Task for InstallMise {
     fn id(&self) -> &'static str {
         "mise.install"
@@ -260,7 +318,7 @@ impl Task for InstallMise {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        PACKAGED_SUPPORTED
+        MISE_SUPPORTED
     }
 
     fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
@@ -283,9 +341,37 @@ impl Task for InstallMise {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
-        backend
-            .packages()
-            .install(executor, backend.package_for(Capability::Mise))?;
+        // Which mechanism applies is asked of the backend, never of the
+        // family: Debian and Arch package this and Red Hat's repositories do
+        // not, so the empty name routes to the verified release instead —
+        // the same artefact, since it is musl and links against nothing.
+        if backend.has_package_for(Capability::Mise) {
+            backend
+                .packages()
+                .install(executor, backend.package_for(Capability::Mise))?;
+        } else if backend.binaries().is_installed(executor, "mise")? {
+            report(progress, "mise is already installed".to_owned());
+
+            return Ok(Outcome::Done);
+        } else {
+            let release = crate::backend::release_installer::release_for(
+                Self::RELEASES,
+                Self::RELEASES
+                    .first()
+                    .map(|release| release.version)
+                    .unwrap_or_default(),
+            )?;
+
+            report(
+                progress,
+                format!(
+                    "Installing mise {} from a verified release...",
+                    release.version
+                ),
+            );
+
+            backend.binaries().install(executor, "mise", release)?;
+        }
 
         report(progress, "mise is installed".to_owned());
         report(
@@ -422,6 +508,74 @@ mod tests {
         // package databases — no Debian or Ubuntu suite carries zellij.
         assert!(for_family(Family::Arch).has_package_for(Capability::Zellij));
         assert!(!for_family(Family::Debian).has_package_for(Capability::Zellij));
+    }
+
+    #[test]
+    fn a_packaging_family_installs_mise_from_its_repository() {
+        let mock = MockExecutor::with_replies([Reply::ok("")]);
+        let backend = for_family(Family::Debian);
+
+        InstallMise
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("Debian packages it");
+
+        assert!(
+            mock.recorded_lines()[0].contains("apt-get"),
+            "{:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn a_family_without_a_mise_package_installs_the_verified_release() {
+        // The gap this closes: the task went straight to `packages().install`,
+        // so on a family whose package name is empty it would have asked the
+        // package manager to install nothing at all.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(1, ""), // command -v mise
+            Reply::ok("x86_64\n"), // uname -m
+            Reply::ok(""),         // the download-and-verify script
+        ]);
+        let backend = for_family(Family::Rhel);
+
+        InstallMise
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("the release must install");
+
+        let script = mock
+            .recorded()
+            .into_iter()
+            .find_map(|command| {
+                command
+                    .args
+                    .into_iter()
+                    .find(|arg| arg.contains("sha256sum"))
+            })
+            .expect("the artefact must be checksummed before it is extracted");
+
+        assert!(
+            script.contains("065b34faf429b4b58e1bf510f5ef42f3729b8d4f04b70d2d20aa6afea2527027"),
+            "the compiled-in digest must be the one checked: {script}"
+        );
+    }
+
+    #[test]
+    fn an_already_installed_mise_is_left_alone() {
+        // Asked before a version is resolved, so re-running the task on a host
+        // that has it does not re-download an archive.
+        let mock = MockExecutor::with_replies([Reply::ok("/usr/local/bin/mise")]);
+        let backend = for_family(Family::Rhel);
+
+        InstallMise
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("a second run must succeed");
+
+        assert_eq!(
+            mock.recorded_lines().len(),
+            1,
+            "only the check must run: {:?}",
+            mock.recorded_lines()
+        );
     }
 
     #[test]

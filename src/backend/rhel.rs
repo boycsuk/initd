@@ -17,6 +17,7 @@ use super::firewalld::Firewalld;
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
+use super::semanage::Semanage;
 use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::systemd_user::SystemdUserServices;
@@ -27,7 +28,7 @@ use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
-    ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
+    SelinuxManager, ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -196,6 +197,7 @@ pub struct RhelBackend {
     accounts: UnixAccounts,
     account_writer: ShadowAccounts,
     sysctl: ProcfsSysctl,
+    selinux: Semanage,
     wireguard: WgTools,
     user_services: SystemdUserServices,
     binaries: ReleaseInstaller,
@@ -210,6 +212,7 @@ impl RhelBackend {
             accounts: UnixAccounts::new(),
             account_writer: ShadowAccounts::new(),
             sysctl: ProcfsSysctl::new(),
+            selinux: Semanage::new(),
             wireguard: WgTools::new(),
             user_services: SystemdUserServices::new(),
             binaries: ReleaseInstaller::new(),
@@ -315,6 +318,13 @@ impl Backend for RhelBackend {
 
     fn sysctl(&self) -> &dyn SysctlManager {
         &self.sysctl
+    }
+
+    fn selinux(&self) -> &dyn SelinuxManager {
+        // The one family that has one. Whether it is enforcing is still asked
+        // of the host: RHEL ships it enabled, administrators disable it, and a
+        // container reports it disabled whatever the image.
+        &self.selinux
     }
 
     fn wireguard(&self) -> &dyn WireguardTools {

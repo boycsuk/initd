@@ -7,6 +7,7 @@
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
+use super::semanage::NoSelinux;
 use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::systemd_user::SystemdUserServices;
@@ -17,7 +18,7 @@ use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
-    ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
+    SelinuxManager, ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -228,6 +229,15 @@ impl Backend for ArchBackend {
 
     fn sysctl(&self) -> &dyn SysctlManager {
         &self.sysctl
+    }
+
+    fn selinux(&self) -> &dyn SelinuxManager {
+        // Nothing enforces here, so the answer is a constant rather than a
+        // question put to the host. Tasks still ask, which is what keeps the
+        // check out of them.
+        const SELINUX: &NoSelinux = &NoSelinux::new();
+
+        SELINUX
     }
 
     fn wireguard(&self) -> &dyn WireguardTools {
