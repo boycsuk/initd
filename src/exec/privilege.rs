@@ -148,10 +148,19 @@ impl PrivilegeEscalator for HelperEscalation {
                 program: self.program.clone(),
                 args: vec!["-n".to_owned(), "true".to_owned()],
             },
-            // polkit owns run0's prompt and its caching, and run0 allocates a
-            // pty of its own, so there is nothing here to ask. An unrecognised
-            // helper answers the same way rather than `Never`: a wrong "will
-            // not prompt" is what strands an operator at a hidden prompt.
+            // polkit owns run0's prompt, but run0 can still be asked whether
+            // one is coming: `--no-ask-password` exits non-zero rather than
+            // prompting. Measured on an Arch container with systemd as PID 1
+            // and polkit active — 1 as an unprivileged user, 0 as root — which
+            // needed both, since without them run0 fails to reach the bus and
+            // every answer looks the same.
+            RUN0 => AuthNeed::Probe {
+                program: self.program.clone(),
+                args: vec!["--no-ask-password".to_owned(), "true".to_owned()],
+            },
+            // An unrecognised helper cannot be asked, so the terminal is
+            // handed over regardless: a wrong "will not prompt" is what
+            // strands an operator at a prompt they cannot see.
             _ => AuthNeed::Always,
         }
     }
@@ -326,11 +335,25 @@ mod tests {
     }
 
     #[test]
-    fn run0_and_unknown_helpers_hand_the_terminal_over_regardless() {
-        // polkit owns run0's prompt, so there is nothing to ask. An unknown
-        // helper answers the same way on purpose: the dangerous direction is
-        // claiming a mechanism will not prompt when it will.
-        assert_eq!(HelperEscalation::new(RUN0).auth_need(), AuthNeed::Always);
+    fn run0_is_asked_rather_than_assumed_to_prompt() {
+        // polkit owns the prompt, but run0 still answers whether one is
+        // coming: `--no-ask-password` refuses instead of asking. Measured on
+        // Arch with systemd as PID 1 and polkit active.
+        let need = HelperEscalation::new(RUN0).auth_need();
+
+        assert_eq!(
+            need,
+            AuthNeed::Probe {
+                program: RUN0.to_owned(),
+                args: vec!["--no-ask-password".to_owned(), "true".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn an_unknown_helper_hands_the_terminal_over_regardless() {
+        // The dangerous direction is claiming a mechanism will not prompt when
+        // it will, so anything unrecognised errs towards a needless handoff.
         assert_eq!(
             HelperEscalation::new("something-else").auth_need(),
             AuthNeed::Always

@@ -209,7 +209,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `permit nopass`, 1 when a password is wanted — because the probe is
   only worth having if it answers the question it claims to. A first reading of
   them was wrong in the safe direction and caught: `exit=0` was the `head` at
-  the end of the pipe, not `doas`.
+  the end of the pipe, not `doas`. `tests/integration_doas.rs` pins both
+  answers on a real Alpine, along with the premise underneath them — that a
+  host carrying `doas` and no `sudo` resolves `doas` — since each is a claim
+  about what that program does rather than about what this repository does.
+- `run0` is probed rather than assumed to prompt. It was classed as
+  unaskable on the reasoning that polkit owns its prompt, which was true and
+  beside the point: `run0 --no-ask-password` refuses instead of asking, exiting
+  1 as an unprivileged user and 0 as root. Measured on Arch with systemd as
+  PID 1 *and* polkit running, because without both `run0` never reaches the bus
+  and every answer looks identical. The old classification cost a needless
+  teardown of the interface before every privileged command on a systemd host.
 
 ### Removed
 - `Executor::run_streaming`, both its implementations, and the `spawn_reader`
