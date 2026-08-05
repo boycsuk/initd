@@ -95,7 +95,7 @@ impl Task for InstallFish {
         SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Installing a shell gives nobody that shell. Said plainly because the
         // two read as one action and are not.
         vec![Consequence::Invalidates {
@@ -321,7 +321,7 @@ impl Task for InstallMise {
         MISE_SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // The failure this prevents: activation is a prompt hook, so a deploy
         // script or a systemd unit sees none of the versions mise manages, and
         // the tool appears to work everywhere except where it matters.
@@ -418,7 +418,7 @@ impl Task for InstallRust {
         PACKAGED_SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // rustup installs no C linker, and this is the single most common
         // first-build failure. It surfaces at link time, long after the
         // toolchain reported itself installed.
@@ -749,7 +749,8 @@ mod tests {
     fn installing_a_shell_gives_nobody_that_shell() {
         // The two read as one action and are not: an administrator who installs
         // fish and stops there has changed nothing about how anyone logs in.
-        let consequences = InstallFish.consequences(&ParamValues::new());
+        let consequences =
+            InstallFish.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert_eq!(consequences[0].task(), Some("users.set-shell"));
     }
@@ -758,7 +759,8 @@ mod tests {
     fn mise_warns_that_activation_does_not_run_non_interactively() {
         // Activation is a prompt hook, so a deploy script or a systemd unit
         // sees none of the versions mise manages.
-        let consequences = InstallMise.consequences(&ParamValues::new());
+        let consequences =
+            InstallMise.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert_eq!(consequences[0].task(), Some("mise.activate"));
     }
@@ -767,7 +769,8 @@ mod tests {
     fn rust_warns_about_the_linker_it_does_not_install() {
         // The most common first-build failure, and it surfaces at link time —
         // long after the toolchain reported itself installed.
-        let consequences = InstallRust.consequences(&ParamValues::new());
+        let consequences =
+            InstallRust.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert!(
             consequences[0].check().is_some(),

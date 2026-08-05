@@ -15,10 +15,13 @@ use std::fmt::Write as _;
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
+use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
-use crate::tasks::consequence::{Check, Consequence, External, Protocol as WarnProtocol, Reason};
+use crate::tasks::consequence::{
+    Check, Consequence, External, Protocol as WarnProtocol, Reason, firewall_check,
+};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
@@ -173,7 +176,7 @@ impl Task for InstallWireguard {
         SUPPORTED
     }
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
             return Vec::new();
         };
@@ -193,17 +196,18 @@ impl Task for InstallWireguard {
             },
             // UDP, and the distinction is the point: a TCP rule for this port
             // admits none of WireGuard's traffic.
+            //
+            // The query comes from whichever front-end holds this host's
+            // ruleset. Spelling `nft` here would be right on three families and
+            // wrong on the fourth: RHEL runs firewalld, so the rule lives in a
+            // zone and `nft list table inet initd` names a table that does not
+            // exist — an answer of "still to do" for a port already open.
             Consequence::Invalidates {
                 task: "firewall.allow-port",
                 reason: Reason::RequiresSetting {
                     setting: "an inbound UDP rule for this port",
                 },
-                check: Some(Check {
-                    command: crate::exec::Command::new("nft")
-                        .args(["list", "table", "inet", "initd"])
-                        .privileged(),
-                    resolved_when_stdout_contains: format!("udp dport {port} accept"),
-                }),
+                check: firewall_check(backend, port, FirewallProtocol::Udp),
             },
             Consequence::External {
                 note: External::ProviderFirewall {
@@ -698,7 +702,10 @@ mod tests {
     fn installing_warns_that_forwarding_and_the_port_are_needed() {
         // Both are what turn a tunnel that establishes into one that carries
         // traffic, and neither is this task's to change.
-        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+        let consequences = InstallWireguard.consequences(
+            for_family(Family::Debian).as_ref(),
+            &install_values("10.89.0.0/24", 51_820),
+        );
 
         let named: Vec<_> = consequences.iter().filter_map(|c| c.task()).collect();
 
@@ -710,7 +717,10 @@ mod tests {
     fn the_firewall_warning_names_udp() {
         // A TCP rule for this port admits none of WireGuard's traffic while
         // looking, in a listing, very much like it should.
-        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+        let consequences = InstallWireguard.consequences(
+            for_family(Family::Debian).as_ref(),
+            &install_values("10.89.0.0/24", 51_820),
+        );
 
         let firewall = consequences
             .iter()
@@ -726,8 +736,51 @@ mod tests {
     }
 
     #[test]
+    fn the_firewall_check_asks_whichever_front_end_holds_the_ruleset() {
+        // The bug this closes: the query was `nft list table inet initd`,
+        // written into the task. Right on three families and wrong on the
+        // fourth — RHEL runs firewalld, so the rule the tool wrote lives in a
+        // zone and that table was never created. The check would answer "not
+        // done" forever for a port that is already open, and a warning nobody
+        // can resolve is one an administrator learns to scroll past, which
+        // costs every other warning beside it.
+        let check_for = |family| {
+            InstallWireguard
+                .consequences(
+                    for_family(family).as_ref(),
+                    &install_values("10.89.0.0/24", 51_820),
+                )
+                .into_iter()
+                .find(|c| c.task() == Some("firewall.allow-port"))
+                .and_then(|c| c.check().cloned())
+                .expect("the firewall consequence must carry a check")
+        };
+
+        let debian = check_for(Family::Debian);
+        let rhel = check_for(Family::Rhel);
+
+        assert_eq!(debian.command.program, "nft", "{:?}", debian.command);
+        assert_eq!(
+            rhel.command.program, "firewall-cmd",
+            "the front-end RHEL actually runs: {:?}",
+            rhel.command
+        );
+
+        // Each needle has to match the listing its own command produces, so
+        // asserting they differ is asserting the pairing rather than the name.
+        assert_eq!(
+            debian.resolved_when_stdout_contains,
+            "udp dport 51820 accept"
+        );
+        assert_eq!(rhel.resolved_when_stdout_contains, "51820/udp");
+    }
+
+    #[test]
     fn the_provider_warning_cannot_be_verified() {
-        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+        let consequences = InstallWireguard.consequences(
+            for_family(Family::Debian).as_ref(),
+            &install_values("10.89.0.0/24", 51_820),
+        );
 
         let external: Vec<_> = consequences.iter().filter(|c| c.is_external()).collect();
 

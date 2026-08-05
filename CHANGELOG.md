@@ -28,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job pulls four distribution images.
 
 ### Changed
+- A consequence's check is phrased by the firewall front-end that holds the
+  host's ruleset, so `Task::consequences` now takes the backend. Three tasks
+  built `nft list table inet initd` themselves — a distro branch wearing a
+  string literal, correct on the three families driven through nftables and
+  wrong on RHEL, where the tool writes the rule through firewalld and that
+  table is never created. The check would have answered "still to do" forever
+  for a port already open, and a warning nobody can resolve is one an
+  administrator learns to scroll past, which costs every warning beside it.
+  `FirewallManager::open_port_check` returns the command and the needle
+  together, since the two are one claim asked at different times; nftables
+  builds its needle from the same `rule` helper `allow` writes, so they cannot
+  drift. Nothing executes checks yet, which is why this was invisible — and
+  why it was worth fixing before something does.
 - `MockExecutor` can be strict about commands nobody scripted, and the tests
   whose subject is the *sequence* now are. An unscripted command previously
   answered `Reply::default()` — success with empty output — so a task that grew

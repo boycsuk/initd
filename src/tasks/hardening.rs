@@ -109,7 +109,7 @@ impl Task for InstallFail2ban {
         SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Not a warning that something broke: a statement that these two do
         // not belong on one host. Both write ban rules through the firewall
         // and neither observes the other's, so a host running both bans twice
@@ -186,7 +186,7 @@ impl Task for InstallCrowdsec {
         CROWDSEC_SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![
             Consequence::Conflicts {
                 task: "fail2ban.install",
@@ -260,7 +260,7 @@ impl Task for UnattendedUpgrades {
         UPGRADE_SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Says plainly that it will not reboot. An administrator who assumes it
         // does is one running a patched kernel that is not the running kernel.
         vec![Consequence::Invalidates {
@@ -335,8 +335,10 @@ mod tests {
         // Not a warning that something broke: a statement that these do not
         // belong on one host. Both write ban rules through the firewall and
         // neither observes the other's.
-        let fail2ban = InstallFail2ban.consequences(&port_values(22));
-        let crowdsec = InstallCrowdsec.consequences(&ParamValues::new());
+        let fail2ban =
+            InstallFail2ban.consequences(for_family(Family::Debian).as_ref(), &port_values(22));
+        let crowdsec =
+            InstallCrowdsec.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert!(
             fail2ban.iter().any(
@@ -356,7 +358,8 @@ mod tests {
     fn a_conflict_offers_no_verification() {
         // The tool cannot tell which one the administrator meant to keep, so
         // there is nothing here for it to settle.
-        let consequences = InstallFail2ban.consequences(&port_values(22));
+        let consequences =
+            InstallFail2ban.consequences(for_family(Family::Debian).as_ref(), &port_values(22));
 
         let conflict = consequences
             .iter()
@@ -397,7 +400,8 @@ mod tests {
     fn crowdsec_says_it_does_not_block_on_its_own() {
         // Without a bouncer it detects and decides and nothing enforces, which
         // reads as a working install right up until an attack is not stopped.
-        let consequences = InstallCrowdsec.consequences(&ParamValues::new());
+        let consequences =
+            InstallCrowdsec.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         let bouncer = consequences
             .iter()
@@ -474,7 +478,8 @@ mod tests {
 
     #[test]
     fn the_reboot_is_declared_rather_than_taken() {
-        let consequences = UnattendedUpgrades.consequences(&ParamValues::new());
+        let consequences = UnattendedUpgrades
+            .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert!(
             matches!(

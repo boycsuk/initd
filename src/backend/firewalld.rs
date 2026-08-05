@@ -246,6 +246,26 @@ impl FirewallManager for Firewalld {
         Self::add_port(executor, port, protocol)
     }
 
+    /// Asks firewalld's own zone, since that is where the rule was written.
+    ///
+    /// `--list-ports` rather than `--query-port`: a check carries one command
+    /// and a needle, and `--query-port` answers `yes`/`no` — a needle of `yes`
+    /// would match the word wherever it appeared. Listing the zone's ports and
+    /// looking for the spec keeps the needle specific to what was asked.
+    ///
+    /// The limitation is worth stating because `is_allowed` does not share it:
+    /// that method also expands services and honours ranges, so a port admitted
+    /// as the *service* `ssh` — the stock RHEL arrangement — is not named here.
+    /// A single command cannot do the expansion. The direction of the error is
+    /// the safe one: it reports unresolved what may already be handled, and the
+    /// administrator is pointed at a setting that turns out to be fine.
+    fn open_port_check(&self, port: u32, protocol: Protocol) -> (Command, String) {
+        (
+            Command::new("firewall-cmd").args(["--zone", ZONE, "--list-ports"]),
+            format!("{port}/{}", protocol.as_str()),
+        )
+    }
+
     fn is_allowed(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<bool> {
         // Deliberately more than `--query-port`, which answers only for ports
         // named directly. RHEL admits SSH as the service `ssh`, so on a stock

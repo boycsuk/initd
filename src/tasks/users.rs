@@ -87,7 +87,7 @@ impl Task for CreateUser {
         SUPPORTED
     }
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(user) = values.get(Self::USER) else {
             return Vec::new();
         };
@@ -706,7 +706,10 @@ mod tests {
         // The account has no password by design, so it cannot log in until a
         // key is authorised. Leaving that unsaid is how a machine ends up with
         // an administrator nobody can use.
-        let consequences = CreateUser.consequences(&values(CreateUser::USER, "alice"));
+        let consequences = CreateUser.consequences(
+            for_family(Family::Debian).as_ref(),
+            &values(CreateUser::USER, "alice"),
+        );
 
         assert_eq!(
             consequences.len(),

@@ -7,10 +7,11 @@
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::files::Backup;
+use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Lockout, Result};
-use crate::exec::{Command, Executor, OutputLine, Stream};
+use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::algorithms;
-use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason};
+use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
@@ -655,7 +656,7 @@ impl Task for ChangePort {
         SUPPORTED
     }
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
             // The port failed to parse, so the task will not run and there is
             // nothing downstream to invalidate.
@@ -669,26 +670,20 @@ impl Task for ChangePort {
             return Vec::new();
         }
 
-        let from = DEFAULT_SSH_PORT.to_string();
-        let to = port.to_string();
-
         vec![
             Consequence::Invalidates {
                 task: "firewall.allow-port",
                 reason: Reason::PortChanged {
-                    from: from.clone(),
-                    to: to.clone(),
+                    from: DEFAULT_SSH_PORT.to_string(),
+                    to: port.to_string(),
                 },
                 // Verifiable now that the firewall is modelled: the rule either
                 // names the new port or it does not, and the ruleset is the
-                // only honest answer. The needle is the whole rule rather than
-                // the bare number, since `2222` also appears in `22220`.
-                check: Some(Check {
-                    command: Command::new("nft")
-                        .args(["list", "table", "inet", "initd"])
-                        .privileged(),
-                    resolved_when_stdout_contains: format!("tcp dport {to} accept"),
-                }),
+                // only honest answer. The front-end phrases the query, since
+                // the one holding this host's ruleset is not the same on every
+                // family — and the needle each returns is the whole rule rather
+                // than the bare number, since `2222` also appears in `22220`.
+                check: firewall_check(backend, port, FirewallProtocol::Tcp),
             },
             Consequence::External {
                 note: External::ProviderFirewall {
@@ -2371,7 +2366,8 @@ mod tests {
 
     #[test]
     fn moving_the_port_invalidates_the_firewall_rule() {
-        let consequences = ChangePort.consequences(&port_values(2222));
+        let consequences =
+            ChangePort.consequences(for_family(Family::Debian).as_ref(), &port_values(2222));
 
         let firewall = consequences
             .iter()
@@ -2391,7 +2387,8 @@ mod tests {
     fn the_firewall_warning_can_be_verified() {
         // The firewall is on this host, so the tool can settle this one rather
         // than only reporting it — unlike the provider's edge firewall.
-        let consequences = ChangePort.consequences(&port_values(2222));
+        let consequences =
+            ChangePort.consequences(for_family(Family::Debian).as_ref(), &port_values(2222));
 
         let firewall = consequences
             .iter()
@@ -2413,7 +2410,8 @@ mod tests {
         // The failure this exists for: a port opened locally that the provider
         // still blocks. Nothing on this host can observe that, so it is
         // reported as unverifiable rather than checked.
-        let consequences = ChangePort.consequences(&port_values(2222));
+        let consequences =
+            ChangePort.consequences(for_family(Family::Debian).as_ref(), &port_values(2222));
 
         let external: Vec<_> = consequences.iter().filter(|c| c.is_external()).collect();
 
@@ -2428,7 +2426,11 @@ mod tests {
     fn keeping_the_current_port_invalidates_nothing() {
         // Re-running with 22 changes nothing, so it breaks nothing. Warning
         // anyway is how these get dismissed unread.
-        assert!(ChangePort.consequences(&port_values(22)).is_empty());
+        assert!(
+            ChangePort
+                .consequences(for_family(Family::Debian).as_ref(), &port_values(22))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2438,15 +2440,31 @@ mod tests {
         let mut unparseable = ParamValues::new();
         unparseable.set(ChangePort::PORT, "not-a-port".to_owned());
 
-        assert!(ChangePort.consequences(&unparseable).is_empty());
-        assert!(ChangePort.consequences(&ParamValues::new()).is_empty());
+        assert!(
+            ChangePort
+                .consequences(for_family(Family::Debian).as_ref(), &unparseable)
+                .is_empty()
+        );
+        assert!(
+            ChangePort
+                .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new())
+                .is_empty()
+        );
     }
 
     #[test]
     fn tasks_that_change_nothing_elsewhere_declare_nothing() {
         // The default is empty, so a task only speaks up when it has something
         // to say.
-        assert!(InstallSsh.consequences(&ParamValues::new()).is_empty());
-        assert!(HardenSsh.consequences(&ParamValues::new()).is_empty());
+        assert!(
+            InstallSsh
+                .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new())
+                .is_empty()
+        );
+        assert!(
+            HardenSsh
+                .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new())
+                .is_empty()
+        );
     }
 }

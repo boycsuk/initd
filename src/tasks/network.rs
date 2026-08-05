@@ -195,7 +195,7 @@ impl Task for EnableFirewall {
         SUPPORTED
     }
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::SSH_PORT) else {
             return Vec::new();
         };
@@ -302,7 +302,7 @@ impl Task for AllowPort {
         SUPPORTED
     }
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
             return Vec::new();
         };
@@ -401,7 +401,7 @@ impl Task for EnableUnprivilegedPorts {
         SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // A running daemon does not re-read this. Docker's own documentation
         // makes the same point, and an administrator who skips it sees a
         // container that still cannot bind 80 with the parameter visibly set.
@@ -589,7 +589,10 @@ mod tests {
     fn enabling_the_firewall_warns_about_the_provider() {
         // Everything but SSH is now denied here, and the layer above this host
         // is one the tool cannot see.
-        let consequences = EnableFirewall.consequences(&port_values(EnableFirewall::SSH_PORT, 22));
+        let consequences = EnableFirewall.consequences(
+            for_family(Family::Debian).as_ref(),
+            &port_values(EnableFirewall::SSH_PORT, 22),
+        );
 
         assert_eq!(consequences.len(), 1, "{consequences:?}");
         assert!(consequences[0].is_external());
@@ -733,7 +736,8 @@ mod tests {
     fn lowering_the_unprivileged_port_tells_docker_to_restart() {
         // A running daemon does not re-read this, so the parameter reads as set
         // while the container still cannot bind 80.
-        let consequences = EnableUnprivilegedPorts.consequences(&ParamValues::new());
+        let consequences = EnableUnprivilegedPorts
+            .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert_eq!(consequences.len(), 1, "{consequences:?}");
         assert_eq!(

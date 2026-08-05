@@ -79,9 +79,16 @@ pub trait Task {
     /// re-running the same task with 22 invalidates nothing. A declaration that
     /// ignored them would warn every time and be learned to ignore.
     ///
+    /// Takes the backend for the same reason every other method does: a
+    /// consequence that names a command must let the family spell it. A task
+    /// writing `nft list table inet initd` itself is a distro branch wearing a
+    /// string literal — correct on three families and wrong on RHEL, where the
+    /// rule was written through firewalld and lives in a zone that listing
+    /// never shows.
+    ///
     /// Most tasks affect nothing else and inherit the empty default.
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
-        let _ = values;
+    fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
+        let _ = (backend, values);
         Vec::new()
     }
 

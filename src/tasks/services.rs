@@ -9,9 +9,10 @@
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::binaries::{Artefact, Release};
+use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
-use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason};
+use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
@@ -110,7 +111,7 @@ impl Task for InstallDockerRootless {
         ROOTLESS_SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Rootless containers cannot bind below 1024 without this, and the
         // failure reads as a container problem rather than a kernel setting.
         vec![Consequence::Invalidates {
@@ -268,19 +269,17 @@ impl Task for InstallCaddy {
         SUPPORTED
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![
             Consequence::Invalidates {
                 task: "firewall.allow-port",
                 reason: Reason::RequiresSetting {
                     setting: "inbound rules for 80 and 443",
                 },
-                check: Some(Check {
-                    command: Command::new("nft")
-                        .args(["list", "table", "inet", "initd"])
-                        .privileged(),
-                    resolved_when_stdout_contains: format!("tcp dport {HTTPS_PORT} accept"),
-                }),
+                // Asked of whichever front-end holds this host's ruleset. Only
+                // 443 is checked, as before: a check carries one command, and
+                // the port that matters is the one a browser reaches.
+                check: firewall_check(backend, HTTPS_PORT, FirewallProtocol::Tcp),
             },
             Consequence::External {
                 note: External::ProviderFirewall {
@@ -634,7 +633,8 @@ mod tests {
     fn installing_the_engine_points_at_the_port_setting() {
         // Rootless containers cannot bind below 1024 without it, and the
         // failure reads as a container problem.
-        let consequences = InstallDockerRootless.consequences(&user_values("deploy"));
+        let consequences = InstallDockerRootless
+            .consequences(for_family(Family::Debian).as_ref(), &user_values("deploy"));
 
         assert_eq!(consequences.len(), 1, "{consequences:?}");
         assert_eq!(
@@ -649,7 +649,8 @@ mod tests {
     fn caddy_warns_about_dns_it_cannot_check() {
         // Certificates are issued automatically and issuance fails if the name
         // does not already point here. Nothing on this host can see that.
-        let consequences = InstallCaddy.consequences(&ParamValues::new());
+        let consequences =
+            InstallCaddy.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         let dns = consequences
             .iter()

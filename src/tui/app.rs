@@ -995,7 +995,7 @@ impl App {
             return;
         };
 
-        let consequences = task.consequences(&self.ran_with);
+        let consequences = task.consequences(self.backend.as_ref(), &self.ran_with);
 
         if consequences.is_empty() {
             return;
