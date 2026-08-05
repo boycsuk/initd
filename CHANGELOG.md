@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `initd version`, also accepted as `--version` and `-V`. The tool had no way
+  to say which build it was, so a bug report against it could not be acted on.
+- A `LICENSE` file. `Cargo.toml` declared MIT and the repository shipped no
+  grant, which for a binary distributed to run as root is part of the contract
+  rather than paperwork.
+- A `README.md` at the root. The install one-liner existed only in a comment
+  inside `install.sh`, so a visitor saw a file listing and no explanation.
+- `cargo deny check` runs in CI, on push and on the existing schedule.
+  `deny.toml` described itself as the automated half of the dependency policy
+  and was automated nowhere — it ran when somebody remembered. The schedule is
+  the half that matters: a new advisory lands against an unchanged
+  `Cargo.lock`, which no push-triggered run would ever notice.
+- CI checks `aarch64-unknown-linux-musl` and the release profile. Both were
+  first compiled on the day a tag was cut, which is the worst moment to find a
+  cross-build or an LTO failure.
+- `ci.yml` declares `permissions: contents: read` and cancels superseded runs.
+  The permissions were whatever the repository defaulted to, and each container
+  job pulls four distribution images.
+
 ### Fixed
 - Losing the session puts an unconfirmed change back, which is the case the
   verification window exists for rather than an edge of it. The countdown lived
