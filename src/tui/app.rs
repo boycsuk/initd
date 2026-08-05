@@ -22,7 +22,7 @@ use super::{Tui, help, layout, style};
 use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::i18n::Lang;
 use crate::tasks::params::ParamValues;
@@ -896,15 +896,28 @@ impl App {
     /// Success and failure are pills of their own, so the outcome is legible
     /// from the left edge without reading the message beside it.
     fn finish_run(&mut self, id: &str, outcome: Result<Outcome>, cancelled: bool) {
-        // Cancellation is reported only once the task has actually stopped,
-        // and it says which steps ran. A tool that claims to have stopped
-        // before it has is how half-configured servers happen.
-        if cancelled {
+        // Cancellation is reported from what the task actually did, not from
+        // the operator having asked: the request arrives between two commands,
+        // and a task already on its last one runs to completion. Reporting the
+        // intent would claim a stop that never happened, which is how a server
+        // gets called half-configured when it is fully configured — and the
+        // reverse, on the next run.
+        if let Err(Error::Cancelled { ref before }) = outcome {
             self.status.set(
                 State::Cancelled,
-                format!("{id} — stopped after the last step"),
+                format!("{id} — stopped before `{before}`"),
             );
             return;
+        }
+
+        // Asked to stop, but the task finished first. Reported as whatever it
+        // actually was, with the near miss said out loud rather than silently
+        // dropped: the operator pressed a key and is owed an answer.
+        if cancelled {
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: "the task finished before it could be stopped".to_owned(),
+            });
         }
 
         // A change that can sever this session is not reported as done: it is
@@ -2947,18 +2960,58 @@ mod tests {
     #[test]
     fn a_cancelled_task_reports_where_it_stopped() {
         // A tool that says only "cancelled" leaves the operator guessing what
-        // ran and what did not.
+        // ran and what did not, so the command it stopped before is named.
         let mut app = test_app(Family::Debian);
 
-        app.finish_run("ssh.install", Ok(Outcome::Done), true);
+        app.finish_run(
+            "ssh.install",
+            Err(Error::Cancelled {
+                before: "systemctl restart ssh.service".to_owned(),
+            }),
+            true,
+        );
 
         assert_eq!(app.status.state(), State::Cancelled);
         assert!(
             app.status
                 .message(Instant::now())
-                .contains("after the last step"),
+                .contains("systemctl restart ssh.service"),
             "got {:?}",
             app.status.message(Instant::now())
+        );
+    }
+
+    #[test]
+    fn a_task_that_finished_before_stopping_is_not_called_cancelled() {
+        // The bug this guards: the interface used to report CANCELLED from the
+        // operator having *asked*, so a task that ran to completion was shown
+        // as stopped. Acting on that belief is how a change gets applied twice.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run("ssh.install", Ok(Outcome::Done), true);
+
+        assert_eq!(
+            app.status.state(),
+            State::Done,
+            "a task that finished must be reported as done, not cancelled"
+        );
+    }
+
+    #[test]
+    fn a_near_miss_is_said_out_loud_rather_than_dropped() {
+        // The operator pressed a key and is owed an answer, even when the task
+        // beat them to the finish.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run("ssh.install", Ok(Outcome::Done), true);
+
+        assert!(
+            app.output
+                .lines()
+                .iter()
+                .any(|line| line.text.contains("finished before it could be stopped")),
+            "got {:?}",
+            app.output.lines()
         );
     }
 

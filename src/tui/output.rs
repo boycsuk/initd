@@ -101,6 +101,12 @@ impl OutputPane {
         self.lines.len()
     }
 
+    /// The retained lines, for assertions about what was reported.
+    #[cfg(test)]
+    pub fn lines(&self) -> &VecDeque<OutputLine> {
+        &self.lines
+    }
+
     /// Whether the view is pinned to the newest output.
     #[cfg(test)]
     pub const fn is_following(&self) -> bool {

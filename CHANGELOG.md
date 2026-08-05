@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Ctrl-C stops the task it says it stops. The flag the interface raised was
+  never read: `Running::start` built it, cloned it, and dropped the clone, so
+  the task ran to completion while the interface reported `CANCELLED` — the
+  precise failure the code beside it warns about, since a tool claiming to have
+  stopped before it has is how half-configured servers happen. The flag now
+  travels to `LocalExecutor`, which refuses the next command rather than
+  interrupting the running one: a task stopped between two commands has
+  completed whole steps only, which is the granularity the interface promises,
+  and tasks are not idempotent so killing mid-step would leave one half
+  applied. Routing it through the executor rather than through `Task::run` is
+  what keeps the obligation off the twenty-eight tasks — the one that forgot to
+  check would be the one that could not be stopped. The check precedes
+  authentication, so a stopped task does not go on to ask for a password.
+- `CANCELLED` is reported from what the task did rather than from the operator
+  having asked. The request lands between two commands, so a task already on
+  its last one finishes; the status now names the command it stopped *before*,
+  and a task that beat the keypress is reported as done with the near miss said
+  out loud instead of dropped. The test that pinned the old behaviour asserted
+  a finished task be shown as cancelled — it now asserts the opposite.
+
 ### Added
 - Third-party package repositories, and the one rule that makes them
   defensible: a repository cannot be expressed without a fingerprint published

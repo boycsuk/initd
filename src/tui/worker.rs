@@ -15,15 +15,13 @@
 //! bound on every future implementation — including the SSH one — to serve a
 //! detail of how this interface happens to schedule work.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::distro::Distro;
 use crate::error::Error;
-use crate::exec::{OutputLine, TerminalBroker};
+use crate::exec::{CancelToken, OutputLine, TerminalBroker};
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
 
@@ -115,8 +113,9 @@ pub struct Running {
     /// Cooperative rather than a kill: a task is a sequence of commands, and
     /// stopping between two of them leaves the system in a state the task
     /// itself chose. Killing mid-command is how a half-written configuration
-    /// file happens.
-    cancel: Arc<AtomicBool>,
+    /// file happens. The executor reads it before each command, so no task has
+    /// to remember to check it.
+    cancel: CancelToken,
     /// Whether cancellation has been asked for but not yet taken effect.
     cancelling: bool,
 }
@@ -129,8 +128,8 @@ impl Running {
     /// boundary.
     pub fn start(task_id: &'static str, distro: Distro, values: ParamValues) -> Self {
         let (sender, updates) = channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&cancel);
+        let cancel = CancelToken::new();
+        let flag = cancel.clone();
 
         thread::spawn(move || {
             // The whole `Distro` rather than its family: the thread outlives
@@ -143,8 +142,13 @@ impl Running {
                 mechanism: escalator.name().to_owned(),
                 deadline: AUTH_DEADLINE,
             };
+            // The flag reaches the task through the executor rather than
+            // through `Task::run`: every command already passes through one
+            // place, so no task has to remember to check it, and the task that
+            // forgot would be the one that could not be stopped.
             let executor =
-                crate::exec::local::LocalExecutor::with_broker(escalator, Box::new(broker));
+                crate::exec::local::LocalExecutor::with_broker(escalator, Box::new(broker))
+                    .cancelled_by(flag);
 
             let Some(task) = crate::tasks::find(task_id) else {
                 // Unreachable through the interface, which only offers tasks
@@ -164,9 +168,6 @@ impl Running {
             });
 
             let _ = sender.send(Update::Finished(outcome));
-            // The flag is read by the task through the executor in a later
-            // change; holding it here keeps the channel alive until the end.
-            drop(flag);
         });
 
         Self {
@@ -232,7 +233,7 @@ impl Running {
 
     /// Asks the task to stop at the next step boundary.
     pub fn cancel(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel.cancel();
         self.cancelling = true;
     }
 
@@ -384,7 +385,7 @@ mod tests {
         running.cancel();
 
         assert!(running.is_cancelling());
-        assert!(running.cancel.load(Ordering::Relaxed));
+        assert!(running.cancel.is_cancelled());
     }
 
     #[test]

@@ -128,6 +128,36 @@ pub trait Executor {
     fn run(&self, command: &Command) -> Result<Output>;
 }
 
+/// A flag the interface raises to ask a running task to stop.
+///
+/// Deliberately *not* a parameter of [`Executor::run`], and not a method on the
+/// trait: a task is stopped between its commands, and the executor is already
+/// the only place every command passes through. Threading a token through all
+/// twenty-eight tasks would put the obligation to check it on each of them, and
+/// the one that forgot would be the one that could not be stopped.
+///
+/// Cloning shares the flag rather than copying its value — the interface holds
+/// one end and the worker thread the other.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelToken {
+    /// A token nobody has cancelled yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Asks whatever holds the other end to stop at its next command.
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether cancellation has been asked for.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// Somewhere the terminal can be borrowed from so a helper may prompt.
 ///
 /// Deliberately *not* a method on [`Executor`]. The interface owns the

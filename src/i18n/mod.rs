@@ -107,6 +107,10 @@ pub enum Msg {
         source: String,
     },
 
+    Cancelled {
+        before: String,
+    },
+
     // --- Privileges ---
     NoPrivilegeEscalator,
     AuthenticationRefused {

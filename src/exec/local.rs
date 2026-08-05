@@ -6,7 +6,7 @@
 use std::process::{Command as StdCommand, Stdio};
 use std::thread;
 
-use super::{Command, Executor, Output, TerminalBroker};
+use super::{CancelToken, Command, Executor, Output, TerminalBroker};
 use crate::error::{Error, Result};
 use crate::exec::privilege::{AuthNeed, PrivilegeEscalator};
 
@@ -19,6 +19,11 @@ pub struct LocalExecutor {
     /// `sudo` can draw its own prompt — the interface is the only caller that
     /// has taken the screen away.
     broker: Option<Box<dyn TerminalBroker>>,
+    /// Raised by the interface to stop the task between two commands.
+    ///
+    /// `None` on the command line: there is no interface to press a key, and a
+    /// terminal `Ctrl-C` already signals the whole process group.
+    cancel: Option<CancelToken>,
 }
 
 impl LocalExecutor {
@@ -27,6 +32,7 @@ impl LocalExecutor {
         Self {
             escalator,
             broker: None,
+            cancel: None,
         }
     }
 
@@ -38,7 +44,35 @@ impl LocalExecutor {
         Self {
             escalator,
             broker: Some(broker),
+            cancel: None,
         }
+    }
+
+    /// Gives the executor a flag the interface can raise to stop the task.
+    #[must_use]
+    pub fn cancelled_by(mut self, cancel: CancelToken) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// Refuses to start a command once the operator has asked the task to stop.
+    ///
+    /// Checked before the command rather than after: a task stopped between two
+    /// commands has completed whole steps only, which is the granularity the
+    /// interface promises. Interrupting a running command would leave the step
+    /// it was performing half applied, and tasks are not idempotent.
+    fn check_not_cancelled(&self, command: &Command) -> Result<()> {
+        let Some(cancel) = self.cancel.as_ref() else {
+            return Ok(());
+        };
+
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled {
+                before: command.to_string(),
+            });
+        }
+
+        Ok(())
     }
 
     /// Hands the terminal over if the helper is about to ask for a password.
@@ -131,6 +165,10 @@ impl LocalExecutor {
 
 impl Executor for LocalExecutor {
     fn run(&self, command: &Command) -> Result<Output> {
+        // First of all, and before authenticating: a task the operator has
+        // stopped must not go on to ask them for a password.
+        self.check_not_cancelled(command)?;
+
         // Before the command, never after: a helper that is going to prompt
         // does so on a terminal the interface still owns, and the prompt is
         // then invisible and unanswerable.
@@ -379,6 +417,93 @@ mod tests {
 
         assert_eq!(out.stdout.trim(), "hello");
         assert_eq!(times_asked(&asked), 1);
+    }
+
+    #[test]
+    fn a_cancelled_task_runs_no_further_commands() {
+        // The whole point of the flag: once the operator has asked to stop,
+        // the next command must not run at all. A task that ran it anyway
+        // would report CANCELLED having applied one more step than it says.
+        let cancel = CancelToken::new();
+        let executor = LocalExecutor::new(Box::new(NoEscalation)).cancelled_by(cancel.clone());
+
+        // A file the command would create if it ran, so the assertion observes
+        // the command's effect rather than only its reported error.
+        let marker = std::env::temp_dir().join("initd-cancel-probe");
+        let _ = std::fs::remove_file(&marker);
+        let path = marker.to_string_lossy().into_owned();
+
+        cancel.cancel();
+
+        let err = executor
+            .run(&Command::new("touch").arg(&path))
+            .expect_err("a cancelled task must not run the command");
+
+        assert!(matches!(err, Error::Cancelled { .. }), "{err:?}");
+        assert!(!marker.exists(), "the command must not have run");
+    }
+
+    #[test]
+    fn a_task_nobody_cancelled_runs_normally() {
+        // The other direction, so the check cannot pass by refusing everything.
+        let cancel = CancelToken::new();
+        let executor = LocalExecutor::new(Box::new(NoEscalation)).cancelled_by(cancel);
+
+        let out = executor
+            .run(&Command::new("echo").arg("hello"))
+            .expect("an uncancelled task must run");
+
+        assert_eq!(out.stdout.trim(), "hello");
+    }
+
+    #[test]
+    fn cancellation_names_the_command_it_stopped_before() {
+        // The report has to say where the task stopped: "cancelled" alone
+        // leaves the operator guessing which steps were applied.
+        let cancel = CancelToken::new();
+        let executor = LocalExecutor::new(Box::new(NoEscalation)).cancelled_by(cancel.clone());
+
+        cancel.cancel();
+
+        let err = executor
+            .run(&Command::new("systemctl").args(["restart", "ssh.service"]))
+            .expect_err("a cancelled task must fail");
+
+        let Error::Cancelled { before } = err else {
+            panic!("expected Cancelled, got {err:?}");
+        };
+        assert_eq!(before, "systemctl restart ssh.service");
+    }
+
+    #[test]
+    fn a_cancelled_task_is_never_asked_for_a_password() {
+        // Authentication happens after the cancellation check, so a task the
+        // operator stopped does not go on to prompt them for a password.
+        let (broker, asked) = ScriptedBroker::new(true);
+        let cancel = CancelToken::new();
+        let executor = LocalExecutor::with_broker(Box::new(AlwaysPrompts), Box::new(broker))
+            .cancelled_by(cancel.clone());
+
+        cancel.cancel();
+
+        let err = executor
+            .run(&Command::new("echo").arg("hello").privileged())
+            .expect_err("a cancelled task must fail");
+
+        assert!(matches!(err, Error::Cancelled { .. }), "{err:?}");
+        assert_eq!(times_asked(&asked), 0, "a stopped task must not prompt");
+    }
+
+    #[test]
+    fn without_a_token_nothing_changes() {
+        // The command line builds no token, and must behave as it always did.
+        let executor = LocalExecutor::new(Box::new(NoEscalation));
+
+        let out = executor
+            .run(&Command::new("echo").arg("hello"))
+            .expect("echo must run");
+
+        assert_eq!(out.stdout.trim(), "hello");
     }
 
     #[test]

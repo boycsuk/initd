@@ -92,6 +92,14 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// The operator asked the task to stop, and it stopped before this command.
+    ///
+    /// Raised between commands rather than by interrupting one: a task killed
+    /// mid-command would leave the step it was performing half applied, and
+    /// tasks are not idempotent. The command named here is the one that was
+    /// *not* run, so the report says where the task stopped.
+    Cancelled { before: String },
+
     /// The operation needs root and no escalation mechanism is available.
     NoPrivilegeEscalator,
 
@@ -329,6 +337,9 @@ impl Error {
             Self::CommandIo { command, source } => Msg::CommandIo {
                 command: command.clone(),
                 source: source.to_string(),
+            },
+            Self::Cancelled { before } => Msg::Cancelled {
+                before: before.clone(),
             },
             Self::NoPrivilegeEscalator => Msg::NoPrivilegeEscalator,
             Self::AuthenticationRefused { mechanism } => Msg::AuthenticationRefused {

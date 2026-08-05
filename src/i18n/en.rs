@@ -53,6 +53,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::CommandIo { command, source } => {
             format!("I/O error while running `{command}`: {source}")
         }
+        Msg::Cancelled { before } => {
+            format!("stopped at the operator's request, before running `{before}`")
+        }
         Msg::NoPrivilegeEscalator => "this operation requires root privileges, but no escalation \
              mechanism (sudo, doas or run0) was found in PATH"
             .to_owned(),
