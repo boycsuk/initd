@@ -433,6 +433,19 @@ The default outcome of silence is the safe one. An administrator who has just
 locked themselves out is, by definition, unable to press a key to undo it, so
 the revert happens without them.
 
+Losing the session counts as silence, not as confirmation. A dropped connection
+delivers `SIGHUP` and an ordinary `kill` or `systemctl stop` delivers `SIGTERM`;
+both are caught, and an unconfirmed change goes back before the process exits.
+This is the case the window exists for rather than an edge of it — `ssh.harden`
+can sever the very connection that would confirm it.
+
+Two things it cannot cover, and the banner says so rather than implying
+otherwise with a line reading **"Reverts while this session lives."**: `SIGKILL`
+cannot be caught by any program, and a machine losing power runs no code at
+all. In both the change stays applied. Stating the limit is what makes the rest
+of the banner trustworthy; a promise with a silent exception teaches people to
+disbelieve all of it.
+
 ### Confirmation dialog (modal)
 
 | Key | Action |

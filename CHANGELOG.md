@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Losing the session puts an unconfirmed change back, which is the case the
+  verification window exists for rather than an edge of it. The countdown lived
+  only in this process, so `ssh.harden` severing the administrator's own
+  connection killed the interface with `SIGHUP` and left in place the very
+  configuration that locked them out — the screen having promised that silence
+  would restore it. `SIGHUP` and `SIGTERM` are now caught, the event loop reads
+  a flag rather than the handler doing the work (a handler may only touch
+  async-signal-safe things, and reverting spawns `cp` through an executor that
+  takes locks), and the change goes back before the process exits. `SIGKILL`
+  and a power cut cannot be covered by any program, so the banner states the
+  limit — "Reverts while this session lives." — rather than implying otherwise:
+  a promise with a silent exception teaches people to disbelieve all of it.
+  `signal-hook` becomes a direct dependency; it was already in the tree through
+  crossterm, so this adds a name to audit rather than new code.
+- A panic restores the terminal before it prints. `run` restored on both the
+  `Ok` and the `Err` path, but a panic unwinds past that match, so the message
+  was drawn into the alternate screen in raw mode — scrolling without carriage
+  returns and vanishing with the screen, leaving an unusable shell and no
+  explanation of why.
 - An address is validated as an address rather than as four numbers.
   `validate_ip` parsed each octet with `str::parse`, which admits what the
   integer parser admits: a leading `+`, and leading zeros without limit. So

@@ -10,6 +10,12 @@ license = "MIT"
 ratatui = "0.30.2"
 crossterm = "0.29.0"
 thiserror = "2.0.19"
+# Already in the tree as a transitive dependency of crossterm, so depending on
+# it directly adds a name to audit rather than any new code. It is here for the
+# verification window: a change is applied and put back if nobody confirms it,
+# and the session that would confirm it is the one `ssh.harden` can sever — so
+# SIGHUP is not an edge case here, it is the case the window exists for.
+signal-hook = { version = "0.3.18", default-features = false }
 
 [profile.release]
 opt-level = "z"

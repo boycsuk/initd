@@ -341,6 +341,13 @@ TUI or CLI:
   - Acceptance: the previous configuration goes back on its own if I do not
     confirm within the window. An administrator who has just locked themselves
     out cannot press a key to undo it.
+  - Acceptance: losing the session counts as not confirming. If my connection
+    drops — which is exactly what the change I am verifying can cause — the
+    previous configuration goes back before the tool exits, rather than the
+    countdown dying with it.
+  - Acceptance: I am told what the automatic revert cannot survive, instead of
+    being left to assume it survives everything. A killed-outright process and
+    a machine losing power both leave the change applied.
   - Acceptance: keeping the change needs a deliberate keypress that no
     navigation key can produce by accident.
   - Acceptance: I cannot quit, or start another task, while a change is

@@ -15,6 +15,7 @@ use super::confirm::Confirm;
 use super::field::Field;
 use super::form::Form;
 use super::output::OutputPane;
+use super::signals::Hangup;
 use super::status::{State, Status};
 use super::verify::Verification;
 use super::worker::{Running, Update};
@@ -145,6 +146,11 @@ pub struct App {
     running: Option<Running>,
     /// An applied change waiting to be kept or put back.
     verification: Option<Verification>,
+    /// Raised when the session this interface runs in is going away.
+    ///
+    /// Default in tests and where registration was declined: a flag nothing
+    /// ever raises simply never fires, which is the behaviour that preceded it.
+    hangup: Hangup,
     /// How far the help overlay is scrolled, while it is showing.
     ///
     /// `None` means it is closed: the overlay has no state worth keeping
@@ -193,8 +199,20 @@ impl App {
             verification: None,
             help: None,
             status: Status::new(),
+            hangup: Hangup::default(),
             should_quit: false,
         }
+    }
+
+    /// Gives the interface a flag raised when the session is going away.
+    ///
+    /// Separate from `new` so that a caller which could not register — and a
+    /// test, which has no session to lose — gets an interface that behaves
+    /// exactly as it did before, rather than one that must pretend.
+    #[must_use]
+    pub fn watching_for_hangup(mut self, hangup: Hangup) -> Self {
+        self.hangup = hangup;
+        self
     }
 
     /// The nodes of the level currently on screen.
@@ -257,6 +275,13 @@ impl App {
     /// Runs the event loop until the user quits.
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
         while !self.should_quit {
+            // First of all: a session that is ending takes the interface with
+            // it, so anything still owed to the operator is owed now.
+            if self.hangup.received() {
+                self.resolve_on_hangup();
+                break;
+            }
+
             // Both before drawing: output that has arrived should appear in
             // this frame, and an expired window should never be shown with a
             // countdown that has already run out.
@@ -530,6 +555,24 @@ impl App {
             _ => self
                 .status
                 .flash("K keeps this change, R puts it back", Instant::now()),
+        }
+    }
+
+    /// Puts an unconfirmed change back because the session is ending.
+    ///
+    /// This is the case the verification window exists for rather than an edge
+    /// of it: `ssh.harden` and its neighbours can sever the very session that
+    /// would confirm them, and the daemon answers a dropped connection with
+    /// `SIGHUP`. Without this the countdown dies with the process and the
+    /// configuration that locked the administrator out is the one left behind
+    /// — the interface having promised on screen that silence puts it back.
+    ///
+    /// Silence is still what decides. Losing the session is not confirmation,
+    /// so the change goes back for the same reason a lapsed window does, and
+    /// the operator finds the machine as they left it.
+    fn resolve_on_hangup(&mut self) {
+        if self.verification.is_some() {
+            self.revert_change("the session ended");
         }
     }
 
@@ -1484,6 +1527,16 @@ fn render_verification(frame: &mut Frame, area: Rect, window: &Verification) {
         // the one thing the administrator must do is stated outright.
         Line::styled("Open a second session and check you", style::EMPHASIS),
         Line::styled("can still log in.", style::EMPHASIS),
+        // What the countdown depends on, said rather than implied. A dropped
+        // connection and an ordinary kill both revert, because the signals are
+        // caught; a `SIGKILL` or a machine losing power run no code at all, so
+        // the change would stay. Stating the limit is what makes the sentence
+        // above trustworthy — a promise with a silent exception teaches people
+        // to disbelieve the whole banner.
+        Line::styled(
+            "Reverts while this session lives.",
+            style::CONSEQUENCE_EXTERNAL,
+        ),
     ];
 
     frame.render_widget(
@@ -2216,6 +2269,65 @@ mod tests {
         assert!(
             app.verification.is_none(),
             "an expired window must resolve itself"
+        );
+    }
+
+    #[test]
+    fn losing_the_session_puts_an_unconfirmed_change_back() {
+        // The case the window exists for, and the one it used to miss. The
+        // countdown lived only in this process, so an `ssh.harden` that severed
+        // the administrator's own connection took the interface down with it —
+        // and the configuration that locked them out was the one left in place,
+        // the screen having promised that silence would restore it.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        app.hangup.raise();
+        app.resolve_on_hangup();
+
+        assert!(
+            app.verification.is_none(),
+            "a change nobody confirmed must go back when the session ends"
+        );
+        assert!(
+            app.status
+                .message(Instant::now())
+                .contains("the session ended"),
+            "the report must say why it went back: {:?}",
+            app.status.message(Instant::now())
+        );
+    }
+
+    #[test]
+    fn losing_the_session_with_nothing_pending_reverts_nothing() {
+        // The other direction: a hangup is not itself a reason to undo work,
+        // only a reason to stop waiting for a confirmation that cannot arrive.
+        let mut app = test_app(Family::Debian);
+
+        app.hangup.raise();
+        app.resolve_on_hangup();
+
+        assert_eq!(app.status.state(), State::Ready);
+    }
+
+    #[test]
+    fn a_kept_change_survives_the_session_ending() {
+        // Keeping is a confirmation, so it closes the window outright. Nothing
+        // is left for a hangup to put back, and a later signal must not undo a
+        // change the administrator explicitly accepted.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Char('K'));
+        assert!(app.verification.is_none(), "keeping must close the window");
+
+        app.hangup.raise();
+        app.resolve_on_hangup();
+
+        assert_ne!(
+            app.status.state(),
+            State::Failed,
+            "a kept change must not be reverted by a later hangup"
         );
     }
 
