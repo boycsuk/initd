@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
-use super::{Command, Executor, Output, OutputLine, Stream};
+use super::{Command, Executor, Output};
 use crate::error::Result;
 
 /// A canned reply for one command.
@@ -124,34 +124,6 @@ impl Executor for MockExecutor {
             stderr: reply.stderr,
         })
     }
-
-    fn run_streaming(
-        &self,
-        command: &Command,
-        on_line: &mut dyn FnMut(OutputLine),
-    ) -> Result<Output> {
-        let reply = self.record(command);
-
-        // Replay the canned output through the callback so streaming callers
-        // exercise the same path they would in production.
-        for (stream, text) in [
-            (Stream::Stdout, &reply.stdout),
-            (Stream::Stderr, &reply.stderr),
-        ] {
-            for line in text.lines() {
-                on_line(OutputLine {
-                    stream,
-                    text: line.to_owned(),
-                });
-            }
-        }
-
-        Ok(Output {
-            code: reply.code,
-            stdout: reply.stdout,
-            stderr: reply.stderr,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -195,17 +167,6 @@ mod tests {
         let extra = mock.run(&Command::new("b")).expect("runs");
 
         assert!(extra.success(), "unscripted calls default to success");
-    }
-
-    #[test]
-    fn streaming_replays_canned_output_through_the_callback() {
-        let mock = MockExecutor::with_replies([Reply::ok("line one\nline two")]);
-        let mut lines = Vec::new();
-
-        mock.run_streaming(&Command::new("a"), &mut |line| lines.push(line.text))
-            .expect("runs");
-
-        assert_eq!(lines, ["line one", "line two"]);
     }
 
     #[test]

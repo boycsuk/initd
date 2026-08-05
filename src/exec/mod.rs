@@ -126,17 +126,6 @@ impl Output {
 pub trait Executor {
     /// Runs a command to completion, capturing its output.
     fn run(&self, command: &Command) -> Result<Output>;
-
-    /// Runs a command, forwarding each output line as it is produced.
-    ///
-    /// The callback receives lines from both streams interleaved in arrival
-    /// order, which is what the live output pane renders.
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn run_streaming(
-        &self,
-        command: &Command,
-        on_line: &mut dyn FnMut(OutputLine),
-    ) -> Result<Output>;
 }
 
 #[cfg(test)]

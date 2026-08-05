@@ -3,12 +3,10 @@
 //! The only real [`Executor`] today. Remote execution over SSH would be a
 //! second implementation of the same trait.
 
-use std::io::{BufRead, BufReader};
 use std::process::{Command as StdCommand, Stdio};
-use std::sync::mpsc;
 use std::thread;
 
-use super::{Command, Executor, Output, OutputLine, Stream};
+use super::{Command, Executor, Output};
 use crate::error::{Error, Result};
 use crate::exec::privilege::PrivilegeEscalator;
 
@@ -85,76 +83,6 @@ impl Executor for LocalExecutor {
             String::from_utf8_lossy(&output.stderr).into_owned(),
         )
     }
-
-    fn run_streaming(
-        &self,
-        command: &Command,
-        on_line: &mut dyn FnMut(OutputLine),
-    ) -> Result<Output> {
-        let (program, args) = self.resolve(command)?;
-
-        let mut child = StdCommand::new(&program)
-            .args(&args)
-            .stdin(stdin_for(command))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| map_spawn_error(source, &program, command))?;
-
-        let writer = spawn_stdin_writer(&mut child, command);
-
-        // Both pipes are drained concurrently: reading them in sequence would
-        // deadlock as soon as the child filled the buffer of the other one.
-        let (tx, rx) = mpsc::channel();
-        let mut readers = Vec::new();
-
-        if let Some(stdout) = child.stdout.take() {
-            readers.push(spawn_reader(stdout, Stream::Stdout, tx.clone()));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            readers.push(spawn_reader(stderr, Stream::Stderr, tx.clone()));
-        }
-
-        // The original sender must go, or the loop below never sees the pipes
-        // close and waits forever.
-        drop(tx);
-
-        let mut stdout_text = String::new();
-        let mut stderr_text = String::new();
-
-        for line in rx {
-            match line.stream {
-                Stream::Stdout => {
-                    stdout_text.push_str(&line.text);
-                    stdout_text.push('\n');
-                }
-                Stream::Stderr => {
-                    stderr_text.push_str(&line.text);
-                    stderr_text.push('\n');
-                }
-            }
-            on_line(line);
-        }
-
-        for reader in readers {
-            // A reader thread only panics if the channel is poisoned, which
-            // cannot happen here; treat a join failure as an I/O error rather
-            // than unwrapping.
-            reader.join().map_err(|_| Error::CommandIo {
-                command: command.to_string(),
-                source: std::io::Error::other("output reader thread failed"),
-            })?;
-        }
-
-        join_stdin_writer(writer, command)?;
-
-        let status = child.wait().map_err(|source| Error::CommandIo {
-            command: command.to_string(),
-            source,
-        })?;
-
-        Self::finish(command, status.code(), stdout_text, stderr_text)
-    }
 }
 
 /// What the child gets for stdin.
@@ -214,25 +142,6 @@ fn join_stdin_writer(
     })
 }
 
-/// Reads a pipe line by line, forwarding each line to the collector.
-#[cfg_attr(not(test), allow(dead_code))]
-fn spawn_reader<R>(pipe: R, stream: Stream, tx: mpsc::Sender<OutputLine>) -> thread::JoinHandle<()>
-where
-    R: std::io::Read + Send + 'static,
-{
-    thread::spawn(move || {
-        for line in BufReader::new(pipe).lines() {
-            // A malformed UTF-8 line ends that stream, but the process is
-            // still waited on, so nothing is left dangling.
-            let Ok(text) = line else { break };
-
-            if tx.send(OutputLine { stream, text }).is_err() {
-                break;
-            }
-        }
-    })
-}
-
 /// Distinguishes "binary not in PATH" from other spawn failures.
 ///
 /// The former is by far the most common and deserves a message naming the
@@ -286,64 +195,5 @@ mod tests {
             .expect_err("a missing binary must fail");
 
         assert!(matches!(err, Error::ProgramNotFound { .. }), "{err:?}");
-    }
-
-    #[test]
-    fn streaming_forwards_lines_in_order() {
-        let mut lines = Vec::new();
-        let out = executor()
-            .run_streaming(
-                &Command::new("sh").args(["-c", "echo one; echo two"]),
-                &mut |line| lines.push(line.text),
-            )
-            .expect("sh must run");
-
-        assert!(out.success());
-        assert_eq!(lines, ["one", "two"]);
-    }
-
-    #[test]
-    fn streaming_tags_stderr_separately() {
-        let mut stderr_lines = Vec::new();
-        executor()
-            .run_streaming(
-                &Command::new("sh").args(["-c", "echo oops >&2"]),
-                &mut |line| {
-                    if line.stream == Stream::Stderr {
-                        stderr_lines.push(line.text);
-                    }
-                },
-            )
-            .expect("sh must run");
-
-        assert_eq!(stderr_lines, ["oops"]);
-    }
-
-    #[test]
-    fn streaming_captures_output_as_well_as_forwarding_it() {
-        let out = executor()
-            .run_streaming(&Command::new("echo").arg("captured"), &mut |_| {})
-            .expect("echo must run");
-
-        assert_eq!(out.stdout.trim(), "captured");
-    }
-
-    #[test]
-    fn streaming_does_not_deadlock_on_large_output() {
-        // A single pipe's buffer is ~64 KiB; writing well past that on both
-        // streams would hang an implementation that drained them in sequence.
-        let mut count = 0_usize;
-        let out = executor()
-            .run_streaming(
-                &Command::new("sh").args([
-                    "-c",
-                    "i=0; while [ $i -lt 4000 ]; do echo out-$i; echo err-$i >&2; i=$((i+1)); done",
-                ]),
-                &mut |_| count += 1,
-            )
-            .expect("sh must run");
-
-        assert!(out.success());
-        assert_eq!(count, 8000, "every line from both streams must arrive");
     }
 }
