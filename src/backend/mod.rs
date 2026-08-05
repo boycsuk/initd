@@ -12,6 +12,7 @@ pub mod nftables;
 pub mod openrc;
 pub mod procfs_sysctl;
 pub mod release_installer;
+pub mod rhel;
 pub mod shadow_accounts;
 pub mod systemd;
 pub mod systemd_user;
@@ -146,6 +147,7 @@ pub fn for_family(family: Family) -> Box<dyn Backend> {
         Family::Debian => Box::new(debian::DebianBackend::new()),
         Family::Arch => Box::new(arch::ArchBackend::new()),
         Family::Alpine => Box::new(alpine::AlpineBackend::new()),
+        Family::Rhel => Box::new(rhel::RhelBackend::new()),
     }
 }
 
@@ -155,7 +157,11 @@ mod tests {
 
     #[test]
     fn each_family_resolves_to_its_own_backend() {
-        for family in [Family::Debian, Family::Arch] {
+        // Iterating `ALL` rather than naming families: the mistake this guards
+        // against is a dispatch arm pointing at the wrong backend, and a
+        // hand-written list is one a new family is added without. Alpine went
+        // untested here for exactly that reason.
+        for &family in Family::ALL {
             assert_eq!(for_family(family).family(), family);
         }
     }
@@ -191,7 +197,7 @@ mod tests {
         // would only restate the constant. What must hold is that the question
         // is answerable per family: a backend that returned an empty path
         // would have every file operation silently address the wrong file.
-        for family in [Family::Debian, Family::Arch] {
+        for &family in Family::ALL {
             let path = for_family(family).path_for(Capability::Ssh);
 
             assert!(

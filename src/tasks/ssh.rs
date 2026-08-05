@@ -16,8 +16,25 @@ use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
 use crate::tasks::{Category, Node, Progress, Task};
 
-/// Families every SSH task supports.
+/// Families the tasks that write to `sshd_config` support.
+///
+/// RHEL is absent, and not because of a name. Its `sshd_config` opens with
+/// `Include /etc/ssh/sshd_config.d/*.conf`, and sshd honours the *first*
+/// occurrence of a directive rather than the last — so a `50-redhat.conf`
+/// applying the system crypto policies wins over anything appended to the main
+/// file. A task writing there would validate, apply, reload cleanly and change
+/// nothing, which is the one failure this project treats as worse than an
+/// error. Settling it means observing a real daemon, not reasoning about the
+/// parser, so these declare Debian, Arch and Alpine until that happens.
 const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+
+/// Families the tasks that do not edit `sshd_config` support.
+///
+/// Installing the daemon and authorising a key touch a package, a unit and a
+/// file under a home directory — none of which the `Include` above has any
+/// bearing on.
+const CONFIG_FREE_SUPPORTED: &[Family] =
+    &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
 
 /// Where a user's authorised keys live, relative to their home directory.
 const AUTHORIZED_KEYS_RELATIVE: &str = ".ssh/authorized_keys";
@@ -104,7 +121,7 @@ impl Task for InstallSsh {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        CONFIG_FREE_SUPPORTED
     }
 
     fn run(
@@ -477,7 +494,7 @@ impl Task for AuthorizeKey {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        CONFIG_FREE_SUPPORTED
     }
 
     fn run(

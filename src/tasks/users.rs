@@ -18,9 +18,10 @@ use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families these tasks support.
 ///
-/// Both implemented families ship the shadow suite. Alpine will need an
-/// `AccountWriter` over busybox's `adduser` before it can be added.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+/// Every family, though not by the same tools: Debian, Arch and RHEL ship the
+/// shadow suite, while Alpine drives busybox's `adduser` through an
+/// `AccountWriter` of its own.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
 
 /// The account whose lock is dangerous enough to warrant its own guard.
 const ROOT: &str = "root";

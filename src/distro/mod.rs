@@ -25,6 +25,13 @@ pub enum Family {
     /// suite, no GNU coreutils. Where the other two disagree over whether a
     /// unit is called `ssh` or `sshd`, Alpine has no units at all.
     Alpine,
+    /// RHEL and derivatives: `dnf`, systemd, `wheel`.
+    ///
+    /// Mechanically the closest to Arch, and the family whose divergence is
+    /// about provenance rather than naming: Red Hat's repositories carry less
+    /// than the other families', so several capabilities resolve to a verified
+    /// release instead of a package, and a few to nothing at all.
+    Rhel,
 }
 
 impl Family {
@@ -39,7 +46,7 @@ impl Family {
     /// resolves exactly one — so this is test-only by nature, like
     /// [`crate::backend::Backend::family`] above it.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const ALL: &'static [Self] = &[Self::Debian, Self::Arch, Self::Alpine];
+    pub const ALL: &'static [Self] = &[Self::Debian, Self::Arch, Self::Alpine, Self::Rhel];
 
     /// Stable identifier, used in messages and CLI output.
     pub const fn as_str(self) -> &'static str {
@@ -47,6 +54,7 @@ impl Family {
             Self::Debian => "debian",
             Self::Arch => "arch",
             Self::Alpine => "alpine",
+            Self::Rhel => "rhel",
         }
     }
 }
@@ -103,9 +111,10 @@ mod tests {
         assert!(names.contains(&"debian"), "debian missing from ALL");
         assert!(names.contains(&"arch"), "arch missing from ALL");
         assert!(names.contains(&"alpine"), "alpine missing from ALL");
+        assert!(names.contains(&"rhel"), "rhel missing from ALL");
         assert_eq!(
             Family::ALL.len(),
-            3,
+            4,
             "a family was added: list it in ALL and name it here"
         );
     }

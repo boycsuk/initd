@@ -350,6 +350,120 @@ mod tests {
             "same as mise: unpackaged on Alpine, and rustup is an installer \
              this tool cannot verify",
         ),
+        // RHEL. Every entry below is about where software comes from rather
+        // than what it is called: Red Hat's repositories are narrower than the
+        // other families', and the alternatives are third-party repositories
+        // this tool has no way to vouch for.
+        (
+            "ssh.harden",
+            Family::Rhel,
+            "RHEL 9+ reads `/etc/ssh/sshd_config.d/*.conf` from an Include at \
+             the top of the main file, and sshd takes the first occurrence of a \
+             directive — so a shipped drop-in applying the crypto policies wins \
+             over anything written here. Pending observation against a real \
+             daemon",
+        ),
+        (
+            "ssh.harden-strict",
+            Family::Rhel,
+            "same Include as ssh.harden, and the tier that writes ciphers, key \
+             exchanges and MACs — precisely the directives the shipped drop-in \
+             sets",
+        ),
+        (
+            "ssh.change-port",
+            Family::Rhel,
+            "the Include applies, and SELinux independently confines which \
+             ports sshd may bind: without `semanage port` the daemon refuses to \
+             start on a port this task would have written successfully",
+        ),
+        (
+            "ssh.allow-users",
+            Family::Rhel,
+            "same Include as ssh.harden",
+        ),
+        (
+            "caddy.install",
+            Family::Rhel,
+            "no package outside third-party repositories. EPEL carries it and \
+             the project documents a COPR as official, but the COPR's signing \
+             key lives on the host serving the packages, is on no keyserver, \
+             and dnf states its contents are held to no security level. The \
+             verifiable route is the checksummed release, which needs a table \
+             entry this build does not have yet",
+        ),
+        (
+            "caddy.validate",
+            Family::Rhel,
+            "nothing to validate until caddy.install can put a binary there",
+        ),
+        (
+            "caddy.security-headers",
+            Family::Rhel,
+            "same as caddy.validate: no installed server to configure",
+        ),
+        (
+            "fish.install",
+            Family::Rhel,
+            "EPEL-only, and unlike Caddy there is no verifiable alternative — \
+             fish publishes source rather than static binaries, and its own \
+             documentation points RHEL users at the openSUSE Build Service \
+             rather than at EPEL",
+        ),
+        (
+            "zellij.install",
+            Family::Rhel,
+            "unpackaged across Fedora and every EPEL branch. Its musl release \
+             is the same artefact Debian already installs, so this resolves as \
+             soon as the release table names the family",
+        ),
+        (
+            "mise.install",
+            Family::Rhel,
+            "unpackaged likewise. Its own RPM repository serves one flat path \
+             for every architecture and EL release, so the musl release is the \
+             sounder route — pending a table entry",
+        ),
+        (
+            "rust.install",
+            Family::Rhel,
+            "AppStream ships `rust-toolset`, which is a compiler rather than a \
+             toolchain manager — a different capability under a similar name. \
+             `rustup-init` is checksummed per architecture but only the archive \
+             path pins a version; the current-release path would invalidate a \
+             compiled digest on every rustup release",
+        ),
+        (
+            "fail2ban.install",
+            Family::Rhel,
+            "has never been in a base repository, in any release. Being Python \
+             there is no static binary to verify, and `sshguard` is EPEL-only \
+             too — RHEL ships no log-scanning tool of its own",
+        ),
+        (
+            "crowdsec.install",
+            Family::Rhel,
+            "publishes no checksums with its releases, and its documented \
+             install pipes a script into a shell to register a repository — the \
+             pattern this project rejects in its own installer",
+        ),
+        (
+            "docker-rootless.install",
+            Family::Rhel,
+            "Red Hat ships Podman and packages no Docker. Docker Inc publishes \
+             a repository covering RHEL 8-10 whose signing key is verifiable — \
+             its fingerprint is on docs.docker.com and two independent \
+             keyservers — but registering a repository is a capability this \
+             tool does not have",
+        ),
+        (
+            "updates.unattended-security",
+            Family::Rhel,
+            "packaged, but under a name that moved: `dnf-automatic` on RHEL 9, \
+             `dnf5-plugin-automatic` on RHEL 10, with four timers collapsed to \
+             one. The backend resolves a family rather than a release, so it \
+             cannot name both — and either name is wrong on half the family",
+        ),
     ];
 
     #[test]

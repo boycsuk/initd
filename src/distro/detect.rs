@@ -119,6 +119,12 @@ fn family_from_id(id: &str) -> Option<Family> {
         // its own ID and names alpine as what it is like, which is exactly the
         // case ID_LIKE exists for.
         "alpine" => Some(Family::Alpine),
+        // `rhel` is what Red Hat Enterprise Linux itself reports. The rebuilds
+        // declare their own ID and reach this family through `ID_LIKE`, but are
+        // named here as well: Rocky and AlmaLinux list `"rhel centos fedora"`,
+        // and resolving them by their own ID keeps that dependency on a field
+        // they are free to change out of the common path.
+        "rhel" | "centos" | "rocky" | "almalinux" | "fedora" => Some(Family::Rhel),
         _ => None,
     }
 }
@@ -226,6 +232,38 @@ mod tests {
 
         assert_eq!(distro.family, Family::Alpine);
         assert_eq!(distro.id, "postmarketos", "the id it reported must survive");
+    }
+
+    #[test]
+    fn detects_rhel_by_its_own_id() {
+        let distro = parse_fixture("rhel10").expect("rhel must resolve");
+
+        assert_eq!(distro.family, Family::Rhel);
+        assert_eq!(distro.id, "rhel");
+        assert_eq!(distro.version_id.as_deref(), Some("10.0"));
+    }
+
+    #[test]
+    fn a_rhel_rebuild_resolves_by_its_own_id_not_its_id_like() {
+        // Rocky declares `ID_LIKE="rhel centos fedora"`, so it would resolve
+        // through the fallback either way. Naming it in `family_from_id` keeps
+        // that off the common path: `ID` is the field a distribution owns, and
+        // resolving by it means a rebuild dropping or reordering `ID_LIKE` does
+        // not change which backend it gets.
+        let distro = parse_fixture("rocky9").expect("rocky must resolve");
+
+        assert_eq!(distro.family, Family::Rhel);
+        assert_eq!(distro.id, "rocky", "the id it reported must survive");
+    }
+
+    #[test]
+    fn an_unknown_rhel_derivative_still_resolves_through_id_like() {
+        // The rebuilds named today are not the only ones there will be, and
+        // this is the path that catches the rest.
+        assert_eq!(
+            resolve_family("oraclelinux", Some("fedora")),
+            Some(Family::Rhel)
+        );
     }
 
     #[test]

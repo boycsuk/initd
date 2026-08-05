@@ -67,7 +67,7 @@ TUI or CLI:
 - As an **administrator**, I can see which distribution `initd` detected so
   that I know it will use the right commands for my system.
   - Acceptance: `initd detect` prints the distribution name, its id, its
-    version and the resolved family (`debian`, `arch` or `alpine`).
+    version and the resolved family (`debian`, `arch`, `alpine` or `rhel`).
   - Acceptance: on an unsupported distribution the command reports which
     family was missing instead of crashing.
 - As an **administrator**, I can see which privilege escalation mechanism will

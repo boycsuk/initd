@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- RHEL and its rebuilds — Rocky, AlmaLinux, CentOS Stream, Fedora — as the
+  fourth family. Mechanically it is the closest to Arch: systemd, `wheel`, the
+  shadow suite, so every shared implementation applies unchanged and the module
+  is names plus `dnf`. What makes it a third kind of family is provenance
+  rather than naming. Red Hat's repositories are narrower than the other
+  families', so fourteen of the twenty-eight tasks declare themselves
+  unsupported, each naming the reason it could not be reached: EPEL is a
+  repository Red Hat does not support and this tool will not enable, Caddy's
+  own COPR keeps its signing key on the host serving the packages, CrowdSec
+  publishes releases without checksums, and Docker's repository is verifiable
+  but needs a capability to register one. Zellij and mise are absent for now
+  and cheaply: their musl releases are the same artefacts Debian already
+  installs.
+- The names were read from Red Hat's documentation and the projects' own rather
+  than assumed from the other families, which corrected three of them:
+  WireGuard is in AppStream and not EPEL, `rust-toolset` is a compiler where
+  `rustup` is a toolchain manager, and `dnf-automatic` changed name and timer
+  layout between RHEL 9 and 10 — one the backend cannot express, since it
+  resolves a family and not a release.
+- The SSH tasks split by whether they write to `sshd_config`. Installing the
+  daemon and authorising a key run on RHEL; the four that edit the file do not,
+  because RHEL 9 reads `/etc/ssh/sshd_config.d/*.conf` from an Include at the
+  top and sshd honours the first occurrence of a directive — so a shipped
+  drop-in applying the crypto policies beats anything appended below it. That
+  is a configuration which validates, applies, reloads and changes nothing,
+  which this project treats as worse than an error, so the tasks wait on a real
+  daemon rather than on reasoning about the parser.
 - A guard that makes a family a task forgot fail rather than go quiet. Support
   is declared as `&[Family]`, which the compiler cannot check for
   exhaustiveness, so adding a family and missing a declaration produced a task

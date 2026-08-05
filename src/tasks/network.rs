@@ -19,9 +19,12 @@ use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families these tasks support.
 ///
-/// All three ship nftables and read `/etc/sysctl.d/`, which is read at boot by
-/// both systemd's `systemd-sysctl` and the OpenRC script Alpine uses.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+/// All four ship nftables and read `/etc/sysctl.d/`, which is read at boot by
+/// both systemd's `systemd-sysctl` and the OpenRC script Alpine uses. RHEL
+/// installs nftables by default but leaves firewalld as the supported
+/// front-end, and the two own overlapping tables — a rule written here can be
+/// one firewalld does not know about.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
 
 /// The port SSH listens on unless it has been moved.
 ///

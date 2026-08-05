@@ -68,7 +68,7 @@ Starts the interactive interface. See `ui.md`.
 Prints the detected distribution and the family whose backend will be used.
 
 **Output:** `distribution`, `id`, `version` (or `(rolling)` when the system
-declares no `VERSION_ID`), and `family` (`debian`, `arch` or `alpine`).
+declares no `VERSION_ID`), and `family` (`debian`, `arch`, `alpine` or `rhel`).
 
 **Errors:** an unsupported distribution exits `1`, naming the `ID` and
 `ID_LIKE` that were found and the families that are supported.

@@ -24,7 +24,7 @@ use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Node, Progress, Task};
 
 /// Families these tasks support.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
 
 /// The interface this tool manages.
 ///
