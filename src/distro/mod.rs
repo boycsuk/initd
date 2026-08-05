@@ -28,6 +28,19 @@ pub enum Family {
 }
 
 impl Family {
+    /// Every family this build supports.
+    ///
+    /// Exists so a test can iterate families rather than restate them: a list
+    /// written out by hand is one a new family is added without. The exhaustive
+    /// `match` below is what keeps this honest — adding a variant fails to
+    /// compile there, and the array is checked against it.
+    ///
+    /// Nothing in the running program iterates families — each execution
+    /// resolves exactly one — so this is test-only by nature, like
+    /// [`crate::backend::Backend::family`] above it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const ALL: &'static [Self] = &[Self::Debian, Self::Arch, Self::Alpine];
+
     /// Stable identifier, used in messages and CLI output.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -65,5 +78,35 @@ impl Distro {
     /// declares no `PRETTY_NAME`.
     pub fn display_name(&self) -> &str {
         self.pretty_name.as_deref().unwrap_or(&self.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_family_appears_in_all() {
+        // `ALL` is a hand-written array and the compiler cannot check that it
+        // lists every variant. Round-tripping each entry through `as_str` — an
+        // exhaustive `match` that a new variant breaks — is what ties the two
+        // together: add a family, fix the `match`, and this fails until `ALL`
+        // names it too. Without this, a new family would be silently absent
+        // from every test that iterates families.
+        let names: Vec<&str> = Family::ALL.iter().map(|family| family.as_str()).collect();
+
+        assert_eq!(
+            names.len(),
+            Family::ALL.len(),
+            "ALL must not contain duplicates"
+        );
+        assert!(names.contains(&"debian"), "debian missing from ALL");
+        assert!(names.contains(&"arch"), "arch missing from ALL");
+        assert!(names.contains(&"alpine"), "alpine missing from ALL");
+        assert_eq!(
+            Family::ALL.len(),
+            3,
+            "a family was added: list it in ALL and name it here"
+        );
     }
 }

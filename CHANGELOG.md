@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A guard that makes a family a task forgot fail rather than go quiet. Support
+  is declared as `&[Family]`, which the compiler cannot check for
+  exhaustiveness, so adding a family and missing a declaration produced a task
+  that was silently unsupported — the one gap in "adding a distribution means
+  adding one module" that nothing caught. The default is now inverted: every
+  task supports every family unless it appears in a list that names the task,
+  the family and the reason, and a second test deletes an exception once the
+  limitation behind it is gone, so a stale entry cannot hide a real omission.
+  Confirmed by adding a fourth family and watching all twenty-eight tasks be
+  named; before, that produced no output at all.
 - A release pipeline: a tag builds both static binaries, confirms each is
   actually statically linked, and publishes them with their checksums. The
   static check is asserted rather than assumed — a dynamically linked binary

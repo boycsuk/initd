@@ -298,6 +298,105 @@ mod tests {
         }
     }
 
+    /// Tasks that deliberately do not support a family, and why.
+    ///
+    /// This list inverts the default. `supported_families` returns a
+    /// `&[Family]`, which the compiler cannot check for exhaustiveness — so
+    /// adding a family and forgetting a task's declaration produces a task that
+    /// is silently unsupported rather than a build that fails. Requiring every
+    /// task to support every family *unless it appears here* turns that silence
+    /// into a test failure, and forces the omission to be either fixed or
+    /// justified in writing.
+    ///
+    /// Each entry is `(task id, family, why)`. The reason is the point: an
+    /// exception with no stated cause is indistinguishable from an oversight.
+    const UNSUPPORTED: &[(&str, Family, &str)] = &[
+        (
+            "docker-rootless.install",
+            Family::Alpine,
+            "no per-user service manager at all: the engine runs under the \
+             account's own systemd instance, and OpenRC has no equivalent",
+        ),
+        (
+            "crowdsec.install",
+            Family::Alpine,
+            "Alpine does not package it, so the task is shown unsupported \
+             rather than being offered a package name `apk` would reject",
+        ),
+        (
+            "updates.unattended-security",
+            Family::Arch,
+            "a rolling release with no equivalent mechanism: upgrading it \
+             unattended means pulling whatever landed today, including changes \
+             that need manual intervention",
+        ),
+        (
+            "updates.unattended-security",
+            Family::Alpine,
+            "Alpine ships no unattended-upgrades equivalent; inventing one under \
+             this task id would make the families silently disagree about what \
+             the task does",
+        ),
+        (
+            "mise.install",
+            Family::Alpine,
+            "Alpine packages neither this nor the Rust toolchain. Both are \
+             installable there by their own installers, but this tool declines \
+             to run an installer it cannot verify",
+        ),
+        (
+            "rust.install",
+            Family::Alpine,
+            "same as mise: unpackaged on Alpine, and rustup is an installer \
+             this tool cannot verify",
+        ),
+    ];
+
+    #[test]
+    fn every_task_supports_every_family_unless_declared_otherwise() {
+        let mut gaps = Vec::new();
+
+        for task in all_tasks() {
+            for &family in Family::ALL {
+                if task.supports(family) {
+                    continue;
+                }
+
+                let declared = UNSUPPORTED
+                    .iter()
+                    .any(|(id, excepted, _)| *id == task.id() && *excepted == family);
+
+                if !declared {
+                    gaps.push(format!("{} does not support {family}", task.id()));
+                }
+            }
+        }
+
+        assert!(
+            gaps.is_empty(),
+            "these tasks omit a family without declaring why. Either add the \
+             family to the task's SUPPORTED const, or add it to UNSUPPORTED \
+             with the reason: {gaps:#?}"
+        );
+    }
+
+    #[test]
+    fn no_exception_outlives_the_gap_it_describes() {
+        // The other half of the guard. Without this, an exception granted for a
+        // real limitation stays behind once the limitation is fixed, and the
+        // list stops describing the code — at which point a genuine omission
+        // can hide behind a stale entry.
+        for (id, family, _) in UNSUPPORTED {
+            let task = find(id)
+                .unwrap_or_else(|| panic!("UNSUPPORTED names a task that no longer exists: {id}"));
+
+            assert!(
+                !task.supports(*family),
+                "{id} now supports {family}: remove its UNSUPPORTED entry"
+            );
+        }
+    }
+
     #[test]
     fn tasks_can_be_found_by_id() {
         assert!(find("ssh.install").is_some());
