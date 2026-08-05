@@ -16,25 +16,31 @@ use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
 use crate::tasks::{Category, Node, Progress, Task};
 
-/// Families the tasks that write to `sshd_config` support.
-///
-/// RHEL is absent, and not because of a name. Its `sshd_config` opens with
-/// `Include /etc/ssh/sshd_config.d/*.conf`, and sshd honours the *first*
-/// occurrence of a directive rather than the last — so a `50-redhat.conf`
-/// applying the system crypto policies wins over anything appended to the main
-/// file. A task writing there would validate, apply, reload cleanly and change
-/// nothing, which is the one failure this project treats as worse than an
-/// error. Settling it means observing a real daemon, not reasoning about the
-/// parser, so these declare Debian, Arch and Alpine until that happens.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+/// Families every SSH task supports.
+const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
 
-/// Families the tasks that do not edit `sshd_config` support.
+/// Families that let this tool choose the SSH cryptography.
 ///
-/// Installing the daemon and authorising a key touch a package, a unit and a
-/// file under a home directory — none of which the `Include` above has any
-/// bearing on.
-const CONFIG_FREE_SUPPORTED: &[Family] =
-    &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
+/// RHEL is absent, and it is the one place its `Include` costs anything. Its
+/// `sshd_config` opens with `Include /etc/ssh/sshd_config.d/*.conf` and sshd
+/// honours the *first* occurrence of a directive, so the shipped
+/// `50-redhat.conf` is read before anything this tool appends. That file names
+/// few directives, but among them — through a nested include of
+/// `/etc/crypto-policies/back-ends/opensshserver.config` — are exactly the
+/// three this task exists to set. Measured against a daemon rather than
+/// reasoned about: `Ciphers aes256-gcm@openssh.com` written to the main file
+/// left `sshd -T` still reporting the full policy list, and `sshd -t` approved
+/// the file either way.
+///
+/// A drop-in numbered below 50 does win, and was confirmed to. It is not used,
+/// because on RHEL the cryptography a daemon accepts is the system's decision
+/// rather than one application's: `update-crypto-policies` sets it for every
+/// service at once, and a file contradicting it in silence would leave two
+/// answers to the same question with nothing reporting the disagreement. The
+/// other hardening tiers are unaffected — `PermitRootLogin`,
+/// `PasswordAuthentication`, `Port` and `AllowUsers` are named nowhere in the
+/// drop-in and take effect from the main file.
+const CRYPTO_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
 
 /// Where a user's authorised keys live, relative to their home directory.
 const AUTHORIZED_KEYS_RELATIVE: &str = ".ssh/authorized_keys";
@@ -121,7 +127,7 @@ impl Task for InstallSsh {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        CONFIG_FREE_SUPPORTED
+        SUPPORTED
     }
 
     fn run(
@@ -336,7 +342,7 @@ impl Task for HardenSshStrict {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+        CRYPTO_SUPPORTED
     }
 
     fn run(
@@ -494,7 +500,7 @@ impl Task for AuthorizeKey {
     }
 
     fn supported_families(&self) -> &'static [Family] {
-        CONFIG_FREE_SUPPORTED
+        SUPPORTED
     }
 
     fn run(

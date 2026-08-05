@@ -29,7 +29,7 @@
 
 use std::process::{Command, Output};
 
-use super::{Image, binary_path};
+use super::{Image, binary_for};
 
 /// How long to wait for systemd to finish booting.
 ///
@@ -59,8 +59,15 @@ impl SystemdContainer {
         // the name alone.
         remove_container(&name);
 
-        let binary = binary_path();
-        let mount = format!("{binary}:/usr/local/bin/initd:ro");
+        // `binary_for` rather than `binary_path`: the image decides which build
+        // it can execute. Mounting the glibc build unconditionally worked for
+        // as long as every image that reached here had a glibc new enough to
+        // run it — Alpine's scenarios skip before this line, having no systemd
+        // to boot, so the static path was never exercised. Rocky boots and has
+        // an older glibc, so the mounted binary died with `version GLIBC_2.39
+        // not found` on every command, which surfaced as units that were never
+        // enabled rather than as a binary that could not start.
+        let mount = format!("{}:/usr/local/bin/initd:ro", binary_for(image)?);
 
         let started = Command::new("docker")
             .args([

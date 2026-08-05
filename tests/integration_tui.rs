@@ -53,11 +53,24 @@ macro_rules! tui {
 
 /// Authorises a key for root, so the lockout guard permits hardening, and
 /// records the configuration for later comparison.
+///
+/// The daemon is waited for rather than assumed. `systemctl start` returns once
+/// systemd has accepted the job, not once the unit is up, and `ssh.harden`
+/// reloads — which systemd refuses outright on an inactive unit, with
+/// `sshd.service is not active, cannot reload`. That fails the task, and a
+/// failed task offers nothing to keep or revert, so the verification window
+/// these scenarios exist to observe never opens. It surfaced on RHEL, where
+/// installing the package leaves the unit enabled but stopped rather than
+/// started, but the race was there for any family whose daemon was slow enough.
 const PREPARE_FOR_HARDENING: &str = concat!(
     "initd authorize-key root 'ssh-ed25519 ",
     "AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd",
     "' >/dev/null 2>&1; \
      systemctl start ssh sshd >/dev/null 2>&1; \
+     for _ in $(seq 30); do \
+       systemctl is-active --quiet ssh sshd && break; \
+       sleep 0.2; \
+     done; \
      cp /etc/ssh/sshd_config /tmp/before"
 );
 

@@ -214,12 +214,64 @@ pub const ALPINE: Image = Image {
     installed_needle: "openssh",
 };
 
+/// RHEL, through Rocky: `dnf`, systemd, `wheel`.
+///
+/// A rebuild rather than Red Hat's own image, because RHEL proper needs a
+/// subscription to reach its repositories and a test that cannot install a
+/// package proves nothing. Rocky resolves to the same family through its `ID`,
+/// which `detects_rhel_by_its_own_id`'s sibling test pins.
+///
+/// Every command below was run against the base image before being written
+/// here, which corrected three that had looked obvious: the base image ships
+/// neither `systemctl` nor `/usr/lib/systemd/systemd`, so systemd is genuinely
+/// installed rather than declared present; `nft` is absent too, despite
+/// nftables being the subsystem firewalld drives; and the client package is
+/// `openssh-clients`, plural, where every other family spells it singular or
+/// ships one package for both.
+pub const RHEL: Image = Image {
+    name: "rockylinux/rockylinux:9",
+    family: "rhel",
+    refresh: "dnf makecache -q",
+    install_ssh: "dnf install -y -q openssh-server",
+    // Plural, and the one name here a scenario would fail on quietly: without
+    // a client there is nothing to connect with, which reads as the daemon
+    // refusing rather than as a missing package.
+    install_ssh_client: "dnf install -y -q openssh-clients",
+    // `useradd` is in the base image, from shadow-utils.
+    install_useradd: "true",
+    install_tmux: "dnf install -y -q tmux",
+    // Not a no-op, unlike the other three: a Rocky base image has no init at
+    // all until this runs. It refreshes first because the image build runs this
+    // field on its own, without the `refresh` the ephemeral path prepends —
+    // which is why Debian's entry carries its own `apt-get update` too.
+    install_systemd: "dnf makecache -q && dnf install -y -q systemd",
+    init_path: "/usr/lib/systemd/systemd",
+    ssh_unit: "sshd.service",
+    // Not because glibc is missing, as on Alpine, but because it is older than
+    // the one the default build links against: a debug binary built on a
+    // current host dies here with `version GLIBC_2.39 not found`. That is the
+    // failure musl was chosen to avoid, and this is the first image in the
+    // matrix to demonstrate it rather than describe it.
+    needs_static_binary: true,
+    install_nftables: "dnf install -y -q nftables",
+    install_wireguard: "dnf install -y -q wireguard-tools",
+    // Two packages where the other families need one or none. `sysctl` comes
+    // from procps-ng rather than procps, and `/etc/sysctl.d` — the directory a
+    // drop-in has to land in to survive a reboot — is owned by systemd-udev
+    // here, not by systemd. Asked of the package database rather than assumed:
+    // `dnf provides /etc/sysctl.d` names udev, and installing systemd alone
+    // leaves the directory absent.
+    install_sysctl: "dnf install -y -q procps-ng systemd-udev",
+    query_ssh: "rpm -q openssh-server",
+    installed_needle: "openssh-server",
+};
+
 /// Every image the shared scenarios run against.
 ///
-/// Only families [`crate::distro::Family`] actually resolves belong here. RHEL
-/// and SUSE are absent because their backends are, and a matrix entry without a
-/// backend would fail for code deliberately not written yet.
-pub const IMAGES: &[&Image] = &[&DEBIAN, &ARCH, &ALPINE];
+/// Only families [`crate::distro::Family`] actually resolves belong here. SUSE
+/// is absent because its backend is, and a matrix entry without a backend would
+/// fail for code deliberately not written yet.
+pub const IMAGES: &[&Image] = &[&DEBIAN, &ARCH, &ALPINE, &RHEL];
 
 /// A public key the hardening tasks accept, so the lockout guard lets them
 /// proceed. Every scenario that hardens needs one first.
@@ -659,6 +711,7 @@ macro_rules! for_each_image {
                 $crate::for_each_image!(@image debian, common::DEBIAN, $image, $body);
                 $crate::for_each_image!(@image arch, common::ARCH, $image, $body);
                 $crate::for_each_image!(@image alpine, common::ALPINE, $image, $body);
+                $crate::for_each_image!(@image rhel, common::RHEL, $image, $body);
             }
         )*
     };

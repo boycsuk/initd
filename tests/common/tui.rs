@@ -66,12 +66,36 @@ impl Tui {
             install_ssh = image.install_ssh,
         ));
 
+        // Resized after creation, and then checked, because `-x`/`-y` are a
+        // request rather than an instruction: with no client attached, tmux is
+        // free to clamp a detached session to the terminal that created it, and
+        // Rocky's tmux does. That produced an 80x23 pane where 120x40 was
+        // asked for — one row below the height at which the interface draws a
+        // key bar at all, so scenarios reading it found the interface had
+        // correctly omitted what they were looking for. `-x`/`-y` are kept as
+        // well: where they are honoured the window opens at the right size and
+        // never redraws.
         let started = container.exec(&format!(
-            "tmux new-session -d -s {SESSION} -x {WIDTH} -y {HEIGHT} initd"
+            "tmux new-session -d -s {SESSION} -x {WIDTH} -y {HEIGHT} initd; \
+             tmux resize-window -t {SESSION} -x {WIDTH} -y {HEIGHT} 2>/dev/null; \
+             tmux display-message -p -t {SESSION} '#{{pane_width}}x#{{pane_height}}'"
         ));
         if !started.status.success() {
             return None;
         }
+
+        // A pane smaller than asked for makes every later assertion a guess
+        // about which layout the interface chose, so it is refused here rather
+        // than diagnosed from a screen dump further down.
+        let pane = String::from_utf8_lossy(&started.stdout);
+        let pane = pane.trim();
+        assert_eq!(
+            pane,
+            format!("{WIDTH}x{HEIGHT}"),
+            "tmux gave a {pane} pane where {WIDTH}x{HEIGHT} was asked for; \
+             the interface sheds its key bar below 24 rows, and scenarios \
+             reading it would report the missing bar as missing output"
+        );
 
         let tui = Self { container };
         std::thread::sleep(SETTLE * 2);

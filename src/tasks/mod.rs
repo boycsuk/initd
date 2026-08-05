@@ -355,32 +355,16 @@ mod tests {
         // other families', and the alternatives are third-party repositories
         // this tool has no way to vouch for.
         (
-            "ssh.harden",
-            Family::Rhel,
-            "RHEL 9+ reads `/etc/ssh/sshd_config.d/*.conf` from an Include at \
-             the top of the main file, and sshd takes the first occurrence of a \
-             directive — so a shipped drop-in applying the crypto policies wins \
-             over anything written here. Pending observation against a real \
-             daemon",
-        ),
-        (
             "ssh.harden-strict",
             Family::Rhel,
-            "same Include as ssh.harden, and the tier that writes ciphers, key \
-             exchanges and MACs — precisely the directives the shipped drop-in \
-             sets",
-        ),
-        (
-            "ssh.change-port",
-            Family::Rhel,
-            "the Include applies, and SELinux independently confines which \
-             ports sshd may bind: without `semanage port` the daemon refuses to \
-             start on a port this task would have written successfully",
-        ),
-        (
-            "ssh.allow-users",
-            Family::Rhel,
-            "same Include as ssh.harden",
+            "the only task RHEL's `Include` costs anything. Its shipped \
+             `50-redhat.conf` is read before the main file and carries the \
+             crypto policies, which are exactly the ciphers, key exchanges and \
+             MACs this tier sets — measured against a daemon, not inferred: the \
+             value written was absent from `sshd -T` while `sshd -t` approved \
+             the file. A drop-in numbered below 50 does win, and is not used, \
+             because on RHEL that choice belongs to `update-crypto-policies` \
+             system-wide rather than to one application contradicting it",
         ),
         (
             "caddy.install",
@@ -413,9 +397,9 @@ mod tests {
         (
             "zellij.install",
             Family::Rhel,
-            "unpackaged across Fedora and every EPEL branch. Its musl release \
-             is the same artefact Debian already installs, so this resolves as \
-             soon as the release table names the family",
+            "unpackaged across Fedora and every EPEL branch. The release table \
+             has no family dimension and needs none — being musl, the artefact \
+             is byte for byte the one Debian already installs",
         ),
         (
             "mise.install",

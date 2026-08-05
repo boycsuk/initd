@@ -222,6 +222,37 @@ pub fn centred_percent(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     )
 }
 
+/// Reserves the last row of `area`, returning what precedes it and that row.
+///
+/// For a dialog whose final line must be visible whatever the prose above it
+/// does. Stacking both in one paragraph makes the choice the first thing lost:
+/// a body long enough to fill the area pushes it past the bottom border, and it
+/// does not wrap or truncate, it simply is not drawn — leaving a destructive
+/// operation asking a question with no answers on screen.
+///
+/// An area one row tall yields an empty rect for the prose rather than
+/// borrowing the row back: whatever else is missing, the choice is drawn.
+pub fn split_off_last_row(area: Rect) -> (Rect, Rect) {
+    split_off_last_rows(area, 1)
+}
+
+/// Reserves the last `rows` of `area`, returning what precedes them.
+///
+/// The generalisation of [`split_off_last_row`], for a dialog with more than one
+/// band that must survive a body long enough to crowd it out. Where the area
+/// cannot afford the reservation, the reserved band takes what there is and the
+/// remainder is empty: the rows held back are the ones the caller judged more
+/// important than the prose above them, so they are the last to be given up
+/// rather than the first.
+pub fn split_off_last_rows(area: Rect, rows: u16) -> (Rect, Rect) {
+    let reserved = rows.min(area.height);
+
+    let [above, last] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(reserved)]).areas(area);
+
+    (above, last)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +387,29 @@ mod tests {
 
         assert_eq!(dialog.width, 1200);
         assert_eq!(dialog.height, 400);
+    }
+
+    #[test]
+    fn the_reserved_row_is_the_last_one_and_the_prose_takes_the_rest() {
+        let (prose, choice) = split_off_last_row(area(60, 10));
+
+        assert_eq!(prose.height, 9);
+        assert_eq!(choice.height, 1);
+        assert_eq!(
+            choice.y,
+            prose.y + prose.height,
+            "the reserved row must sit below the prose, not overlap it"
+        );
+    }
+
+    #[test]
+    fn the_reserved_row_survives_an_area_with_no_room_to_spare() {
+        // The row this reserves is the one the operator answers with, so it is
+        // the last thing to give up rather than the first.
+        let (prose, choice) = split_off_last_row(area(60, 1));
+
+        assert_eq!(prose.height, 0);
+        assert_eq!(choice.height, 1);
     }
 
     #[test]

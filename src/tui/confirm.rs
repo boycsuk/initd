@@ -15,6 +15,13 @@ use super::{layout, style};
 const WIDTH_PERCENT: u16 = 60;
 const HEIGHT_PERCENT: u16 = 40;
 
+/// Rows held back for the lockout warning.
+///
+/// Two, because the warnings are a sentence rather than a phrase and wrap once
+/// at the dialog's width. A band too small truncates the sentence; one too
+/// large steals rows from a description that is merely useful.
+const WARNING_ROWS: u16 = 2;
+
 /// A pending confirmation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirm {
@@ -59,26 +66,60 @@ impl Confirm {
         // Clear first, or the interface underneath shows through the dialog.
         frame.render_widget(Clear, area);
 
-        let mut lines = vec![Line::from(self.body.clone()), Line::from("")];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(self.title.clone())
+            .border_style(style::DIALOG_BORDER_DANGER);
+        let inner = block.inner(area);
 
-        if let Some(ref warning) = self.warning {
-            lines.push(Line::styled(warning.clone(), style::DANGER_TEXT));
-            lines.push(Line::from(""));
-        }
+        frame.render_widget(block, area);
 
-        lines.push(self.choice_line());
+        // The choice is laid out before the prose rather than appended after
+        // it. Stacked in one paragraph, a body long enough to fill the dialog
+        // pushed `Yes` and `No` past the bottom border and they simply vanished
+        // — leaving a destructive operation asking a question with no visible
+        // answers. Found on Rocky, whose longer `PRETTY_NAME` narrowed the
+        // dialog enough to wrap `ssh.harden`'s description one line further,
+        // but the description was always one terminal size away from doing it
+        // on any family.
+        let (above, choice_area) = layout::split_off_last_row(inner);
 
-        let dialog = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(self.title.clone())
-                    .border_style(style::DIALOG_BORDER_DANGER),
-            )
+        // The warning is given a band of its own too, below the description and
+        // above the choice, because it is the one line here that must be read.
+        // Appended to the description it was the first thing a long body pushed
+        // out of sight — and a dialog that has lost its warning still looks
+        // like a dialog, so nothing reports it. The description is what yields
+        // instead: by the time this is on screen the operator has chosen the
+        // task and can scroll back to its detail pane, whereas the risk of
+        // losing the machine is stated only here.
+        let (body_area, warning_area) = match self.warning {
+            Some(_) => {
+                let (body, warning) = layout::split_off_last_rows(above, WARNING_ROWS);
+                (body, Some(warning))
+            }
+            None => (above, None),
+        };
+
+        let body = Paragraph::new(self.body.clone())
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Left);
 
-        frame.render_widget(dialog, area);
+        frame.render_widget(body, body_area);
+
+        if let (Some(warning), Some(warning_area)) = (self.warning.as_ref(), warning_area) {
+            frame.render_widget(
+                Paragraph::new(warning.clone())
+                    .style(style::DANGER_TEXT)
+                    .wrap(Wrap { trim: true })
+                    .alignment(Alignment::Left),
+                warning_area,
+            );
+        }
+
+        frame.render_widget(
+            Paragraph::new(self.choice_line()).alignment(Alignment::Left),
+            choice_area,
+        );
     }
 
     /// The yes/no line, with the current selection highlighted.
@@ -101,6 +142,83 @@ impl Confirm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Renders a dialog and returns the screen as text.
+    fn rendered(confirm: &Confirm, width: u16, height: u16) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("the test backend must build");
+
+        terminal
+            .draw(|frame| confirm.render(frame))
+            .expect("the dialog must draw");
+
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A description long enough to fill the dialog at any usable size.
+    ///
+    /// `ssh.harden`'s own, which is what exposed this: it wraps to more lines
+    /// than the dialog has rows, so whatever is laid out after it is what gets
+    /// lost.
+    const LONG_BODY: &str = "Disables root login, password authentication, agent and X11 \
+         forwarding, tunnelling and user environments; limits authentication attempts to 3 \
+         and the login grace period to 30 seconds; disconnects idle sessions after 10 \
+         minutes; and turns on verbose logging so the key each login used is recorded.";
+
+    #[test]
+    fn a_body_too_long_for_the_dialog_cannot_push_the_choice_off_screen() {
+        // The failure this guards against is silent: the dialog still looks
+        // like a dialog, and a destructive operation is left asking a question
+        // with no visible answers.
+        let confirm = Confirm::new("Harden the SSH configuration", LONG_BODY);
+
+        let screen = rendered(&confirm, 80, 24);
+
+        assert!(screen.contains("Yes"), "the choice must be drawn: {screen}");
+        assert!(screen.contains("No"), "the choice must be drawn: {screen}");
+    }
+
+    #[test]
+    fn a_body_too_long_for_the_dialog_cannot_push_the_warning_off_screen() {
+        // The warning outranks the description: by the time this is on screen
+        // the operator has chosen the task, but the risk of losing the machine
+        // is stated only here.
+        let confirm = Confirm::new("Harden the SSH configuration", LONG_BODY)
+            .with_warning("This can lock you out of a remote server.");
+
+        let screen = rendered(&confirm, 80, 24);
+
+        assert!(
+            screen.contains("lock you out"),
+            "the warning must survive a long body: {screen}"
+        );
+        assert!(screen.contains("Yes"), "and so must the choice: {screen}");
+    }
+
+    #[test]
+    fn the_warning_and_choice_survive_a_narrow_terminal() {
+        // Narrower means the body wraps to more lines, which is what crowds the
+        // rest out — the Rocky failure was a wider `PRETTY_NAME` doing exactly
+        // this by one line.
+        let confirm = Confirm::new("Harden the SSH configuration", LONG_BODY)
+            .with_warning("This can lock you out of a remote server.");
+
+        let screen = rendered(&confirm, layout::MIN_WIDTH, layout::MIN_HEIGHT);
+
+        assert!(
+            screen.contains("lock you out"),
+            "the warning must survive the smallest usable terminal: {screen}"
+        );
+        assert!(screen.contains("Yes"), "and so must the choice: {screen}");
+    }
 
     #[test]
     fn defaults_to_the_safe_answer() {

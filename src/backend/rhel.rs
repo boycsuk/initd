@@ -43,14 +43,23 @@ const SSH_SERVICE: &str = "sshd.service";
 
 /// Where the OpenSSH server reads its configuration.
 ///
-/// RHEL 9 and later add `Include /etc/ssh/sshd_config.d/*.conf` near the top of
-/// this file, and sshd takes the *first* occurrence of a directive rather than
-/// the last. A `50-redhat.conf` shipped there applies the system crypto
-/// policies, so an algorithm written at the end of the main file is overridden
-/// by a drop-in that was read earlier. The hardening tasks are declared
-/// unsupported here until that is settled against a real daemon rather than
-/// guessed at: the failure mode is a configuration that validates, applies, and
-/// silently does not take effect.
+/// RHEL 9 and later open this file with `Include /etc/ssh/sshd_config.d/*.conf`
+/// and sshd honours the *first* occurrence of a directive, so a shipped drop-in
+/// is read before anything appended below it. What that costs was measured
+/// against a real daemon rather than reasoned about, because `sshd -t` validates
+/// either way and the failure is silent:
+///
+/// - `50-redhat.conf` names only `SyslogFacility`, `UsePAM`, GSSAPI, X11
+///   forwarding, `PrintMotd`, and — through a nested include of
+///   `/etc/crypto-policies/back-ends/opensshserver.config` — the ciphers, key
+///   exchanges and MACs.
+/// - Everything it does not name takes effect from the main file.
+///   `PermitRootLogin`, `PasswordAuthentication`, `Port` and `AllowUsers` were
+///   each written there and read back from `sshd -T` as the daemon's effective
+///   value.
+///
+/// So this path is right for every task except `ssh.harden-strict`, whose whole
+/// subject is the three directives the crypto policies own.
 const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
 
 /// The WireGuard tools, in AppStream rather than EPEL.
@@ -136,12 +145,13 @@ const MISE_PACKAGE: &str = "";
 /// break itself. Until a version is pinned, the capability is absent.
 const RUST_PACKAGE: &str = "";
 
-/// The nftables front-end, in BaseOS and installed by default.
+/// The nftables front-end, in BaseOS.
 ///
-/// Present on every RHEL host without being asked for. Its unit ships disabled,
-/// because firewalld is the supported front-end and owns its own nftables
-/// tables — driving both is how a rule becomes invisible to the tool that did
-/// not write it, which is the hazard [`Nftables`] already documents for `ufw`.
+/// Packaged rather than preinstalled — a Rocky 9 base image ships neither `nft`
+/// nor `firewall-cmd`, which is why the enable task installs before it filters.
+/// firewalld is the front-end Red Hat supports and it owns its own nftables
+/// tables, so the two are resolved as alternatives rather than driven together:
+/// that is the hazard [`Nftables`] already documents for `ufw`.
 const NFTABLES_PACKAGE: &str = "nftables";
 
 /// fail2ban is packaged only in EPEL.

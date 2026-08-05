@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- RHEL enters the container matrix, through Rocky, and the backend written
+  against a mock is observed for the first time. Every command in its image
+  entry was run against the base image before being written down, which
+  corrected three that had looked obvious: the image ships neither `systemctl`
+  nor an init, so systemd is genuinely installed rather than declared present;
+  `nft` is absent despite nftables being the subsystem firewalld drives; and
+  the client package is `openssh-clients`, plural, where the other families
+  spell it singular or ship one package for both. `/etc/sysctl.d` is owned by
+  `systemd-udev` here rather than by `systemd` — asked of `dnf provides` rather
+  than assumed, after a scenario found the directory missing.
+- Three of the four SSH tasks held back from RHEL are returned to it, because
+  the Include was measured rather than reasoned about. `50-redhat.conf` names
+  only `SyslogFacility`, `UsePAM`, GSSAPI, X11 forwarding, `PrintMotd` and —
+  through a nested include — the crypto policies. `PermitRootLogin`,
+  `PasswordAuthentication`, `Port` and `AllowUsers` are named nowhere in it and
+  were each read back from `sshd -T` as the daemon's effective value after
+  being written to the main file. Only `ssh.harden-strict` remains unsupported,
+  and now for a reason that was seen rather than inferred: a drop-in numbered
+  below 50 does beat the shipped one and is deliberately not used, since on
+  RHEL the cryptography a daemon accepts belongs to `update-crypto-policies`
+  system-wide rather than to one application contradicting it in silence.
 - firewalld, the front-end RHEL installs and runs out of the box, and with it
   the recognition that a family may present more than one. `Backend::firewall`
   became `firewalls`, a list tried in order, and which of them holds a host's
@@ -105,6 +126,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it has no window to offer and nothing rolls a mistake back.
 
 ### Fixed
+- The confirmation dialog could lose its answers. Body, warning and choice were
+  one stacked paragraph, so a description long enough to fill the dialog pushed
+  `Yes` and `No` past the bottom border, where they were not truncated but
+  simply not drawn — leaving a destructive operation asking a question with no
+  visible way to answer it, and looking otherwise normal. The warning is the
+  other casualty and outranks the description: by the time the dialog is up the
+  operator has chosen the task, but the risk of losing the machine is stated
+  only there. Both now have bands of their own and the description yields
+  instead. Found on Rocky, whose longer `PRETTY_NAME` wrapped `ssh.harden`'s
+  description one line further, but any family was one terminal size away from
+  it — a comment in the TUI harness had recorded the symptom and worked around
+  it by enlarging the terminal.
+- The privileged systemd containers mounted the glibc build regardless of what
+  the image could execute. Alpine's scenarios skip before that line, having no
+  systemd to boot, so the static path was never exercised there; Rocky boots
+  and carries an older glibc, so every command died with `version GLIBC_2.39
+  not found` and surfaced as units that were never enabled rather than as a
+  binary that could not start. The helper that picks the right build already
+  existed and is now used.
+- The TUI harness asked tmux for a 120x40 pane and did not check it got one.
+  `-x`/`-y` are a request: with no client attached tmux may clamp a detached
+  session to the terminal that created it, and Rocky's does, yielding 80x23 —
+  one row below the height at which the interface draws a key bar at all. The
+  scenarios then read a screen with no key bar and reported missing output for
+  an interface that had shed it exactly as designed. The window is resized after
+  creation and the size asserted, so a pane smaller than asked for fails where
+  it happens rather than as a puzzle further down.
 - The two firewall front-ends are now alternatives rather than layers, which
   they had to become before RHEL could enable a firewall at all. nftables
   evaluates every chain registered on a hook, and while `accept` passes a packet
