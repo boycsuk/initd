@@ -119,7 +119,7 @@ fn terminal_error(source: io::Error) -> Error {
 /// Starts the TUI, guaranteeing the terminal is restored afterwards.
 pub fn run() -> Result<()> {
     let distro = crate::distro::detect::detect()?;
-    let backend = crate::backend::for_family(distro.family);
+    let backend = crate::backend::for_distro(&distro);
 
     // The escalator is probed before it is handed to the executor, so the
     // header can state how root will be obtained without the executor having

@@ -79,6 +79,15 @@ pub enum Msg {
         id_like: Option<String>,
     },
 
+    RepositoryKeyMismatch {
+        repository: String,
+        expected: String,
+        found: String,
+    },
+    RepositoryKeyUnverifiable {
+        repository: String,
+    },
+
     NoFirewallFrontEnd,
 
     // --- Command execution ---

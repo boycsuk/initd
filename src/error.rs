@@ -48,6 +48,23 @@ pub enum Error {
     /// The distribution was identified but belongs to no supported family.
     UnsupportedDistro { id: String, id_like: Option<String> },
 
+    /// A repository's signing key is not the one this build expects.
+    ///
+    /// Carries both fingerprints because the difference is the evidence: an
+    /// administrator seeing only "key mismatch" cannot tell a compromised
+    /// mirror from a project that rotated its key.
+    RepositoryKeyMismatch {
+        repository: String,
+        expected: String,
+        found: String,
+    },
+
+    /// A repository's signing key could not be fetched or read.
+    ///
+    /// Distinct from a mismatch: nothing was proven either way, so the
+    /// repository is not registered and nothing is claimed about it.
+    RepositoryKeyUnverifiable { repository: String },
+
     /// No inbound filtering front-end is present on this host.
     ///
     /// Carries nothing: which front-ends were tried is a property of the
@@ -268,6 +285,18 @@ impl Error {
             Self::UnsupportedDistro { id, id_like } => Msg::UnsupportedDistro {
                 id: id.clone(),
                 id_like: id_like.clone(),
+            },
+            Self::RepositoryKeyMismatch {
+                repository,
+                expected,
+                found,
+            } => Msg::RepositoryKeyMismatch {
+                repository: repository.clone(),
+                expected: expected.clone(),
+                found: found.clone(),
+            },
+            Self::RepositoryKeyUnverifiable { repository } => Msg::RepositoryKeyUnverifiable {
+                repository: repository.clone(),
             },
             Self::NoFirewallFrontEnd => Msg::NoFirewallFrontEnd,
             Self::ProgramNotFound { program } => Msg::ProgramNotFound {

@@ -17,6 +17,7 @@ use super::firewalld::Firewalld;
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
+use super::rpm_repositories::RpmRepositories;
 use super::semanage::Semanage;
 use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
@@ -28,7 +29,8 @@ use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
-    SelinuxManager, ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
+    Repository, RepositoryManager, SelinuxManager, ServiceManager, SysctlManager,
+    UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -78,15 +80,47 @@ const WIREGUARD_SERVICE: &str = "wg-quick@";
 /// Where WireGuard keeps its configuration.
 const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 
-/// Rootless Docker has no package in any Red Hat repository.
+/// The rootless Docker extras, from Docker's own repository.
 ///
-/// Red Hat ships Podman instead and does not package Docker at all. Docker Inc
-/// publishes a repository covering RHEL 8, 9 and 10, and it is verifiable —
-/// the RPM signing key's fingerprint is published on `docs.docker.com` and on
-/// two independent keyservers, so it can be pinned and checked rather than
-/// trusted on arrival. Registering a repository is a capability this tool does
-/// not have yet, so the task declares itself unsupported until it does.
-const DOCKER_ROOTLESS_PACKAGE: &str = "";
+/// Red Hat ships Podman and packages no Docker at all, so unlike every other
+/// name here this one is not in a repository the host already has — see
+/// [`Backend::repository_for`], which is how the task learns it must register
+/// one first. The name matches Debian's because it is the same upstream
+/// packaging: `docker-ce` carries the daemon and this carries the rootless
+/// setup script, which is the part the task actually runs.
+const DOCKER_ROOTLESS_PACKAGE: &str = "docker-ce-rootless-extras";
+
+/// Where Docker serves packages for Red Hat Enterprise Linux itself.
+const DOCKER_REPO_RHEL: &str = "https://download.docker.com/linux/rhel";
+
+/// Where it serves the rebuilds — Rocky, AlmaLinux, CentOS Stream.
+///
+/// Not interchangeable with the path above: Docker builds one set of packages
+/// for the rebuilds and another for Red Hat's own, and pointing a host at the
+/// wrong one yields a repository whose `$releasever` resolves to nothing it
+/// carries.
+const DOCKER_REPO_CENTOS: &str = "https://download.docker.com/linux/centos";
+
+/// Where each path serves its signing key.
+///
+/// Two URLs and one key: both were fetched and hash identically, which is why a
+/// single fingerprint below covers either. The URL follows whichever repository
+/// this host uses rather than deciding anything.
+const DOCKER_KEY_RHEL: &str = "https://download.docker.com/linux/rhel/gpg";
+const DOCKER_KEY_CENTOS: &str = "https://download.docker.com/linux/centos/gpg";
+
+/// The fingerprint of the key Docker signs its RPMs with.
+///
+/// Published on `docs.docker.com` and on `keys.openpgp.org` and
+/// `keyserver.ubuntu.com` — three hosts with different operators, none of them
+/// the one serving the key. That is what makes this worth compiling in: an
+/// attacker who can replace the key on the CDN cannot also replace this value,
+/// so the comparison has something independent to fail against.
+///
+/// Note it is *not* the fingerprint in Docker's Debian documentation. The
+/// `.deb` and `.rpm` archives are signed by different keys with different UIDs,
+/// and using the Debian one here would refuse every legitimate key.
+const DOCKER_RPM_FINGERPRINT: &str = "060A61C51B558A7F742B77AAC52FEB6B621E9F35";
 
 /// The rootless engine's user unit, once a mechanism exists to install it.
 const DOCKER_USER_UNIT: &str = "docker.service";
@@ -198,14 +232,50 @@ pub struct RhelBackend {
     account_writer: ShadowAccounts,
     sysctl: ProcfsSysctl,
     selinux: Semanage,
+    repositories: RpmRepositories,
+    /// Which of Docker's per-distribution paths serves this host.
+    ///
+    /// The one thing in this backend that varies within the family rather than
+    /// between families.
+    docker_repo_path: &'static str,
+    /// Where that path serves its signing key.
+    docker_key_path: &'static str,
     wireguard: WgTools,
     user_services: SystemdUserServices,
     binaries: ReleaseInstaller,
 }
 
 impl RhelBackend {
+    /// Builds a backend for a named distribution in this family.
+    ///
+    /// The `ID` decides one thing and only one: which of Docker's per-
+    /// distribution repositories serves this host. Red Hat's own is
+    /// `linux/rhel`; the rebuilds are served by `linux/centos`, which Docker
+    /// documents and which is not interchangeable — a `$releasever` that the
+    /// wrong path does not carry yields a repository with no packages in it.
+    pub fn for_distribution(id: &str) -> Self {
+        let (repo, key) = match id.to_ascii_lowercase().as_str() {
+            "rhel" => (DOCKER_REPO_RHEL, DOCKER_KEY_RHEL),
+            // Rocky, AlmaLinux, CentOS Stream and anything else reaching this
+            // family through `ID_LIKE`. Docker builds one set of packages for
+            // the rebuilds and serves them from here.
+            _ => (DOCKER_REPO_CENTOS, DOCKER_KEY_CENTOS),
+        };
+
+        Self {
+            docker_repo_path: repo,
+            docker_key_path: key,
+            ..Self::new()
+        }
+    }
+
     pub const fn new() -> Self {
         Self {
+            // The rebuilds' paths are the default because they are the common
+            // case: `for_distribution` narrows to Red Hat's own when the `ID`
+            // says so.
+            docker_repo_path: DOCKER_REPO_CENTOS,
+            docker_key_path: DOCKER_KEY_CENTOS,
             packages: DnfPackages,
             services: SystemdServices::new(),
             files: UnixFiles::new(),
@@ -213,6 +283,7 @@ impl RhelBackend {
             account_writer: ShadowAccounts::new(),
             sysctl: ProcfsSysctl::new(),
             selinux: Semanage::new(),
+            repositories: RpmRepositories::new(),
             wireguard: WgTools::new(),
             user_services: SystemdUserServices::new(),
             binaries: ReleaseInstaller::new(),
@@ -318,6 +389,32 @@ impl Backend for RhelBackend {
 
     fn sysctl(&self) -> &dyn SysctlManager {
         &self.sysctl
+    }
+
+    fn repositories(&self) -> Option<&dyn RepositoryManager> {
+        Some(&self.repositories)
+    }
+
+    fn repository_for(&self, capability: Capability) -> Option<Repository> {
+        match capability {
+            // The one capability Red Hat's repositories do not carry and whose
+            // upstream can nonetheless be verified: Docker publishes the
+            // fingerprint of its RPM signing key on its own documentation and
+            // on two keyservers, so the key that arrives can be checked against
+            // a value this build did not learn from the same host.
+            Capability::DockerRootless => Some(Repository {
+                name: "docker-ce",
+                base_url: self.docker_repo_path,
+                // Served beside the packages it signs, on whichever path this
+                // host uses. Both paths serve the same key — the fingerprint
+                // below was read from `linux/rhel` and matches what Docker
+                // documents for every RPM distribution — so this follows the
+                // repository rather than deciding which key is expected.
+                key_url: self.docker_key_path,
+                fingerprint: DOCKER_RPM_FINGERPRINT,
+            }),
+            _ => None,
+        }
     }
 
     fn selinux(&self) -> &dyn SelinuxManager {
@@ -471,12 +568,108 @@ mod tests {
             Capability::Rust,
             Capability::Fail2ban,
             Capability::Crowdsec,
-            Capability::DockerRootless,
             Capability::UnattendedUpgrades,
         ] {
             assert!(
                 !backend.has_package_for(capability),
                 "{capability:?} must report no package on RHEL"
+            );
+        }
+    }
+
+    #[test]
+    fn docker_is_the_only_capability_needing_a_repository_registered() {
+        // A package name alone would be a lie here: `docker-ce-rootless-extras`
+        // is in no repository a stock RHEL host has, so the task must know to
+        // register one before asking for it.
+        let backend = RhelBackend::new();
+
+        assert!(backend.repository_for(Capability::DockerRootless).is_some());
+
+        for capability in [
+            Capability::Ssh,
+            Capability::Wireguard,
+            Capability::Nftables,
+            Capability::Caddy,
+            Capability::Crowdsec,
+        ] {
+            assert!(
+                backend.repository_for(capability).is_none(),
+                "{capability:?} must not carry a repository"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rebuilds_are_served_by_a_different_path_than_red_hats_own() {
+        // Docker builds one set of packages for RHEL and another for the
+        // rebuilds. Pointing a host at the wrong one yields a repository whose
+        // `$releasever` resolves to nothing it carries — an empty repository
+        // rather than an error, which reads as a broken install.
+        let rhel = RhelBackend::for_distribution("rhel")
+            .repository_for(Capability::DockerRootless)
+            .expect("docker must resolve");
+        let rocky = RhelBackend::for_distribution("rocky")
+            .repository_for(Capability::DockerRootless)
+            .expect("docker must resolve");
+
+        assert!(rhel.base_url.ends_with("/rhel"), "{}", rhel.base_url);
+        assert!(rocky.base_url.ends_with("/centos"), "{}", rocky.base_url);
+    }
+
+    #[test]
+    fn every_rebuild_expects_the_same_signing_key() {
+        // Both paths serve the same key — fetched and found to hash
+        // identically — so a fingerprint that varied by distribution would be
+        // inventing a difference that does not exist.
+        let fingerprints: Vec<&str> = ["rhel", "rocky", "almalinux", "centos"]
+            .into_iter()
+            .map(|id| {
+                RhelBackend::for_distribution(id)
+                    .repository_for(Capability::DockerRootless)
+                    .expect("docker must resolve")
+                    .fingerprint
+            })
+            .collect();
+
+        assert!(
+            fingerprints.windows(2).all(|pair| pair[0] == pair[1]),
+            "{fingerprints:?}"
+        );
+        assert_eq!(fingerprints[0], DOCKER_RPM_FINGERPRINT);
+    }
+
+    #[test]
+    fn the_expected_key_is_dockers_rpm_key_and_not_its_deb_one() {
+        // Written out rather than compared against the constant, which would
+        // only prove it equals itself. The value is the whole security
+        // property: it is what an attacker who replaced the key on the CDN
+        // cannot also replace, so a typo in it would not fail anywhere else —
+        // it would refuse every legitimate key, or accept a wrong one.
+        //
+        // The literal below is Docker's *RPM* key, from docs.docker.com and
+        // confirmed against two keyservers. Docker's Debian documentation
+        // publishes a different fingerprint for a different key, and using
+        // that one here is the mistake this pins against.
+        assert_eq!(
+            DOCKER_RPM_FINGERPRINT,
+            "060A61C51B558A7F742B77AAC52FEB6B621E9F35"
+        );
+        assert_ne!(
+            DOCKER_RPM_FINGERPRINT, "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+            "that is the .deb key; the RPMs are signed by another"
+        );
+    }
+
+    #[test]
+    fn a_family_with_no_third_party_repository_offers_no_manager() {
+        // The default: nothing this tool installs on Debian, Arch or Alpine
+        // comes from outside the distribution, so none of them can register
+        // anything at all.
+        for family in [Family::Debian, Family::Arch, Family::Alpine] {
+            assert!(
+                super::super::for_family(family).repositories().is_none(),
+                "{family} must not be able to register repositories"
             );
         }
     }

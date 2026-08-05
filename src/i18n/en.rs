@@ -17,6 +17,23 @@ pub(super) fn render(message: &Msg) -> String {
                  Supported families: debian, arch, alpine, rhel"
             )
         }
+        Msg::RepositoryKeyMismatch {
+            repository,
+            expected,
+            found,
+        } => {
+            format!(
+                "the signing key served for {repository} is not the one this \
+                 build expects, so it was not registered. Expected \
+                 {expected}, got {found}"
+            )
+        }
+        Msg::RepositoryKeyUnverifiable { repository } => {
+            format!(
+                "the signing key for {repository} could not be fetched or read, \
+                 so the repository was not registered"
+            )
+        }
         Msg::NoFirewallFrontEnd => {
             "no inbound filtering front-end is installed on this host".to_owned()
         }

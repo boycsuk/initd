@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Third-party package repositories, and the one rule that makes them
+  defensible: a repository cannot be expressed without a fingerprint published
+  independently of the key it verifies. `Repository::fingerprint` is a required
+  field, so "register this and trust whatever key arrives" is not representable
+  — the key is fetched, its fingerprint derived on the host, compared with a
+  value compiled into this build, and a mismatch refuses rather than warns.
+  Order matters as much as the check: nothing is written until the key is
+  established, so a wrong key leaves the machine as it found it.
+- Rootless Docker on RHEL, which is what the capability was built for and the
+  only thing that passes its test. Red Hat ships Podman and packages no Docker;
+  Docker Inc publishes a repository for RHEL 8-10 whose RPM signing key's
+  fingerprint appears on docs.docker.com and on two keyservers — three hosts
+  with different operators, none of them the one serving the key. CrowdSec's
+  packagecloud repository and Caddy's COPR both fail the same test and stay
+  out: their keys are served by the hosts serving their packages and appear on
+  no keyserver.
+- The fingerprint is pinned by a test that writes the value out rather than
+  comparing the constant with itself. It is the whole security property, so a
+  typo in it would fail nowhere else — it would refuse every legitimate key, or
+  accept a wrong one. The test also names the mistake it guards against: the
+  `.deb` and `.rpm` archives are signed by different keys, and Docker's Debian
+  documentation publishes the other fingerprint.
+- `for_distro` alongside `for_family`, because Docker publishes a repository
+  per distribution rather than per family: Rocky and AlmaLinux are served by
+  `linux/centos` where Red Hat's own is `linux/rhel`, and pointing a host at
+  the wrong one yields a repository whose `$releasever` resolves to nothing it
+  carries. That is a URL rather than a behaviour, so the backend resolves it
+  like any other name — tasks still cannot ask which distribution they run on.
 - SELinux, as a domain trait rather than a check inside a task. It is not a
   different spelling of anything the other families have — it is a second
   authority that can refuse what the first permitted, and its failure has the

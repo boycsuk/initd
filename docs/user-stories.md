@@ -171,6 +171,11 @@ TUI or CLI:
     anything is installed, since no container could start.
   - Acceptance: the engine is confirmed running rather than assumed. Enabling a
     service reports that the command ran, not that the service came up.
+  - Acceptance: where my distribution packages no Docker, the engine comes from
+    Docker's own repository, and that repository is registered only after its
+    signing key is checked against a fingerprint the tool carries from sources
+    independent of the host serving the key. A key that does not match refuses
+    the whole operation and leaves the machine unchanged.
   - Platform exception: not on Alpine, which has no per-user service manager at
     all. The engine runs under the account's own systemd instance and OpenRC
     has no equivalent, so the task is shown unsupported rather than failing

@@ -80,7 +80,7 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
         });
     }
 
-    let backend = backend::for_family(distro.family);
+    let backend = backend::for_distro(&distro);
     let executor = exec::local::LocalExecutor::new(exec::privilege::detect());
 
     let outcome = task.run(

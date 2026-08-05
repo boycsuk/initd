@@ -21,7 +21,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::distro::Family;
+use crate::distro::Distro;
 use crate::error::Error;
 use crate::exec::OutputLine;
 use crate::tasks::params::ParamValues;
@@ -73,13 +73,16 @@ impl Running {
     /// The family is passed rather than a backend because the thread builds
     /// its own: the trait objects the interface holds cannot cross a thread
     /// boundary.
-    pub fn start(task_id: &'static str, family: Family, values: ParamValues) -> Self {
+    pub fn start(task_id: &'static str, distro: Distro, values: ParamValues) -> Self {
         let (sender, updates) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
 
         thread::spawn(move || {
-            let backend = crate::backend::for_family(family);
+            // The whole `Distro` rather than its family: the thread outlives
+            // the call, so it owns what it needs, and the backend resolves one
+            // repository URL from the distribution's own `ID`.
+            let backend = crate::backend::for_distro(&distro);
             let executor = crate::exec::local::LocalExecutor::new(crate::exec::privilege::detect());
 
             let Some(task) = crate::tasks::find(task_id) else {
@@ -88,7 +91,7 @@ impl Running {
                 // silent no-op would look like a task that did nothing.
                 let _ = sender.send(Update::Finished(Err(Error::TaskUnsupported {
                     task: task_id.to_owned(),
-                    family: family.to_string(),
+                    family: distro.family.to_string(),
                 })));
                 return;
             };
@@ -208,12 +211,25 @@ mod tests {
         panic!("the task did not finish within the deadline");
     }
 
+    /// A distribution to start a task against.
+    ///
+    /// Only the family matters to these scenarios; the rest of the record is
+    /// what `Running::start` needs to build a backend.
+    fn debian() -> Distro {
+        Distro {
+            id: "debian".to_owned(),
+            version_id: None,
+            pretty_name: None,
+            family: crate::distro::Family::Debian,
+        }
+    }
+
     #[test]
     fn a_task_reports_its_lines_and_then_its_outcome() {
         // ssh.install against a host with no package manager reachable will
         // fail, which is fine: what matters is that both kinds of update
         // arrive and that Finished is last.
-        let mut running = Running::start("ssh.install", Family::Debian, ParamValues::new());
+        let mut running = Running::start("ssh.install", debian(), ParamValues::new());
 
         let updates = collect(&mut running);
 
@@ -227,7 +243,7 @@ mod tests {
     fn an_unknown_task_finishes_rather_than_hanging() {
         // Unreachable through the interface, but a silent no-op would look
         // exactly like a task that ran and did nothing.
-        let mut running = Running::start("nonexistent.task", Family::Debian, ParamValues::new());
+        let mut running = Running::start("nonexistent.task", debian(), ParamValues::new());
 
         let updates = collect(&mut running);
 
@@ -239,7 +255,7 @@ mod tests {
 
     #[test]
     fn draining_an_idle_task_yields_nothing_and_does_not_block() {
-        let mut running = Running::start("ssh.install", Family::Debian, ParamValues::new());
+        let mut running = Running::start("ssh.install", debian(), ParamValues::new());
 
         // Whatever this returns, it must return: a blocking drain would freeze
         // the interface between redraws.
@@ -248,7 +264,7 @@ mod tests {
 
     #[test]
     fn the_clock_reads_as_minutes_and_seconds() {
-        let running = Running::start("ssh.install", Family::Debian, ParamValues::new());
+        let running = Running::start("ssh.install", debian(), ParamValues::new());
         let start = running.started;
 
         assert_eq!(running.elapsed(start), "0:00");
@@ -259,7 +275,7 @@ mod tests {
     #[test]
     fn the_spinner_advances_on_the_clock_not_on_output() {
         // A command that says nothing for a minute still has to look alive.
-        let running = Running::start("ssh.install", Family::Debian, ParamValues::new());
+        let running = Running::start("ssh.install", debian(), ParamValues::new());
         let start = running.started;
 
         let frames: Vec<&str> = (0..SPINNER.len())
@@ -290,7 +306,7 @@ mod tests {
 
     #[test]
     fn cancellation_is_recorded() {
-        let mut running = Running::start("ssh.install", Family::Debian, ParamValues::new());
+        let mut running = Running::start("ssh.install", debian(), ParamValues::new());
         assert!(!running.is_cancelling());
 
         running.cancel();

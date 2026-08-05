@@ -398,15 +398,6 @@ mod tests {
              pattern this project rejects in its own installer",
         ),
         (
-            "docker-rootless.install",
-            Family::Rhel,
-            "Red Hat ships Podman and packages no Docker. Docker Inc publishes \
-             a repository covering RHEL 8-10 whose signing key is verifiable — \
-             its fingerprint is on docs.docker.com and two independent \
-             keyservers — but registering a repository is a capability this \
-             tool does not have",
-        ),
-        (
             "updates.unattended-security",
             Family::Rhel,
             "packaged, but under a name that moved: `dnf-automatic` on RHEL 9, \

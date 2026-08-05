@@ -745,7 +745,7 @@ impl App {
         // which the event loop drains each tick. Running it inline would
         // freeze the interface for the duration: no output as it arrives, no
         // way to cancel, and no clock for the verification window.
-        self.running = Some(Running::start(id, self.distro.family, values));
+        self.running = Some(Running::start(id, self.distro.clone(), values));
     }
 
     /// Takes whatever the running task has reported since the last redraw.
@@ -2598,7 +2598,7 @@ mod tests {
     fn pretend_running(app: &mut App) {
         app.running = Some(Running::start(
             "ssh.install",
-            app.distro.family,
+            app.distro.clone(),
             ParamValues::new(),
         ));
         app.status.set(State::Running, "ssh.install");

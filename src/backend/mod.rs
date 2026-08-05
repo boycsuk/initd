@@ -14,6 +14,7 @@ pub mod openrc;
 pub mod procfs_sysctl;
 pub mod release_installer;
 pub mod rhel;
+pub mod rpm_repositories;
 pub mod semanage;
 pub mod shadow_accounts;
 pub mod systemd;
@@ -22,10 +23,11 @@ pub mod unix_accounts;
 pub mod unix_files;
 pub mod wg_tools;
 
-use crate::distro::Family;
+use crate::distro::{Distro, Family};
 use crate::domain::{
     AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
-    SelinuxManager, ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
+    Repository, RepositoryManager, SelinuxManager, ServiceManager, SysctlManager,
+    UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::Executor;
@@ -141,6 +143,32 @@ pub trait Backend {
     /// Kernel parameters.
     fn sysctl(&self) -> &dyn SysctlManager;
 
+    /// Registers package repositories the distribution does not ship.
+    ///
+    /// The most consequential capability here: what it adds decides where a
+    /// machine's software comes from from then on, not just what is installed
+    /// today. Which is why a [`Repository`] cannot be expressed without a
+    /// fingerprint published independently of the key it verifies — see
+    /// [`crate::domain::repositories`].
+    ///
+    /// Returns `None` for families whose packaging has no such mechanism, and
+    /// for those where nothing this tool installs needs one.
+    fn repositories(&self) -> Option<&dyn RepositoryManager> {
+        None
+    }
+
+    /// The repository providing a capability, where one has to be registered.
+    ///
+    /// Separate from [`Backend::package_for`] because the two answer different
+    /// questions: that one names a package in a repository the host already
+    /// has, this one names a repository the host does not. Docker is the case —
+    /// Red Hat ships Podman and packages no Docker at all, while Docker Inc
+    /// publishes a repository whose signing key can be verified.
+    fn repository_for(&self, capability: Capability) -> Option<Repository> {
+        let _ = capability;
+        None
+    }
+
     /// The mandatory access control layer, where the family has one.
     ///
     /// Separate from every other capability because it is not a different
@@ -198,12 +226,38 @@ pub fn firewall_for<'a>(
 }
 
 /// Builds the backend for a detected family.
+///
+/// Takes the distribution's own `ID` alongside its family because one thing
+/// below this layer needs it: Docker publishes a repository per distribution
+/// rather than per family, and Rocky and AlmaLinux are served by `linux/centos`
+/// where Red Hat's own is `linux/rhel`. That is a URL rather than a behaviour,
+/// so it is resolved here like every other name instead of splitting the family
+/// in two — and tasks stay unable to ask which distribution they run on.
 pub fn for_family(family: Family) -> Box<dyn Backend> {
     match family {
         Family::Debian => Box::new(debian::DebianBackend::new()),
         Family::Arch => Box::new(arch::ArchBackend::new()),
         Family::Alpine => Box::new(alpine::AlpineBackend::new()),
         Family::Rhel => Box::new(rhel::RhelBackend::new()),
+    }
+}
+
+/// Builds the backend for a detected distribution.
+///
+/// What the running program uses. [`for_family`] remains for callers that have
+/// only a family — chiefly tests asserting a property every member of one
+/// shares — and resolves the same backend with the family's own defaults.
+///
+/// The `ID` narrows exactly one thing: Docker publishes a repository per
+/// distribution rather than per family, and Rocky and AlmaLinux are served by
+/// `linux/centos` where Red Hat's own is `linux/rhel`. That is a URL rather
+/// than a behaviour, so it is resolved here like any other name instead of
+/// splitting the family in two — and tasks remain unable to ask which
+/// distribution they are running on.
+pub fn for_distro(distro: &Distro) -> Box<dyn Backend> {
+    match distro.family {
+        Family::Rhel => Box::new(rhel::RhelBackend::for_distribution(&distro.id)),
+        family => for_family(family),
     }
 }
 

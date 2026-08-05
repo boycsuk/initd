@@ -31,7 +31,14 @@ const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Fam
 /// engine runs under the account's own systemd instance, and OpenRC has no
 /// equivalent. That is a missing mechanism rather than a different spelling,
 /// so the task declares it unsupported instead of failing at run time.
-const ROOTLESS_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+///
+/// RHEL is present but reaches the engine differently: Red Hat ships Podman
+/// and packages no Docker, so the task registers Docker's own repository after
+/// checking its signing key against a fingerprint published independently of
+/// it. That check is the condition of being here at all — the same reasoning
+/// keeps CrowdSec out, whose repository publishes no fingerprint to check
+/// against.
+const ROOTLESS_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Rhel];
 
 /// The user unit a rootless engine installs.
 const DOCKER_USER_SERVICE: &str = "docker.service";
@@ -141,6 +148,24 @@ impl Task for InstallDockerRootless {
         }
 
         report(progress, format!("installing docker for {user}"));
+
+        // Where the distribution packages no Docker, the engine comes from
+        // Docker's own repository — registered only if its signing key matches
+        // a fingerprint this build carries from three sources the serving host
+        // does not control. Registered before the install rather than as part
+        // of it, so a key that does not match stops here with nothing changed.
+        if let (Some(repositories), Some(repository)) = (
+            backend.repositories(),
+            backend.repository_for(Capability::DockerRootless),
+        ) && !repositories.is_registered(executor, &repository)?
+        {
+            report(
+                progress,
+                format!("registering the {} repository", repository.name),
+            );
+
+            repositories.register(executor, &repository)?;
+        }
 
         backend
             .packages()
