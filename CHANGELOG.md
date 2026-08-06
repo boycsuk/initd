@@ -46,6 +46,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrong but because nothing called it; it is a property of the executor now
   rather than a second `run` method that can fall out of use unnoticed.
 
+### Added
+- Container scenarios for `firewalld`, `openrc` and `semanage`, the three
+  backends a whole family each depends on and that had only ever answered to a
+  mock — the arrangement `integration_systemd` exists because of. What each can
+  honestly claim differs, and was measured rather than assumed: firewalld works
+  fully offline, so its port and service queries are asserted against real zone
+  state; OpenRC enables and lists without an init, so the enable half is real
+  while `status` refuses because the container was booted by something else.
+  `semanage` cannot be tested in a container at all — there is no SELinux policy
+  store — so the scenario asserts *that*, which is what stops a plausible test
+  being written against a tool that never ran. The first measurement of both
+  refusals was wrong: piping through `head` reports the pipeline's exit code
+  rather than the command's, making both look like they exited 0 when they exit
+  1. The tests failed on the wrong claim, which is how it was caught.
+
 ### Changed
 - `tasks::ssh` becomes a directory module. It was 992 lines of production code
   holding six tasks, and two of them formed subjects of their own: everything
