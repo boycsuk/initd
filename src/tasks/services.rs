@@ -11,11 +11,11 @@ use crate::distro::Family;
 use crate::domain::binaries::{Artefact, Release};
 use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Result};
-use crate::exec::{Command, Executor, OutputLine, Stream};
+use crate::exec::{Command, Executor};
 use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Support, Task, supported_everywhere};
+use crate::tasks::{Category, Node, Progress, Support, Task, report, supported_everywhere};
 
 /// The user unit a rootless engine installs.
 const DOCKER_USER_SERVICE: &str = "docker.service";
@@ -23,14 +23,6 @@ const DOCKER_USER_SERVICE: &str = "docker.service";
 /// The ports a web server needs, and the parameter that lets it bind them.
 const HTTP_PORT: u32 = 80;
 const HTTPS_PORT: u32 = 443;
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
-}
 
 /// Builds the services category.
 pub fn category() -> Category {

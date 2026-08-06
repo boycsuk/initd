@@ -14,22 +14,14 @@ use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::UpdatePolicy;
 use crate::error::{Error, Result};
-use crate::exec::{Command, Executor, OutputLine, Stream};
+use crate::exec::{Command, Executor};
 use crate::tasks::consequence::{Check, Conflict, Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Support, Task};
+use crate::tasks::{Category, Node, Progress, Support, Task, report};
 
 /// The port SSH listens on unless it has been moved.
 const DEFAULT_SSH_PORT: u32 = 22;
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
-}
 
 /// Builds the hardening category.
 pub fn category() -> Category {

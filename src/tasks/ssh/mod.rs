@@ -19,7 +19,7 @@ use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewal
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
-use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
+use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
 
 /// Where a user's authorised keys live, relative to their home directory.
 const AUTHORIZED_KEYS_RELATIVE: &str = ".ssh/authorized_keys";
@@ -91,14 +91,6 @@ fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
             service: backend.service_for(Capability::Ssh),
         })
     })
-}
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
 }
 
 /// Installs the OpenSSH server and enables it at boot.

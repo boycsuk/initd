@@ -17,13 +17,13 @@ use crate::backend::{Backend, Capability};
 use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
-use crate::exec::{Executor, OutputLine, Stream};
+use crate::exec::Executor;
 use crate::tasks::consequence::{
     Check, Consequence, External, Protocol as WarnProtocol, Reason, firewall_check,
 };
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
+use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
 
 /// The interface this tool manages.
 ///
@@ -46,14 +46,6 @@ const IP_FORWARD: Setting = Setting {
     key: "net.ipv4.ip_forward",
     value: "1",
 };
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
-}
 
 /// Builds the WireGuard category.
 pub fn category() -> Category {

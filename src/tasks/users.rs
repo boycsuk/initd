@@ -9,12 +9,12 @@
 use crate::backend::Backend;
 use crate::domain::account_writer::{LockMethod, PasswordPolicy};
 use crate::error::{Error, Result};
-use crate::exec::{Executor, OutputLine, Stream};
+use crate::exec::Executor;
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::ssh::has_authorized_key;
-use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
+use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
 
 /// The account whose lock is dangerous enough to warrant its own guard.
 const ROOT: &str = "root";
@@ -25,14 +25,6 @@ const ROOT: &str = "root";
 /// families out of the box, and changing it afterwards is what
 /// [`SetShell`] is for.
 const DEFAULT_SHELL: &str = "/bin/bash";
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
-}
 
 /// Builds the account administration category.
 pub fn category() -> Category {
@@ -366,8 +358,7 @@ mod tests {
     /// comment — and fails the shared one, which parses the key. The fixture
     /// was never a valid key; only the old criterion was lax enough to admit
     /// it, and a guard that admits `garbage` is not guarding `users.lock-root`.
-    const TEST_KEY: &str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ user@host";
+    const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ user@host";
 
     /// Values for a task taking a single named parameter.
     fn values(name: &'static str, value: &str) -> ParamValues {
@@ -553,13 +544,13 @@ mod tests {
                 // The home comes from passwd rather than from `/home/{user}`,
                 // so each key check spends a `getent` before reading the file.
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
-                Reply::ok(""),                               // file exists
-                Reply::ok(TEST_KEY), // holds a key
-                Reply::ok("Account expires\t: never"),       // not yet locked
+                Reply::ok(""),                                         // file exists
+                Reply::ok(TEST_KEY),                                   // holds a key
+                Reply::ok("Account expires\t: never"),                 // not yet locked
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
-                Reply::ok(""),                               // re-check: exists
-                Reply::ok(TEST_KEY), // re-check: still there
-                Reply::ok(""),                               // usermod
+                Reply::ok(""),                                         // re-check: exists
+                Reply::ok(TEST_KEY),                                   // re-check: still there
+                Reply::ok(""),                                         // usermod
             ],
             &values(LockRoot::ADMIN, "alice"),
         );
@@ -590,11 +581,11 @@ mod tests {
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
                 Reply::ok("alice sudo"),
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
-                Reply::ok(""),                               // file exists
-                Reply::ok(TEST_KEY), // holds a key
-                Reply::ok("Account expires\t: never"),       // not yet locked
+                Reply::ok(""),                                         // file exists
+                Reply::ok(TEST_KEY),                                   // holds a key
+                Reply::ok("Account expires\t: never"),                 // not yet locked
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
-                Reply::failure(1, ""),                       // re-check: key file gone
+                Reply::failure(1, ""),                                 // re-check: key file gone
             ],
             &values(LockRoot::ADMIN, "alice"),
         );

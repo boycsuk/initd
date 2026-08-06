@@ -10,11 +10,11 @@ use crate::backend::{Backend, Capability, firewall_for};
 use crate::domain::firewall::Protocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
-use crate::exec::{Executor, OutputLine, Stream};
+use crate::exec::Executor;
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
+use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
 
 /// The port SSH listens on unless it has been moved.
 ///
@@ -36,14 +36,6 @@ const UNPRIVILEGED_PORT_START: Setting = Setting {
     key: "net.ipv4.ip_unprivileged_port_start",
     value: "80",
 };
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
-}
 
 /// Builds the network category.
 pub fn category() -> Category {
