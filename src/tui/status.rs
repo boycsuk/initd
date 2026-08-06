@@ -1,13 +1,22 @@
-//! The status row: one authoritative place for what the tool is doing.
+//! The status line: one authoritative place for what the tool is doing.
 //!
-//! Two kinds of message share the row and must not be confused:
+//! It rides the bottom border of the pane on the right, the way the tree's
+//! census rides its own. That is a change from the full row this used to
+//! occupy, and it costs the pill: a word on a filled background cannot sit on
+//! a border without painting over it. What the pill carried is carried by
+//! [`State::label`] instead, drawn as the first word of the line in the
+//! state's colour — so the state is still readable with no colour at all, and
+//! still costs nothing but the border it was already drawing.
 //!
-//! - **The pill and its message** describe the current state. They persist
-//!   until the state itself changes.
+//! Two kinds of message share the line and must not be confused:
+//!
+//! - **The state and its message** describe what the tool is doing. They
+//!   persist until the state itself changes.
 //! - **A transient message** reports a refusal — "unsupported here", "already
 //!   at the top level". It overrides the message for a couple of seconds and
-//!   then disappears, but it *never* replaces the pill: the operator must not
-//!   lose sight of what the tool is doing because something was refused.
+//!   then disappears, but it *never* replaces the state's word: the operator
+//!   must not lose sight of what the tool is doing because something was
+//!   refused.
 //!
 //! Refusals flash in place rather than opening a toast or an overlay. A
 //! message that occludes content is unacceptable when the content is the log
@@ -55,6 +64,21 @@ pub enum State {
 }
 
 impl State {
+    /// Whether this state is worth naming on the border.
+    ///
+    /// `Ready` is not. It is the state the tool is in whenever it is in no
+    /// other, so a border reading `READY` for most of a session says only that
+    /// the program is running — which the screen already says — and trains the
+    /// eye to skip the one place a failure will appear. Every other state
+    /// describes something the operator did not already know.
+    ///
+    /// Ready's *message* is still drawn when it has one: "cancelled" after a
+    /// stopped task is the state's own word for what happened, and dropping it
+    /// with the label would lose the report rather than a redundancy.
+    pub const fn is_worth_naming(self) -> bool {
+        !matches!(self, Self::Ready)
+    }
+
     /// The message naming this state, for the catalogue to render.
     ///
     /// Returns a [`Msg`] rather than the word itself, the same seam

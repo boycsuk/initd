@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod auth;
+pub mod clipboard;
 pub mod confirm;
 pub mod cursor;
 pub mod dispatch;

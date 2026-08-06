@@ -71,7 +71,8 @@ impl Task for InstallDockerRootless {
     fn params(&self) -> Vec<Param> {
         vec![
             Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_hint("the account the engine runs as"),
+                .with_hint("the account the engine runs as")
+                .suggesting_accounts(),
         ]
     }
 

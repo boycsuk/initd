@@ -31,6 +31,19 @@ pub struct Field {
     cursor: usize,
     /// First visible character, for values wider than the field.
     scroll: usize,
+    /// What the host says this field could hold.
+    ///
+    /// Empty where the host was not asked or had no answer, which is the same
+    /// thing to every reader here: a field with nothing to offer behaves
+    /// exactly as it did before there was anything to offer.
+    options: Vec<String>,
+    /// Which option was last stepped to, for stepping on from it.
+    ///
+    /// `None` until one is, so that the first press offers the first option
+    /// rather than the second. Cleared by typing: once the value is no longer
+    /// the option that was chosen, counting from it would step somewhere the
+    /// operator cannot predict.
+    at_option: Option<usize>,
 }
 
 impl Field {
@@ -47,7 +60,85 @@ impl Field {
             buffer,
             cursor,
             scroll: 0,
+            options: Vec::new(),
+            at_option: None,
         }
+    }
+
+    /// Offers the values the host says this field could hold.
+    ///
+    /// Set after construction rather than passed to it, because resolving them
+    /// runs commands and `Field::new` is called from tests that have no
+    /// executor. A field that is never given any behaves as it always did.
+    pub fn offer(&mut self, options: Vec<String>) {
+        self.options = options;
+    }
+
+    /// What the host says this field could hold.
+    pub fn options(&self) -> &[String] {
+        &self.options
+    }
+
+    /// Which option the value currently is, if it is one of them.
+    ///
+    /// Recomputed from the buffer rather than trusted from `at_option`: the
+    /// operator may have typed a value that happens to be an option, and a
+    /// position that disagrees with what is on screen is worse than none.
+    pub fn option_position(&self) -> Option<usize> {
+        let value = self.value();
+
+        self.options.iter().position(|option| *option == value)
+    }
+
+    /// Replaces the value with the next option, wrapping at the end.
+    pub fn next_option(&mut self) {
+        self.step_option(1);
+    }
+
+    /// Replaces the value with the previous option, wrapping at the start.
+    pub fn previous_option(&mut self) {
+        self.step_option(-1);
+    }
+
+    /// Moves `delta` options along and takes that value.
+    ///
+    /// Counts from where the value already is when it matches an option, so
+    /// that stepping continues from what is on screen rather than from
+    /// whatever was last stepped to — the two differ once the operator has
+    /// typed. Falling back to `at_option` covers the case where they typed
+    /// something that is not an option at all and then pressed a key: the walk
+    /// resumes where it left off instead of restarting.
+    fn step_option(&mut self, delta: isize) {
+        if self.options.is_empty() {
+            return;
+        }
+
+        let count = self.options.len();
+
+        let next = match self.option_position().or(self.at_option) {
+            // `rem_euclid` rather than `%`: the remainder of a negative number
+            // is negative in Rust, so stepping back from the first option
+            // would index out of the list rather than wrapping to its end.
+            Some(current) => (current as isize + delta).rem_euclid(count as isize) as usize,
+            // Stepping into an untouched field offers the first option going
+            // forwards and the last going back, which is what the arrow
+            // pressed said to do.
+            None if delta > 0 => 0,
+            None => count - 1,
+        };
+
+        self.take_option(next);
+    }
+
+    /// Fills the field with the option at `index`.
+    pub fn take_option(&mut self, index: usize) {
+        let Some(option) = self.options.get(index) else {
+            return;
+        };
+
+        self.buffer = option.chars().collect();
+        self.cursor = self.buffer.len();
+        self.at_option = Some(index);
     }
 
     /// The value typed so far.
@@ -85,6 +176,9 @@ impl Field {
 
         self.buffer.insert(self.cursor, character);
         self.cursor += 1;
+        // The value is no longer the option that was stepped to, so counting
+        // from it would step somewhere the operator cannot predict.
+        self.at_option = None;
     }
 
     /// Deletes the character before the cursor.
@@ -95,12 +189,14 @@ impl Field {
 
         self.cursor -= 1;
         self.buffer.remove(self.cursor);
+        self.at_option = None;
     }
 
     /// Deletes the character under the cursor.
     pub fn delete(&mut self) {
         if self.cursor < self.buffer.len() {
             self.buffer.remove(self.cursor);
+            self.at_option = None;
         }
     }
 
@@ -130,11 +226,13 @@ impl Field {
     pub fn clear_before_cursor(&mut self) {
         self.buffer.drain(..self.cursor);
         self.cursor = 0;
+        self.at_option = None;
     }
 
     /// Clears everything from the cursor onwards.
     pub fn clear_after_cursor(&mut self) {
         self.buffer.truncate(self.cursor);
+        self.at_option = None;
     }
 
     /// Deletes the word before the cursor.
@@ -157,6 +255,7 @@ impl Field {
 
         self.buffer.drain(start..self.cursor);
         self.cursor = start;
+        self.at_option = None;
     }
 
     /// The slice of the value visible in a field of the given width, and where
@@ -236,6 +335,135 @@ mod tests {
 
     fn key_field() -> Field {
         Field::new(Param::new("key", "Public key", ParamKind::PublicKey))
+    }
+
+    fn shell_field() -> Field {
+        let mut field = Field::new(Param::new("shell", "Shell", ParamKind::Path));
+        field.offer(vec![
+            "/bin/sh".to_owned(),
+            "/bin/bash".to_owned(),
+            "/usr/bin/fish".to_owned(),
+        ]);
+
+        field
+    }
+
+    #[test]
+    fn the_first_step_forwards_offers_the_first_option() {
+        // Not the second: an untouched field has no position to count from,
+        // and skipping the first option would hide it behind a full cycle.
+        let mut field = shell_field();
+
+        field.next_option();
+
+        assert_eq!(field.value(), "/bin/sh");
+    }
+
+    #[test]
+    fn the_first_step_backwards_offers_the_last_option() {
+        // Which is what the arrow pressed said to do; starting both
+        // directions at the first option would make one of the two arrows lie.
+        let mut field = shell_field();
+
+        field.previous_option();
+
+        assert_eq!(field.value(), "/usr/bin/fish");
+    }
+
+    #[test]
+    fn stepping_past_the_end_wraps_to_the_start() {
+        let mut field = shell_field();
+
+        // The first press takes the first option rather than stepping past it,
+        // so four presses over three options land back on the first.
+        for _ in 0..4 {
+            field.next_option();
+        }
+
+        assert_eq!(field.value(), "/bin/sh");
+    }
+
+    #[test]
+    fn stepping_back_from_the_first_option_does_not_index_out_of_the_list() {
+        // The remainder of a negative number is negative in Rust, so `%` here
+        // would index past the start rather than wrapping to the end.
+        let mut field = shell_field();
+
+        field.next_option();
+        field.previous_option();
+
+        assert_eq!(field.value(), "/usr/bin/fish");
+    }
+
+    #[test]
+    fn stepping_counts_from_a_value_that_was_typed_rather_than_stepped_to() {
+        // Typing "/bin/sh" by hand and pressing Down must offer "/bin/bash",
+        // not restart at the top — the two differ, and the one the operator
+        // can predict is the one that follows what is on screen.
+        let mut field = shell_field();
+
+        for character in "/bin/sh".chars() {
+            field.insert(character);
+        }
+        field.next_option();
+
+        assert_eq!(field.value(), "/bin/bash");
+    }
+
+    #[test]
+    fn a_field_with_nothing_offered_is_unchanged_by_stepping() {
+        // Most fields have no options at all, and pressing an arrow in one
+        // must not clear what was typed.
+        let mut field = port_field();
+        field.insert('2');
+        field.insert('2');
+
+        field.next_option();
+        field.previous_option();
+
+        assert_eq!(field.value(), "22");
+    }
+
+    #[test]
+    fn taking_an_option_leaves_the_cursor_where_more_can_be_typed() {
+        // A shell stepped to and then corrected by hand is the case: a cursor
+        // left at the start would insert the correction backwards.
+        let mut field = shell_field();
+
+        field.next_option();
+
+        assert_eq!(field.cursor, "/bin/sh".chars().count());
+    }
+
+    #[test]
+    fn an_index_past_the_end_is_refused_rather_than_panicking() {
+        // This runs as root on someone's server; an out-of-range index must
+        // not take the interface down.
+        let mut field = shell_field();
+
+        field.take_option(99);
+
+        assert_eq!(field.value(), "");
+    }
+
+    #[test]
+    fn the_position_reported_is_the_one_on_screen() {
+        let mut field = shell_field();
+
+        assert_eq!(field.option_position(), None, "an empty field is no option");
+
+        field.next_option();
+        field.next_option();
+
+        assert_eq!(field.option_position(), Some(1));
+
+        field.insert('x');
+
+        assert_eq!(
+            field.option_position(),
+            None,
+            "an edited value is no longer the option it came from"
+        );
     }
 
     #[test]

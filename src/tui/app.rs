@@ -128,6 +128,16 @@ pub struct App {
     pub(super) output: OutputPane,
     /// The parameter form, while one is being filled in.
     pub(super) form: Option<Form>,
+    /// Where the cursor sits in the list of a field's options, while it is
+    /// open.
+    ///
+    /// `Option<usize>` for the same reason `help` is `Option<u16>`: one field
+    /// says both whether the overlay is open and where it is, so the two
+    /// cannot disagree. The position lives here rather than on the field
+    /// because moving through the list is not yet choosing — the field is
+    /// written only when `Enter` is pressed, so `Esc` leaves what was typed
+    /// exactly as it was.
+    pub(super) options_at: Option<usize>,
     pub(super) confirm: Option<Confirm>,
     /// A helper waiting for the terminal, until the next turn of the loop.
     ///
@@ -209,6 +219,7 @@ impl App {
             focus: Pane::Tree,
             output: OutputPane::new(),
             form: None,
+            options_at: None,
             confirm: None,
             pending_values: ParamValues::new(),
             ran_with: ParamValues::new(),
@@ -962,6 +973,9 @@ mod tests {
         assert!(screen.contains("not yet kept"), "{screen}");
         assert!(screen.contains("reverting in"), "{screen}");
         assert!(screen.contains("second session"), "{screen}");
+        // The word is on the log's bottom border now rather than in a band of
+        // its own, so this asserts the last row of the body rather than the
+        // row below it.
         assert!(rows[22].contains("VERIFY"), "got {:?}", rows[22]);
     }
 
@@ -1239,9 +1253,13 @@ mod tests {
     }
 
     #[test]
-    fn the_reference_size_spends_only_three_rows_on_chrome() {
-        // 80x24 is the size that has to work: row 1 header, rows 2-22 body,
-        // row 23 status, row 24 keys. Bordered chrome bands would eat six.
+    fn the_reference_size_spends_only_two_rows_on_chrome() {
+        // 80x24 is the size that has to work: row 1 header, rows 2-23 body,
+        // row 24 keys. Bordered chrome bands would eat six.
+        //
+        // Row 23 was the status band and is now the body's bottom border,
+        // which is where the status is drawn — so the row is doing both jobs
+        // rather than having been freed by dropping one of them.
         let mut app = test_app(Family::Debian);
         let rows = render_to_rows(&mut app, 80, 24);
 
@@ -1256,8 +1274,8 @@ mod tests {
             rows[1]
         );
         assert!(
-            rows[22].contains("READY"),
-            "row 23 is the status pill: {:?}",
+            rows[22].starts_with('└'),
+            "row 23 is the body's bottom border, not a band of its own: {:?}",
             rows[22]
         );
         assert!(
@@ -1265,6 +1283,298 @@ mod tests {
             "row 24 is the key bar: {:?}",
             rows[23]
         );
+    }
+
+    #[test]
+    fn a_failure_reaches_the_border_of_whichever_pane_is_showing() {
+        // The status rides the right pane's bottom border, and on a terminal
+        // too narrow for two panes that pane may not be drawn at all — so the
+        // tree takes it. Without that, pressing Tab back to the tree after a
+        // task failed hides the only report of the failure, which is the one
+        // thing this line exists to prevent.
+        let mut app = test_app(Family::Debian);
+        app.status
+            .set(State::Failed, "ssh.harden — sshd -t rejected the config");
+
+        let narrow = render_to_rows(&mut app, 60, 15).join("\n");
+
+        assert!(narrow.contains("FAILED"), "got {narrow}");
+        assert!(narrow.contains("sshd -t rejected"), "got {narrow}");
+    }
+
+    #[test]
+    fn the_census_yields_the_border_rather_than_colliding_with_a_failure() {
+        // Both ride the tree's bottom border once the tree is the whole body,
+        // and ratatui draws two overlapping titles rather than arbitrating
+        // between them — which rendered the census as "6 ca FAILED …". The
+        // census counts rows already on screen; the status may be the only
+        // report of a task that failed, so the census is what goes.
+        let mut app = test_app(Family::Debian);
+        app.status
+            .set(State::Failed, "ssh.harden — sshd -t rejected the config");
+
+        let rows = render_to_rows(&mut app, 60, 15);
+        let border = rows.last().expect("the tree's bottom border").clone();
+
+        assert!(
+            border.contains("sshd -t rejected the config"),
+            "the failure must survive whole: {border}"
+        );
+        assert!(
+            !border.contains("categor"),
+            "the census must yield rather than be eaten into: {border}"
+        );
+    }
+
+    #[test]
+    fn the_census_keeps_the_border_when_there_is_room_for_both() {
+        // The census only yields where it must; a short message leaves room
+        // for both, and dropping it there would trade one signal for nothing.
+        let mut app = test_app(Family::Debian);
+        app.status.set(State::Failed, "failed");
+
+        let rows = render_to_rows(&mut app, 60, 15);
+        let border = rows.last().expect("the tree's bottom border").clone();
+
+        assert!(border.contains("categor"), "got {border}");
+        assert!(border.contains("FAILED"), "got {border}");
+    }
+
+    #[test]
+    fn a_message_too_long_for_the_border_loses_its_tail_and_not_its_state() {
+        // Ratatui cuts a right-aligned title at its head, which took the first
+        // characters of VERIFY and left "RIFY" on screen during the one state
+        // whose word must not be misread. The message is truncated before the
+        // line is built so the state's word is never the part that goes.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        let rows = render_to_rows(&mut app, 80, 24);
+        let border = rows[22].clone();
+
+        // Asserted on the word with the separator that precedes it, not on
+        // "VERIFY" alone: a cut leaves "RIFY", and every truncation of the
+        // word is a substring of the whole one — the same trap `is-active`
+        // and `inactive` set in the systemd tests.
+        assert!(
+            border.contains("┘└ VERIFY  ·"),
+            "the state must reach the border whole: {border}"
+        );
+        assert!(border.contains('…'), "a dropped tail must be marked");
+    }
+
+    /// A passwd file and an `/etc/shells`, in the order the form asks for
+    /// them: accounts for the first field, shells for the second.
+    fn app_with_host_answers() -> App {
+        use crate::backend::for_family;
+        use crate::exec::mock::{MockExecutor, Reply};
+        use crate::tui::fixtures::{test_distro, test_host};
+
+        const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
+             daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+             www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n\
+             cosmin:x:1000:1000::/home/cosmin:/bin/bash\n\
+             alice:x:1001:1001::/home/alice:/bin/sh\n";
+        const SHELLS: &str = "# /etc/shells\n/bin/sh\n/bin/bash\n/usr/bin/fish\n";
+
+        App::new(
+            test_distro(Family::Debian),
+            test_host(),
+            for_family(Family::Debian),
+            MockExecutor::with_replies([Reply::ok(PASSWD), Reply::ok(SHELLS)]),
+        )
+    }
+
+    fn press_ctrl(app: &mut App, character: char) {
+        app.on_key(KeyEvent::new(
+            KeyCode::Char(character),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+    }
+
+    #[test]
+    fn a_form_field_is_filled_from_what_the_host_actually_has() {
+        // The whole point: the two values a shell form collects are both
+        // recorded on the host, so guessing at them is guessing at something
+        // already written down.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.set-shell");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(screen.contains("root"), "the first account: {screen}");
+        assert!(screen.contains("1/5 on this host"), "got {screen}");
+    }
+
+    #[test]
+    fn the_arrows_move_between_fields_where_the_host_offers_nothing() {
+        // A port has nothing to suggest, so `↑↓` must keep moving between
+        // fields there — the navigation is never what the suggestions cost.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.change-port");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(
+            screen.contains("22"),
+            "the value must survive the arrow: {screen}"
+        );
+    }
+
+    #[test]
+    fn the_options_list_opens_under_the_form_rather_than_over_it() {
+        // Centred, it landed on the very field it answers. A chooser that
+        // hides the question makes the operator dismiss it to remember what
+        // they were filling in.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.set-shell");
+        press(&mut app, KeyCode::Enter);
+        press_ctrl(&mut app, 'l');
+
+        let rows = render_to_rows(&mut app, 80, 24);
+        let screen = rows.join("\n");
+
+        let list_at = rows
+            .iter()
+            .position(|row| row.contains("on this host"))
+            .expect("the list must be drawn");
+        let field_at = rows
+            .iter()
+            .position(|row| row.contains("the account whose shell changes"))
+            .expect("the field it answers must still be readable");
+
+        assert!(field_at < list_at, "got {screen}");
+    }
+
+    #[test]
+    fn the_options_list_stays_inside_the_terminal() {
+        // Drawn at its full height where the room is shorter, it runs through
+        // the frame's bottom border and reads as having broken the interface.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.set-shell");
+        press(&mut app, KeyCode::Enter);
+        press_ctrl(&mut app, 'l');
+
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        assert_eq!(rows.len(), 24, "nothing may be drawn past the last row");
+        assert!(
+            rows.iter().all(|row| row.chars().count() <= 80),
+            "nothing may be drawn past the right edge"
+        );
+    }
+
+    #[test]
+    fn choosing_from_the_list_writes_the_field_and_escape_does_not() {
+        // Moving through the list is reading it, not answering it — so `Esc`
+        // must leave whatever was typed exactly as it was.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.set-shell");
+        press(&mut app, KeyCode::Enter);
+
+        press_ctrl(&mut app, 'l');
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Esc);
+
+        let after_escape = render_to_rows(&mut app, 80, 24).join("\n");
+        assert!(
+            !after_escape.contains("alice"),
+            "Esc must not write the field: {after_escape}"
+        );
+
+        press_ctrl(&mut app, 'l');
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+
+        let after_enter = render_to_rows(&mut app, 80, 24).join("\n");
+        assert!(after_enter.contains("alice"), "got {after_enter}");
+    }
+
+    #[test]
+    fn the_form_footer_still_names_the_key_that_abandons_it() {
+        // The footer is drawn as adjacent spans that neither wrap nor
+        // truncate, so one too wide for the dialog silently loses its last
+        // word — which is `cancel`, the key out of a modal.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.set-shell");
+        press(&mut app, KeyCode::Enter);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(screen.contains("Ctrl-L list"), "got {screen}");
+        assert!(screen.contains("Esc cancel"), "got {screen}");
+    }
+
+    #[test]
+    fn creating_an_account_says_it_will_have_no_password() {
+        // The detail pane explains this and the form is drawn over the detail
+        // pane, so an operator who reaches the field sees one box asking for a
+        // name and nothing saying the account it makes cannot yet log in.
+        //
+        // Asserted whole rather than on a word: a hint too wide for the dialog
+        // is silently cut, and the half that survives ("no password") says the
+        // opposite of the half that does not ("authorise a key next").
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.create");
+        press(&mut app, KeyCode::Enter);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(
+            screen.contains("no password; authorise a key next"),
+            "got {screen}"
+        );
+    }
+
+    #[test]
+    fn creating_an_account_offers_nothing_and_says_nothing() {
+        // Seen on screen before it was pinned: the form offered the twenty-four
+        // accounts the host has, every one of which this task refuses. The
+        // footer must lose `Ctrl-L` with them — a key named in a footer and
+        // doing nothing is worse than one that was never offered.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.create");
+        press(&mut app, KeyCode::Enter);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(!screen.contains("on this host"), "got {screen}");
+        assert!(!screen.contains("Ctrl-L"), "got {screen}");
+    }
+
+    #[test]
+    fn the_widest_layout_draws_every_title_whole() {
+        // The pane was 34 cells and cut nine of the twenty-eight titles, so
+        // rows read `Create an administrative us…`. Asserted on the rendered
+        // screen rather than on the constant, because the constant being big
+        // enough and the row using it are two different claims — the row also
+        // spends cells on a marker, a flag and a separator.
+        let mut app = test_app(Family::Debian);
+        enter_named_category(&mut app, "Network");
+        enter_named_category(&mut app, "Kernel parameters");
+
+        let screen = render_to_rows(&mut app, 120, 20).join("\n");
+
+        assert!(
+            screen.contains("Allow unprivileged binding to 80 and 443"),
+            "the longest title in the tree must survive: {screen}"
+        );
+    }
+
+    #[test]
+    fn the_idle_interface_says_nothing_where_it_used_to_say_ready() {
+        // READY is the state the tool is in whenever it is in no other, so a
+        // border reading it for most of a session says only that the program
+        // is running — and teaches the eye to skip the one place a failure
+        // will appear.
+        let mut app = test_app(Family::Debian);
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(!screen.contains("READY"), "got {screen}");
     }
 
     #[test]
@@ -1396,10 +1706,12 @@ mod tests {
     #[test]
     fn the_census_rides_the_bottom_border() {
         // A bottom title costs no rows, which is why the count lives there.
+        // The body now reaches row 23, and that last row is the border the
+        // census rides — so the slice has to include it.
         let mut app = test_app(Family::Debian);
         let rows = render_to_rows(&mut app, 80, 24);
 
-        let body = rows[..22].join("\n");
+        let body = rows[..23].join("\n");
         assert!(
             body.contains("categor"),
             "the tree must report what the level holds: {body}"
@@ -1546,10 +1858,98 @@ mod tests {
     }
 
     #[test]
-    fn starting_a_task_moves_focus_to_its_output() {
-        // Reading what is about to happen is the natural next thing to do.
+    fn the_follow_indicator_yields_rather_than_being_cut_to_one_letter() {
+        // Both ride the output pane's bottom border, and ratatui draws two
+        // that do not fit rather than arbitrating: `following` was rendered as
+        // `f`. A status may be the only report of a task that failed, whereas
+        // whether the view is pinned is also visible from the write cursor.
+        let mut app = test_app(Family::Debian);
+        app.focus = Pane::Output;
+        app.output.push(crate::exec::OutputLine {
+            stream: crate::exec::Stream::Stdout,
+            text: "a line".to_owned(),
+        });
+        app.status.flash(
+            app.lang
+                .render(&crate::i18n::Msg::StatusCopied { lines: 4 }),
+            Instant::now(),
+        );
+
+        let rows = render_to_rows(&mut app, 80, 24);
+        let border = rows
+            .iter()
+            .find(|row| row.contains("sent to the terminal"))
+            .expect("the message must be drawn")
+            .clone();
+
+        assert!(
+            !border.contains("└ f "),
+            "the indicator must yield whole rather than be cut: {border}"
+        );
+    }
+
+    #[test]
+    fn copying_an_empty_pane_says_so_rather_than_claiming_success() {
+        // Asserted on the empty case because it is the branch that does *not*
+        // write to the terminal: the others emit an OSC 52 sequence to real
+        // stdout, which a test must not do — it would land in the harness's
+        // own output. What the sequence contains is pinned in `clipboard`,
+        // against the RFC's vectors.
+        let mut app = test_app(Family::Debian);
+        app.focus = Pane::Output;
+
+        press(&mut app, KeyCode::Char('y'));
+
+        assert!(
+            app.status
+                .message(Instant::now())
+                .contains("no output to copy"),
+            "got {:?}",
+            app.status.message(Instant::now())
+        );
+    }
+
+    #[test]
+    fn the_output_key_bar_names_the_copy_key() {
+        // The mouse cannot select this pane cleanly, so the key that can is
+        // the one an operator has to be told about.
+        let mut app = test_app(Family::Debian);
+        app.focus = Pane::Output;
+        app.output.push(crate::exec::OutputLine {
+            stream: crate::exec::Stream::Stdout,
+            text: "a line".to_owned(),
+        });
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(screen.contains("y copy"), "got {screen}");
+    }
+
+    #[test]
+    fn starting_a_task_leaves_the_focus_where_it_was() {
+        // This used to move to the output, on the grounds that reading what is
+        // about to happen is the natural next thing. That is true of the pane
+        // and not of the cursor: the output is drawn and streaming either way.
+        // What moving the focus did was take the arrow keys away from the
+        // tree, so moving on to the next task meant pressing Tab first to undo
+        // something the operator had not asked for.
         let mut app = test_app(Family::Debian);
         select_task(&mut app, "ssh.install");
+        assert_eq!(app.focus, Pane::Tree, "the fixture starts on the tree");
+
+        app.run_selected(ParamValues::new());
+
+        assert_eq!(app.focus, Pane::Tree);
+    }
+
+    #[test]
+    fn starting_a_task_does_not_move_the_focus_back_either() {
+        // The rule is that running a task does not touch the focus at all, not
+        // that the focus ends on the tree: an operator who pressed Tab to read
+        // the previous task's output must not be moved out of it.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.install");
+        app.focus = Pane::Output;
 
         app.run_selected(ParamValues::new());
 

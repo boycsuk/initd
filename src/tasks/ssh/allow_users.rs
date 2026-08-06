@@ -52,6 +52,14 @@ impl Task for RestrictUsers {
         vec![
             // No starting value: seeding "root" would suggest the root-only
             // configuration `ssh.harden` exists to disable.
+            //
+            // No suggestions either, though every name in it is an account
+            // this host has. The field holds a space-separated *list*, and
+            // taking a suggestion replaces the whole value — so offering
+            // accounts here would delete the names already typed each time one
+            // was chosen. Completing within a list is a different mechanism
+            // from choosing a value, and this field needs the one that does
+            // not exist yet rather than the one that does.
             Param::new(Self::USERS, "Allowed users", ParamKind::UsernameList)
                 .with_hint("space-separated; every other account is refused"),
         ]

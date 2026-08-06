@@ -18,6 +18,7 @@ use ratatui::layout::Rect;
 
 use super::app::{App, Mode, Pane};
 use super::app::{HELP_PAGE, PAGE_SCROLL};
+use super::clipboard;
 use super::confirm::Confirm;
 use super::field::Field;
 use super::form::Form;
@@ -26,7 +27,7 @@ use super::search::Search;
 use super::status::State;
 use crate::i18n::{Msg, RevertReason};
 use crate::tasks::Node;
-use crate::tasks::params::ParamValues;
+use crate::tasks::params::{ParamValues, Suggestions};
 
 impl App {
     /// Handles a key press, routing to whichever dialog is open.
@@ -159,11 +160,43 @@ impl App {
             // of scrolling away, the other names what it does.
             KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
             KeyCode::Char('w') => self.output.toggle_wrap(),
+            KeyCode::Char('y') => self.copy_output(),
             KeyCode::Esc => self.focus = Pane::Tree,
             _ => return false,
         }
 
         true
+    }
+
+    /// Puts the whole transcript on the operator's clipboard.
+    ///
+    /// The mouse cannot do this: the terminal owns the selection and copies
+    /// rectangles of screen, so dragging over the pane takes its border and
+    /// the tree's flags, and takes only what the pane was wide enough to draw.
+    ///
+    /// The message says the transcript was *sent* to the terminal rather than
+    /// that it was copied. OSC 52 has no reply, and terminals that refuse it
+    /// are real — some ship with it disabled, since a program that can write
+    /// the clipboard can also overwrite what was in it. Reporting success the
+    /// tool cannot observe is how a message stops being believed.
+    fn copy_output(&mut self) {
+        if self.output.is_empty() {
+            self.status
+                .flash(self.lang.render(&Msg::StatusNothingToCopy), Instant::now());
+            return;
+        }
+
+        let lines = self.output.len();
+
+        if clipboard::copy(&self.output.transcript()) {
+            self.status.flash(
+                self.lang.render(&Msg::StatusCopied { lines }),
+                Instant::now(),
+            );
+        } else {
+            self.status
+                .flash(self.lang.render(&Msg::StatusCopyFailed), Instant::now());
+        }
     }
     /// Handles a key press while a task is running.
     ///
@@ -315,6 +348,14 @@ impl App {
     /// Every printable character is literal here. Only `Tab`, `Enter`, `Esc`,
     /// the arrows and the `Ctrl-*` bindings stay commands.
     fn on_form_key(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        // The options list is modal over the form, so it answers first — the
+        // same precedence the form itself has over the tree. Without this,
+        // `Esc` would close the form underneath an open list.
+        if self.options_at.is_some() {
+            self.on_options_key(key);
+            return None;
+        }
+
         let form = self.form.as_mut()?;
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -325,6 +366,9 @@ impl App {
                 // lose, so it closes outright.
                 if form.is_untouched() || form.cancel_armed() {
                     self.form = None;
+                    // The list belongs to a field of this form; leaving it set
+                    // would reopen it over the next form that is opened.
+                    self.options_at = None;
                     self.status
                         .set(State::Ready, self.lang.render(&Msg::StatusCancelled));
                 } else {
@@ -346,7 +390,29 @@ impl App {
         // whichever field has focus. Resolving which of the two a key means
         // before touching either keeps the focus guard in one place instead of
         // repeated around every editing key.
+        // `↑↓` step through what the host offers where there is anything to
+        // step through, and move between fields where there is not. `Tab` and
+        // `BackTab` always move between fields, so the navigation the form had
+        // before is never the thing that was taken away — a field with options
+        // is still left with `Tab`, which the key bar names.
+        //
+        // Asked of the focused field rather than of the form: two fields of
+        // one form differ, and `ssh.allow-users` has a shell-less list beside
+        // an account field.
+        let offers_options = form
+            .focused_mut()
+            .is_some_and(|field| !field.options().is_empty());
+
         let edit: fn(&mut Field) = match key.code {
+            // Opens on the option the field already holds, so a list reached
+            // from a filled field starts where the operator left it rather
+            // than at the top.
+            KeyCode::Char('l') if control && offers_options => {
+                self.options_at = Some(form.focused_option_position().unwrap_or(0));
+                return None;
+            }
+            KeyCode::Down if offers_options => Field::next_option,
+            KeyCode::Up if offers_options => Field::previous_option,
             KeyCode::Tab | KeyCode::Down => {
                 form.focus_next();
                 return None;
@@ -384,6 +450,48 @@ impl App {
 
         None
     }
+    /// Moves through the focused field's options, or takes one.
+    ///
+    /// Nothing is written to the field until `Enter`: moving the cursor here
+    /// is reading the list, not answering it, so `Esc` leaves whatever was
+    /// typed exactly as it was.
+    fn on_options_key(&mut self, key: KeyEvent) {
+        let Some(at) = self.options_at else {
+            return;
+        };
+
+        let Some(form) = self.form.as_mut() else {
+            // The list cannot outlive the form it belongs to.
+            self.options_at = None;
+            return;
+        };
+
+        let count = form.focused_option_count();
+
+        if count == 0 {
+            self.options_at = None;
+            return;
+        }
+
+        match key.code {
+            // Wrapping, like the tree and the search results: a list that
+            // stops at its ends makes the operator reverse to reach what is
+            // one press the other way.
+            KeyCode::Down | KeyCode::Char('j') => self.options_at = Some((at + 1) % count),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.options_at = Some((at + count - 1) % count);
+            }
+            KeyCode::Home => self.options_at = Some(0),
+            KeyCode::End => self.options_at = Some(count - 1),
+            KeyCode::Enter => {
+                form.take_focused_option(at);
+                self.options_at = None;
+            }
+            KeyCode::Esc => self.options_at = None,
+            _ => {}
+        }
+    }
+
     /// Submits the form, or moves to the field standing in the way.
     ///
     /// On a field that is not the last, `Enter` advances rather than
@@ -410,6 +518,7 @@ impl App {
 
         let values = form.values();
         self.form = None;
+        self.options_at = None;
 
         let destructive = self
             .selected_task()
@@ -486,7 +595,9 @@ impl App {
         // Values first, then consent, then the work: the confirmation states
         // what will happen, and it cannot do that before it knows the values.
         if task.needs_input() {
-            self.form = Some(Form::new(task.title(), task.params()));
+            let mut form = Form::new(task.title(), task.params());
+            self.offer_what_the_host_knows(&mut form);
+            self.form = Some(form);
             return None;
         }
 
@@ -497,6 +608,49 @@ impl App {
 
         Some(ParamValues::new())
     }
+
+    /// Fills each field with what the host says it could hold.
+    ///
+    /// Resolved once here rather than per keystroke: each answer is a command,
+    /// and running `cat /etc/passwd` on every arrow press would put the
+    /// executor in the path of a keystroke.
+    ///
+    /// Asked once per kind, not once per field. `ssh.allow-users` has two
+    /// account fields, and the passwd database does not change between them.
+    ///
+    /// A failure is dropped rather than raised. These are suggestions: a host
+    /// whose `/etc/shells` cannot be read is a host where the operator types
+    /// the shell, which is what they did before there was anything to offer.
+    /// Refusing to open the form over it would turn a convenience into a
+    /// prerequisite.
+    fn offer_what_the_host_knows(&mut self, form: &mut Form) {
+        let mut accounts: Option<Vec<String>> = None;
+        let mut shells: Option<Vec<String>> = None;
+
+        for field in form.fields_mut() {
+            let Some(source) = field.param.suggestions else {
+                continue;
+            };
+
+            let options = match source {
+                Suggestions::Accounts => accounts.get_or_insert_with(|| {
+                    self.backend
+                        .accounts()
+                        .list(self.executor.as_ref())
+                        .unwrap_or_default()
+                }),
+                Suggestions::Shells => shells.get_or_insert_with(|| {
+                    self.backend
+                        .account_writer()
+                        .valid_shells(self.executor.as_ref())
+                        .unwrap_or_default()
+                }),
+            };
+
+            field.offer(options.clone());
+        }
+    }
+
     /// Opens the confirmation for the selected task.
     fn open_confirmation(&mut self) {
         let Some(task) = self.selected_task() else {

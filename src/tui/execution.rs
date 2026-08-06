@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use super::app::{App, Pane};
+use super::app::App;
 use super::auth::AuthRequest;
 use super::status::State;
 use super::verify::Verification;
@@ -35,8 +35,16 @@ impl App {
 
         self.output.clear();
         self.status.set(State::Running, id);
-        // Reading what is about to happen is the natural thing to do next.
-        self.focus = Pane::Output;
+
+        // Focus deliberately stays where it was. This used to move to the
+        // output on the grounds that reading what is about to happen is the
+        // natural next thing, which is true of the *pane* and not of the
+        // *cursor*: the output is drawn and streaming either way, since the
+        // right pane shows it as soon as there is any. What moving the focus
+        // actually did was take the arrow keys away from the tree, so the row
+        // the operator had selected stopped being the row the keys addressed —
+        // and moving on to the next task meant pressing Tab first, to undo
+        // something they had not asked for.
 
         // Kept because consequences are declared from the values the task ran
         // with, and those are reported once it finishes — by which point the

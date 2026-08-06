@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `y` sends the output pane's whole transcript to the terminal's clipboard.
+  The mouse cannot do this: the terminal owns the selection and copies
+  rectangles of screen, so dragging over the pane takes its border and the
+  tree's flags with it, and takes only what the pane was wide enough to draw —
+  every line longer than the pane arrives cut. Sent as an OSC 52 sequence
+  rather than through a clipboard library or `xclip`, because the machine
+  being administered usually has no display server and its clipboard would be
+  the wrong one anyway: the operator is at the other end of an SSH connection.
+  The message says what was *sent*, never that it was copied — OSC 52 has no
+  reply, and terminals that refuse it are real.
+- Account and shell fields offer what the host already records, stepped
+  through with `↑↓` or listed in full with `Ctrl-L`. The source is declared per
+  parameter rather than derived from the field's type: a type describes the
+  shape of a value, and `users.create` collects a username that must *not*
+  exist — offering the host's accounts there suggested precisely the values it
+  refuses. `wireguard.add-peer` collects a label validated by the username
+  rules and has nothing to suggest either; `ssh.allow-users` holds a list, and
+  taking a suggestion would delete the names already typed.
+
 ### Fixed
+- The tree pane fits the longest title it has to draw. It was 34 cells and
+  nine of the twenty-eight titles did not fit, so rows read `Create an
+  administrative us…`. The width is now measured rather than chosen — 40 cells
+  for the longest title plus six for a row's marker, flag, separator and
+  borders — and a test compares the constant against the tree, so a task added
+  with a longer name is a failing build rather than a screen nobody can read.
 - `g` in the output pane no longer crashes the interface. It scrolls to the
   top by asking for `usize::MAX` lines, and the pane added that to its current
   offset before clamping the result — so the addition overflowed and panicked
@@ -29,6 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid key, and only the lax criterion admitted it.
 
 ### Changed
+- The status gives up its own row and rides the bottom border of the pane on
+  the right, the way the tree's census rides its own — so the row it cost goes
+  to the body, which on the 24-row terminal this interface is measured against
+  is one more task visible without scrolling. The pill goes with the row: a
+  word on a filled background cannot sit on a border without painting over it,
+  so the state's word is drawn in the state's colour instead, and the
+  `STATUS_*` roles set a foreground only. `READY` is no longer drawn at all —
+  it is the state the tool is in whenever it is in no other, so a border
+  reading it for most of a session says only that the program is running and
+  teaches the eye to skip the one place a failure will appear.
+- Running a task no longer moves the focus to the output. That was true of the
+  pane, which streams either way, and not of the cursor: what it did was take
+  the arrow keys off the tree, so moving on to the next task meant pressing
+  `Tab` first to undo something nobody had asked for. `Tab` is the only thing
+  that moves focus.
+- Where two titles share a pane's bottom border, the pane's own indicator
+  yields whole rather than being cut. Ratatui draws both rather than
+  arbitrating, which rendered the tree's census as `6 ca FAILED …` and the
+  output pane's `following` as `f`. Neither is the only place its information
+  appears; the status may be the only report of a task that failed.
 - `src/tui/app.rs` gives up the key handlers, the run's life and the privilege
   request: `dispatch.rs`, `execution.rs` and `auth.rs`. Its production code
   drops from 1295 lines to ~495, leaving the struct, the constructor, the event

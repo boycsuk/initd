@@ -172,21 +172,36 @@ pub const CHOICE_NORMAL: Style = fg_mod(Color::White, Modifier::DIM);
 pub const SEARCH_MATCH: Style = pair(Color::Black, Color::Yellow);
 
 // --- Status row and key bar ------------------------------------------------
+//
+// Two families, because the status is drawn in two places that cannot share a
+// style. A badge sits on a filled background; the status line rides a pane
+// border, where a background would paint a block over the border it interrupts
+// and read as damage rather than as emphasis. So the badges below set a pair
+// and the `STATUS_*` roles set a foreground only.
 
-/// The `READY` and `DONE` pills.
-pub const STATUS_READY: Style = pair(Color::Black, Color::Green).add_modifier(Modifier::BOLD);
+/// The `VERIFY` badge inside the verification banner.
+///
+/// The one place a status word is still drawn on a filled background: the
+/// banner is a block of its own, not a border it has to sit inside.
+pub const BADGE_BUSY: Style = pair(Color::Black, Color::Yellow).add_modifier(Modifier::BOLD);
 
-/// The `RUNNING` and `VERIFY` pills.
-pub const STATUS_BUSY: Style = pair(Color::Black, Color::Yellow).add_modifier(Modifier::BOLD);
+/// `READY` and `DONE` on the pane border.
+pub const STATUS_READY: Style = fg_mod(Color::Green, Modifier::BOLD);
 
-/// The `FAILED` and `CONFIRM` pills.
-pub const STATUS_ERROR: Style = pair(Color::Black, Color::Red).add_modifier(Modifier::BOLD);
+/// `RUNNING` and `VERIFY` on the pane border.
+pub const STATUS_BUSY: Style = fg_mod(Color::Yellow, Modifier::BOLD);
 
-/// The `INPUT` pill.
-pub const STATUS_INPUT: Style = pair(Color::Black, Color::Blue).add_modifier(Modifier::BOLD);
+/// `FAILED`, `CANCELLED` and `CONFIRM` on the pane border.
+pub const STATUS_ERROR: Style = fg_mod(Color::Red, Modifier::BOLD);
 
-/// The `UNSUPPORTED` pill.
-pub const STATUS_INERT: Style = pair(Color::Black, Color::White).add_modifier(Modifier::BOLD);
+/// `INPUT` on the pane border.
+pub const STATUS_INPUT: Style = fg_mod(Color::Blue, Modifier::BOLD);
+
+/// `UNSUPPORTED` on the pane border.
+///
+/// Dim rather than coloured: a host refusing a task is not an error, and
+/// giving it a hue of its own would rank it alongside a failure.
+pub const STATUS_INERT: Style = fg_mod(Color::White, Modifier::DIM);
 
 /// The key glyph in the bottom key bar.
 pub const KEYBAR_KEY: Style = fg_mod(Color::Reset, Modifier::BOLD);
@@ -242,20 +257,51 @@ mod tests {
     }
 
     #[test]
-    fn every_status_pill_is_readable_without_colour() {
-        // The pills differ by background, so each must also set a foreground
-        // that contrasts; a pill with only a background inverts unpredictably.
-        for pill in [
+    fn a_badge_sets_both_colours_of_its_pair() {
+        // A badge differs from its surroundings by background, so it must also
+        // set a foreground that contrasts; one with only a background inverts
+        // unpredictably against whatever theme is underneath.
+        assert!(BADGE_BUSY.fg.is_some(), "a badge must set its foreground");
+        assert!(BADGE_BUSY.bg.is_some(), "a badge must set its background");
+        assert!(BADGE_BUSY.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn no_status_style_paints_a_background_over_the_border() {
+        // These are drawn on a pane's bottom border, where a background fills
+        // the cells the border runs through — which reads as a gap in the
+        // frame rather than as emphasis. Foreground only, so the border shows
+        // through the spaces around the word.
+        for status in [
             STATUS_READY,
             STATUS_BUSY,
             STATUS_ERROR,
             STATUS_INPUT,
             STATUS_INERT,
         ] {
-            assert!(pill.fg.is_some(), "a pill must set its foreground");
-            assert!(pill.bg.is_some(), "a pill must set its background");
-            assert!(pill.add_modifier.contains(Modifier::BOLD));
+            assert!(status.fg.is_some(), "a status must colour its text");
+            assert_eq!(
+                status.bg, None,
+                "a background here would paint over the border"
+            );
         }
+    }
+
+    #[test]
+    fn the_status_styles_differ_from_one_another() {
+        // Colour is redundant reinforcement here rather than the signal, but
+        // two states sharing a hue would make the reinforcement misleading.
+        let hues = [
+            STATUS_READY.fg,
+            STATUS_BUSY.fg,
+            STATUS_ERROR.fg,
+            STATUS_INPUT.fg,
+        ];
+        let mut seen: Vec<String> = hues.iter().map(|colour| format!("{colour:?}")).collect();
+        seen.sort_unstable();
+        seen.dedup();
+
+        assert_eq!(seen.len(), hues.len(), "two states share a colour");
     }
 
     #[test]

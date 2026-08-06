@@ -96,6 +96,7 @@ const SECTIONS: &[Section] = &[
             ("g", Msg::HelpOldestLine),
             ("G f", Msg::HelpNewestLine),
             ("w", Msg::HelpWrap),
+            ("y", Msg::HelpCopy),
         ],
     },
     Section {
@@ -103,6 +104,8 @@ const SECTIONS: &[Section] = &[
         keys: &[
             ("Tab", Msg::HelpNextField),
             ("Enter", Msg::HelpNextFieldOrSubmit),
+            ("↑↓", Msg::HelpStepOptions),
+            ("Ctrl-L", Msg::HelpListOptions),
             ("Ctrl-A/E", Msg::HelpFieldEnds),
             ("Ctrl-U/K", Msg::HelpClearAround),
             ("Ctrl-W", Msg::HelpDeleteWord),

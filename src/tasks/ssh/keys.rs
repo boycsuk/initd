@@ -55,7 +55,8 @@ impl Task for AuthorizeKey {
             // not because it is the one to prefer.
             Param::new(Self::USER, "Username", ParamKind::Username)
                 .with_initial("root")
-                .with_hint("the account the key authorises"),
+                .with_hint("the account the key authorises")
+                .suggesting_accounts(),
             Param::new(Self::KEY, "Public key", ParamKind::PublicKey)
                 .with_hint("paste the contents of a .pub file"),
         ]

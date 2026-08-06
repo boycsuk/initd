@@ -55,6 +55,36 @@ pub enum ParamKind {
 /// this tool edits as root. `#` would comment out the remainder of the line.
 const CONFIG_UNSAFE: [char; 3] = ['\n', '\r', '#'];
 
+/// Where the values a field can be filled from come from.
+///
+/// Named here and resolved elsewhere, deliberately. `ParamKind` validates a
+/// string against a rule and touches nothing; reading `/etc/passwd` or
+/// `/etc/shells` needs an [`crate::exec::Executor`], which would put the whole
+/// backend behind a type whose job is to compare text. So this says *which*
+/// question to ask and the interface, which holds the executor, asks it when
+/// it opens the form.
+///
+/// Declared per parameter rather than derived from its [`ParamKind`], which is
+/// where this started and was wrong. A kind describes the *shape* of a value;
+/// what the host can offer for it depends on the value's *relation to the
+/// system*, and the two come apart in both directions:
+///
+/// - `users.create` collects a username that must **not** exist. Offering the
+///   accounts on the host there suggests exactly the values guaranteed to
+///   fail — the tool refuses each one with "account exists".
+/// - `wireguard.add-peer` collects a peer *label* that is validated as a
+///   username because the character rules suit it. It is not an account, and
+///   the host has nothing to say about it.
+///
+/// Both are `ParamKind::Username`, and neither wants what the third one does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Suggestions {
+    /// The accounts defined on this host.
+    Accounts,
+    /// The login shells `/etc/shells` admits.
+    Shells,
+}
+
 impl ParamKind {
     /// Whether a character can appear in a value of this kind.
     ///
@@ -346,6 +376,13 @@ pub struct Param {
     pub initial: String,
     /// A short note shown beside the field.
     pub hint: Option<String>,
+    /// What the host can offer for this field, where anything can.
+    ///
+    /// Opt-in per parameter: a field says so or is left alone. The default of
+    /// `None` is what keeps a new parameter from silently inheriting
+    /// suggestions that do not fit it — which is the mistake this field exists
+    /// to have made impossible.
+    pub suggestions: Option<Suggestions>,
 }
 
 impl Param {
@@ -357,6 +394,7 @@ impl Param {
             kind,
             initial: String::new(),
             hint: None,
+            suggestions: None,
         }
     }
 
@@ -371,6 +409,24 @@ impl Param {
     #[must_use]
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    /// Offers the accounts this host has.
+    ///
+    /// For a field naming an account that must already exist. A field that
+    /// names one which must *not* — `users.create` — asks for nothing: every
+    /// account on the host is a value that task refuses.
+    #[must_use]
+    pub const fn suggesting_accounts(mut self) -> Self {
+        self.suggestions = Some(Suggestions::Accounts);
+        self
+    }
+
+    /// Offers the login shells this host admits.
+    #[must_use]
+    pub const fn suggesting_shells(mut self) -> Self {
+        self.suggestions = Some(Suggestions::Shells);
         self
     }
 }

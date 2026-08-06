@@ -327,8 +327,14 @@ pub enum Msg {
     HelpOldestLine,
     HelpNewestLine,
     HelpWrap,
+    /// What `y` does in the output pane, in the help overlay.
+    HelpCopy,
     HelpNextField,
     HelpNextFieldOrSubmit,
+    /// What `↑↓` do in a field the host can offer values for.
+    HelpStepOptions,
+    /// What the key that opens the full list of those values does.
+    HelpListOptions,
     HelpFieldEnds,
     HelpClearAround,
     HelpDeleteWord,
@@ -379,6 +385,26 @@ pub enum Msg {
         index: usize,
         total: usize,
     },
+    /// How many values the host offers for a field, and which one is on
+    /// screen.
+    ///
+    /// `position` is `None` where the value is not one of them — typed by
+    /// hand, or not yet typed at all — so the count is still offered without
+    /// claiming the field is sitting on an option it is not. Carries the
+    /// numbers rather than a rendered `2/6` for the same reason as
+    /// [`Msg::FormFieldCounter`].
+    FormOptionCount {
+        position: Option<usize>,
+        total: usize,
+    },
+    /// What the key that opens the full list of options does.
+    FormKeyList,
+    /// Title of the overlay listing everything the host offers for a field.
+    FormOptionsTitle {
+        label: String,
+    },
+    /// What `Enter` does in the options overlay.
+    FormOptionsChoose,
     FormKeyField,
     /// What `Enter` does once every field would be accepted.
     FormKeyContinue,
@@ -532,6 +558,8 @@ pub enum Msg {
     KeyBarStop,
     KeyBarScroll,
     KeyBarWrap,
+    /// What `y` does in the output pane.
+    KeyBarCopy,
     KeyBarKeys,
     KeyBarKeep,
     KeyBarRevert,
@@ -562,6 +590,17 @@ pub enum Msg {
     /// where doing nothing has consequences.
     StatusVerifyKeysOnly,
     StatusCancelled,
+    /// How many lines were handed to the terminal to copy.
+    ///
+    /// Says what was sent rather than what was copied: OSC 52 has no reply,
+    /// and a terminal that refuses it looks identical to one that honoured it.
+    StatusCopied {
+        lines: usize,
+    },
+    /// The copy sequence could not be written to the terminal at all.
+    StatusCopyFailed,
+    /// Copy was pressed with an empty pane.
+    StatusNothingToCopy,
     /// The second-press prompt before a form with typed values is discarded.
     StatusPressEscAgainToDiscard,
     StatusFillEveryFieldFirst,

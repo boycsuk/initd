@@ -294,9 +294,17 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpScrollPage => "scroll a page".to_owned(),
         Msg::HelpOldestLine => "oldest retained line".to_owned(),
         Msg::HelpNewestLine => "newest output, and follow it".to_owned(),
+        Msg::HelpCopy => "send the whole transcript to the terminal's clipboard".to_owned(),
         Msg::HelpWrap => "wrap long lines".to_owned(),
         Msg::HelpNextField => "next field".to_owned(),
         Msg::HelpNextFieldOrSubmit => "next field, or submit on the last".to_owned(),
+        // Both say "where the host offers any", because in a field with none
+        // the arrows still move between fields and the list key does nothing
+        // — and a help entry that does not say so reads as a broken binding.
+        Msg::HelpStepOptions => {
+            "step through what this host offers, where it offers any".to_owned()
+        }
+        Msg::HelpListOptions => "list everything this host offers for the field".to_owned(),
         Msg::HelpFieldEnds => "start / end of the value".to_owned(),
         Msg::HelpClearAround => "clear before / after the cursor".to_owned(),
         Msg::HelpDeleteWord => "delete the previous word".to_owned(),
@@ -341,6 +349,16 @@ pub(super) fn render(message: &Msg) -> String {
         // each key hint from the next: they are drawn as adjacent spans on one
         // line, so the gap has to travel with the words.
         Msg::FormFieldCounter { index, total } => format!("{index} of {total}  "),
+        // Leading spaces separate this from the validation note it sits
+        // beside. The arrows are drawn rather than named for the reason the
+        // key bar states: a glyph on a keyboard is not a word in a language.
+        Msg::FormOptionCount { position, total } => match position {
+            Some(position) => format!("   ↑↓ {position}/{total} on this host"),
+            None => format!("   ↑↓ {total} on this host"),
+        },
+        Msg::FormKeyList => " list   ".to_owned(),
+        Msg::FormOptionsTitle { label } => format!(" {label} on this host "),
+        Msg::FormOptionsChoose => " choose   ".to_owned(),
         Msg::FormKeyField => " field   ".to_owned(),
         Msg::FormKeyContinue => " continue   ".to_owned(),
         // Parenthesised because it stands where `continue` stands: it names
@@ -448,6 +466,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarStop => "stop".to_owned(),
         Msg::KeyBarScroll => "scroll".to_owned(),
         Msg::KeyBarWrap => "wrap".to_owned(),
+        Msg::KeyBarCopy => "copy".to_owned(),
         Msg::KeyBarKeys => "keys".to_owned(),
         Msg::KeyBarKeep => "keep".to_owned(),
         Msg::KeyBarRevert => "revert".to_owned(),
@@ -474,6 +493,15 @@ pub(super) fn render(message: &Msg) -> String {
         // one window where doing nothing has consequences.
         Msg::StatusVerifyKeysOnly => "K keeps this change, R puts it back".to_owned(),
         Msg::StatusCancelled => "cancelled".to_owned(),
+        // "sent to the terminal" rather than "copied": the tool cannot see
+        // whether the terminal honoured it, and a claim it cannot check is one
+        // the operator learns to disbelieve.
+        Msg::StatusCopied { lines } => {
+            let line = if *lines == 1 { "line" } else { "lines" };
+            format!("{lines} {line} sent to the terminal's clipboard")
+        }
+        Msg::StatusCopyFailed => "the terminal did not accept the copy".to_owned(),
+        Msg::StatusNothingToCopy => "there is no output to copy".to_owned(),
         Msg::StatusPressEscAgainToDiscard => "press Esc again to discard what you typed".to_owned(),
         Msg::StatusFillEveryFieldFirst => "fill in every field first".to_owned(),
         Msg::StatusFinishedBeforeItCouldStop => {

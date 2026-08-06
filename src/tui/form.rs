@@ -12,7 +12,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use super::field::Field;
 use super::{layout, style};
@@ -20,13 +20,38 @@ use crate::i18n::{Lang, Msg};
 use crate::tasks::params::{Param, ParamValues};
 
 /// Width the dialog is drawn at, before clamping to the terminal.
-const DIALOG_WIDTH: u16 = 64;
+///
+/// Sized by its footer rather than by its fields, which is what sets the
+/// floor: the longest one is `Tab field   Ctrl-L list   Enter (fill every
+/// field)   Esc cancel`, and it is drawn as adjacent spans that neither wrap
+/// nor truncate — a footer one cell too wide simply loses `cancel`, leaving
+/// the key that abandons the form unnamed. `centred` clamps this to the
+/// terminal, so a narrow one shrinks the dialog rather than overflowing.
+const DIALOG_WIDTH: u16 = 72;
 
 /// Rows one field occupies: its label, the boxed input, and a note beneath.
 const ROWS_PER_FIELD: u16 = 5;
 
 /// Rows spent on the dialog's own frame and its footer.
 const CHROME_ROWS: u16 = 4;
+
+/// Rows the options overlay spends on its border and footer.
+const OPTIONS_CHROME_ROWS: u16 = 2;
+
+/// Tallest the options overlay is drawn, before the terminal clamps it.
+///
+/// Forty accounts do not fit a 24-row terminal and are not meant to: the list
+/// scrolls. The ceiling is what keeps the overlay from claiming the whole
+/// screen on a tall one, where the form underneath is the context for the
+/// choice being made.
+const OPTIONS_MAX_HEIGHT: u16 = 14;
+
+/// How the key that opens the full list of options is written in the footer.
+///
+/// `Ctrl-L` for *list*, and free: the readline bindings this field honours are
+/// `u`, `k`, `w`, `a` and `e`, so it takes nothing an operator's fingers
+/// already expect to do something else here.
+pub const LIST_KEY_LABEL: &str = "Ctrl-L";
 
 /// A form being filled in.
 #[derive(Debug)]
@@ -72,6 +97,16 @@ impl Form {
     /// The field currently receiving keystrokes.
     pub fn focused_mut(&mut self) -> Option<&mut Field> {
         self.fields.get_mut(self.focus)
+    }
+
+    /// Every field, for filling in what the host can offer them.
+    ///
+    /// Mutable access to the whole set, which the rest of this type avoids on
+    /// purpose. It exists for one caller: the interface resolves what each
+    /// field could hold once, when the form opens, because doing it per
+    /// keystroke would run `cat /etc/passwd` on every arrow press.
+    pub fn fields_mut(&mut self) -> &mut [Field] {
+        &mut self.fields
     }
 
     /// Moves to the next field, wrapping at the end.
@@ -136,14 +171,114 @@ impl Form {
         values
     }
 
+    /// Where this dialog is drawn inside the terminal.
+    ///
+    /// Resolved here rather than at each call site so that the options overlay
+    /// can be placed against the same rectangle the form occupies. Two call
+    /// sites computing it separately is how the two would drift apart after a
+    /// change to either.
+    fn area(&self, terminal: Rect) -> Rect {
+        let height = CHROME_ROWS + ROWS_PER_FIELD * self.fields.len() as u16;
+
+        layout::centred(DIALOG_WIDTH, height, terminal)
+    }
+
+    /// Draws every option the focused field offers, over the form.
+    ///
+    /// Stepping with `↑↓` covers the three shells `/etc/shells` usually holds;
+    /// this covers the forty accounts `/etc/passwd` does, where stepping one
+    /// at a time is not reading a list, it is guessing more slowly.
+    ///
+    /// `chosen` is where the cursor sits in the overlay, which is not the
+    /// field's own position: the operator moves through the list before
+    /// deciding, and the field is only written when they press `Enter`.
+    pub fn render_options(&mut self, frame: &mut Frame, chosen: usize, lang: Lang) {
+        let Some(field) = self.fields.get(self.focus) else {
+            return;
+        };
+
+        if field.options().is_empty() {
+            return;
+        }
+
+        let label = field.param.label.to_owned();
+        let options = field.options();
+
+        // Sized to the content up to a ceiling, so three shells do not get the
+        // same box as forty accounts. Two rows go to the border and one to the
+        // footer.
+        let height = (options.len() as u16 + OPTIONS_CHROME_ROWS).min(OPTIONS_MAX_HEIGHT);
+
+        // Below the form rather than centred over it, which is where centring
+        // put it: on top of the very field it answers. A chooser that hides
+        // the question makes the operator dismiss it to remember what they
+        // were filling in.
+        let area = below(self.area(frame.area()), height, frame.area());
+
+        // Clear first, or the form underneath shows through.
+        frame.render_widget(Clear, area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(style::DIALOG_BORDER_INPUT)
+            .title(Span::styled(
+                lang.render(&Msg::FormOptionsTitle { label }),
+                style::EMPHASIS,
+            ))
+            // The spaces framing it are what hold the border off the words;
+            // without them the footer reads as the frame having been drawn
+            // through it.
+            .title_bottom(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("Enter", style::KEYBAR_KEY),
+                Span::styled(lang.render(&Msg::FormOptionsChoose), style::KEYBAR_LABEL),
+                Span::styled("Esc", style::KEYBAR_KEY),
+                Span::styled(lang.render(&Msg::FormKeyCancel), style::KEYBAR_LABEL),
+                Span::raw(" "),
+            ]));
+
+        let items: Vec<ListItem> = options
+            .iter()
+            .map(|option| ListItem::new(format!(" {option}")))
+            .collect();
+
+        let mut state = ListState::default().with_selected(Some(chosen));
+
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(block)
+                .highlight_style(style::SELECTION_FOCUSED),
+            area,
+            &mut state,
+        );
+    }
+
+    /// How many options the focused field offers.
+    pub fn focused_option_count(&self) -> usize {
+        self.fields
+            .get(self.focus)
+            .map_or(0, |field| field.options().len())
+    }
+
+    /// Fills the focused field with the option at `index`.
+    pub fn take_focused_option(&mut self, index: usize) {
+        if let Some(field) = self.fields.get_mut(self.focus) {
+            field.take_option(index);
+        }
+    }
+
+    /// Where the focused field's value sits among its options.
+    pub fn focused_option_position(&self) -> Option<usize> {
+        self.fields.get(self.focus).and_then(Field::option_position)
+    }
+
     /// Renders the dialog centred over the interface.
     ///
     /// The title arrives as text because it is the task's own, chosen before
     /// the form opened; `lang` renders only the chrome the dialog itself owns
     /// — the field counter and the key hints.
     pub fn render(&mut self, frame: &mut Frame, lang: Lang) {
-        let height = CHROME_ROWS + ROWS_PER_FIELD * self.fields.len() as u16;
-        let area = layout::centred(DIALOG_WIDTH, height, frame.area());
+        let area = self.area(frame.area());
 
         // Clear first, or the interface underneath shows through the dialog.
         frame.render_widget(Clear, area);
@@ -227,26 +362,48 @@ impl Form {
                 style::border(focused),
             ));
 
-            lines.push(note_line(field));
+            lines.push(note_line(field, lang));
         }
 
         // The key glyphs stay literals for the reason `help.rs` states: `Tab`
         // and `Esc` name keys on a keyboard rather than words in a language.
-        lines.push(Line::from(vec![
+        let mut keys = vec![
             Span::styled("Tab", style::KEYBAR_KEY),
             Span::styled(lang.render(&Msg::FormKeyField), style::KEYBAR_LABEL),
-            Span::styled("Enter", style::KEYBAR_KEY),
-            Span::styled(
-                lang.render(&if self.is_valid() {
-                    Msg::FormKeyContinue
-                } else {
-                    Msg::FormKeyIncomplete
-                }),
+        ];
+
+        // Offered only where the focused field has something to list, since a
+        // hint naming a key that does nothing is worse than no hint. `↑↓` are
+        // not named here: they are stated beside the field itself, where the
+        // count says how many there are to step through.
+        if self
+            .fields
+            .get(focus)
+            .is_some_and(|field| !field.options().is_empty())
+        {
+            keys.push(Span::styled(LIST_KEY_LABEL, style::KEYBAR_KEY));
+            keys.push(Span::styled(
+                lang.render(&Msg::FormKeyList),
                 style::KEYBAR_LABEL,
-            ),
-            Span::styled("Esc", style::KEYBAR_KEY),
-            Span::styled(lang.render(&Msg::FormKeyCancel), style::KEYBAR_LABEL),
-        ]));
+            ));
+        }
+
+        keys.push(Span::styled("Enter", style::KEYBAR_KEY));
+        keys.push(Span::styled(
+            lang.render(&if self.is_valid() {
+                Msg::FormKeyContinue
+            } else {
+                Msg::FormKeyIncomplete
+            }),
+            style::KEYBAR_LABEL,
+        ));
+        keys.push(Span::styled("Esc", style::KEYBAR_KEY));
+        keys.push(Span::styled(
+            lang.render(&Msg::FormKeyCancel),
+            style::KEYBAR_LABEL,
+        ));
+
+        lines.push(Line::from(keys));
 
         frame.render_widget(Paragraph::new(lines), area);
 
@@ -256,12 +413,60 @@ impl Form {
     }
 }
 
+/// Places a box of at most `wanted` rows against `anchor`, inside `terminal`.
+///
+/// Below the anchor by preference, above it when the room below is smaller,
+/// and **shrunk to whatever that side actually has** — never merely moved. A
+/// box placed at its full height where the room is shorter runs off the
+/// terminal, which on a 24-row screen means it is drawn over the key bar and
+/// through the frame's bottom border: the list looks like it broke the
+/// interface rather than like it has more rows than fit.
+///
+/// Shrinking costs nothing the list does not already handle. It scrolls, so
+/// fewer rows means fewer visible at once rather than options that cannot be
+/// reached.
+///
+/// It keeps the anchor's width and left edge, so the two boxes read as one
+/// stack rather than as two unrelated dialogs.
+fn below(anchor: Rect, wanted: u16, terminal: Rect) -> Rect {
+    let under = anchor.y + anchor.height;
+    let bottom = terminal.y + terminal.height;
+
+    let room_below = bottom.saturating_sub(under);
+    let room_above = anchor.y.saturating_sub(terminal.y);
+
+    // The taller side wins, so the list is drawn where most of it is legible.
+    // Below is preferred on a tie: the eye is already travelling downwards
+    // through the fields.
+    let (y, room) = if room_below >= room_above {
+        (under, room_below)
+    } else {
+        (terminal.y, room_above)
+    };
+
+    let height = wanted.min(room);
+
+    Rect {
+        x: anchor.x,
+        // Sitting the box against the anchor rather than against the terminal
+        // edge when it goes above: the gap belongs at the far end, not between
+        // the list and the field it answers.
+        y: if y == terminal.y {
+            anchor.y - height
+        } else {
+            y
+        },
+        width: anchor.width,
+        height,
+    }
+}
+
 /// The note under a field: what is wrong, or what the value parsed as.
 ///
 /// A warning the tool then ignores is worse than no warning, so this states
 /// the problem rather than merely that there is one.
-fn note_line(field: &Field) -> Line<'static> {
-    if let Some(error) = field.error() {
+fn note_line(field: &Field, lang: Lang) -> Line<'static> {
+    let mut spans = if let Some(error) = field.error() {
         // An empty required field is not yet a mistake — the operator has not
         // finished — so it reads as a prompt rather than a failure.
         let style = if field.is_empty() {
@@ -270,13 +475,29 @@ fn note_line(field: &Field) -> Line<'static> {
             style::OUTPUT_ERROR
         };
 
-        return Line::styled(format!("  {error}"), style);
+        vec![Span::styled(format!("  {error}"), style)]
+    } else {
+        match field.parsed_summary() {
+            Some(summary) => vec![Span::styled(format!("  ✓ {summary}"), style::RESULT_OK)],
+            None => vec![Span::styled("  ✓", style::RESULT_OK)],
+        }
+    };
+
+    // What the host offers, on the row the operator is already reading for the
+    // validation note. A row of its own would cost one per field, which on a
+    // three-field form is the difference between fitting a 24-row terminal and
+    // not.
+    if !field.options().is_empty() {
+        spans.push(Span::styled(
+            lang.render(&Msg::FormOptionCount {
+                position: field.option_position().map(|index| index + 1),
+                total: field.options().len(),
+            }),
+            style::BLOCK_SUBTITLE,
+        ));
     }
 
-    field.parsed_summary().map_or_else(
-        || Line::styled("  ✓", style::RESULT_OK),
-        |summary| Line::styled(format!("  ✓ {summary}"), style::RESULT_OK),
-    )
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -289,6 +510,80 @@ mod tests {
             "Change the SSH port",
             vec![Param::new("port", "Port", ParamKind::Port).with_initial("22")],
         )
+    }
+
+    /// A terminal 24 rows tall, the size the interface is measured against.
+    fn terminal() -> Rect {
+        Rect::new(0, 0, 80, 24)
+    }
+
+    #[test]
+    fn an_options_box_that_fits_below_is_drawn_below() {
+        let anchor = Rect::new(4, 5, 72, 8);
+
+        let placed = below(anchor, 6, terminal());
+
+        assert_eq!(placed.y, 13, "immediately under the anchor");
+        assert_eq!(placed.height, 6, "at the height it asked for");
+    }
+
+    #[test]
+    fn an_options_box_never_runs_off_the_bottom_of_the_terminal() {
+        // Drawn at full height where the room is shorter, it lands on the key
+        // bar and through the frame's bottom border — which reads as the list
+        // having broken the interface rather than as having more rows than
+        // fit.
+        let anchor = Rect::new(4, 5, 72, 16);
+
+        let placed = below(anchor, 7, terminal());
+
+        assert!(
+            placed.y + placed.height <= 24,
+            "got y={} height={}",
+            placed.y,
+            placed.height
+        );
+    }
+
+    #[test]
+    fn an_options_box_goes_above_when_that_side_has_more_room() {
+        // The form sits low enough that below it is two rows and above it is
+        // eighteen; a chooser drawn into the two would show one option.
+        let anchor = Rect::new(4, 18, 72, 4);
+
+        let placed = below(anchor, 8, terminal());
+
+        assert!(placed.y < anchor.y, "got y={}", placed.y);
+        assert_eq!(
+            placed.y + placed.height,
+            anchor.y,
+            "it must sit against the field it answers, not against the screen edge"
+        );
+    }
+
+    #[test]
+    fn an_options_box_is_shrunk_rather_than_moved_when_neither_side_fits() {
+        // Both sides are short, so it takes the taller one at whatever height
+        // that side has. The list scrolls, so fewer rows means fewer visible
+        // at once rather than options that cannot be reached.
+        let anchor = Rect::new(4, 9, 72, 12);
+
+        let placed = below(anchor, 10, terminal());
+
+        assert!(placed.height < 10, "got height={}", placed.height);
+        assert!(placed.height > 0, "it must still be drawn");
+        assert!(placed.y + placed.height <= 24);
+    }
+
+    #[test]
+    fn an_options_box_keeps_the_width_and_left_edge_of_the_form() {
+        // The two boxes read as one stack rather than as two dialogs.
+        let anchor = Rect::new(4, 5, 72, 8);
+
+        let placed = below(anchor, 6, terminal());
+
+        assert_eq!(placed.x, anchor.x);
+        assert_eq!(placed.width, anchor.width);
     }
 
     fn key_form() -> Form {

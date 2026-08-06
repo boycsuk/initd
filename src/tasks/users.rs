@@ -63,8 +63,16 @@ impl Task for CreateUser {
 
     fn params(&self) -> Vec<Param> {
         vec![
+            // The hint says there will be no password because the form is
+            // where that becomes surprising: the detail pane explains it, and
+            // the form is drawn over the detail pane. An operator who reaches
+            // this field is looking at one box asking for a name, and nothing
+            // else on screen says the account it makes cannot yet log in.
+            //
+            // No suggestions here, deliberately: every account this host has
+            // is a value this task refuses.
             Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_hint("the account to create"),
+                .with_hint("the account to create — no password; authorise a key next"),
         ]
     }
 
@@ -164,10 +172,12 @@ impl Task for SetShell {
     fn params(&self) -> Vec<Param> {
         vec![
             Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_hint("the account whose shell changes"),
+                .with_hint("the account whose shell changes")
+                .suggesting_accounts(),
             Param::new(Self::SHELL, "Shell", ParamKind::Path)
                 .with_initial(DEFAULT_SHELL.to_owned())
-                .with_hint("must appear in /etc/shells"),
+                .with_hint("must appear in /etc/shells")
+                .suggesting_shells(),
         ]
     }
 
@@ -232,7 +242,8 @@ impl Task for LockRoot {
     fn params(&self) -> Vec<Param> {
         vec![
             Param::new(Self::ADMIN, "Administrative account", ParamKind::Username)
-                .with_hint("the account that must still be able to get in"),
+                .with_hint("the account that must still be able to get in")
+                .suggesting_accounts(),
         ]
     }
 

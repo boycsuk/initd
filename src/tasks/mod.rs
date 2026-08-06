@@ -432,6 +432,63 @@ mod tests {
     }
 
     #[test]
+    fn a_task_that_creates_an_account_does_not_offer_the_ones_that_exist() {
+        // The mistake this pins, found on screen rather than by a test:
+        // suggestions were derived from `ParamKind`, so `users.create` offered
+        // all twenty-four accounts on the host — precisely the values it
+        // refuses, since it fails with "account exists" on every one of them.
+        //
+        // Asserted against the task rather than against the field's kind: the
+        // kind is the same one `ssh.authorize-key` uses and wants suggestions
+        // for, which is the whole reason the two cannot share an answer.
+        let creators = ["users.create", "wireguard.add-peer"];
+
+        for task in all_tasks() {
+            if !creators.contains(&task.id()) {
+                continue;
+            }
+
+            for param in task.params() {
+                assert_eq!(
+                    param.suggestions,
+                    None,
+                    "{} offers the host's accounts for {}, which it cannot accept",
+                    task.id(),
+                    param.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_naming_an_existing_account_offers_them() {
+        // The other direction, so the fix cannot be "suggest nothing
+        // anywhere": a field that names an account which must already exist is
+        // exactly the case the host's answer is worth reading.
+        let expected = [
+            "users.set-shell",
+            "users.lock-root",
+            "ssh.authorize-key",
+            "containers.rootless",
+            "devtools.install",
+        ];
+
+        for task in all_tasks() {
+            if !expected.contains(&task.id()) {
+                continue;
+            }
+
+            assert!(
+                task.params()
+                    .iter()
+                    .any(|param| param.suggestions == Some(params::Suggestions::Accounts)),
+                "{} names an existing account and offers nothing for it",
+                task.id()
+            );
+        }
+    }
+
+    #[test]
     fn every_refusal_states_a_reason_worth_reading() {
         // `Support::No` cannot be constructed without a reason, so what is
         // left to check is that the reason says something. An exception with

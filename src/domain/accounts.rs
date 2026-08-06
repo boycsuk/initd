@@ -14,6 +14,24 @@ pub trait AccountReader {
     /// Whether an account with this name exists.
     fn exists(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
 
+    /// Every account on the host, the ones a person logs in as first.
+    ///
+    /// A default rather than a method each family answers, unlike the two
+    /// above it: those differ because `getent` is absent from busybox, and the
+    /// file busybox would fall back to reading is the same `/etc/passwd` the
+    /// shadow suite records. Listing is not one of the operations the two
+    /// suites disagree about, so answering it twice would be answering it
+    /// identically. The trait already uses this shape where a capability is
+    /// genuinely shared.
+    ///
+    /// Offered to the operator as suggestions, never as the permitted set: an
+    /// account can be created between one form opening and the next, and a
+    /// chooser that refused what it had not listed would be wrong exactly when
+    /// the operator knows more than the file does.
+    fn list(&self, executor: &dyn Executor) -> Result<Vec<String>> {
+        crate::backend::posix_accounts::list_accounts(executor)
+    }
+
     /// The account's home directory, as the passwd database records it.
     ///
     /// Asked rather than assumed. `/home/<user>` is a convention, not a rule:

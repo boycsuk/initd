@@ -380,7 +380,8 @@ impl Task for InstallRust {
     fn params(&self) -> Vec<Param> {
         vec![
             Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_hint("the account the toolchain belongs to"),
+                .with_hint("the account the toolchain belongs to")
+                .suggesting_accounts(),
         ]
     }
 

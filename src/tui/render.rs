@@ -59,7 +59,6 @@ pub(super) fn all(frame: &mut Frame, app: &mut App) {
 
     header(frame, app, bands.header);
     body(frame, app, bands.body);
-    status(frame, app, bands.status);
 
     if let Some(keys) = bands.keys {
         key_bar(frame, app, keys);
@@ -86,9 +85,17 @@ pub(super) fn all(frame: &mut Frame, app: &mut App) {
             // Copied out first: the form is borrowed mutably for its
             // scroll state, which leaves the rest of `App` unreadable.
             let lang = app.lang;
+            let options_at = app.options_at;
 
             if let Some(ref mut form) = app.form {
                 form.render(frame, lang);
+
+                // Over the form rather than instead of it: the field being
+                // filled is the context for the choice, and a list that
+                // replaced the form would hide which field it answers.
+                if let Some(chosen) = options_at {
+                    form.render_options(frame, chosen, lang);
+                }
             }
         }
         // None of these draws a dialog: the countdown is a banner inside
@@ -179,19 +186,35 @@ fn body(frame: &mut Frame, app: &mut App, area: Rect) {
     // and `Tab` chooses which.
     if split == layout::BodyLayout::Single {
         match app.focus {
-            Pane::Tree => tree(frame, app, tree_area),
+            // The status rides the right pane's border, and here that pane
+            // may not be drawn at all — so the tree takes it while it is the
+            // only thing on screen. Without this, `Tab` to the tree on a
+            // narrow terminal hides the report of a task that just failed,
+            // which is the one thing this line exists to prevent it doing.
+            Pane::Tree => {
+                // Built before the call rather than inside it: `tree` borrows
+                // `App` mutably for the list's scroll state, which leaves
+                // nothing to read the status from.
+                let status = status_line(app, Instant::now(), tree_area.width);
+
+                tree(frame, app, tree_area, status);
+            }
             Pane::Output => right(frame, app, right_area),
         }
 
         return;
     }
 
-    tree(frame, app, tree_area);
+    tree(frame, app, tree_area, None);
     right(frame, app, right_area);
 }
 
 /// Draws the task tree and its scrollbar.
-fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect) {
+///
+/// `status` is `Some` only where the tree is the whole body — on a terminal
+/// too narrow to show both panes, with focus here. Everywhere else the right
+/// pane owns the status, and passing it to both would draw it twice.
+fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect, status: Option<Line<'static>>) {
     let family = app.distro.family;
     // The two borders and the marker column are not available to the row.
     let row_width = tree_area.width.saturating_sub(2) as usize;
@@ -202,19 +225,42 @@ fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect) {
         .collect();
 
     let tree_focused = app.focus == Pane::Tree;
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(style::border(tree_focused))
+        .title(Span::styled(
+            // Two borders and the spaces framing the title.
+            truncate_head(&app.breadcrumb(), tree_area.width.saturating_sub(4)),
+            style::PANE_TITLE,
+        ));
+
+    match status {
+        // Opposite the census, for the same reason the output pane puts it
+        // opposite the follow indicator: ratatui aligns every bottom title
+        // left, so two left-aligned titles are drawn over each other.
+        //
+        // Opposite ends is not enough on its own — ratatui does not arbitrate
+        // between two titles that outgrow the border between them, it simply
+        // draws both, and the census was rendered as `6 ca FAILED …`. So the
+        // census yields entirely when the two will not fit: it counts rows
+        // already on screen, while the status may be the only report of a task
+        // that failed, and a half-eaten word beside it is worse than neither.
+        Some(line) => {
+            let status_width = line.width();
+
+            if census_fits_beside(app, tree_area.width, status_width) {
+                block = block.title_bottom(Span::styled(census(app), style::BLOCK_SUBTITLE));
+            }
+
+            block = block.title_bottom(line.right_aligned());
+        }
+        // The census rides the bottom border, costing no rows.
+        None => block = block.title_bottom(Span::styled(census(app), style::BLOCK_SUBTITLE)),
+    }
+
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(style::border(tree_focused))
-                .title(Span::styled(
-                    // Two borders and the spaces framing the title.
-                    truncate_head(&app.breadcrumb(), tree_area.width.saturating_sub(4)),
-                    style::PANE_TITLE,
-                ))
-                // The census rides the bottom border, costing no rows.
-                .title_bottom(Span::styled(census(app), style::BLOCK_SUBTITLE)),
-        )
+        .block(block)
         // The selected row stays visible while focus is elsewhere, drawn
         // differently: losing the cursor on Tab would mean hunting for it
         // again on the way back.
@@ -246,7 +292,15 @@ fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect) {
 }
 
 /// Draws whichever of detail, output or verification the state calls for.
+///
+/// Whichever it is takes the status on its bottom border. The status used to
+/// have a row to itself, below all three, so it was drawn once and none of
+/// them had to know about it; on a border it belongs to whichever pane owns
+/// the bottom of the area, which is why it is built here and handed down
+/// rather than drawn by each.
 fn right(frame: &mut Frame, app: &App, right_area: Rect) {
+    let status = status_line(app, Instant::now(), right_area.width);
+
     if let Some(ref window) = app.verification {
         // The countdown takes the top of the pane and the output keeps the
         // rest: what the change did is the evidence for the decision.
@@ -256,12 +310,17 @@ fn right(frame: &mut Frame, app: &App, right_area: Rect) {
 
         verification(frame, banner, window, app.lang);
         app.output
-            .render(frame, log, app.lang, app.focus == Pane::Output);
+            .render(frame, log, app.lang, app.focus == Pane::Output, status);
     } else if app.output.is_empty() {
-        detail(frame, app, right_area);
+        detail(frame, app, right_area, status);
     } else {
-        app.output
-            .render(frame, right_area, app.lang, app.focus == Pane::Output);
+        app.output.render(
+            frame,
+            right_area,
+            app.lang,
+            app.focus == Pane::Output,
+            status,
+        );
     }
 }
 
@@ -294,7 +353,7 @@ fn tree_scrollbar(frame: &mut Frame, app: &App, area: Rect) {
 ///
 /// A category has no description of its own, so it reports what it holds
 /// rather than leaving the pane blank.
-fn detail(frame: &mut Frame, app: &App, area: Rect) {
+fn detail(frame: &mut Frame, app: &App, area: Rect, status: Option<Line<'static>>) {
     let description = match app.selected_node() {
         // A task that cannot run here says why, under what it would have
         // done. The tree already dims the row and the pill already reads
@@ -329,19 +388,45 @@ fn detail(frame: &mut Frame, app: &App, area: Rect) {
         _ => app.lang.render(&Msg::DetailTitle),
     };
 
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(style::border(app.focus == Pane::Output))
+        .title(Span::styled(
+            truncate_head(&title, area.width.saturating_sub(4)),
+            style::PANE_TITLE,
+        ));
+
+    // Right-aligned even though this border is otherwise empty, so the status
+    // sits in the same corner whether the pane holds a description or a log.
+    // Left would put it under the tree's census on one and beside nothing on
+    // the other, moving between two panes that swap without warning.
+    if let Some(line) = status {
+        block = block.title_bottom(line.right_aligned());
+    }
+
     let paragraph = Paragraph::new(description)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(style::border(app.focus == Pane::Output))
-                .title(Span::styled(
-                    truncate_head(&title, area.width.saturating_sub(4)),
-                    style::PANE_TITLE,
-                )),
-        )
+        .block(block)
         .wrap(Wrap { trim: true });
 
     frame.render_widget(paragraph, area);
+}
+
+/// Whether the census and a status of `status_width` both fit on one border.
+///
+/// They share the bottom border of the tree only on a terminal too narrow to
+/// show both panes, which is exactly where the room runs out. Ratatui draws
+/// both regardless and lets them overlap, so the caller asks first.
+///
+/// The gap is not decoration: two titles that merely touch read as one string,
+/// and `6 categoriesFAILED` is a worse answer than dropping the census.
+fn census_fits_beside(app: &App, border_width: u16, status_width: usize) -> bool {
+    /// Cells that must stay blank between the two.
+    const GAP: usize = 2;
+
+    // The border's own two corners are not available to either title.
+    let available = (border_width as usize).saturating_sub(2);
+
+    census(app).chars().count() + GAP + status_width <= available
 }
 
 /// Counts what the level on screen holds, for the tree's bottom border.
@@ -369,47 +454,96 @@ fn census(app: &App) -> String {
     format!(" {} ", parts.join(", "))
 }
 
-/// Draws the status bar and key hints.
+/// What the tool is doing, for the right pane's bottom border.
 ///
-/// The pill always occupies the same cells at the left edge, so the eye
-/// never has to search for the tool's current state.
-fn status(frame: &mut Frame, app: &App, area: Rect) {
-    let now = Instant::now();
+/// The status used to own a row of its own, with the state on a coloured
+/// background at the left edge. It rides a border now, which costs the
+/// background — filled cells there read as a gap in the frame rather than as
+/// emphasis — and returns the row to the body. What the background carried is
+/// carried by the word and its colour instead.
+///
+/// Returns `None` when there is nothing to say, so that a border with no
+/// status draws unbroken rather than with an empty notch in it.
+///
+/// The order is the order it is read in: liveness first, because a spinner
+/// that has stopped is the fastest thing on screen to check; then the state;
+/// then what it is doing. The spinner leads rather than trails so it sits at a
+/// fixed distance from the corner while the message beside it changes length.
+///
+/// The message is what gives way when the line outgrows the border, and that
+/// is the whole reason `width` is a parameter. A `title_bottom` wider than its
+/// block is cut by ratatui at the end the alignment anchors away from — for a
+/// right-aligned line, the head — which took the first characters of `VERIFY`
+/// and left `RIFY` on screen during the one state whose word the operator must
+/// not misread. Truncating here means the label and the liveness signals are
+/// never the part that goes.
+fn status_line(app: &App, now: Instant, width: u16) -> Option<Line<'static>> {
     let state = pill(app);
+    let mut spans = Vec::new();
 
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", app.lang.render(&state.label())),
-            state.style(),
-        ),
-        Span::raw("  "),
-        Span::styled(app.status.message(now), style::NORMAL),
-    ];
-
-    // Two independent liveness signals, right-aligned: a spinner driven by
-    // the clock and a wall-clock timer. Both keep moving through a command
-    // that produces no output for a minute, which is what distinguishes a
-    // slow package manager from a frozen screen over a bad link.
+    // Two independent liveness signals: a spinner driven by the clock and a
+    // wall-clock timer. Both keep moving through a command that produces no
+    // output for a minute, which is what distinguishes a slow package manager
+    // from a frozen screen over a bad link.
     if let Some(ref running) = app.running {
-        let live = format!("{}  {}  ", running.spinner(now), running.elapsed(now));
-        let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
-        let width = area.width as usize;
+        spans.push(Span::styled(
+            format!("{}  {}", running.spinner(now), running.elapsed(now)),
+            style::BLOCK_SUBTITLE,
+        ));
+    }
 
-        if used + live.chars().count() <= width {
-            spans.push(Span::raw(" ".repeat(width - used - live.chars().count())));
-            spans.push(Span::styled(live, style::BLOCK_SUBTITLE));
+    if state.is_worth_naming() {
+        if !spans.is_empty() {
+            spans.push(Span::styled("  ·  ", style::BLOCK_SUBTITLE));
+        }
+
+        spans.push(Span::styled(app.lang.render(&state.label()), state.style()));
+    }
+
+    let message = app.status.message(now);
+
+    if !message.is_empty() {
+        // Below this, what survives truncation is not a shortened sentence but
+        // a smear, and the message is dropped whole instead. The state's word
+        // is still on the border, and it is the part carrying the meaning.
+        const LEGIBLE_MINIMUM: usize = 8;
+
+        // Two borders, the two spaces framing the line, and the separator this
+        // message would add are all spoken for before it gets a cell.
+        let spent: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+        let reserved = spent + if spans.is_empty() { 4 } else { 9 };
+        let available = (width as usize).saturating_sub(reserved);
+
+        if available >= LEGIBLE_MINIMUM {
+            if !spans.is_empty() {
+                spans.push(Span::styled("  ·  ", style::BLOCK_SUBTITLE));
+            }
+
+            spans.push(Span::styled(
+                truncate_tail(message, available),
+                style::NORMAL,
+            ));
         }
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    if spans.is_empty() {
+        return None;
+    }
+
+    // The spaces are what hold the border off the text; without them the line
+    // reads as though the frame had been drawn through it.
+    spans.insert(0, Span::raw(" "));
+    spans.push(Span::raw(" "));
+
+    Some(Line::from(spans))
 }
 
-/// The state pill for the status row.
+/// The state naming what the tool is doing.
 ///
 /// Mostly this is whatever the last action left behind, but two conditions
 /// describe the cursor rather than the past and therefore win: a dialog is
-/// open, or the row under the cursor cannot run here. The pill is the one
-/// place that always states what pressing Enter would do.
+/// open, or the row under the cursor cannot run here. It is the one place
+/// that always states what pressing Enter would do.
 ///
 /// The confirmation outranks the form for the same reason the row flag
 /// does: a destructive task collects its parameters first and confirms
@@ -502,6 +636,7 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
             Pane::Output => vec![
                 ("↑↓", Msg::KeyBarScroll),
                 ("G", Msg::KeyBarFollow),
+                ("y", Msg::KeyBarCopy),
                 ("w", Msg::KeyBarWrap),
                 ("Tab", Msg::KeyBarTree),
             ],
@@ -538,7 +673,7 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
 fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang) {
     let lines = vec![
         Line::from(vec![
-            Span::styled(lang.render(&Msg::VerifyBadge), style::STATUS_BUSY),
+            Span::styled(lang.render(&Msg::VerifyBadge), style::BADGE_BUSY),
             Span::raw("  "),
             Span::styled(lang.render(&Msg::VerifyApplied), style::NORMAL),
             Span::styled(lang.render(&Msg::VerifyNotYetKept), style::EMPHASIS),

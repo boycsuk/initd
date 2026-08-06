@@ -17,8 +17,14 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 
 /// Width at or above which the tree pane takes a fixed width.
 ///
-/// Its content has a fixed natural width — labels are capped by design — so
-/// extra width belongs to the output, where lines are long and wrapping hurts.
+/// Its content has a natural width — the longest task title plus a row's
+/// chrome, which is what [`TREE_PANE_WIDTH`] is — so beyond that, extra width
+/// belongs to the output, where lines are long and wrapping hurts. Giving the
+/// tree a share of a wide terminal would spend it on padding.
+///
+/// Must stay at or above `TREE_PANE_WIDTH + RIGHT_PANE_MIN_WIDTH`, or the
+/// layout promises the right pane a minimum it cannot be given; a test pins
+/// that rather than the comment.
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 100;
 
 /// Width below which the two panes collapse into one, switched with `Tab`.
@@ -29,12 +35,38 @@ const SPLIT_LAYOUT_MIN_WIDTH: u16 = 72;
 
 /// Fixed width of the tree pane in the wide layout.
 ///
-/// Two cells of gutter, eight of indent, twenty of label, two of flags and two
-/// of border.
-const TREE_PANE_WIDTH: u16 = 34;
+/// Measured against the tree rather than chosen: the longest title in it is
+/// `Allow unprivileged binding to 80 and 443` at 40 cells, and a row spends
+/// six more — two of border, two of marker, one of flag, and the space that
+/// separates the title from it. So 46 is the width at which no task in the
+/// tree is truncated, and it was 34, which cut nine of the twenty-eight.
+///
+/// This is the one number that has to grow with the content. A title longer
+/// than this is still cut with an ellipsis rather than clipped, so the cost of
+/// being wrong is legible rather than silent — `tree_rows_are_not_truncated`
+/// is what makes it noticed.
+const TREE_PANE_WIDTH: u16 = 46;
+
+/// Cells a tree row spends on anything that is not the title.
+///
+/// Two of border, two of marker, one of flag, one separating the last two.
+/// Stated here because [`TREE_PANE_WIDTH`] is derived from it and a test
+/// checks that derivation; a literal in both places is a literal that drifts.
+pub const TREE_ROW_CHROME: u16 = 6;
 
 /// Minimum width left for the right pane in the wide layout.
+///
+/// The detail pane holds prose, which wraps, so it degrades gracefully where
+/// the tree does not — a truncated title is a name the operator cannot read,
+/// whereas narrower prose is the same prose on more lines.
 const RIGHT_PANE_MIN_WIDTH: u16 = 46;
+
+// Below this the layout would hand the right pane less than the minimum it
+// declares, which is a promise the constraints cannot keep — ratatui resolves
+// it by shrinking something, without saying so. All three are constants, so
+// the compiler is the right place to check it: a test would only report at run
+// time what is already knowable at build time.
+const _: () = assert!(WIDE_LAYOUT_MIN_WIDTH >= TREE_PANE_WIDTH + RIGHT_PANE_MIN_WIDTH);
 
 /// Height at or below which the detail pane gives up rows to the output.
 const SHORT_TERMINAL_HEIGHT: u16 = 30;
@@ -96,24 +128,29 @@ impl BodyLayout {
     }
 }
 
-/// The four horizontal bands every screen is built from.
+/// The three horizontal bands every screen is built from.
+///
+/// There were four. The status had a band of its own, and spent it saying
+/// `READY` for most of a session; it rides the right pane's bottom border now,
+/// the way the tree's census rides its own, and the row it cost went to the
+/// body — where it is one more task visible without scrolling on the 24-row
+/// terminal this interface is measured against.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
     /// One line naming the tool and the detected host.
     pub header: Rect,
-    /// Everything between the header and the status row.
+    /// Everything between the header and the key hints.
     pub body: Rect,
-    /// The status pill and its message.
-    pub status: Rect,
     /// The key hints, absent on terminals too short to afford them.
     pub keys: Option<Rect>,
 }
 
-/// Splits the whole terminal into its four bands.
+/// Splits the whole terminal into its bands.
 ///
 /// The key bar is the first thing to go when rows run short: it is a
-/// convenience, whereas the status row is the only authoritative place the
-/// operator is told what the tool is doing.
+/// convenience, and it is now the only band that can be given up at all. The
+/// status costs no row to keep, so a short terminal no longer has to choose
+/// between being told what the tool is doing and having somewhere to draw it.
 pub fn frame(area: Rect) -> Frame {
     let keep_keybar = area.height >= KEYBAR_MIN_HEIGHT;
 
@@ -122,14 +159,9 @@ pub fn frame(area: Rect) -> Frame {
             Constraint::Length(1),
             Constraint::Min(8),
             Constraint::Length(1),
-            Constraint::Length(1),
         ]
     } else {
-        &[
-            Constraint::Length(1),
-            Constraint::Min(8),
-            Constraint::Length(1),
-        ]
+        &[Constraint::Length(1), Constraint::Min(8)]
     };
 
     let bands = Layout::vertical(constraints).split(area);
@@ -137,8 +169,7 @@ pub fn frame(area: Rect) -> Frame {
     Frame {
         header: bands[0],
         body: bands[1],
-        status: bands[2],
-        keys: if keep_keybar { Some(bands[3]) } else { None },
+        keys: if keep_keybar { Some(bands[2]) } else { None },
     }
 }
 
@@ -279,25 +310,56 @@ mod tests {
 
     #[test]
     fn the_reference_frame_spends_two_rows_on_chrome() {
-        // Rows 1, 23 and 24 are chrome; rows 2-22 are the body. Losing more
+        // Row 1 and row 24 are chrome; rows 2-23 are the body. Losing more
         // than that to borders is what the one-line bands exist to prevent.
         let frame = frame(area(80, 24));
 
         assert_eq!(frame.header.height, 1);
-        assert_eq!(frame.status.height, 1);
         assert_eq!(frame.keys.expect("24 rows affords a key bar").height, 1);
-        assert_eq!(frame.body.height, 21);
+        assert_eq!(frame.body.height, 22);
     }
 
     #[test]
-    fn a_short_terminal_drops_the_key_bar_before_the_status_row() {
-        // The status row is the only authoritative place; the key bar is a
-        // convenience, so it goes first.
+    fn the_body_kept_the_row_the_status_band_used_to_cost() {
+        // The status moved onto a border it was already drawing, so this is a
+        // row the body gained rather than one the chrome merely stopped using.
+        // Pinned at the reference size because that is where a row is worth
+        // arguing about: 24 rows is the terminal the interface is measured on.
+        assert_eq!(frame(area(80, 24)).body.height, 22);
+    }
+
+    #[test]
+    fn a_short_terminal_drops_the_key_bar_and_keeps_the_body() {
+        // The key bar is a convenience and is the only band left that can be
+        // given up. What the tool is doing costs no row now, so a short
+        // terminal is no longer asked to choose between being told and having
+        // somewhere to draw it.
         let frame = frame(area(80, 16));
 
         assert!(frame.keys.is_none());
-        assert_eq!(frame.status.height, 1);
-        assert!(frame.body.height > 0);
+        assert_eq!(frame.header.height, 1);
+        assert_eq!(frame.body.height, 15, "everything the header leaves");
+    }
+
+    #[test]
+    fn the_tree_pane_fits_the_longest_title_in_the_tree() {
+        // The pane was 34 cells and nine of the twenty-eight titles did not
+        // fit, so the rows read `Create an administrative us…`. The number is
+        // derived from the content rather than chosen, which means it has to
+        // be checked against the content: a task added with a longer name is
+        // the case this catches, and it is silent otherwise — a truncated
+        // title still renders, it just cannot be read.
+        let longest = crate::tasks::all_tasks()
+            .iter()
+            .map(|task| task.title().chars().count())
+            .max()
+            .expect("the tree has tasks in it");
+
+        assert!(
+            TREE_PANE_WIDTH as usize >= longest + TREE_ROW_CHROME as usize,
+            "the longest title is {longest} cells and the pane offers {}",
+            TREE_PANE_WIDTH - TREE_ROW_CHROME
+        );
     }
 
     #[test]
