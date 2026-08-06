@@ -47,6 +47,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a second `run` method that can fall out of use unnoticed.
 
 ### Changed
+- Which modal state owns the keyboard is decided in one place. The interface
+  holds six independent `Option`s, and four separate sites decided precedence
+  by testing the same fields in their own order — two of which had already
+  drifted: `pill` asked about `confirm` before `running` and would have named a
+  dialog during a task, while `render` drew `confirm` and `form` with
+  independent `if`s, so both would have appeared at once with the answering key
+  going to only one. No bug today, since the transitions never build those
+  states; the correctness simply rested on four readings agreeing. `App::mode`
+  now states the order once and `dispatch`, `render`, `pill` and the key bar
+  match on the answer, so a state added later fails to compile until each has
+  answered for it. Derived rather than replacing the fields, which would touch
+  every site that reads or sets one for the same guarantee.
+- The key bar is derived from that mode too, so it cannot advertise a key the
+  state would refuse, and it now names search's keys while a search is open.
 - A consequence's check is phrased by the firewall front-end that holds the
   host's ruleset, so `Task::consequences` now takes the backend. Three tasks
   built `nft list table inet initd` themselves — a distro branch wearing a

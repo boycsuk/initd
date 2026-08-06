@@ -91,6 +91,36 @@ impl Pane {
 ///
 /// Carries the reply channel so that whoever takes the request is obliged to
 /// answer it: a worker thread is blocked on the other end.
+/// Which of the interface's states is in effect, in precedence order.
+///
+/// Derived from [`App::mode`] rather than stored, so there is exactly one
+/// definition of what wins and the compiler requires every reader to answer
+/// for each state. Borrows what it names, since every caller only reads.
+enum Mode<'a> {
+    /// The help overlay is open, above everything else.
+    Help,
+    /// A task is running; nothing new may be started.
+    ///
+    /// Carries nothing: what the interface needs to draw about a running task
+    /// — its spinner, its clock — is read from `running` where the borrow can
+    /// be mutable, and every decision made from the mode is about *which*
+    /// state this is rather than what is in it.
+    Running,
+    /// A change is applied and waiting to be kept or put back.
+    Verifying,
+    /// A parameter form is collecting values.
+    ///
+    /// Also carries nothing: `Form::render` needs `&mut self` for its scroll
+    /// state, which a mode borrowing the rest of `App` could not lend.
+    Filling,
+    /// A destructive task is waiting to be confirmed.
+    Confirming(&'a Confirm),
+    /// A search is open over the task tree.
+    Searching(&'a Search),
+    /// The tree, with nothing modal on top of it.
+    Browsing,
+}
+
 struct AuthRequest {
     program: String,
     args: Vec<String>,
@@ -223,6 +253,72 @@ impl App {
         self
     }
 
+    /// What the interface is doing, as one answer rather than six flags.
+    ///
+    /// The modal state is held as six independent `Option`s, which between them
+    /// can represent far more combinations than are reachable — a form open
+    /// while a task runs, a countdown beside a confirmation. None of those
+    /// happen, because the transitions never build them; but *nothing in the
+    /// type says so*, and four separate places used to decide which one wins by
+    /// testing the same fields in their own order.
+    ///
+    /// They had already drifted. `dispatch` refused a key to everything below
+    /// `running`, while `pill` asked about `confirm` first and would have named
+    /// a dialog during a task; `render` drew `confirm` and `form` with
+    /// independent `if`s, so both would appear at once if both existed. No bug
+    /// today, since the states cannot arise — but the correctness rested on
+    /// four readings agreeing, and two of them no longer did.
+    ///
+    /// So precedence is stated once, here, and everything else matches on the
+    /// answer. Deriving it rather than replacing the fields keeps the change
+    /// to what it is worth: an `enum` holding the payloads would touch every
+    /// site that reads or sets one, for the same guarantee this already gives
+    /// the four readers that matter.
+    fn mode(&self) -> Mode<'_> {
+        // Help sits above everything: it is asked for from wherever the
+        // operator is stuck, including on top of a dialog.
+        if self.help.is_some() {
+            return Mode::Help;
+        }
+
+        self.mode_under_help()
+    }
+
+    /// The mode ignoring the help overlay, for the renderer.
+    ///
+    /// Help draws *over* another state rather than instead of it, so what it
+    /// was opened on top of still has to be painted underneath. Every other
+    /// caller wants [`Self::mode`], which reports the state that owns the
+    /// keyboard.
+    fn mode_under_help(&self) -> Mode<'_> {
+        // Then the two that refuse to start anything new, running first: a
+        // task in flight outranks a window over a change already applied.
+        if self.running.is_some() {
+            return Mode::Running;
+        }
+
+        if self.verification.is_some() {
+            return Mode::Verifying;
+        }
+
+        // Then the ways of starting something, innermost first. Search opens
+        // over the tree and a form opens over what search found, so a form
+        // takes the keyboard from the search that led to it.
+        if self.form.is_some() {
+            return Mode::Filling;
+        }
+
+        if let Some(ref confirm) = self.confirm {
+            return Mode::Confirming(confirm);
+        }
+
+        if let Some(ref search) = self.search {
+            return Mode::Searching(search);
+        }
+
+        Mode::Browsing
+    }
+
     /// The nodes of the level currently on screen.
     fn current_level(&self) -> &[Node] {
         level_at(&self.tree, &self.path)
@@ -353,52 +449,47 @@ impl App {
     /// `Some` means the key was the one that starts the work; everything else
     /// is resolved in place.
     fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
-        if self.help.is_some() {
-            self.on_help_key(key);
-            return None;
-        }
+        // The one place precedence is decided is `mode`; this only says what
+        // each state does with a key. A state added there fails to compile
+        // here until it is answered for, which is the point of deriving it.
+        match self.mode() {
+            Mode::Help => {
+                self.on_help_key(key);
+                None
+            }
+            // While a task runs the interface stays open — scrolling,
+            // switching panes and reading all work — but nothing new may be
+            // started and nothing may be answered. Only one task at a time,
+            // and the keys that would start another are refused rather than
+            // queued.
+            Mode::Running => {
+                self.on_running_key(key);
+                None
+            }
+            // Semi-modal: reading is never blocked while a change is
+            // unverified, but nothing new may be started until it is settled.
+            Mode::Verifying => {
+                self.on_verify_key(key);
+                None
+            }
+            Mode::Filling => self.on_form_key(key),
+            Mode::Confirming(_) => self.on_confirm_key(key),
+            Mode::Searching(_) => {
+                self.on_search_key(key);
+                None
+            }
+            Mode::Browsing => {
+                if self.on_navigation_key(key) {
+                    return None;
+                }
 
-        // While a task runs the interface stays open — scrolling, switching
-        // panes and reading all work — but nothing new may be started and
-        // nothing may be answered. Only one task at a time, and the keys that
-        // would start another are refused rather than queued.
-        if self.running.is_some() {
-            self.on_running_key(key);
-            return None;
-        }
+                if key.code == KeyCode::Enter && self.focus == Pane::Tree {
+                    return self.activate();
+                }
 
-        // Semi-modal: reading is never blocked while a change is unverified,
-        // but nothing new may be started until this one is settled.
-        if self.verification.is_some() {
-            self.on_verify_key(key);
-            return None;
+                None
+            }
         }
-
-        // Ahead of the form, which is modal and would otherwise swallow `/` —
-        // and behind `running` and `verification`, since neither admits
-        // starting another task and search exists to start one.
-        if self.search.is_some() {
-            self.on_search_key(key);
-            return None;
-        }
-
-        if self.form.is_some() {
-            return self.on_form_key(key);
-        }
-
-        if self.confirm.is_some() {
-            return self.on_confirm_key(key);
-        }
-
-        if self.on_navigation_key(key) {
-            return None;
-        }
-
-        if key.code == KeyCode::Enter && self.focus == Pane::Tree {
-            return self.activate();
-        }
-
-        None
     }
 
     /// Handles the keys that only move around, reporting whether one matched.
@@ -1224,20 +1315,40 @@ impl App {
 
         // Dialogs draw last, over everything: they are modal, and content
         // showing through one would misrepresent what the keys now do.
-        if let Some(ref confirm) = self.confirm {
-            confirm.render(frame);
+        //
+        // One dialog, chosen by the same precedence the keys follow. These
+        // used to be independent `if`s, which would have drawn a confirmation
+        // and a form on top of each other had both ever existed — and the key
+        // that answered would have gone to only one of them.
+        //
+        // `Filling` is handled outside the match because `Form::render` needs
+        // `&mut self` for its scroll state, which `mode` cannot lend.
+        // One dialog, chosen by the same precedence the keys follow. These
+        // were independent `if`s, which would have drawn a confirmation and a
+        // form on top of each other had both ever existed, while the key
+        // answering went to only one of them.
+        //
+        // `mode_under_help` rather than `mode`, because help is the one state
+        // that draws *over* another rather than instead of it: what it was
+        // opened on top of still has to be underneath.
+        match self.mode_under_help() {
+            Mode::Confirming(confirm) => confirm.render(frame),
+            Mode::Searching(search) => search::render(frame, search),
+            // Asked again below rather than borrowed here: `Form::render`
+            // needs `&mut self` for its scroll state, which `mode` cannot
+            // lend while it is borrowing the rest of `App`.
+            Mode::Filling => {
+                if let Some(ref mut form) = self.form {
+                    form.render(frame);
+                }
+            }
+            // None of these draws a dialog: the countdown is a banner inside
+            // the body, and a running task is the pane itself.
+            Mode::Help | Mode::Running | Mode::Verifying | Mode::Browsing => {}
         }
 
-        if let Some(ref mut form) = self.form {
-            form.render(frame);
-        }
-
-        if let Some(ref search) = self.search {
-            search::render(frame, search);
-        }
-
-        // Last of all: help is asked for from wherever the operator is stuck,
-        // including on top of a dialog.
+        // Last of all, over whatever the operator was looking at when they
+        // asked for it.
         if let Some(scroll) = self.help {
             help::render(frame, scroll);
         }
@@ -1510,17 +1621,19 @@ impl App {
     /// does: a destructive task collects its parameters first and confirms
     /// after, so once both are open the confirmation is the live question.
     fn pill(&self) -> State {
-        if self.confirm.is_some() {
-            return State::Confirm;
-        }
-
-        if self.form.is_some() {
-            return State::Input;
-        }
-
-        match self.selected_node() {
-            Some(Node::Task(task)) if !task.supports(self.distro.family) => State::Unsupported,
-            _ => self.status.state(),
+        match self.mode() {
+            // These three carry their own pill through `status`, set when the
+            // state was entered: `Busy` while a task runs, `Verify` while a
+            // change is unsettled. Asking here would duplicate that.
+            Mode::Help | Mode::Running | Mode::Verifying => self.status.state(),
+            Mode::Confirming(_) => State::Confirm,
+            Mode::Filling => State::Input,
+            // Search names no pill of its own: it changes what the keys do,
+            // not what the interface is in the middle of.
+            Mode::Searching(_) | Mode::Browsing => match self.selected_node() {
+                Some(Node::Task(task)) if !task.supports(self.distro.family) => State::Unsupported,
+                _ => self.status.state(),
+            },
         }
     }
 
@@ -1559,31 +1672,40 @@ impl App {
     fn render_key_bar(&self, frame: &mut Frame, area: Rect) {
         // While a change is unverified the tree keys are refused, so offering
         // them would advertise actions the state does not allow.
-        let mut keys = match self.focus {
-            // Only the keys the state actually accepts. Offering "Enter run"
-            // while a task is running would name an action that is refused.
-            _ if self.running.is_some() => vec![
+        // Only the keys the state actually accepts. Offering "Enter run" while
+        // a task is running would name an action that is refused — so this
+        // asks the same `mode` the dispatcher does, rather than re-deriving
+        // which state wins and drifting from it.
+        let mut keys = match self.mode() {
+            Mode::Running => vec![
                 ("Ctrl-C", "stop"),
                 ("↑↓", "scroll"),
                 ("w", "wrap"),
                 ("?", "keys"),
             ],
-            _ if self.verification.is_some() => {
-                vec![("K", "keep"), ("R", "revert"), ("↑↓", "scroll")]
-            }
-            Pane::Tree => self.tree_keys(),
-            Pane::Output => vec![
-                ("↑↓", "scroll"),
-                ("G", "follow"),
-                ("w", "wrap"),
-                ("Tab", "tree"),
-            ],
+            Mode::Verifying => vec![("K", "keep"), ("R", "revert"), ("↑↓", "scroll")],
+            Mode::Searching(_) => vec![("↑↓", "move"), ("Enter", "go"), ("Esc", "close")],
+            // Both draw their own keys inside the dialog, where the operator
+            // is already looking; repeating them along the bottom would be
+            // the same hint twice.
+            Mode::Filling | Mode::Confirming(_) => Vec::new(),
+            // The overlay states its own keys, and it covers this row anyway.
+            Mode::Help => Vec::new(),
+            Mode::Browsing => match self.focus {
+                Pane::Tree => self.tree_keys(),
+                Pane::Output => vec![
+                    ("↑↓", "scroll"),
+                    ("G", "follow"),
+                    ("w", "wrap"),
+                    ("Tab", "tree"),
+                ],
+            },
         };
 
         // Quitting is refused while work is outstanding: mid-task it would
         // leave a server half-configured, and mid-verification it would
         // abandon a change with nobody left to put it back.
-        if self.verification.is_none() && self.running.is_none() {
+        if !matches!(self.mode(), Mode::Running | Mode::Verifying) {
             keys.push(("q", "quit"));
         }
 
@@ -3194,6 +3316,92 @@ mod tests {
         for character in query.chars() {
             press(app, KeyCode::Char(character));
         }
+    }
+
+    #[test]
+    fn one_state_owns_the_keyboard_even_when_several_are_set() {
+        // The states below cannot arise together through any transition — but
+        // nothing in the type says so, and four places used to decide which
+        // one wins by testing the same fields in their own order. Two had
+        // already drifted: `pill` asked about `confirm` before `running`, and
+        // `render` drew `confirm` and `form` with independent `if`s.
+        //
+        // Setting them by hand is the only way to ask what the readers would
+        // do if they ever disagreed. They now all read `mode`, so the answer
+        // is one answer.
+        let mut app = test_app(Family::Debian);
+
+        app.confirm = Some(Confirm::new("Harden", "dangerous"));
+        app.form = Some(Form::new(
+            "Change the port",
+            vec![crate::tasks::params::Param::new(
+                "port",
+                "Port",
+                crate::tasks::params::ParamKind::Port,
+            )],
+        ));
+
+        assert!(
+            matches!(app.mode(), Mode::Filling),
+            "a form outranks the confirmation it was opened from"
+        );
+
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        assert!(
+            matches!(app.mode(), Mode::Running),
+            "a running task outranks every way of starting another"
+        );
+
+        app.help = Some(0);
+
+        assert!(
+            matches!(app.mode(), Mode::Help),
+            "help is asked for from wherever the operator is stuck"
+        );
+        assert!(
+            matches!(app.mode_under_help(), Mode::Running),
+            "and the state underneath still has to be drawn"
+        );
+    }
+
+    #[test]
+    fn the_key_bar_names_only_what_the_current_state_accepts() {
+        // The bar is derived from the same `mode` the dispatcher routes on, so
+        // it cannot advertise a key the state would refuse. `q` is the one
+        // worth pinning: it is refused while work is outstanding, and a bar
+        // offering it there names the one action that cannot be taken.
+        let mut app = test_app(Family::Debian);
+
+        assert!(
+            rendered_keys(&mut app).contains("q"),
+            "browsing may be quit: {:?}",
+            rendered_keys(&mut app)
+        );
+
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        let keys = rendered_keys(&mut app);
+
+        assert!(!keys.contains(" q "), "a running task refuses q: {keys:?}");
+        assert!(keys.contains("Ctrl-C"), "and offers the way out: {keys:?}");
+    }
+
+    /// The key bar as one string, for asserting what it offers.
+    ///
+    /// Drawn through the whole interface rather than in isolation, since the
+    /// bar is one of the things a narrow terminal drops and asserting on it
+    /// out of context would not notice.
+    fn rendered_keys(app: &mut App) -> String {
+        render_to_rows(app, 100, 30).join("\n")
     }
 
     #[test]
