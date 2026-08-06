@@ -232,7 +232,9 @@ impl Category {
 /// adding a line here and a module beside it — never restructuring the tree.
 ///
 /// `Remote Access` is named for what its members do rather than for a protocol:
-/// SSH grants shell access and WireGuard, once it lands, grants network access.
+/// SSH grants shell access and WireGuard grants network access. The name was
+/// chosen before WireGuard existed and did not have to change when it arrived,
+/// which is what it was chosen for.
 pub fn tree() -> Vec<Node> {
     vec![
         // Identity comes first because the rest depends on there being a safe

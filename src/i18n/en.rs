@@ -2,6 +2,10 @@
 
 use super::{Msg, RevertReason};
 
+/// Renders a message in English.
+///
+/// Exhaustive by construction: a new [`Msg`] variant fails to compile here
+/// rather than falling through to a placeholder at runtime.
 pub(super) fn render(message: &Msg) -> String {
     match message {
         Msg::OsReleaseUnreadable { path, source } => {

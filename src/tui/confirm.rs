@@ -73,8 +73,13 @@ impl Confirm {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(self.title.clone())
-            .border_style(style::DIALOG_BORDER_DANGER);
+            .border_style(style::DIALOG_BORDER_DANGER)
+            // Styled like the parameter form's title, and for the same reason:
+            // it names the task rather than the panel. It was the one title in
+            // the interface drawn with no role at all, which left the dialog
+            // that asks before a destructive change looking less deliberate
+            // than the form that asks for a port.
+            .title(Span::styled(format!(" {} ", self.title), style::EMPHASIS));
         let inner = block.inner(area);
 
         frame.render_widget(block, area);
