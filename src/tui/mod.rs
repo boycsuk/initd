@@ -9,12 +9,18 @@
 //!    following the pattern ratatui documents for spawning an editor.
 
 pub mod app;
+pub mod auth;
 pub mod confirm;
 pub mod cursor;
+pub mod dispatch;
+pub mod execution;
 pub mod field;
+#[cfg(test)]
+pub mod fixtures;
 pub mod form;
 pub mod help;
 pub mod layout;
+pub mod navigation;
 pub mod output;
 pub mod render;
 pub mod search;
