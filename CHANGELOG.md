@@ -120,6 +120,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task that stopped running a command the script still claims.
 
 ### Fixed
+- A key is written where the passwd database says the home is, rather than at
+  a guessed `/home/<user>`. The guess had `/root` as its one exception, which
+  is a convention rather than a rule: system accounts live under `/var/lib`
+  and `/srv`, and a site can relocate an ordinary account. The failure was
+  silent in the direction that matters — the task reported success, sshd never
+  read the file, and `ssh.harden` could then disable passwords for an account
+  whose key had not landed where it was needed. `AccountReader::home_dir`
+  reads the field `getent passwd` was already returning and discarding;
+  Alpine's implementation reads `/etc/passwd` directly, as its existence check
+  already did. The guard that asks whether a named account holds a key uses it
+  too, so `ssh.allow-users` stops looking in the wrong place for the same
+  reason.
 - Losing the session puts an unconfirmed change back, which is the case the
   verification window exists for rather than an edge of it. The countdown lived
   only in this process, so `ssh.harden` severing the administrator's own

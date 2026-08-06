@@ -15,7 +15,7 @@
 //!   worth pulling in for the write.
 
 use crate::domain::account_writer::{AccountWriter, LockMethod, PasswordPolicy};
-use crate::domain::accounts::AccountReader;
+use crate::domain::accounts::{AccountReader, home_from_passwd_line};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
@@ -60,6 +60,23 @@ impl AccountReader for BusyboxAccounts {
         let command = Command::new("grep").args(["-q", &format!("^{user}:"), PASSWD]);
 
         Ok(executor.run(&command)?.success())
+    }
+
+    fn home_dir(&self, executor: &dyn Executor, user: &str) -> Result<String> {
+        // Without `-q` this time, since the line itself is the answer. Same
+        // anchoring: `admin` must not be satisfied by `administrator`.
+        let command = Command::new("grep").args([&format!("^{user}:"), PASSWD]);
+        let output = executor.run(&command)?;
+
+        if !output.success() {
+            return Err(Error::NoSuchAccount {
+                user: user.to_owned(),
+            });
+        }
+
+        home_from_passwd_line(&output.stdout, user).ok_or_else(|| Error::NoSuchAccount {
+            user: user.to_owned(),
+        })
     }
 }
 

@@ -499,7 +499,9 @@ impl Task for AuthorizeKey {
         is_valid_public_key(key)?;
 
         let files = backend.files();
-        let home = home_dir(&user);
+        // Asked of the passwd database rather than assumed to be `/home/<user>`:
+        // a key written where sshd does not read it grants nothing, silently.
+        let home = backend.accounts().home_dir(executor, &user)?;
         let ssh_dir = format!("{home}/.ssh");
         let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
 
@@ -562,17 +564,6 @@ impl Task for AuthorizeKey {
         // Authorising a key only ever grants access; undoing it is the
         // dangerous direction, so it is not offered here.
         Ok(Outcome::Done)
-    }
-}
-
-/// Home directory of a user.
-///
-/// Root is the documented exception to `/home/<name>`.
-fn home_dir(user: &str) -> String {
-    if user == "root" {
-        "/root".to_owned()
-    } else {
-        format!("/home/{user}")
     }
 }
 
@@ -781,7 +772,14 @@ fn warn_if_socket_activated(
 /// Read through the file editor rather than `std::fs` so it works under
 /// privilege escalation, and so a missing file is a plain `false`.
 fn has_authorized_key(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
-    let path = format!("{}/{AUTHORIZED_KEYS_RELATIVE}", home_dir(user));
+    // An account that does not exist holds no key, which is an answer rather
+    // than a failure: this runs over the accounts named in `AllowUsers`, and
+    // one of them being absent is exactly what the caller is checking for.
+    let Ok(home) = backend.accounts().home_dir(executor, user) else {
+        return Ok(false);
+    };
+
+    let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
 
     if !backend.files().exists(executor, &path)? {
         return Ok(false);
@@ -1003,6 +1001,16 @@ mod tests {
     }
 
     /// The values `AuthorizeKey` declares, as the interface would collect them.
+    /// A passwd entry for root, as `getent` returns it.
+    ///
+    /// The home directory is read from here rather than assumed, so every
+    /// scenario that authorises a key has to answer the lookup first.
+    const ROOT_PASSWD: &str = "root:x:0:0:root:/root:/bin/bash";
+
+    /// Passwd entries for the two ordinary accounts the allow-list tests name.
+    const ALICE_PASSWD: &str = "alice:x:1000:1000::/home/alice:/bin/sh";
+    const BOB_PASSWD: &str = "bob:x:1001:1001::/home/bob:/bin/sh";
+
     fn key_values(user: &str, key: &str) -> ParamValues {
         let mut values = ParamValues::new();
         values.set(AuthorizeKey::USER, user);
@@ -1222,6 +1230,7 @@ mod tests {
         // added there is covered here without this test being edited.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
         ]);
@@ -1252,6 +1261,7 @@ mod tests {
         // could connect before, so it belongs to the strict task.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
         ]);
@@ -1280,6 +1290,7 @@ mod tests {
     fn hardening_writes_the_keyword_this_sshd_understands() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::ok(""),          // probe: KbdInteractiveAuthentication accepted
@@ -1317,6 +1328,7 @@ mod tests {
         // cost the whole change, not just this directive.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::failure(
@@ -1360,6 +1372,7 @@ mod tests {
         };
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             bad_option("KbdInteractiveAuthentication"),
@@ -1413,6 +1426,7 @@ mod tests {
     fn strict_hardening_writes_only_supported_algorithms() {
         let mut replies = vec![
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
         ];
@@ -1455,6 +1469,7 @@ mod tests {
         // still has other work to do and must finish it.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::failure(255, "Unsupported query"),
@@ -1488,7 +1503,12 @@ mod tests {
     fn strict_hardening_warns_when_it_skips_a_directive() {
         // A directive the administrator asked for must never be silently
         // absent from the result.
-        let mut replies = vec![Reply::ok("Port 22\n"), Reply::ok(""), Reply::ok(TEST_KEY)];
+        let mut replies = vec![
+            Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ];
         replies.extend(query_replies(
             "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
             // Only one hardened cipher survives: below the floor.
@@ -1545,6 +1565,7 @@ mod tests {
     fn strict_hardening_reloads_rather_than_restarts() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),
             Reply::ok(TEST_KEY),
         ]);
@@ -1569,6 +1590,7 @@ mod tests {
     fn strict_hardening_offers_a_revert() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),
             Reply::ok(TEST_KEY),
         ]);
@@ -1594,18 +1616,20 @@ mod tests {
     #[test]
     fn restricting_users_writes_the_allow_list() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok(""),          // getent bob
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // alice authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok(""),          // bob authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok(""),          // test -e for the write
-            Reply::ok(""),          // cp backup
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // systemctl reload
+            Reply::ok(""),           // getent alice
+            Reply::ok(""),           // getent bob
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // alice authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::ok(BOB_PASSWD),   // getent passwd: bob's home
+            Reply::ok(""),           // bob authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::ok(""),           // test -e for the write
+            Reply::ok(""),           // cp backup
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // systemctl reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1699,17 +1723,18 @@ mod tests {
         // Deliberately "at least one", not "all": a service account that logs
         // in by other means is a legitimate member of the list.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok(""),          // getent deploy
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // alice authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::failure(1, ""),  // deploy has none
-            Reply::ok(""),          // test -e for the write
-            Reply::ok(""),          // cp backup
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // systemctl reload
+            Reply::ok(""),           // getent alice
+            Reply::ok(""),           // getent deploy
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // alice authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::failure(1, ""),   // deploy has none
+            Reply::ok(""),           // test -e for the write
+            Reply::ok(""),           // cp backup
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // systemctl reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1761,6 +1786,7 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),          // getent root
             Reply::ok("Port 22\n"), // read sshd_config — root login untouched
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // and holds a key
             Reply::ok(""),          // test -e
@@ -1806,15 +1832,16 @@ mod tests {
         // The administrator's last chance to recognise a name they did not
         // intend is before the change lands, not after.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // alice authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // reload
+            Reply::ok(""),           // getent alice
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // alice authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::ok(""),           // test -e
+            Reply::ok(""),           // cp
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // reload
         ]);
         let backend = for_family(Family::Debian);
         let mut warnings = Vec::new();
@@ -1841,15 +1868,16 @@ mod tests {
     #[test]
     fn restricting_users_offers_a_revert() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // authorized_keys exists
-            Reply::ok(TEST_KEY),    // holds a key
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // reload
+            Reply::ok(""),           // getent alice
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // authorized_keys exists
+            Reply::ok(TEST_KEY),     // holds a key
+            Reply::ok(""),           // test -e
+            Reply::ok(""),           // cp
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1867,7 +1895,12 @@ mod tests {
     fn the_key_guard_reads_the_named_users_own_file() {
         // Generalised from root: `ssh.allow-users` has to ask the same question
         // about an ordinary account, whose keys live under /home.
+        // The home comes from the passwd database, so this one is deliberately
+        // not `/home/alice`: an account whose home was moved is exactly the
+        // case the old guess got wrong, and a fixture that agreed with the
+        // guess would not have noticed.
         let mock = MockExecutor::with_replies([
+            Reply::ok("alice:x:1000:1000::/srv/alice:/bin/sh"),
             Reply::ok(""),       // authorized_keys exists
             Reply::ok(TEST_KEY), // and holds a valid key
         ]);
@@ -1880,8 +1913,8 @@ mod tests {
         assert!(
             mock.recorded_lines()
                 .iter()
-                .any(|c| c.contains("/home/alice/.ssh/authorized_keys")),
-            "got: {:?}",
+                .any(|c| c.contains("/srv/alice/.ssh/authorized_keys")),
+            "the key must be looked for where passwd says the home is: {:?}",
             mock.recorded_lines()
         );
     }
@@ -1890,6 +1923,7 @@ mod tests {
     fn hardening_disables_root_login_and_passwords() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::ok(""),          // test -e for the write
@@ -1920,6 +1954,7 @@ mod tests {
         // Restarting would drop the administrator's own session.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),
             Reply::ok(TEST_KEY),
             Reply::ok(""),
@@ -1942,13 +1977,14 @@ mod tests {
     #[test]
     fn authorising_a_key_sets_the_permissions_sshd_requires() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),         // install -d
-            Reply::ok(""),         // chown dir
-            Reply::failure(1, ""), // authorized_keys absent
-            Reply::ok(""),         // test -e inside write
-            Reply::ok(""),         // tee
-            Reply::ok(""),         // chmod
-            Reply::ok(""),         // chown file
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::failure(1, ""),  // authorized_keys absent
+            Reply::ok(""),          // test -e inside write
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1988,17 +2024,18 @@ mod tests {
         // chmod and the write must fail this rather than answer success from
         // nowhere.
         let mock = MockExecutor::with_exact_replies([
-            Reply::ok(""),         // install -d
-            Reply::ok(""),         // chown dir
-            Reply::failure(1, ""), // test -e: authorized_keys absent
-            Reply::ok(""),         // test -e, opening the empty write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: create it empty
-            Reply::ok(""),         // chmod 600, before any key exists
-            Reply::ok(""),         // chown file
-            Reply::ok(""),         // test -e, opening the real write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: the key
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::failure(1, ""),  // test -e: authorized_keys absent
+            Reply::ok(""),          // test -e, opening the empty write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee: create it empty
+            Reply::ok(""),          // chmod 600, before any key exists
+            Reply::ok(""),          // chown file
+            Reply::ok(""),          // test -e, opening the real write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee: the key
         ]);
         let backend = for_family(Family::Debian);
 
@@ -2041,14 +2078,15 @@ mod tests {
         const OTHER_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther other@host";
 
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),        // install -d
-            Reply::ok(""),        // chown dir
-            Reply::ok(""),        // authorized_keys exists
-            Reply::ok(OTHER_KEY), // holding somebody else's key
-            Reply::ok(""),        // test -e inside write
-            Reply::ok(""),        // tee
-            Reply::ok(""),        // chmod
-            Reply::ok(""),        // chown file
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(OTHER_KEY),   // holding somebody else's key
+            Reply::ok(""),          // test -e inside write
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
         ]);
         let backend = for_family(Family::Debian);
 
@@ -2072,12 +2110,59 @@ mod tests {
     }
 
     #[test]
+    fn a_key_is_written_where_passwd_says_the_home_is() {
+        // The bug: the path was built as `/home/<user>`, with `/root` as the
+        // one exception. That is a convention, not a rule — a relocated or
+        // system account has its home elsewhere — and a key written to a path
+        // sshd never reads grants nothing while reporting success. `ssh.harden`
+        // may then disable passwords for an account whose key did not land.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::ok("deploy:x:1001:1001::/srv/deploy:/bin/sh"),
+            Reply::ok(""),         // install -d
+            Reply::ok(""),         // chown dir
+            Reply::failure(1, ""), // test -e: authorized_keys absent
+            Reply::ok(""),         // test -e, opening the empty write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: create it empty
+            Reply::ok(""),         // chmod
+            Reply::ok(""),         // chown file
+            Reply::ok(""),         // test -e, opening the real write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: the key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("deploy", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let commands = mock.recorded_lines();
+
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.contains("/srv/deploy/.ssh/authorized_keys")),
+            "the key must go where passwd says: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("/home/deploy")),
+            "and never to the guessed path: {commands:?}"
+        );
+    }
+
+    #[test]
     fn authorising_the_same_key_twice_does_not_duplicate_it() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),       // install -d
-            Reply::ok(""),       // chown
-            Reply::ok(""),       // authorized_keys exists
-            Reply::ok(TEST_KEY), // and already holds the key
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // and already holds the key
         ]);
         let backend = for_family(Family::Debian);
 
@@ -2100,14 +2185,16 @@ mod tests {
     fn authorising_a_key_keeps_existing_ones() {
         let existing = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQfakebodyvaluehere someone@else";
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(existing),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(existing),    // holding somebody else's key
+            Reply::ok(""),          // test -e, opening the write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
         ]);
         let backend = for_family(Family::Debian);
 
