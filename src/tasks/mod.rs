@@ -30,6 +30,46 @@ use crate::tasks::revert::Outcome;
 /// The CLI prints these lines; the TUI streams them into its output pane.
 pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
 
+/// Whether a task runs on a family, and the reason when it does not.
+///
+/// The reason is not optional, which is the point: an exception with no stated
+/// cause is indistinguishable from an oversight, and every one of these was
+/// established by measurement rather than assumption — which repository ships
+/// what, which shipped `Include` wins, which installer publishes no digest.
+///
+/// It is `&'static str` rather than a message in the catalogue because it says
+/// something about the world rather than about this program, and because these
+/// sentences are the record of what was tried. Rendering them through i18n
+/// would mean translating a citation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Support {
+    /// The task runs here.
+    Yes,
+    /// The task does not run here, for the stated reason.
+    No(&'static str),
+}
+
+/// Implements [`Task::support`] as `Yes` for every family.
+///
+/// Most tasks work everywhere, and writing four identical arms in each of them
+/// would bury the ones that do not. The `match` still happens — it is written
+/// once, here — so a new family fails to compile in this macro and every task
+/// using it is corrected in one place.
+macro_rules! supported_everywhere {
+    () => {
+        fn support(&self, family: $crate::distro::Family) -> $crate::tasks::Support {
+            match family {
+                $crate::distro::Family::Debian
+                | $crate::distro::Family::Rhel
+                | $crate::distro::Family::Arch
+                | $crate::distro::Family::Alpine => $crate::tasks::Support::Yes,
+            }
+        }
+    };
+}
+
+pub(crate) use supported_everywhere;
+
 /// A unit of administration work.
 ///
 /// Implementations must never branch on the distribution. If a task needs to
@@ -79,21 +119,46 @@ pub trait Task {
     /// re-running the same task with 22 invalidates nothing. A declaration that
     /// ignored them would warn every time and be learned to ignore.
     ///
+    /// Takes the backend for the same reason every other method does: a
+    /// consequence that names a command must let the family spell it. A task
+    /// writing `nft list table inet initd` itself is a distro branch wearing a
+    /// string literal — correct on three families and wrong on RHEL, where the
+    /// rule was written through firewalld and lives in a zone that listing
+    /// never shows.
+    ///
     /// Most tasks affect nothing else and inherit the empty default.
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
-        let _ = values;
+    fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
+        let _ = (backend, values);
         Vec::new()
     }
 
-    /// Families this task supports.
+    /// Whether this task runs on `family`, and if not, why not.
     ///
-    /// The TUI shows unsupported tasks greyed out with the reason, rather than
-    /// hiding them.
-    fn supported_families(&self) -> &'static [Family];
+    /// Written as an exhaustive `match` rather than returning a list of the
+    /// families that work. A `&[Family]` cannot be checked for exhaustiveness,
+    /// so adding a family and forgetting a task produced a task that was
+    /// *silently* unsupported — the tool would start on the new distribution
+    /// and grey out every row. A test used to invert that default and catch it;
+    /// this makes the compiler catch it, in the file that has to decide.
+    ///
+    /// The reason travels with the refusal because it is the useful half. Every
+    /// one of these was measured — which repository ships what, which shipped
+    /// `Include` wins, which installer publishes no digest — and it used to
+    /// live in a test table where the operator being told "unsupported" could
+    /// never see it.
+    fn support(&self, family: Family) -> Support;
 
     /// Whether the task runs on the given family.
     fn supports(&self, family: Family) -> bool {
-        self.supported_families().contains(&family)
+        matches!(self.support(family), Support::Yes)
+    }
+
+    /// Why this task does not run here, if it does not.
+    fn unsupported_reason(&self, family: Family) -> Option<&'static str> {
+        match self.support(family) {
+            Support::Yes => None,
+            Support::No(reason) => Some(reason),
+        }
     }
 
     /// Runs the task with the values collected for its parameters.
@@ -225,6 +290,58 @@ fn collect_tasks(nodes: Vec<Node>, out: &mut Vec<Box<dyn Task>>) {
     }
 }
 
+/// Where a task sits in the tree: the indices to reach it, and the categories
+/// it sits under.
+///
+/// Separate from [`all_tasks`], which flattens the tree and discards the route
+/// through it. Search needs the route — a result nobody can jump to is a list,
+/// not a way of getting anywhere — and the titles, because "Install the SSH
+/// server" means something different under `Remote Access › SSH` than the same
+/// words would elsewhere.
+pub struct TaskLocation {
+    /// Index of the task within its own level.
+    pub index: usize,
+    /// Indices from the root to the category holding it.
+    pub path: Vec<usize>,
+    /// Titles of those categories, outermost first.
+    pub titles: Vec<&'static str>,
+}
+
+/// Locates every task in the tree, in tree order, keeping the route to each.
+pub fn located_tasks(nodes: &[Node]) -> Vec<(TaskLocation, &dyn Task)> {
+    let mut found = Vec::new();
+    locate_tasks(nodes, &mut Vec::new(), &mut Vec::new(), &mut found);
+    found
+}
+
+/// Walks `nodes`, carrying the path and titles taken to reach them.
+fn locate_tasks<'a>(
+    nodes: &'a [Node],
+    path: &mut Vec<usize>,
+    titles: &mut Vec<&'static str>,
+    out: &mut Vec<(TaskLocation, &'a dyn Task)>,
+) {
+    for (index, node) in nodes.iter().enumerate() {
+        match node {
+            Node::Task(task) => out.push((
+                TaskLocation {
+                    index,
+                    path: path.clone(),
+                    titles: titles.clone(),
+                },
+                task.as_ref(),
+            )),
+            Node::Category(category) => {
+                path.push(index);
+                titles.push(category.title);
+                locate_tasks(&category.children, path, titles, out);
+                titles.pop();
+                path.pop();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,166 +406,62 @@ mod tests {
 
     #[test]
     fn every_task_supports_at_least_one_family() {
+        // A task supported nowhere is a row that can never be run. The
+        // compiler cannot catch this: `No` on every arm type-checks.
         for task in all_tasks() {
             assert!(
-                !task.supported_families().is_empty(),
+                Family::ALL.iter().any(|&family| task.supports(family)),
                 "{} supports nothing",
                 task.id()
             );
         }
     }
 
-    /// Tasks that deliberately do not support a family, and why.
-    ///
-    /// This list inverts the default. `supported_families` returns a
-    /// `&[Family]`, which the compiler cannot check for exhaustiveness — so
-    /// adding a family and forgetting a task's declaration produces a task that
-    /// is silently unsupported rather than a build that fails. Requiring every
-    /// task to support every family *unless it appears here* turns that silence
-    /// into a test failure, and forces the omission to be either fixed or
-    /// justified in writing.
-    ///
-    /// Each entry is `(task id, family, why)`. The reason is the point: an
-    /// exception with no stated cause is indistinguishable from an oversight.
-    const UNSUPPORTED: &[(&str, Family, &str)] = &[
-        (
-            "docker-rootless.install",
-            Family::Alpine,
-            "no per-user service manager at all: the engine runs under the \
-             account's own systemd instance, and OpenRC has no equivalent",
-        ),
-        (
-            "crowdsec.install",
-            Family::Alpine,
-            "Alpine does not package it, so the task is shown unsupported \
-             rather than being offered a package name `apk` would reject",
-        ),
-        (
-            "updates.unattended-security",
-            Family::Arch,
-            "a rolling release with no equivalent mechanism: upgrading it \
-             unattended means pulling whatever landed today, including changes \
-             that need manual intervention",
-        ),
-        (
-            "updates.unattended-security",
-            Family::Alpine,
-            "Alpine ships no unattended-upgrades equivalent; inventing one under \
-             this task id would make the families silently disagree about what \
-             the task does",
-        ),
-        (
-            "mise.install",
-            Family::Alpine,
-            "Alpine packages neither this nor the Rust toolchain. Both are \
-             installable there by their own installers, but this tool declines \
-             to run an installer it cannot verify",
-        ),
-        (
-            "rust.install",
-            Family::Alpine,
-            "same as mise: unpackaged on Alpine, and rustup is an installer \
-             this tool cannot verify",
-        ),
-        // RHEL. Every entry below is about where software comes from rather
-        // than what it is called: Red Hat's repositories are narrower than the
-        // other families', and the alternatives are third-party repositories
-        // this tool has no way to vouch for.
-        (
-            "ssh.harden-strict",
-            Family::Rhel,
-            "the only task RHEL's `Include` costs anything. Its shipped \
-             `50-redhat.conf` is read before the main file and carries the \
-             crypto policies, which are exactly the ciphers, key exchanges and \
-             MACs this tier sets — measured against a daemon, not inferred: the \
-             value written was absent from `sshd -T` while `sshd -t` approved \
-             the file. A drop-in numbered below 50 does win, and is not used, \
-             because on RHEL that choice belongs to `update-crypto-policies` \
-             system-wide rather than to one application contradicting it",
-        ),
-        (
-            "fish.install",
-            Family::Rhel,
-            "EPEL-only, and unlike Caddy there is no verifiable alternative — \
-             fish publishes source rather than static binaries, and its own \
-             documentation points RHEL users at the openSUSE Build Service \
-             rather than at EPEL",
-        ),
-        (
-            "rust.install",
-            Family::Rhel,
-            "AppStream ships `rust-toolset`, which is a compiler rather than a \
-             toolchain manager — a different capability under a similar name. \
-             `rustup-init` is checksummed per architecture but only the archive \
-             path pins a version; the current-release path would invalidate a \
-             compiled digest on every rustup release",
-        ),
-        (
-            "fail2ban.install",
-            Family::Rhel,
-            "has never been in a base repository, in any release. Being Python \
-             there is no static binary to verify, and `sshguard` is EPEL-only \
-             too — RHEL ships no log-scanning tool of its own",
-        ),
-        (
-            "crowdsec.install",
-            Family::Rhel,
-            "publishes no checksums with its releases, and its documented \
-             install pipes a script into a shell to register a repository — the \
-             pattern this project rejects in its own installer",
-        ),
-        (
-            "updates.unattended-security",
-            Family::Rhel,
-            "packaged, but under a name that moved: `dnf-automatic` on RHEL 9, \
-             `dnf5-plugin-automatic` on RHEL 10, with four timers collapsed to \
-             one. The backend resolves a family rather than a release, so it \
-             cannot name both — and either name is wrong on half the family",
-        ),
-    ];
-
     #[test]
-    fn every_task_supports_every_family_unless_declared_otherwise() {
-        let mut gaps = Vec::new();
-
+    fn every_refusal_states_a_reason_worth_reading() {
+        // `Support::No` cannot be constructed without a reason, so what is
+        // left to check is that the reason says something. An exception with
+        // no stated cause is indistinguishable from an oversight, and these
+        // sentences are the record of what was measured — which repository
+        // ships what, which shipped `Include` wins, which installer publishes
+        // no digest.
+        //
+        // The floor is deliberately low and the point is the shape: a
+        // placeholder like "n/a" or "TODO" fails, a sentence passes.
         for task in all_tasks() {
             for &family in Family::ALL {
-                if task.supports(family) {
+                let Some(reason) = task.unsupported_reason(family) else {
                     continue;
-                }
+                };
 
-                let declared = UNSUPPORTED
-                    .iter()
-                    .any(|(id, excepted, _)| *id == task.id() && *excepted == family);
-
-                if !declared {
-                    gaps.push(format!("{} does not support {family}", task.id()));
-                }
+                assert!(
+                    reason.len() > 30 && reason.contains(' '),
+                    "{} refuses {family} without explaining why: {reason:?}",
+                    task.id()
+                );
+                assert!(
+                    !reason.to_lowercase().contains("todo"),
+                    "{} refuses {family} with a placeholder: {reason:?}",
+                    task.id()
+                );
             }
         }
-
-        assert!(
-            gaps.is_empty(),
-            "these tasks omit a family without declaring why. Either add the \
-             family to the task's SUPPORTED const, or add it to UNSUPPORTED \
-             with the reason: {gaps:#?}"
-        );
     }
 
     #[test]
-    fn no_exception_outlives_the_gap_it_describes() {
-        // The other half of the guard. Without this, an exception granted for a
-        // real limitation stays behind once the limitation is fixed, and the
-        // list stops describing the code — at which point a genuine omission
-        // can hide behind a stale entry.
-        for (id, family, _) in UNSUPPORTED {
-            let task = find(id)
-                .unwrap_or_else(|| panic!("UNSUPPORTED names a task that no longer exists: {id}"));
-
-            assert!(
-                !task.supports(*family),
-                "{id} now supports {family}: remove its UNSUPPORTED entry"
-            );
+    fn support_and_supports_cannot_disagree() {
+        // `supports` is derived from `support`, and the interface uses one
+        // while the CLI's refusal path uses the other. They answer the same
+        // question and must not drift.
+        for task in all_tasks() {
+            for &family in Family::ALL {
+                assert_eq!(
+                    task.supports(family),
+                    task.unsupported_reason(family).is_none(),
+                    "{} disagrees with itself about {family}",
+                    task.id()
+                );
+            }
         }
     }
 

@@ -33,6 +33,13 @@ fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match args.first().map(String::as_str) {
+        // Accepted in both spellings because both are habits: `initd version`
+        // matches the other subcommands, and `--version` is what anyone tries
+        // first on a binary they were handed.
+        Some("version" | "--version" | "-V") => {
+            cmd_version();
+            Ok(())
+        }
         Some("detect") => cmd_detect(),
         Some("privileges") => cmd_privileges(),
         Some("list") => cmd_list(),
@@ -52,10 +59,20 @@ fn run() -> Result<()> {
     }
 }
 
+/// Prints which build this is.
+///
+/// On stdout rather than stderr: a version is an answer to a question that was
+/// asked, not a diagnostic, and it is the first thing a bug report needs — a
+/// report against a binary nobody can identify cannot be acted on.
+fn cmd_version() {
+    println!("initd {}", env!("CARGO_PKG_VERSION"));
+}
+
 /// Prints the available subcommands.
 fn usage() {
     eprintln!("usage: initd <command>");
     eprintln!();
+    eprintln!("  version                      show which build this is");
     eprintln!("  detect                       show the detected distribution");
     eprintln!("  privileges                   show the privilege escalation mechanism");
     eprintln!("  list                         list the available tasks");
@@ -90,6 +107,9 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
         &mut |line| match line.stream {
             exec::Stream::Stdout => println!("{}", line.text),
             exec::Stream::Stderr => eprintln!("{}", line.text),
+            // Diagnostic rather than output: `initd run … > file` should
+            // capture what the task produced, not a transcript of how.
+            exec::Stream::Command => eprintln!("$ {}", line.text),
         },
     )?;
 

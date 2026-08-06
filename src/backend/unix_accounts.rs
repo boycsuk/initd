@@ -6,8 +6,8 @@
 //! reading `/etc/passwd` directly, and nothing above this line has to change
 //! when it arrives.
 
-use crate::domain::accounts::AccountReader;
-use crate::error::Result;
+use crate::domain::accounts::{AccountReader, home_from_passwd_line};
+use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
 /// Reads accounts using `getent`.
@@ -30,6 +30,22 @@ impl AccountReader for UnixAccounts {
         let command = Command::new("getent").args(["passwd", user]);
 
         Ok(executor.run(&command)?.success())
+    }
+
+    fn home_dir(&self, executor: &dyn Executor, user: &str) -> Result<String> {
+        // The same lookup `exists` runs, reading the field it discards.
+        let command = Command::new("getent").args(["passwd", user]);
+        let output = executor.run(&command)?;
+
+        if !output.success() {
+            return Err(Error::NoSuchAccount {
+                user: user.to_owned(),
+            });
+        }
+
+        home_from_passwd_line(&output.stdout, user).ok_or_else(|| Error::NoSuchAccount {
+            user: user.to_owned(),
+        })
     }
 }
 

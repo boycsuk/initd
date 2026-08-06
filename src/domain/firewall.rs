@@ -14,7 +14,7 @@
 //! routes nothing.
 
 use crate::error::Result;
-use crate::exec::Executor;
+use crate::exec::{Command, Executor};
 
 /// Transport protocol a rule names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,4 +72,19 @@ pub trait FirewallManager {
 
     /// Reports whether filtering is active and what it admits.
     fn state(&self, executor: &dyn Executor) -> Result<FirewallState>;
+
+    /// How to ask this front-end, later, whether a port is open.
+    ///
+    /// Returned as a command rather than run, because a consequence is declared
+    /// while a task is being *defined* — running anything there would execute
+    /// commands the administrator never asked for.
+    ///
+    /// It belongs to the front-end for the same reason `allow` does. A task
+    /// spelling the query itself has to pick one, and the one it would pick is
+    /// `nft`: on RHEL the rule was written through firewalld and lives in a
+    /// zone, so `nft list table inet initd` names a table that does not exist —
+    /// the answer would be "still open to fix" for a port that is already
+    /// correct, forever, on the one family where the tool installs a different
+    /// front-end than the others.
+    fn open_port_check(&self, port: u32, protocol: Protocol) -> (Command, String);
 }

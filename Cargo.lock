@@ -488,6 +488,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "ratatui",
+ "signal-hook",
  "thiserror 2.0.19",
 ]
 

@@ -7,21 +7,13 @@
 //! out of a remote machine needs the provider's rescue console.
 
 use crate::backend::Backend;
-use crate::distro::Family;
 use crate::domain::account_writer::{LockMethod, PasswordPolicy};
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families these tasks support.
-///
-/// Every family, though not by the same tools: Debian, Arch and RHEL ship the
-/// shadow suite, while Alpine drives busybox's `adduser` through an
-/// `AccountWriter` of its own.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
+use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
 
 /// The account whose lock is dangerous enough to warrant its own guard.
 const ROOT: &str = "root";
@@ -83,11 +75,9 @@ impl Task for CreateUser {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(user) = values.get(Self::USER) else {
             return Vec::new();
         };
@@ -188,9 +178,7 @@ impl Task for SetShell {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -255,9 +243,7 @@ impl Task for LockRoot {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -387,6 +373,7 @@ fn has_authorized_key(executor: &dyn Executor, backend: &dyn Backend, user: &str
 mod tests {
     use super::*;
     use crate::backend::for_family;
+    use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// Values for a task taking a single named parameter.
@@ -706,7 +693,10 @@ mod tests {
         // The account has no password by design, so it cannot log in until a
         // key is authorised. Leaving that unsaid is how a machine ends up with
         // an administrator nobody can use.
-        let consequences = CreateUser.consequences(&values(CreateUser::USER, "alice"));
+        let consequences = CreateUser.consequences(
+            for_family(Family::Debian).as_ref(),
+            &values(CreateUser::USER, "alice"),
+        );
 
         assert_eq!(
             consequences.len(),

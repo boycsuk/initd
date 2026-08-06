@@ -5,6 +5,7 @@
 //! means adding one module here — never editing a task.
 
 pub mod alpine;
+pub mod apt_periodic;
 pub mod arch;
 pub mod busybox_accounts;
 pub mod debian;
@@ -25,8 +26,8 @@ pub mod wg_tools;
 
 use crate::distro::{Distro, Family};
 use crate::domain::{
-    AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
-    Repository, RepositoryManager, SelinuxManager, ServiceManager, SysctlManager,
+    AccountReader, AccountWriter, AutomaticUpdates, BinaryInstaller, FileEditor, FirewallManager,
+    PackageManager, Repository, RepositoryManager, SelinuxManager, ServiceManager, SysctlManager,
     UserServiceManager, WireguardTools,
 };
 use crate::error::Result;
@@ -154,6 +155,18 @@ pub trait Backend {
     /// Returns `None` for families whose packaging has no such mechanism, and
     /// for those where nothing this tool installs needs one.
     fn repositories(&self) -> Option<&dyn RepositoryManager> {
+        None
+    }
+
+    /// How this family configures unattended updates, where it has a mechanism.
+    ///
+    /// `None` by default and on three of the four families, each for a reason
+    /// recorded beside `updates.unattended-security`'s refusal: Arch is a
+    /// rolling release with no equivalent, Alpine ships none, and RHEL's
+    /// package name moved between releases the backend cannot distinguish.
+    /// Returning `None` rather than an implementation that writes nothing keeps
+    /// "there is no mechanism here" distinguishable from "it did nothing".
+    fn automatic_updates(&self) -> Option<&dyn AutomaticUpdates> {
         None
     }
 

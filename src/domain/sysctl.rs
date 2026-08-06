@@ -42,7 +42,22 @@ pub trait SysctlManager {
     fn set(&self, executor: &dyn Executor, setting: Setting) -> Result<()>;
 
     /// Whether a parameter already holds the value a task needs.
+    ///
+    /// Only the running value: this answers "is it in effect", not "will it
+    /// survive". [`Self::is_persisted`] answers the other half, and callers
+    /// deciding whether there is work to do need both.
     fn holds(&self, executor: &dyn Executor, setting: Setting) -> Result<bool> {
         Ok(self.get(executor, setting.key)?.trim() == setting.value)
     }
+
+    /// Whether this tool's drop-in already records the value.
+    ///
+    /// Asked because the running value alone cannot answer it. A kernel may
+    /// hold the right value for reasons that do not outlive a reboot — another
+    /// tool set it, an image ships it that way, a container inherits it — and
+    /// a task that stopped at [`Self::holds`] would report success over a host
+    /// where the setting vanishes on restart. Docker is the case that surfaced
+    /// it: `net.ipv4.ip_forward` is already `1` in every container, so the
+    /// task did nothing and said it was done.
+    fn is_persisted(&self, executor: &dyn Executor, setting: Setting) -> Result<bool>;
 }

@@ -12,30 +12,13 @@
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
+use crate::domain::UpdatePolicy;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Check, Conflict, Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families supporting the log-parsing banner.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
-
-/// Families packaging the reputation-network banner.
-///
-/// Alpine does not, so the task is shown unsupported there rather than being
-/// offered a package name `apk` would reject.
-const CROWDSEC_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
-
-/// Families supporting unattended upgrades.
-///
-/// Debian only, and deliberately. Arch is a rolling release with no equivalent
-/// mechanism: upgrading it unattended means pulling whatever landed today,
-/// including changes that need manual intervention. Inventing a different
-/// operation under the same task id would make the two families silently
-/// disagree about what the task does.
-const UPGRADE_SUPPORTED: &[Family] = &[Family::Debian];
+use crate::tasks::{Category, Node, Progress, Support, Task};
 
 /// The port SSH listens on unless it has been moved.
 const DEFAULT_SSH_PORT: u32 = 22;
@@ -105,11 +88,18 @@ impl Task for InstallFail2ban {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
+            Family::Rhel => Support::No(
+                "has never been in a base repository, in any release. Being \
+                 Python there is no static binary to verify, and `sshguard` is \
+                 EPEL-only too — RHEL ships no log-scanning tool of its own",
+            ),
+        }
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Not a warning that something broke: a statement that these two do
         // not belong on one host. Both write ban rules through the firewall
         // and neither observes the other's, so a host running both bans twice
@@ -182,11 +172,22 @@ impl Task for InstallCrowdsec {
         true
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        CROWDSEC_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch => Support::Yes,
+            Family::Alpine => Support::No(
+                "Alpine does not package it, so the task is shown unsupported \
+                 rather than being offered a package name `apk` would reject",
+            ),
+            Family::Rhel => Support::No(
+                "publishes no checksums with its releases, and its documented \
+                 install pipes a script into a shell to register a repository \
+                 — the pattern this project rejects in its own installer",
+            ),
+        }
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![
             Consequence::Conflicts {
                 task: "fail2ban.install",
@@ -234,12 +235,11 @@ impl Task for InstallCrowdsec {
 }
 
 /// Applies security updates without being asked.
+///
+/// Holds no path and no syntax. Where the policy is written and how it is
+/// spelled belong to the family — this task names the intent and lets
+/// [`crate::domain::AutomaticUpdates`] express it.
 pub struct UnattendedUpgrades;
-
-impl UnattendedUpgrades {
-    /// Where the policy this tool writes lives.
-    const POLICY: &'static str = "/etc/apt/apt.conf.d/51initd-unattended";
-}
 
 impl Task for UnattendedUpgrades {
     fn id(&self) -> &'static str {
@@ -256,11 +256,30 @@ impl Task for UnattendedUpgrades {
          behaviour is still yours to decide."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        UPGRADE_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian => Support::Yes,
+            Family::Arch => Support::No(
+                "a rolling release with no equivalent mechanism: upgrading it \
+                 unattended means pulling whatever landed today, including \
+                 changes that need manual intervention",
+            ),
+            Family::Alpine => Support::No(
+                "Alpine ships no unattended-upgrades equivalent; inventing one \
+                 under this task id would make the families silently disagree \
+                 about what the task does",
+            ),
+            Family::Rhel => Support::No(
+                "packaged, but under a name that moved: `dnf-automatic` on \
+                 RHEL 9, `dnf5-plugin-automatic` on RHEL 10, with four timers \
+                 collapsed to one. The backend resolves a family rather than a \
+                 release, so it cannot name both — and either name is wrong on \
+                 half the family",
+            ),
+        }
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Says plainly that it will not reboot. An administrator who assumes it
         // does is one running a patched kernel that is not the running kernel.
         vec![Consequence::Invalidates {
@@ -279,6 +298,16 @@ impl Task for UnattendedUpgrades {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
+        // Asked of the backend rather than assumed to exist. A family with no
+        // mechanism is not a family where this quietly does nothing: the task
+        // declares itself unsupported there, and this is the guard that makes
+        // the declaration structural rather than a promise.
+        let updates = backend
+            .automatic_updates()
+            .ok_or(Error::CapabilityUnavailable {
+                capability: "unattended updates",
+            })?;
+
         backend.packages().install(
             executor,
             backend.package_for(Capability::UnattendedUpgrades),
@@ -286,25 +315,16 @@ impl Task for UnattendedUpgrades {
 
         // Security only, and no automatic reboot. A tool that reboots a server
         // on its own schedule is one nobody can plan around; the consequence
-        // says a reboot is needed rather than taking it.
-        //
-        // `51` orders this after the package's own `50unattended-upgrades`, so
-        // these values win without that file being edited.
-        let policy = "// Managed by initd.\n\
-             APT::Periodic::Update-Package-Lists \"1\";\n\
-             APT::Periodic::Unattended-Upgrade \"1\";\n\
-             Unattended-Upgrade::Automatic-Reboot \"false\";\n";
+        // says a reboot is needed rather than taking it. How that is spelled —
+        // which file, which syntax — belongs to the family, not here.
+        updates.configure(executor, UpdatePolicy::SECURITY_ONLY)?;
 
-        backend.files().write(executor, Self::POLICY, policy)?;
-
-        // Read back rather than assumed: the package ships a debconf question
-        // whose answer decides whether any of this runs, and a policy file
-        // alone does not enable the timer.
-        let check = Command::new("systemctl").args(["is-enabled", "apt-daily-upgrade.timer"]);
-
-        if executor.run(&check)?.stdout.trim() != "enabled" {
+        // Read back rather than assumed: on Debian the package ships a debconf
+        // question whose answer decides whether any of this runs, and a policy
+        // file alone does not enable the timer.
+        if !updates.is_scheduled(executor)? {
             return Err(Error::TimerNotEnabled {
-                timer: "apt-daily-upgrade.timer".to_owned(),
+                timer: updates.timer().to_owned(),
             });
         }
 
@@ -335,8 +355,10 @@ mod tests {
         // Not a warning that something broke: a statement that these do not
         // belong on one host. Both write ban rules through the firewall and
         // neither observes the other's.
-        let fail2ban = InstallFail2ban.consequences(&port_values(22));
-        let crowdsec = InstallCrowdsec.consequences(&ParamValues::new());
+        let fail2ban =
+            InstallFail2ban.consequences(for_family(Family::Debian).as_ref(), &port_values(22));
+        let crowdsec =
+            InstallCrowdsec.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert!(
             fail2ban.iter().any(
@@ -356,7 +378,8 @@ mod tests {
     fn a_conflict_offers_no_verification() {
         // The tool cannot tell which one the administrator meant to keep, so
         // there is nothing here for it to settle.
-        let consequences = InstallFail2ban.consequences(&port_values(22));
+        let consequences =
+            InstallFail2ban.consequences(for_family(Family::Debian).as_ref(), &port_values(22));
 
         let conflict = consequences
             .iter()
@@ -397,7 +420,8 @@ mod tests {
     fn crowdsec_says_it_does_not_block_on_its_own() {
         // Without a bouncer it detects and decides and nothing enforces, which
         // reads as a working install right up until an attack is not stopped.
-        let consequences = InstallCrowdsec.consequences(&ParamValues::new());
+        let consequences =
+            InstallCrowdsec.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         let bouncer = consequences
             .iter()
@@ -421,6 +445,26 @@ mod tests {
         // the reason rather than the tool inventing a different operation.
         assert!(UnattendedUpgrades.supports(Family::Debian));
         assert!(!UnattendedUpgrades.supports(Family::Arch));
+    }
+
+    #[test]
+    fn a_family_without_a_mechanism_offers_none_to_write_with() {
+        // The shape this refactor bought. The task used to build `/etc/apt`
+        // paths and APT syntax itself, so the only thing keeping an APT policy
+        // off an Arch host was the support declaration — a promise rather than
+        // a structure. Now the backend has to offer a mechanism, and three of
+        // the four families offer none.
+        for family in [Family::Arch, Family::Alpine, Family::Rhel] {
+            assert!(
+                for_family(family).automatic_updates().is_none(),
+                "{family} must offer no mechanism"
+            );
+        }
+
+        assert!(
+            for_family(Family::Debian).automatic_updates().is_some(),
+            "Debian is the one family with one"
+        );
     }
 
     #[test]
@@ -474,7 +518,8 @@ mod tests {
 
     #[test]
     fn the_reboot_is_declared_rather_than_taken() {
-        let consequences = UnattendedUpgrades.consequences(&ParamValues::new());
+        let consequences = UnattendedUpgrades
+            .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert!(
             matches!(

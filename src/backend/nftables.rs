@@ -124,6 +124,20 @@ impl FirewallManager for Nftables {
         run_checked(executor, &command)
     }
 
+    /// The same listing `is_allowed` reads, and the same rule text it matches.
+    ///
+    /// Built from `rule` rather than spelled out again, so the needle cannot
+    /// drift from what `allow` writes — the two are the same claim asked at
+    /// different times.
+    fn open_port_check(&self, port: u32, protocol: Protocol) -> (Command, String) {
+        (
+            Command::new("nft")
+                .args(["list", "table", "inet", "initd"])
+                .privileged(),
+            Self::rule(port, protocol),
+        )
+    }
+
     fn is_allowed(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<bool> {
         let command = Command::new("nft")
             .args(["list", "table", "inet", "initd"])

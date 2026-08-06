@@ -16,42 +16,7 @@ use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families these tasks support.
-///
-/// RHEL is absent, and only fish is left using this. It is packaged in EPEL —
-/// a repository Red Hat does not support, whose `epel-release` is not in any
-/// Red Hat repository, and which Red Hat's own RHEL 10 Extensions is
-/// documented as conflicting with. fish publishes no static binary either, and
-/// its own documentation points RHEL users at the openSUSE Build Service, so
-/// there is no route here this tool could verify.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
-
-/// Families the multiplexer reaches, by either mechanism.
-///
-/// Arch packages it, and everyone else installs the checksummed musl release —
-/// the same artefact, since it links against nothing.
-const RELEASE_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
-
-/// Families the version manager reaches, by either mechanism.
-///
-/// Debian and Arch package it; RHEL does not and installs the checksummed musl
-/// release instead, which is the same artefact. Alpine is the one absence, and
-/// not for want of a package: its own release is glibc-linked where every other
-/// family's is musl, so there is nothing here this tool could verify and run.
-const MISE_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Rhel];
-
-/// Families packaging the Rust toolchain manager.
-///
-/// Neither Alpine nor RHEL. Both could reach `rustup-init`, which is published
-/// with a checksum per architecture — but only from the archive path that pins
-/// a version. The current-release path serves a new binary on every rustup
-/// release, so a digest compiled into this build would invalidate itself, and
-/// pinning a version means choosing which rustup an administrator may install.
-/// Neither is decided here yet, so the capability stays where a package
-/// provides it.
-const PACKAGED_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
+use crate::tasks::{Category, Node, Progress, Support, Task, supported_everywhere};
 
 /// Reports a step to the caller as a normal output line.
 fn report(progress: Progress<'_>, text: impl Into<String>) {
@@ -91,11 +56,19 @@ impl Task for InstallFish {
          it. Set it for a user with users.set-shell."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
+            Family::Rhel => Support::No(
+                "EPEL-only, and unlike Caddy there is no verifiable \
+                 alternative — fish publishes source rather than static \
+                 binaries, and its own documentation points RHEL users at the \
+                 openSUSE Build Service rather than at EPEL",
+            ),
+        }
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Installing a shell gives nobody that shell. Said plainly because the
         // two read as one action and are not.
         vec![Consequence::Invalidates {
@@ -214,9 +187,7 @@ impl Task for InstallZellij {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        RELEASE_SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -317,11 +288,18 @@ impl Task for InstallMise {
          does not run in a non-interactive session."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        MISE_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch | Family::Rhel => Support::Yes,
+            Family::Alpine => Support::No(
+                "Alpine packages neither this nor the Rust toolchain. Both are \
+                 installable there by their own installers, but this tool \
+                 declines to run an installer it cannot verify",
+            ),
+        }
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // The failure this prevents: activation is a prompt hook, so a deploy
         // script or a systemd unit sees none of the versions mise manages, and
         // the tool appears to work everywhere except where it matters.
@@ -414,11 +392,25 @@ impl Task for InstallRust {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        PACKAGED_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch => Support::Yes,
+            Family::Alpine => Support::No(
+                "same as mise: unpackaged on Alpine, and rustup is an \
+                 installer this tool cannot verify",
+            ),
+            Family::Rhel => Support::No(
+                "AppStream ships `rust-toolset`, which is a compiler rather \
+                 than a toolchain manager — a different capability under a \
+                 similar name. `rustup-init` is checksummed per architecture \
+                 but only the archive path pins a version; the current-release \
+                 path would invalidate a compiled digest on every rustup \
+                 release",
+            ),
+        }
     }
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // rustup installs no C linker, and this is the single most common
         // first-build failure. It surfaces at link time, long after the
         // toolchain reported itself installed.
@@ -749,7 +741,8 @@ mod tests {
     fn installing_a_shell_gives_nobody_that_shell() {
         // The two read as one action and are not: an administrator who installs
         // fish and stops there has changed nothing about how anyone logs in.
-        let consequences = InstallFish.consequences(&ParamValues::new());
+        let consequences =
+            InstallFish.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert_eq!(consequences[0].task(), Some("users.set-shell"));
     }
@@ -758,7 +751,8 @@ mod tests {
     fn mise_warns_that_activation_does_not_run_non_interactively() {
         // Activation is a prompt hook, so a deploy script or a systemd unit
         // sees none of the versions mise manages.
-        let consequences = InstallMise.consequences(&ParamValues::new());
+        let consequences =
+            InstallMise.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert_eq!(consequences[0].task(), Some("mise.activate"));
     }
@@ -767,7 +761,8 @@ mod tests {
     fn rust_warns_about_the_linker_it_does_not_install() {
         // The most common first-build failure, and it surfaces at link time —
         // long after the toolchain reported itself installed.
-        let consequences = InstallRust.consequences(&ParamValues::new());
+        let consequences =
+            InstallRust.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert!(
             consequences[0].check().is_some(),

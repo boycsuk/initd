@@ -63,6 +63,18 @@ comes from the operating system: commands that need root are escalated through
 
 Starts the interactive interface. See `ui.md`.
 
+### `initd version`
+
+Prints which build this is, as `initd <version>`. Also accepted as
+`initd --version` and `initd -V`, since both are habits and neither should
+send someone to the usage text.
+
+**Output:** one line on **stdout**, not stderr — a version was asked for rather
+than gone wrong. It is the first thing a bug report needs: a report against a
+binary nobody can identify cannot be acted on.
+
+**Errors:** none. It reads nothing about the host, so there is nothing to fail.
+
 ### `initd detect`
 
 Prints the detected distribution and the family whose backend will be used.

@@ -107,6 +107,10 @@ pub enum Msg {
         source: String,
     },
 
+    Cancelled {
+        before: String,
+    },
+
     // --- Privileges ---
     NoPrivilegeEscalator,
     AuthenticationRefused {
@@ -166,6 +170,9 @@ pub enum Msg {
     },
     InvalidCaddyfile {
         details: String,
+    },
+    CapabilityUnavailable {
+        capability: String,
     },
     TimerNotEnabled {
         timer: String,

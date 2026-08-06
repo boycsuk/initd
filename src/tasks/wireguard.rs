@@ -14,17 +14,16 @@
 use std::fmt::Write as _;
 
 use crate::backend::{Backend, Capability};
-use crate::distro::Family;
+use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
-use crate::tasks::consequence::{Check, Consequence, External, Protocol as WarnProtocol, Reason};
+use crate::tasks::consequence::{
+    Check, Consequence, External, Protocol as WarnProtocol, Reason, firewall_check,
+};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families these tasks support.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
+use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
 
 /// The interface this tool manages.
 ///
@@ -89,9 +88,7 @@ impl Task for WireguardStatus {
          configured. Changes nothing."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -169,11 +166,9 @@ impl Task for InstallWireguard {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
             return Vec::new();
         };
@@ -193,17 +188,18 @@ impl Task for InstallWireguard {
             },
             // UDP, and the distinction is the point: a TCP rule for this port
             // admits none of WireGuard's traffic.
+            //
+            // The query comes from whichever front-end holds this host's
+            // ruleset. Spelling `nft` here would be right on three families and
+            // wrong on the fourth: RHEL runs firewalld, so the rule lives in a
+            // zone and `nft list table inet initd` names a table that does not
+            // exist — an answer of "still to do" for a port already open.
             Consequence::Invalidates {
                 task: "firewall.allow-port",
                 reason: Reason::RequiresSetting {
                     setting: "an inbound UDP rule for this port",
                 },
-                check: Some(Check {
-                    command: crate::exec::Command::new("nft")
-                        .args(["list", "table", "inet", "initd"])
-                        .privileged(),
-                    resolved_when_stdout_contains: format!("udp dport {port} accept"),
-                }),
+                check: firewall_check(backend, port, FirewallProtocol::Udp),
             },
             Consequence::External {
                 note: External::ProviderFirewall {
@@ -315,9 +311,7 @@ impl Task for AddPeer {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -482,6 +476,7 @@ fn first_address(subnet: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::backend::for_family;
+    use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// A syntactically valid key, for tests that do not care which one.
@@ -601,18 +596,32 @@ mod tests {
         // on the box for as long as the two calls take. `wg` warns about
         // exactly this when it writes a key itself, which is how it surfaced —
         // in a container, from the tool's own stderr, not from a mock.
-        let mock = MockExecutor::with_replies([
-            Reply::failure(1, ""), // no existing configuration
-            Reply::ok(""),         // install
-            Reply::ok(""),         // create the directory
-            Reply::ok(KEY),        // genkey
-            Reply::ok(KEY),        // genpsk
-            Reply::ok(KEY),        // pubkey
-            Reply::ok(""),         // create the file empty
-            Reply::ok(""),         // chmod
-            Reply::ok(""),         // backup before the real write
-            Reply::ok(""),         // write the configuration
-            Reply::ok(""),         // enable the unit
+        //
+        // Strict, because the subject here is the sequence. Under the lenient
+        // mock a command inserted between the chmod and the write would answer
+        // success from nowhere and this test would go on passing, having
+        // stopped describing what the task does.
+        // Every command the task actually runs, in order. Writing it out is
+        // the point of the strict mock: the previous script named eleven
+        // commands and the task ran fourteen, because each `write` is itself a
+        // `test -e`, a `cp -p` backup and a `tee`. Those three were absorbed
+        // as fabricated successes, and the comments beside the replies had
+        // drifted onto the wrong commands without anything noticing.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::failure(1, ""), // test -e: no existing configuration
+            Reply::ok(""),         // apt-get install
+            Reply::ok(""),         // install -d: the directory
+            Reply::ok(KEY),        // wg genkey
+            Reply::ok(KEY),        // wg genpsk
+            Reply::ok(KEY),        // wg pubkey
+            Reply::ok(""),         // test -e, opening the empty write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: create the file empty
+            Reply::ok(""),         // chmod 600, before any secret exists
+            Reply::ok(""),         // test -e, opening the real write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: the configuration, with the key
+            Reply::ok(""),         // systemctl enable
         ]);
         let backend = for_family(Family::Debian);
 
@@ -647,6 +656,15 @@ mod tests {
             "the mode must be set before the key is written: {:?}",
             mock.recorded_lines()
         );
+
+        // The other direction: a leftover reply means the task stopped running
+        // a command this test still claims it runs.
+        assert_eq!(
+            mock.unused_replies(),
+            0,
+            "the script must describe the task exactly: {:?}",
+            mock.recorded_lines()
+        );
     }
 
     #[test]
@@ -675,7 +693,10 @@ mod tests {
     fn installing_warns_that_forwarding_and_the_port_are_needed() {
         // Both are what turn a tunnel that establishes into one that carries
         // traffic, and neither is this task's to change.
-        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+        let consequences = InstallWireguard.consequences(
+            for_family(Family::Debian).as_ref(),
+            &install_values("10.89.0.0/24", 51_820),
+        );
 
         let named: Vec<_> = consequences.iter().filter_map(|c| c.task()).collect();
 
@@ -687,7 +708,10 @@ mod tests {
     fn the_firewall_warning_names_udp() {
         // A TCP rule for this port admits none of WireGuard's traffic while
         // looking, in a listing, very much like it should.
-        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+        let consequences = InstallWireguard.consequences(
+            for_family(Family::Debian).as_ref(),
+            &install_values("10.89.0.0/24", 51_820),
+        );
 
         let firewall = consequences
             .iter()
@@ -703,8 +727,51 @@ mod tests {
     }
 
     #[test]
+    fn the_firewall_check_asks_whichever_front_end_holds_the_ruleset() {
+        // The bug this closes: the query was `nft list table inet initd`,
+        // written into the task. Right on three families and wrong on the
+        // fourth — RHEL runs firewalld, so the rule the tool wrote lives in a
+        // zone and that table was never created. The check would answer "not
+        // done" forever for a port that is already open, and a warning nobody
+        // can resolve is one an administrator learns to scroll past, which
+        // costs every other warning beside it.
+        let check_for = |family| {
+            InstallWireguard
+                .consequences(
+                    for_family(family).as_ref(),
+                    &install_values("10.89.0.0/24", 51_820),
+                )
+                .into_iter()
+                .find(|c| c.task() == Some("firewall.allow-port"))
+                .and_then(|c| c.check().cloned())
+                .expect("the firewall consequence must carry a check")
+        };
+
+        let debian = check_for(Family::Debian);
+        let rhel = check_for(Family::Rhel);
+
+        assert_eq!(debian.command.program, "nft", "{:?}", debian.command);
+        assert_eq!(
+            rhel.command.program, "firewall-cmd",
+            "the front-end RHEL actually runs: {:?}",
+            rhel.command
+        );
+
+        // Each needle has to match the listing its own command produces, so
+        // asserting they differ is asserting the pairing rather than the name.
+        assert_eq!(
+            debian.resolved_when_stdout_contains,
+            "udp dport 51820 accept"
+        );
+        assert_eq!(rhel.resolved_when_stdout_contains, "51820/udp");
+    }
+
+    #[test]
     fn the_provider_warning_cannot_be_verified() {
-        let consequences = InstallWireguard.consequences(&install_values("10.89.0.0/24", 51_820));
+        let consequences = InstallWireguard.consequences(
+            for_family(Family::Debian).as_ref(),
+            &install_values("10.89.0.0/24", 51_820),
+        );
 
         let external: Vec<_> = consequences.iter().filter(|c| c.is_external()).collect();
 

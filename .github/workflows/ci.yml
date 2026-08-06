@@ -23,6 +23,19 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# Nothing here writes to the repository; `release.yml` narrows separately for
+# the one job that does. Stated rather than inherited, because the default is
+# whatever the repository settings happen to be.
+permissions:
+  contents: read
+
+# A second push to a branch makes the first run's answer irrelevant. Cancelling
+# it matters more than usual here: each container job pulls Debian, Arch,
+# Alpine and Rocky images and installs real packages.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # A misconfigured runner would otherwise skip every container test and
@@ -30,6 +43,21 @@ env:
   INITD_REQUIRE_DOCKER: "1"
 
 jobs:
+  # `deny.toml` calls itself the automated half of the dependency policy, and
+  # was automated nowhere: it ran only when somebody remembered to. The
+  # schedule above matters as much as the push trigger — a new advisory lands
+  # against an unchanged `Cargo.lock`, which no push would ever notice.
+  deny:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+
   check:
     name: Format, lint, and test on Debian
     runs-on: ubuntu-latest
@@ -50,6 +78,17 @@ jobs:
 
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # The other published target, and the release profile, both of which were
+      # otherwise first compiled on the day a tag was cut — the worst moment to
+      # discover a cross-build or an LTO failure. A check rather than a build:
+      # it catches what differs about the target without paying for codegen,
+      # and `release.yml` still does the real build.
+      - name: Check the other published target
+        run: cargo check --all-targets --target aarch64-unknown-linux-musl
+
+      - name: Check the release profile
+        run: cargo check --release --all-targets
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest

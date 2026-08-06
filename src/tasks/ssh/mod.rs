@@ -4,43 +4,22 @@
 //! unit names and command syntax all arrive through the backend — that is the
 //! property this whole design exists to provide.
 
+pub mod harden;
+pub mod keys;
+
+pub use harden::{HardenSsh, HardenSshStrict};
+pub use keys::{AuthorizeKey, is_valid_public_key};
+
 use crate::backend::{Backend, Capability};
-use crate::distro::Family;
 use crate::domain::files::Backup;
+use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Lockout, Result};
-use crate::exec::{Command, Executor, OutputLine, Stream};
-use crate::tasks::algorithms;
-use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason};
+use crate::exec::{Executor, OutputLine, Stream};
+use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families every SSH task supports.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
-
-/// Families that let this tool choose the SSH cryptography.
-///
-/// RHEL is absent, and it is the one place its `Include` costs anything. Its
-/// `sshd_config` opens with `Include /etc/ssh/sshd_config.d/*.conf` and sshd
-/// honours the *first* occurrence of a directive, so the shipped
-/// `50-redhat.conf` is read before anything this tool appends. That file names
-/// few directives, but among them — through a nested include of
-/// `/etc/crypto-policies/back-ends/opensshserver.config` — are exactly the
-/// three this task exists to set. Measured against a daemon rather than
-/// reasoned about: `Ciphers aes256-gcm@openssh.com` written to the main file
-/// left `sshd -T` still reporting the full policy list, and `sshd -t` approved
-/// the file either way.
-///
-/// A drop-in numbered below 50 does win, and was confirmed to. It is not used,
-/// because on RHEL the cryptography a daemon accepts is the system's decision
-/// rather than one application's: `update-crypto-policies` sets it for every
-/// service at once, and a file contradicting it in silence would leave two
-/// answers to the same question with nothing reporting the disagreement. The
-/// other hardening tiers are unaffected — `PermitRootLogin`,
-/// `PasswordAuthentication`, `Port` and `AllowUsers` are named nowhere in the
-/// drop-in and take effect from the main file.
-const CRYPTO_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
 
 /// Where a user's authorised keys live, relative to their home directory.
 const AUTHORIZED_KEYS_RELATIVE: &str = ".ssh/authorized_keys";
@@ -101,6 +80,19 @@ pub fn category() -> Category {
     )
 }
 
+/// Wraps a configuration backup as the undo for a change already applied.
+///
+/// A change with no backup — a file that did not exist — has nothing to put
+/// back, so it finishes rather than offering an undo that would delete it.
+fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
+    backup.map_or(Outcome::Done, |backup| {
+        Outcome::Revertible(Revert::ConfigFile {
+            backup,
+            service: backend.service_for(Capability::Ssh),
+        })
+    })
+}
+
 /// Reports a step to the caller as a normal output line.
 fn report(progress: Progress<'_>, text: impl Into<String>) {
     progress(OutputLine {
@@ -126,9 +118,7 @@ impl Task for InstallSsh {
          starts at boot."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -165,430 +155,6 @@ impl Task for InstallSsh {
         // their way in, so there is nothing worth offering to undo.
         Ok(Outcome::Done)
     }
-}
-
-/// Directives the safe tier sets.
-///
-/// Every one either matches an OpenSSH default or tightens something no
-/// ordinary client depends on, so none can strand a client that could connect
-/// before. Anything that narrows what a client must speak — algorithms,
-/// forwarding — belongs to the strict tier instead.
-///
-/// Keyboard-interactive authentication is absent deliberately: its keyword
-/// differs by version and is probed rather than assumed. See
-/// [`keyboard_interactive_keywords`].
-const SAFE_DIRECTIVES: [(&str, &str); 17] = [
-    ("PermitRootLogin", "no"),
-    ("PasswordAuthentication", "no"),
-    ("PubkeyAuthentication", "yes"),
-    // Six attempts is the default; three still admits a mistyped passphrase
-    // while halving what a brute-force attempt gets per connection.
-    ("MaxAuthTries", "3"),
-    // The default of 120 seconds holds an unauthenticated slot open long
-    // enough to be worth exhausting.
-    ("LoginGraceTime", "30"),
-    ("X11Forwarding", "no"),
-    ("AllowAgentForwarding", "no"),
-    ("PermitEmptyPasswords", "no"),
-    ("HostbasedAuthentication", "no"),
-    ("IgnoreRhosts", "yes"),
-    ("StrictModes", "yes"),
-    ("PermitUserEnvironment", "no"),
-    // Verbose logging records the fingerprint each login used, which is what
-    // makes an unexpected key visible after the fact.
-    ("LogLevel", "VERBOSE"),
-    ("ClientAliveInterval", "300"),
-    ("ClientAliveCountMax", "2"),
-    ("MaxSessions", "10"),
-    ("PermitTunnel", "no"),
-];
-
-/// The keywords for keyboard-interactive authentication, newest first.
-///
-/// `KbdInteractiveAuthentication` is the current name and is unknown before
-/// OpenSSH 6.9; `ChallengeResponseAuthentication` is a deprecated alias since
-/// 8.7 and is on a removal path. No single keyword is safe across the range,
-/// so both are probed and every one this sshd accepts is written. On a version
-/// that knows both they are aliases holding the same value, which is what
-/// stops the pair disagreeing.
-const KEYBOARD_INTERACTIVE_KEYWORDS: [&str; 2] = [
-    "KbdInteractiveAuthentication",
-    "ChallengeResponseAuthentication",
-];
-
-/// Applies the SSH hardening that cannot strand a client.
-///
-/// Destructive: applied to a server the administrator reaches over SSH without
-/// a working key, it locks them out. The task refuses to disable password
-/// authentication when no authorised key exists.
-pub struct HardenSsh;
-
-impl Task for HardenSsh {
-    fn id(&self) -> &'static str {
-        "ssh.harden"
-    }
-
-    fn title(&self) -> &'static str {
-        "Harden the SSH configuration"
-    }
-
-    fn description(&self) -> &'static str {
-        "Disables root login, password authentication, agent and X11 \
-         forwarding, tunnelling and user environments; limits authentication \
-         attempts to 3 and the login grace period to 30 seconds; disconnects \
-         idle sessions after 10 minutes; and turns on verbose logging so the \
-         key each login used is recorded. None of these can stop a client that \
-         could connect before from connecting, provided it holds a key. \
-         Requires an authorised key for root, keeps a backup of the previous \
-         configuration, and holds the change open until you confirm you can \
-         still log in."
-    }
-
-    fn is_destructive(&self) -> bool {
-        true
-    }
-
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
-
-    fn run(
-        &self,
-        executor: &dyn Executor,
-        backend: &dyn Backend,
-        _values: &ParamValues,
-        progress: Progress<'_>,
-    ) -> Result<Outcome> {
-        let files = backend.files();
-        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
-
-        // Disabling password authentication without a key in place is the
-        // documented way administrators lock themselves out of a server.
-        if !has_authorized_key(executor, backend, "root")? {
-            return Err(Error::LockoutRisk {
-                kind: Lockout::NoKeyForRoot,
-            });
-        }
-
-        report(
-            progress,
-            format!("Applying {} hardening directives...", SAFE_DIRECTIVES.len()),
-        );
-
-        let hardened = SAFE_DIRECTIVES
-            .into_iter()
-            .fold(contents, |acc, (directive, value)| {
-                sshd_config::set_directive(&acc, directive, value)
-            });
-
-        let hardened = disable_keyboard_interactive(executor, &hardened, progress)?;
-
-        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
-
-        if let Some(ref backup) = backup {
-            report(
-                progress,
-                format!("Previous configuration saved to {}", backup.copy),
-            );
-        }
-
-        reload_ssh(executor, backend, progress)?;
-
-        // `sshd -t` proved the syntax and the reload proved the daemon
-        // accepted it, but neither proves the administrator can still log in:
-        // the key this task requires might not be the one their client offers.
-        // So the change is offered back until they say otherwise.
-        Ok(revertible(backup, backend))
-    }
-}
-
-/// Directives the strict tier sets besides the algorithm lists.
-///
-/// `RequiredRSASize` may only ever be raised, and 3072 is the smallest size
-/// current guidance accepts. `AllowTcpForwarding no` is the one directive here
-/// an administrator is likely to want back: it stops port forwarding, which
-/// tunnels and remote development tooling rely on.
-const STRICT_DIRECTIVES: [(&str, &str); 2] =
-    [("RequiredRSASize", "3072"), ("AllowTcpForwarding", "no")];
-
-/// Narrows the algorithms and forwarding sshd will accept.
-///
-/// Destructive in a way the safe tier is not: a client too old to speak any
-/// surviving algorithm can no longer connect at all.
-pub struct HardenSshStrict;
-
-impl Task for HardenSshStrict {
-    fn id(&self) -> &'static str {
-        "ssh.harden-strict"
-    }
-
-    fn title(&self) -> &'static str {
-        "Harden the SSH cryptography"
-    }
-
-    fn description(&self) -> &'static str {
-        "Restricts the key exchange, cipher, MAC and host key algorithms to a \
-         modern set, requires RSA keys of at least 3072 bits, and disables TCP \
-         forwarding, which stops tunnelling and remote development tools. Only \
-         algorithms this OpenSSH reports it supports are written, and a list \
-         that would be narrowed to fewer than two is left at the system \
-         default and reported. Old clients may no longer be able to connect. \
-         Requires an authorised key for root, keeps a backup, and holds the \
-         change open until you confirm you can still log in."
-    }
-
-    fn is_destructive(&self) -> bool {
-        true
-    }
-
-    fn supported_families(&self) -> &'static [Family] {
-        CRYPTO_SUPPORTED
-    }
-
-    fn run(
-        &self,
-        executor: &dyn Executor,
-        backend: &dyn Backend,
-        _values: &ParamValues,
-        progress: Progress<'_>,
-    ) -> Result<Outcome> {
-        let files = backend.files();
-        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
-
-        // Same guard as the safe tier. This task disables no password, but a
-        // configuration that strands the administrator's client is just as
-        // unrecoverable as one that refuses their password.
-        if !has_authorized_key(executor, backend, "root")? {
-            return Err(Error::LockoutRisk {
-                kind: Lockout::NoKeyForRoot,
-            });
-        }
-
-        report(progress, "Narrowing the accepted algorithms...");
-
-        let mut hardened = contents;
-
-        for class in algorithms::ALL_CLASSES {
-            match algorithms::hardened_for(executor, class) {
-                Some(value) => {
-                    report(progress, format!("{}: {value}", class.directive()));
-                    hardened = sshd_config::set_directive(&hardened, class.directive(), &value);
-                }
-                // Skipping is the safe outcome, not a compromise: the
-                // compiled-in default admits a reasonable range, while a list
-                // narrowed too far refuses clients for no gain. Reported so
-                // that a directive the administrator asked for is never
-                // silently absent.
-                None => progress(OutputLine {
-                    stream: Stream::Stderr,
-                    text: format!(
-                        "warning: {} left at the system default — this OpenSSH supports too \
-                         few of the hardened algorithms to narrow it safely",
-                        class.directive()
-                    ),
-                }),
-            }
-        }
-
-        let hardened = STRICT_DIRECTIVES
-            .into_iter()
-            .fold(hardened, |acc, (directive, value)| {
-                sshd_config::set_directive(&acc, directive, value)
-            });
-
-        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
-
-        if let Some(ref backup) = backup {
-            report(
-                progress,
-                format!("Previous configuration saved to {}", backup.copy),
-            );
-        }
-
-        reload_ssh(executor, backend, progress)?;
-
-        Ok(revertible(backup, backend))
-    }
-}
-
-/// Turns off keyboard-interactive authentication under whichever keyword this
-/// sshd recognises.
-///
-/// Writing a keyword the daemon does not know is not a warning: `sshd -t`
-/// rejects the file, `write_validated` restores the backup, and every other
-/// directive set alongside it is lost. So each candidate is probed first and
-/// only the accepted ones are written. When none is accepted the setting is
-/// left alone and said so — the sixteen directives that did apply are worth
-/// more than the one that could not.
-fn disable_keyboard_interactive(
-    executor: &dyn Executor,
-    contents: &str,
-    progress: Progress<'_>,
-) -> Result<String> {
-    let mut updated = contents.to_owned();
-    let mut applied = false;
-
-    for keyword in KEYBOARD_INTERACTIVE_KEYWORDS {
-        if sshd_config::accepts_directive(executor, keyword, "no")? {
-            updated = sshd_config::set_directive(&updated, keyword, "no");
-            applied = true;
-        }
-    }
-
-    if !applied {
-        progress(OutputLine {
-            stream: Stream::Stderr,
-            text: "warning: keyboard-interactive authentication left unchanged — this sshd \
-                   recognises neither keyword for it"
-                .to_owned(),
-        });
-    }
-
-    Ok(updated)
-}
-
-/// Wraps a configuration backup as the undo for a change already applied.
-///
-/// A change with no backup — a file that did not exist — has nothing to put
-/// back, so it finishes rather than offering an undo that would delete it.
-fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
-    backup.map_or(Outcome::Done, |backup| {
-        Outcome::Revertible(Revert::ConfigFile {
-            backup,
-            service: backend.service_for(Capability::Ssh),
-        })
-    })
-}
-
-/// Adds a public key to a user's `authorized_keys`.
-///
-/// Fieldless: the user and the key are declared as parameters and collected
-/// when the task is run, so the tree can offer it without inventing values.
-pub struct AuthorizeKey;
-
-impl AuthorizeKey {
-    /// Name of the parameter holding the account to authorise the key for.
-    pub const USER: &'static str = "user";
-    /// Name of the parameter holding the key itself.
-    pub const KEY: &'static str = "key";
-}
-
-impl Task for AuthorizeKey {
-    fn id(&self) -> &'static str {
-        "ssh.authorize-key"
-    }
-
-    fn title(&self) -> &'static str {
-        "Authorise a public key"
-    }
-
-    fn description(&self) -> &'static str {
-        "Appends a public key to the user's authorized_keys, creating ~/.ssh \
-         with the strict permissions sshd requires."
-    }
-
-    fn params(&self) -> Vec<Param> {
-        vec![
-            // root is offered because it is the account that always exists,
-            // not because it is the one to prefer.
-            Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_initial("root")
-                .with_hint("the account the key authorises"),
-            Param::new(Self::KEY, "Public key", ParamKind::PublicKey)
-                .with_hint("paste the contents of a .pub file"),
-        ]
-    }
-
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
-
-    fn run(
-        &self,
-        executor: &dyn Executor,
-        backend: &dyn Backend,
-        values: &ParamValues,
-        progress: Progress<'_>,
-    ) -> Result<Outcome> {
-        let user = values.get(Self::USER)?.to_owned();
-        let key = values.get(Self::KEY)?.trim().to_owned();
-        let key = key.as_str();
-
-        is_valid_public_key(key)?;
-
-        let files = backend.files();
-        let home = home_dir(&user);
-        let ssh_dir = format!("{home}/.ssh");
-        let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
-
-        // sshd silently ignores authorized_keys when the directory or file is
-        // group- or world-accessible, so the modes are part of the operation
-        // rather than an afterthought.
-        files.create_dir(executor, &ssh_dir, SSH_DIR_MODE)?;
-        files.set_owner(executor, &ssh_dir, &user)?;
-
-        let existing = if files.exists(executor, &path)? {
-            files.read(executor, &path)?
-        } else {
-            String::new()
-        };
-
-        if key_is_present(&existing, key) {
-            report(progress, "The key is already authorised; nothing to do");
-            return Ok(Outcome::Done);
-        }
-
-        report(progress, format!("Adding the key to {path}..."));
-
-        // Append rather than replace: other keys in the file are other
-        // people's access.
-        let mut updated = existing;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str(key);
-        updated.push('\n');
-
-        files.write(executor, &path, &updated)?;
-        files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
-        files.set_owner(executor, &path, &user)?;
-
-        report(progress, "Key authorised");
-
-        // Authorising a key only ever grants access; undoing it is the
-        // dangerous direction, so it is not offered here.
-        Ok(Outcome::Done)
-    }
-}
-
-/// Home directory of a user.
-///
-/// Root is the documented exception to `/home/<name>`.
-fn home_dir(user: &str) -> String {
-    if user == "root" {
-        "/root".to_owned()
-    } else {
-        format!("/home/{user}")
-    }
-}
-
-/// Whether the key is already present, comparing the type and body only.
-///
-/// The trailing comment is ignored: the same key added from two machines
-/// carries two different comments but grants identical access.
-fn key_is_present(contents: &str, key: &str) -> bool {
-    let fingerprint = key_fingerprint(key);
-
-    contents
-        .lines()
-        .any(|line| key_fingerprint(line.trim()) == fingerprint)
-}
-
-/// The identifying part of a key line: its type and body, without the comment.
-fn key_fingerprint(line: &str) -> Option<(&str, &str)> {
-    let mut parts = line.split_whitespace();
-
-    Some((parts.next()?, parts.next()?))
 }
 
 /// Changes the port sshd listens on.
@@ -629,11 +195,9 @@ impl Task for ChangePort {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
             // The port failed to parse, so the task will not run and there is
             // nothing downstream to invalidate.
@@ -647,26 +211,20 @@ impl Task for ChangePort {
             return Vec::new();
         }
 
-        let from = DEFAULT_SSH_PORT.to_string();
-        let to = port.to_string();
-
         vec![
             Consequence::Invalidates {
                 task: "firewall.allow-port",
                 reason: Reason::PortChanged {
-                    from: from.clone(),
-                    to: to.clone(),
+                    from: DEFAULT_SSH_PORT.to_string(),
+                    to: port.to_string(),
                 },
                 // Verifiable now that the firewall is modelled: the rule either
                 // names the new port or it does not, and the ruleset is the
-                // only honest answer. The needle is the whole rule rather than
-                // the bare number, since `2222` also appears in `22220`.
-                check: Some(Check {
-                    command: Command::new("nft")
-                        .args(["list", "table", "inet", "initd"])
-                        .privileged(),
-                    resolved_when_stdout_contains: format!("tcp dport {to} accept"),
-                }),
+                // only honest answer. The front-end phrases the query, since
+                // the one holding this host's ruleset is not the same on every
+                // family — and the needle each returns is the whole rule rather
+                // than the bare number, since `2222` also appears in `22220`.
+                check: firewall_check(backend, port, FirewallProtocol::Tcp),
             },
             Consequence::External {
                 note: External::ProviderFirewall {
@@ -785,7 +343,14 @@ fn warn_if_socket_activated(
 /// Read through the file editor rather than `std::fs` so it works under
 /// privilege escalation, and so a missing file is a plain `false`.
 fn has_authorized_key(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
-    let path = format!("{}/{AUTHORIZED_KEYS_RELATIVE}", home_dir(user));
+    // An account that does not exist holds no key, which is an answer rather
+    // than a failure: this runs over the accounts named in `AllowUsers`, and
+    // one of them being absent is exactly what the caller is checking for.
+    let Ok(home) = backend.accounts().home_dir(executor, user) else {
+        return Ok(false);
+    };
+
+    let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
 
     if !backend.files().exists(executor, &path)? {
         return Ok(false);
@@ -811,49 +376,6 @@ fn reload_ssh(
 
     report(progress, format!("Reloading {service}..."));
     backend.services().reload(executor, service)
-}
-
-/// Validates the shape of an `authorized_keys` entry.
-///
-/// Only structural validation: type prefix plus a base64-looking body. Full
-/// cryptographic verification is `ssh-keygen`'s job, and a malformed key would
-/// make sshd ignore the whole file.
-pub fn is_valid_public_key(line: &str) -> Result<()> {
-    let invalid = |reason: &str| Error::InvalidPublicKey {
-        reason: reason.to_owned(),
-    };
-
-    // Before anything else: `split_whitespace` treats a line break like any
-    // other separator, so a value carrying one would validate as a single key
-    // and then be written verbatim as two entries in `authorized_keys` — the
-    // second of them never approved. `AuthorizeKey` only trims the outer
-    // whitespace, and the CLI hands its argument straight here without passing
-    // through the interface's per-keystroke filter, so this is the barrier.
-    if line.contains(['\n', '\r']) {
-        return Err(invalid("a key cannot span more than one line"));
-    }
-
-    let mut parts = line.split_whitespace();
-    let key_type = parts.next().ok_or_else(|| invalid("the line is empty"))?;
-
-    if !VALID_KEY_PREFIXES.contains(&key_type) {
-        return Err(invalid(&format!("unrecognised key type: {key_type}")));
-    }
-
-    let body = parts
-        .next()
-        .ok_or_else(|| invalid("the key has no body after its type"))?;
-
-    if body.len() < 32 || !body.bytes().all(is_base64_byte) {
-        return Err(invalid("the key body is not valid base64"));
-    }
-
-    Ok(())
-}
-
-/// Whether a byte may appear in base64 content.
-const fn is_base64_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
 }
 
 /// Restricts SSH login to a named set of accounts.
@@ -898,9 +420,7 @@ impl Task for RestrictUsers {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -999,8 +519,10 @@ impl Task for RestrictUsers {
 
 #[cfg(test)]
 mod tests {
+    use super::harden::SAFE_DIRECTIVES;
     use super::*;
     use crate::backend::for_family;
+    use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// For tasks that declare no parameters.
@@ -1009,6 +531,16 @@ mod tests {
     }
 
     /// The values `AuthorizeKey` declares, as the interface would collect them.
+    /// A passwd entry for root, as `getent` returns it.
+    ///
+    /// The home directory is read from here rather than assumed, so every
+    /// scenario that authorises a key has to answer the lookup first.
+    const ROOT_PASSWD: &str = "root:x:0:0:root:/root:/bin/bash";
+
+    /// Passwd entries for the two ordinary accounts the allow-list tests name.
+    const ALICE_PASSWD: &str = "alice:x:1000:1000::/home/alice:/bin/sh";
+    const BOB_PASSWD: &str = "bob:x:1001:1001::/home/bob:/bin/sh";
+
     fn key_values(user: &str, key: &str) -> ParamValues {
         let mut values = ParamValues::new();
         values.set(AuthorizeKey::USER, user);
@@ -1228,6 +760,7 @@ mod tests {
         // added there is covered here without this test being edited.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
         ]);
@@ -1258,6 +791,7 @@ mod tests {
         // could connect before, so it belongs to the strict task.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
         ]);
@@ -1286,6 +820,7 @@ mod tests {
     fn hardening_writes_the_keyword_this_sshd_understands() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::ok(""),          // probe: KbdInteractiveAuthentication accepted
@@ -1323,6 +858,7 @@ mod tests {
         // cost the whole change, not just this directive.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::failure(
@@ -1366,6 +902,7 @@ mod tests {
         };
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             bad_option("KbdInteractiveAuthentication"),
@@ -1419,6 +956,7 @@ mod tests {
     fn strict_hardening_writes_only_supported_algorithms() {
         let mut replies = vec![
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
         ];
@@ -1461,6 +999,7 @@ mod tests {
         // still has other work to do and must finish it.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::failure(255, "Unsupported query"),
@@ -1494,7 +1033,12 @@ mod tests {
     fn strict_hardening_warns_when_it_skips_a_directive() {
         // A directive the administrator asked for must never be silently
         // absent from the result.
-        let mut replies = vec![Reply::ok("Port 22\n"), Reply::ok(""), Reply::ok(TEST_KEY)];
+        let mut replies = vec![
+            Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ];
         replies.extend(query_replies(
             "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
             // Only one hardened cipher survives: below the floor.
@@ -1551,6 +1095,7 @@ mod tests {
     fn strict_hardening_reloads_rather_than_restarts() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),
             Reply::ok(TEST_KEY),
         ]);
@@ -1575,6 +1120,7 @@ mod tests {
     fn strict_hardening_offers_a_revert() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),
             Reply::ok(TEST_KEY),
         ]);
@@ -1600,18 +1146,20 @@ mod tests {
     #[test]
     fn restricting_users_writes_the_allow_list() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok(""),          // getent bob
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // alice authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok(""),          // bob authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok(""),          // test -e for the write
-            Reply::ok(""),          // cp backup
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // systemctl reload
+            Reply::ok(""),           // getent alice
+            Reply::ok(""),           // getent bob
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // alice authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::ok(BOB_PASSWD),   // getent passwd: bob's home
+            Reply::ok(""),           // bob authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::ok(""),           // test -e for the write
+            Reply::ok(""),           // cp backup
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // systemctl reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1705,17 +1253,18 @@ mod tests {
         // Deliberately "at least one", not "all": a service account that logs
         // in by other means is a legitimate member of the list.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok(""),          // getent deploy
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // alice authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::failure(1, ""),  // deploy has none
-            Reply::ok(""),          // test -e for the write
-            Reply::ok(""),          // cp backup
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // systemctl reload
+            Reply::ok(""),           // getent alice
+            Reply::ok(""),           // getent deploy
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // alice authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::failure(1, ""),   // deploy has none
+            Reply::ok(""),           // test -e for the write
+            Reply::ok(""),           // cp backup
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // systemctl reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1767,6 +1316,7 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),          // getent root
             Reply::ok("Port 22\n"), // read sshd_config — root login untouched
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // and holds a key
             Reply::ok(""),          // test -e
@@ -1812,15 +1362,16 @@ mod tests {
         // The administrator's last chance to recognise a name they did not
         // intend is before the change lands, not after.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // alice authorized_keys exists
-            Reply::ok(TEST_KEY),    // and holds a key
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // reload
+            Reply::ok(""),           // getent alice
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // alice authorized_keys exists
+            Reply::ok(TEST_KEY),     // and holds a key
+            Reply::ok(""),           // test -e
+            Reply::ok(""),           // cp
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // reload
         ]);
         let backend = for_family(Family::Debian);
         let mut warnings = Vec::new();
@@ -1847,15 +1398,16 @@ mod tests {
     #[test]
     fn restricting_users_offers_a_revert() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),          // getent alice
-            Reply::ok("Port 22\n"), // read sshd_config
-            Reply::ok(""),          // authorized_keys exists
-            Reply::ok(TEST_KEY),    // holds a key
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // sshd -t
-            Reply::ok(""),          // reload
+            Reply::ok(""),           // getent alice
+            Reply::ok("Port 22\n"),  // read sshd_config
+            Reply::ok(ALICE_PASSWD), // getent passwd: alice's home
+            Reply::ok(""),           // authorized_keys exists
+            Reply::ok(TEST_KEY),     // holds a key
+            Reply::ok(""),           // test -e
+            Reply::ok(""),           // cp
+            Reply::ok(""),           // tee
+            Reply::ok(""),           // sshd -t
+            Reply::ok(""),           // reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1873,7 +1425,12 @@ mod tests {
     fn the_key_guard_reads_the_named_users_own_file() {
         // Generalised from root: `ssh.allow-users` has to ask the same question
         // about an ordinary account, whose keys live under /home.
+        // The home comes from the passwd database, so this one is deliberately
+        // not `/home/alice`: an account whose home was moved is exactly the
+        // case the old guess got wrong, and a fixture that agreed with the
+        // guess would not have noticed.
         let mock = MockExecutor::with_replies([
+            Reply::ok("alice:x:1000:1000::/srv/alice:/bin/sh"),
             Reply::ok(""),       // authorized_keys exists
             Reply::ok(TEST_KEY), // and holds a valid key
         ]);
@@ -1886,8 +1443,8 @@ mod tests {
         assert!(
             mock.recorded_lines()
                 .iter()
-                .any(|c| c.contains("/home/alice/.ssh/authorized_keys")),
-            "got: {:?}",
+                .any(|c| c.contains("/srv/alice/.ssh/authorized_keys")),
+            "the key must be looked for where passwd says the home is: {:?}",
             mock.recorded_lines()
         );
     }
@@ -1896,6 +1453,7 @@ mod tests {
     fn hardening_disables_root_login_and_passwords() {
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // it contains a valid key
             Reply::ok(""),          // test -e for the write
@@ -1926,6 +1484,7 @@ mod tests {
         // Restarting would drop the administrator's own session.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
             Reply::ok(""),
             Reply::ok(TEST_KEY),
             Reply::ok(""),
@@ -1948,13 +1507,14 @@ mod tests {
     #[test]
     fn authorising_a_key_sets_the_permissions_sshd_requires() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),         // install -d
-            Reply::ok(""),         // chown dir
-            Reply::failure(1, ""), // authorized_keys absent
-            Reply::ok(""),         // test -e inside write
-            Reply::ok(""),         // tee
-            Reply::ok(""),         // chmod
-            Reply::ok(""),         // chown file
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::failure(1, ""),  // authorized_keys absent
+            Reply::ok(""),          // test -e inside write
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
         ]);
         let backend = for_family(Family::Debian);
 
@@ -1981,12 +1541,158 @@ mod tests {
     }
 
     #[test]
+    fn a_new_authorized_keys_is_restricted_before_it_holds_a_key() {
+        // The property, and the reason it is asserted on the order rather than
+        // on the final mode: `tee` creates a file with the shell's umask, so
+        // writing the key first leaves it world-readable until the chmod lands
+        // one privileged command later. A local account can read it in that
+        // window, or hold it open and influence which keys sshd honours. The
+        // fix is the one `wg0.conf` already carries — create empty, restrict,
+        // then write — and a test that only checks the mode at the end passes
+        // against both orders.
+        // Strict: the subject is the order, so a command appearing between the
+        // chmod and the write must fail this rather than answer success from
+        // nowhere.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::failure(1, ""),  // test -e: authorized_keys absent
+            Reply::ok(""),          // test -e, opening the empty write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee: create it empty
+            Reply::ok(""),          // chmod 600, before any key exists
+            Reply::ok(""),          // chown file
+            Reply::ok(""),          // test -e, opening the real write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee: the key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let commands = mock.recorded_lines();
+        let chmod = commands
+            .iter()
+            .position(|c| c == "chmod 600 /root/.ssh/authorized_keys")
+            .expect("the file must be restricted");
+        let wrote_key = mock
+            .recorded()
+            .iter()
+            .position(|c| {
+                c.program == "tee"
+                    && c.stdin
+                        .as_deref()
+                        .is_some_and(|data| data.contains(TEST_KEY))
+            })
+            .expect("the key must be written");
+
+        assert!(
+            chmod < wrote_key,
+            "the mode must be set before the key is written: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn an_existing_authorized_keys_keeps_the_keys_already_in_it() {
+        // The other direction of the same change: a file that already exists
+        // is appended to, never truncated first — the keys in it are other
+        // people's access.
+        const OTHER_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther other@host";
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(OTHER_KEY),   // holding somebody else's key
+            Reply::ok(""),          // test -e inside write
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let written = mock
+            .recorded()
+            .iter()
+            .find_map(|c| (c.program == "tee").then(|| c.stdin.clone()).flatten())
+            .expect("the file must be written");
+
+        assert!(written.contains(OTHER_KEY), "{written:?}");
+        assert!(written.contains(TEST_KEY), "{written:?}");
+    }
+
+    #[test]
+    fn a_key_is_written_where_passwd_says_the_home_is() {
+        // The bug: the path was built as `/home/<user>`, with `/root` as the
+        // one exception. That is a convention, not a rule — a relocated or
+        // system account has its home elsewhere — and a key written to a path
+        // sshd never reads grants nothing while reporting success. `ssh.harden`
+        // may then disable passwords for an account whose key did not land.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::ok("deploy:x:1001:1001::/srv/deploy:/bin/sh"),
+            Reply::ok(""),         // install -d
+            Reply::ok(""),         // chown dir
+            Reply::failure(1, ""), // test -e: authorized_keys absent
+            Reply::ok(""),         // test -e, opening the empty write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: create it empty
+            Reply::ok(""),         // chmod
+            Reply::ok(""),         // chown file
+            Reply::ok(""),         // test -e, opening the real write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: the key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("deploy", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let commands = mock.recorded_lines();
+
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.contains("/srv/deploy/.ssh/authorized_keys")),
+            "the key must go where passwd says: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("/home/deploy")),
+            "and never to the guessed path: {commands:?}"
+        );
+    }
+
+    #[test]
     fn authorising_the_same_key_twice_does_not_duplicate_it() {
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),       // install -d
-            Reply::ok(""),       // chown
-            Reply::ok(""),       // authorized_keys exists
-            Reply::ok(TEST_KEY), // and already holds the key
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // and already holds the key
         ]);
         let backend = for_family(Family::Debian);
 
@@ -2009,14 +1715,16 @@ mod tests {
     fn authorising_a_key_keeps_existing_ones() {
         let existing = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQfakebodyvaluehere someone@else";
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(existing),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(existing),    // holding somebody else's key
+            Reply::ok(""),          // test -e, opening the write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
         ]);
         let backend = for_family(Family::Debian);
 
@@ -2252,7 +1960,8 @@ mod tests {
 
     #[test]
     fn moving_the_port_invalidates_the_firewall_rule() {
-        let consequences = ChangePort.consequences(&port_values(2222));
+        let consequences =
+            ChangePort.consequences(for_family(Family::Debian).as_ref(), &port_values(2222));
 
         let firewall = consequences
             .iter()
@@ -2272,7 +1981,8 @@ mod tests {
     fn the_firewall_warning_can_be_verified() {
         // The firewall is on this host, so the tool can settle this one rather
         // than only reporting it — unlike the provider's edge firewall.
-        let consequences = ChangePort.consequences(&port_values(2222));
+        let consequences =
+            ChangePort.consequences(for_family(Family::Debian).as_ref(), &port_values(2222));
 
         let firewall = consequences
             .iter()
@@ -2294,7 +2004,8 @@ mod tests {
         // The failure this exists for: a port opened locally that the provider
         // still blocks. Nothing on this host can observe that, so it is
         // reported as unverifiable rather than checked.
-        let consequences = ChangePort.consequences(&port_values(2222));
+        let consequences =
+            ChangePort.consequences(for_family(Family::Debian).as_ref(), &port_values(2222));
 
         let external: Vec<_> = consequences.iter().filter(|c| c.is_external()).collect();
 
@@ -2309,7 +2020,11 @@ mod tests {
     fn keeping_the_current_port_invalidates_nothing() {
         // Re-running with 22 changes nothing, so it breaks nothing. Warning
         // anyway is how these get dismissed unread.
-        assert!(ChangePort.consequences(&port_values(22)).is_empty());
+        assert!(
+            ChangePort
+                .consequences(for_family(Family::Debian).as_ref(), &port_values(22))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2319,15 +2034,31 @@ mod tests {
         let mut unparseable = ParamValues::new();
         unparseable.set(ChangePort::PORT, "not-a-port".to_owned());
 
-        assert!(ChangePort.consequences(&unparseable).is_empty());
-        assert!(ChangePort.consequences(&ParamValues::new()).is_empty());
+        assert!(
+            ChangePort
+                .consequences(for_family(Family::Debian).as_ref(), &unparseable)
+                .is_empty()
+        );
+        assert!(
+            ChangePort
+                .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new())
+                .is_empty()
+        );
     }
 
     #[test]
     fn tasks_that_change_nothing_elsewhere_declare_nothing() {
         // The default is empty, so a task only speaks up when it has something
         // to say.
-        assert!(InstallSsh.consequences(&ParamValues::new()).is_empty());
-        assert!(HardenSsh.consequences(&ParamValues::new()).is_empty());
+        assert!(
+            InstallSsh
+                .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new())
+                .is_empty()
+        );
+        assert!(
+            HardenSsh
+                .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new())
+                .is_empty()
+        );
     }
 }

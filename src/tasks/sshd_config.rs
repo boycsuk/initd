@@ -398,14 +398,18 @@ mod tests {
 
     #[test]
     fn an_invalid_config_is_rolled_back_and_never_committed() {
-        // Replies: test -e (exists), cp (backup), tee (write), sshd -t (fails),
-        // cp (restore).
-        let mock = MockExecutor::with_replies([
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::failure(255, "Bad configuration option: Prt"),
-            Reply::ok(""),
+        // Strict, because the failing reply has to land on `sshd -t` and
+        // nothing but a comment used to say that it did. Insert a command
+        // anywhere before it under the lenient mock and the failure slides
+        // onto `tee` instead: validation then "passes", nothing is rolled
+        // back, and this test goes on asserting a rollback it caused by
+        // accident. The queue is now the claim.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::ok(""),                                        // test -e
+            Reply::ok(""),                                        // cp -p: backup
+            Reply::ok(""),                                        // tee: write
+            Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
+            Reply::ok(""),                                        // cp -p: restore
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 

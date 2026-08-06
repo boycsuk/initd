@@ -101,6 +101,12 @@ impl OutputPane {
         self.lines.len()
     }
 
+    /// The retained lines, for assertions about what was reported.
+    #[cfg(test)]
+    pub fn lines(&self) -> &VecDeque<OutputLine> {
+        &self.lines
+    }
+
     /// Whether the view is pinned to the newest output.
     #[cfg(test)]
     pub const fn is_following(&self) -> bool {
@@ -240,15 +246,18 @@ impl Window {
 }
 
 /// Styles one line according to the stream it came from.
+///
+/// A command is prefixed with `$` and dimmed: it is the structure of the
+/// transcript rather than its content, and an administrator scanning for what
+/// a task did reads the commands, not every line each one printed.
 fn render_line(line: &OutputLine) -> Line<'static> {
-    let style = match line.stream {
-        Stream::Stdout => style::NORMAL,
+    match line.stream {
+        Stream::Stdout => Line::styled(line.text.clone(), style::NORMAL),
         // stderr is highlighted so warnings stand out from progress. It is not
         // treated as an error: plenty of tools report progress on stderr.
-        Stream::Stderr => style::OUTPUT_WARN,
-    };
-
-    Line::styled(line.text.clone(), style)
+        Stream::Stderr => Line::styled(line.text.clone(), style::OUTPUT_WARN),
+        Stream::Command => Line::styled(format!("$ {}", line.text), style::OUTPUT_COMMAND),
+    }
 }
 
 #[cfg(test)]

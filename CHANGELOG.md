@@ -8,6 +8,254 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `initd version`, also accepted as `--version` and `-V`. The tool had no way
+  to say which build it was, so a bug report against it could not be acted on.
+- A `LICENSE` file. `Cargo.toml` declared MIT and the repository shipped no
+  grant, which for a binary distributed to run as root is part of the contract
+  rather than paperwork.
+- A `README.md` at the root. The install one-liner existed only in a comment
+  inside `install.sh`, so a visitor saw a file listing and no explanation.
+- `cargo deny check` runs in CI, on push and on the existing schedule.
+  `deny.toml` described itself as the automated half of the dependency policy
+  and was automated nowhere — it ran when somebody remembered. The schedule is
+  the half that matters: a new advisory lands against an unchanged
+  `Cargo.lock`, which no push-triggered run would ever notice.
+- CI checks `aarch64-unknown-linux-musl` and the release profile. Both were
+  first compiled on the day a tag was cut, which is the worst moment to find a
+  cross-build or an LTO failure.
+- `ci.yml` declares `permissions: contents: read` and cancels superseded runs.
+  The permissions were whatever the repository defaulted to, and each container
+  job pulls four distribution images.
+
+### Added
+- The output pane shows what the task is actually doing. `docs/ui.md` promised
+  output "streamed line by line as it is produced" and `user-stories.md`
+  promised it "appears as the task produces it"; neither was true. Commands
+  were run through `wait_with_output()`, which captures at the end, and no task
+  forwarded any of it — so `apt install` could take two minutes behind a single
+  hand-written line, and a failure was a one-line status row carrying a stderr
+  cut off mid-sentence. `LocalExecutor` now drains both pipes on their own
+  threads and hands each line to an `OutputObserver` as it arrives, still
+  collecting both streams so callers that classify a failure by its stderr are
+  unaffected. Each command is announced with a `$` prefix first, rendered as
+  the task asked for it rather than wrapped in whichever escalation helper the
+  host resolved, and never carrying stdin — which is what keeps a WireGuard
+  private key out of the pane. A failed task's error goes to the pane as well
+  as the status row, where it can be scrolled and pasted into a bug report.
+  This restores the shape removed in `813b690`, which went not because it was
+  wrong but because nothing called it; it is a property of the executor now
+  rather than a second `run` method that can fall out of use unnoticed.
+
+### Changed
+- `integration_accounts` and `integration_services` expand through
+  `for_each_image!` instead of looping over `IMAGES`. The macro's own
+  documentation already argued against the loop — it makes four families into
+  one test, so the first to fail hides the rest and the failure names a line
+  rather than a distribution — and these two files were the ones not following
+  it. Fifteen scenarios become sixty tests, named per family and run in
+  parallel. Verified by breaking one scenario for Alpine alone: `::alpine`
+  fails and the other three still run and pass, where the loop would have
+  abandoned every family after the first. The one `continue` became a `return`,
+  which now skips a single image rather than the remainder of the matrix.
+
+### Added
+- Tasks run as tasks in a container, on all four families. Five of twenty-eight
+  reached one before; eleven scenarios now cover the account, sysctl, firewall
+  and WireGuard tasks end to end — running the task and then reading the system
+  through a different mechanism, since asking the tool whether the tool
+  succeeded is how a mock agrees with itself. It found the sysctl persistence
+  bug fixed above on its first run. What a plain container cannot settle is
+  stated rather than skipped: sysctls are the host's and `/proc/sys` is mounted
+  read-only, so the refusal path is what is asserted, with the measured note
+  that `--privileged` does make the success path work.
+- Container scenarios for `firewalld`, `openrc` and `semanage`, the three
+  backends a whole family each depends on and that had only ever answered to a
+  mock — the arrangement `integration_systemd` exists because of. What each can
+  honestly claim differs, and was measured rather than assumed: firewalld works
+  fully offline, so its port and service queries are asserted against real zone
+  state; OpenRC enables and lists without an init, so the enable half is real
+  while `status` refuses because the container was booted by something else.
+  `semanage` labels a port and reports it back, without `--privileged`: managing
+  the policy store is a matter of writing files under `/etc/selinux` rather than
+  of enforcing anything. Two measurements were wrong before they were right,
+  both concluding less than was true — piping the refusals through `head`
+  reported the pipeline's exit code rather than the command's, and installing
+  `policycoreutils-python-utils` without `selinux-policy-targeted` gave a
+  semanage with no policy to manage, which read as a container that could not
+  manage one. The second correction turned an asserted impossibility into two
+  real scenarios.
+- `semanage port -a` on a port already labelled does not fail: it prints
+  "already defined, modifying instead" and exits 0, doing the fallback itself.
+  The comment beside the add-then-modify sequence claimed the opposite. The
+  sequence stays — the outcome is right either way, and an older policycoreutils
+  may well fail where this one recovers — but both paths are now pinned by a
+  scenario rather than by a premise.
+
+### Changed
+- `tasks::ssh` becomes a directory module. It was 992 lines of production code
+  holding six tasks, and two of them formed subjects of their own: everything
+  about `authorized_keys` — the file that decides who may log in, where a mode
+  matters as much as a content — and the two hardening tiers, which share a
+  shape nothing else there has, writing a table of directives wholesale and
+  rolling them back together. `mod.rs` keeps 520 lines and the tasks that edit
+  one value at a time. That `algorithms` stopped being reachable from the
+  parent is the evidence the cut followed a real seam rather than a line count.
+- A task declares support as an exhaustive `match` on the family, carrying the
+  reason when it refuses. `supported_families` returned a `&[Family]`, which
+  the compiler cannot check for exhaustiveness — so adding a family and
+  forgetting a task produced a task that was *silently* unsupported, and the
+  tool would start on the new distribution and grey out every row. A test
+  inverted that default to catch it, at the cost of a table of twelve
+  exceptions kept in sync by hand. Verified rather than assumed: adding a fifth
+  family now produces 31 compile errors naming the exact tasks that must
+  decide, where before it produced none. The fourteen `SUPPORTED` consts are
+  gone, and a `supported_everywhere!` macro covers the twenty-one tasks that
+  work on all four, so the ones that do not are the ones you see.
+- The reasons those twelve tasks are refused now reach the operator. They were
+  measured — which repository has never carried fail2ban, which shipped
+  `Include` wins on RHEL, which installer publishes no digest — and they lived
+  in a test table, invisible in the binary, while the code above the tree
+  claimed unsupported tasks stayed visible *with their reason*. Selecting one
+  now shows it in the detail panel. Dimming a row says a task is refused; only
+  the reason separates a missing package from a policy from a bug worth
+  reporting.
+- Tree navigation moves to `tui::cursor::TreeCursor`. It depended on none of
+  what the rest of `app.rs` does — no executor, no backend, no terminal — which
+  made it the one part of the interface that could be tested without building
+  an interface, and was not being. It also holds the two stacks that have to
+  move together (`path` and the row left behind at each level), so the code
+  able to desynchronise them is now confined to the file whose job they are; a
+  test pins that, and was confirmed to fail when a push is dropped. The status
+  row stays out of it: `leave_category` at the root answers that it could not
+  move, and the interface phrases the refusal, because a cursor that knew about
+  the status row would be a cursor that knew about the interface.
+- Which modal state owns the keyboard is decided in one place. The interface
+  holds six independent `Option`s, and four separate sites decided precedence
+  by testing the same fields in their own order — two of which had already
+  drifted: `pill` asked about `confirm` before `running` and would have named a
+  dialog during a task, while `render` drew `confirm` and `form` with
+  independent `if`s, so both would have appeared at once with the answering key
+  going to only one. No bug today, since the transitions never build those
+  states; the correctness simply rested on four readings agreeing. `App::mode`
+  now states the order once and `dispatch`, `render`, `pill` and the key bar
+  match on the answer, so a state added later fails to compile until each has
+  answered for it. Derived rather than replacing the fields, which would touch
+  every site that reads or sets one for the same guarantee.
+- The key bar is derived from that mode too, so it cannot advertise a key the
+  state would refuse, and it now names search's keys while a search is open.
+- A consequence's check is phrased by the firewall front-end that holds the
+  host's ruleset, so `Task::consequences` now takes the backend. Three tasks
+  built `nft list table inet initd` themselves — a distro branch wearing a
+  string literal, correct on the three families driven through nftables and
+  wrong on RHEL, where the tool writes the rule through firewalld and that
+  table is never created. The check would have answered "still to do" forever
+  for a port already open, and a warning nobody can resolve is one an
+  administrator learns to scroll past, which costs every warning beside it.
+  `FirewallManager::open_port_check` returns the command and the needle
+  together, since the two are one claim asked at different times; nftables
+  builds its needle from the same `rule` helper `allow` writes, so they cannot
+  drift. Nothing executes checks yet, which is why this was invisible — and
+  why it was worth fixing before something does.
+- `MockExecutor` can be strict about commands nobody scripted, and the tests
+  whose subject is the *sequence* now are. An unscripted command previously
+  answered `Reply::default()` — success with empty output — so a task that grew
+  a step got a fabricated success from every test written before that step
+  existed: not merely unasserted, but asserted to have worked by a test that
+  had never heard of it. It found real drift immediately. The WireGuard secret
+  test scripted eleven commands against a task that runs fourteen, because each
+  `write` is a `test -e`, a `cp -p` and a `tee`; three were being absorbed
+  silently and the comments naming which reply belonged to which command had
+  drifted onto the wrong ones. `write_validated`'s rollback test was worse: only
+  a comment tied its failing reply to `sshd -t`, and a command inserted anywhere
+  ahead of it would have slid that failure onto `tee` — validation would then
+  "pass", nothing would roll back, and the test would go on asserting a rollback
+  it had caused by accident. `unused_replies()` covers the other direction, a
+  task that stopped running a command the script still claims.
+
+### Fixed
+- A kernel parameter already holding its value is still persisted. The task
+  asked `holds`, which reads the *running* value, and returned early when it
+  matched — writing no drop-in and reporting success. A kernel can hold the
+  right value for reasons that do not outlive a reboot: another tool set it,
+  the image ships it that way, a container inherits it. The task promises "now
+  and after a reboot" and delivered only the first half, on exactly the hosts
+  where the second half was the only part still needed. `SysctlManager` gains
+  `is_persisted`, and the early return now requires both. Found by running the
+  real task in Docker, where `net.ipv4.ip_forward` is already `1` in every
+  container — the mock had been agreeing that there was nothing to do.
+- A key is written where the passwd database says the home is, rather than at
+  a guessed `/home/<user>`. The guess had `/root` as its one exception, which
+  is a convention rather than a rule: system accounts live under `/var/lib`
+  and `/srv`, and a site can relocate an ordinary account. The failure was
+  silent in the direction that matters — the task reported success, sshd never
+  read the file, and `ssh.harden` could then disable passwords for an account
+  whose key had not landed where it was needed. `AccountReader::home_dir`
+  reads the field `getent passwd` was already returning and discarding;
+  Alpine's implementation reads `/etc/passwd` directly, as its existence check
+  already did. The guard that asks whether a named account holds a key uses it
+  too, so `ssh.allow-users` stops looking in the wrong place for the same
+  reason.
+- Losing the session puts an unconfirmed change back, which is the case the
+  verification window exists for rather than an edge of it. The countdown lived
+  only in this process, so `ssh.harden` severing the administrator's own
+  connection killed the interface with `SIGHUP` and left in place the very
+  configuration that locked them out — the screen having promised that silence
+  would restore it. `SIGHUP` and `SIGTERM` are now caught, the event loop reads
+  a flag rather than the handler doing the work (a handler may only touch
+  async-signal-safe things, and reverting spawns `cp` through an executor that
+  takes locks), and the change goes back before the process exits. `SIGKILL`
+  and a power cut cannot be covered by any program, so the banner states the
+  limit — "Reverts while this session lives." — rather than implying otherwise:
+  a promise with a silent exception teaches people to disbelieve all of it.
+  `signal-hook` becomes a direct dependency; it was already in the tree through
+  crossterm, so this adds a name to audit rather than new code.
+- A panic restores the terminal before it prints. `run` restored on both the
+  `Ok` and the `Err` path, but a panic unwinds past that match, so the message
+  was drawn into the alternate screen in raw mode — scrolling without carriage
+  returns and vanishing with the screen, leaving an unusable shell and no
+  explanation of why.
+- An address is validated as an address rather than as four numbers.
+  `validate_ip` parsed each octet with `str::parse`, which admits what the
+  integer parser admits: a leading `+`, and leading zeros without limit. So
+  `010.0.0.1`, `+1.0.0.1` and `0000000010.0.0.1` were all accepted and written
+  verbatim into `wg0.conf` — where a leading zero reads as octal to some
+  tooling, making the address reviewed and the address in effect different
+  addresses. `Ipv4Addr::from_str` refuses all three, costs no dependency, and
+  the four-part count is still checked first so the message can name the actual
+  mistake. Table-driven tests now cover `Ip`, `Cidr`, `Endpoint`, `Version` and
+  `Protocol`, five kinds that had no validation test at all; the `Cidr` table
+  pins `/8` and `/30` because an off-by-one at either edge of the documented
+  range was invisible to a test that only tried `/24`.
+- A new `authorized_keys` is restricted before it holds a key. The file was
+  written and *then* chmodded, which is the pattern `wg0.conf` was already
+  fixed for: `tee` creates a file with the shell's umask, so the key sat
+  world-readable for as long as the two privileged commands took. Brief, and
+  long enough for a local account to read it — or to hold it open and influence
+  which keys sshd honours. A new file is now created empty, restricted, and
+  only then written; an existing one is appended to and never truncated, since
+  the keys already in it are other people's access. Pinned by a test asserting
+  the *order*, because one asserting the final mode passes against both.
+- Ctrl-C stops the task it says it stops. The flag the interface raised was
+  never read: `Running::start` built it, cloned it, and dropped the clone, so
+  the task ran to completion while the interface reported `CANCELLED` — the
+  precise failure the code beside it warns about, since a tool claiming to have
+  stopped before it has is how half-configured servers happen. The flag now
+  travels to `LocalExecutor`, which refuses the next command rather than
+  interrupting the running one: a task stopped between two commands has
+  completed whole steps only, which is the granularity the interface promises,
+  and tasks are not idempotent so killing mid-step would leave one half
+  applied. Routing it through the executor rather than through `Task::run` is
+  what keeps the obligation off the twenty-eight tasks — the one that forgot to
+  check would be the one that could not be stopped. The check precedes
+  authentication, so a stopped task does not go on to ask for a password.
+- `CANCELLED` is reported from what the task did rather than from the operator
+  having asked. The request lands between two commands, so a task already on
+  its last one finishes; the status now names the command it stopped *before*,
+  and a task that beat the keypress is reported as done with the near miss said
+  out loud instead of dropped. The test that pinned the old behaviour asserted
+  a finished task be shown as cancelled — it now asserts the opposite.
+
+### Added
 - Third-party package repositories, and the one rule that makes them
   defensible: a repository cannot be expressed without a fingerprint published
   independently of the key it verifies. `Repository::fingerprint` is a required

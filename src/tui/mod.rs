@@ -10,11 +10,14 @@
 
 pub mod app;
 pub mod confirm;
+pub mod cursor;
 pub mod field;
 pub mod form;
 pub mod help;
 pub mod layout;
 pub mod output;
+pub mod search;
+pub mod signals;
 pub mod status;
 pub mod style;
 pub mod verify;
@@ -50,6 +53,27 @@ pub fn init() -> Result<Tui> {
 pub fn restore() -> Result<()> {
     disable_raw_mode().map_err(terminal_error)?;
     execute!(io::stdout(), LeaveAlternateScreen).map_err(terminal_error)
+}
+
+/// Restores the terminal before a panic prints its message.
+///
+/// `run` restores on both the `Ok` and the `Err` path, but a panic unwinds past
+/// that match, so without this the message is drawn into the alternate screen
+/// in raw mode — where it scrolls without carriage returns and vanishes with
+/// the screen, leaving an unusable shell and no explanation. The hook runs
+/// before the default one so the report lands on an ordinary terminal.
+///
+/// The previous hook is called rather than replaced, so this composes with
+/// whatever the runtime installed instead of discarding it.
+fn restore_terminal_on_panic() {
+    let previous = std::panic::take_hook();
+
+    std::panic::set_hook(Box::new(move |info| {
+        // Nothing useful can be done if restoring fails while already
+        // panicking, and the panic itself is the more important message.
+        let _ = restore();
+        previous(info);
+    }));
 }
 
 /// Runs a closure with the terminal handed back to the child process.
@@ -140,8 +164,20 @@ pub fn run() -> Result<()> {
 
     let executor = crate::exec::local::LocalExecutor::new(escalator);
 
+    // Installed before the screen is taken, so a panic between here and the
+    // restore below still lands on a terminal somebody can read.
+    restore_terminal_on_panic();
+
+    // Registered before the screen is taken, so a connection dropping during
+    // startup is noticed rather than killing the process outright. A failure
+    // to register is not fatal: the interface then behaves as it did before,
+    // and the verification window says so rather than promising otherwise.
+    let hangup = signals::Hangup::listen().unwrap_or_default();
+
     let mut terminal = init()?;
-    let outcome = app::App::new(distro, host, backend, executor).run(&mut terminal);
+    let outcome = app::App::new(distro, host, backend, executor)
+        .watching_for_hangup(hangup)
+        .run(&mut terminal);
 
     // Restoration must happen whether the app succeeded or failed; a failure
     // to restore is only reported if the app itself did not already fail.

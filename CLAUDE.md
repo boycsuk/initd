@@ -13,7 +13,10 @@
 - Runtime: Rust latest stable via `rustup` (1.95.0 at bootstrap, 2026-04), edition 2024
 - Package manager: `cargo`
 - Build targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` (static, glibc-independent)
-- TUI: `ratatui` 0.30 + `crossterm` 0.29; errors: `thiserror` 2.0
+- TUI: `ratatui` 0.30 + `crossterm` 0.29; errors: `thiserror` 2.0; signals:
+  `signal-hook` 0.3 (already in the tree through crossterm, so depending on it
+  directly adds a name to audit rather than new code — it is what lets a
+  dropped connection put an unconfirmed change back)
 - Database engine: n/a
 
 ## WHAT — Commands
@@ -45,34 +48,20 @@
 - No deployment target, no hosting, no reverse proxy — the tool runs *on* the server being administered.
 
 ## WHAT — External integrations (MCP)
-- **serena** — symbol-level navigation (LSP-backed). Locating trait implementations across distro backends, finding references, rewriting function bodies.
-- **graphify** — knowledge graph of the codebase. Structural and ripple-effect questions ("what breaks if this trait changes"), mapping unfamiliar areas.
 
-### When to prefer Serena tools over native Claude Code tools
+Both are navigation aids rather than project rules; the general guidance for
+using them lives in `~/.claude/rules/ai-collaboration.md` and is not restated
+here. What is specific to this repository:
 
-Serena operates at the **symbol level** (LSP-backed), not the text level. Prefer it for:
-- **Locating a symbol's definition** → `find_symbol` instead of `Grep` + `Read`.
-- **Finding all references to a function/class** → `find_referencing_symbols` instead of `Grep`.
-- **Renaming or rewriting a function body** → `replace_symbol_body` instead of `Edit` (it preserves siblings and indentation correctly).
-- **Inserting code adjacent to a symbol** → `insert_after_symbol` / `insert_before_symbol`.
-- **Getting a structural overview of a file** → `get_symbols_overview` instead of reading the whole file.
-
-Keep using native tools for:
-- Plain text files, configs, markdown (no LSP gain).
-- One-off reads of a known path (`Read` is faster).
-- Edits where line-level precision matters more than symbol semantics.
-
-Serena writes onboarding summaries to `.serena/memories/*.md` — these ARE committed (team-wide context). `.serena/project.local.yml` is gitignored (personal overrides).
-
-### Graphify (graph-level companion, same `.mcp.json` as Serena)
-
-Where Serena works at the symbol level, Graphify answers **structural / ripple-effect** questions over a knowledge graph of the whole codebase: "what depends on this", "what breaks if I change X" (`get_pr_impact`, `shortest_path`), or mapping an unfamiliar area (`query_graph`, `get_neighbors`). Workflow: **graph first, then Serena** — query the graph for shape and blast radius, then act on the symbols with Serena.
-
-Reach the graph two ways over the same `graphify-out/graph.json`:
-- **MCP tools** (`query_graph`, `get_neighbors`, `shortest_path`, `get_pr_impact`) for impact analysis mid-task.
-- **CLI** for focused lookups: `graphify query "<question>"` (scoped subgraph, cheaper than grepping), `graphify path "<A>" "<B>"` (relationships), `graphify explain "<concept>"`. Use `graphify-out/wiki/index.md` for broad navigation; read `graphify-out/GRAPH_REPORT.md` only for whole-architecture review. After editing code, `graphify update .` refreshes it (AST-only, no API cost).
-
-One-time setup — run `/graphify .` once to build `graphify-out/graph.json` (the MCP server stays unavailable until then). You do NOT need to run `graphify install`: the graph-first `PreToolUse` nudge ships centrally as `prefer-graphify.{sh,ps1}` and is merged into this project's hooks by `--serena` (gated on the graph existing, so it's silent until you build it). Heed the nudge when you see it: the graph answers structure questions faster than scanning files. `graphify-out/` is gitignored build output.
+- **serena** — symbol-level navigation. The thing worth reaching for it on is a
+  trait implemented once per family: `find_referencing_symbols` on a domain
+  trait answers "which backends implement this" without four greps.
+- **graphify** — the graph answers ripple-effect questions, and this codebase
+  has one shape that makes them worth asking: a change to a domain trait
+  reaches every backend and the tasks above them. `/graphify .` builds it once;
+  `graphify-out/` is gitignored.
+- `.serena/memories/*.md` **are** committed (team-wide context);
+  `.serena/project.local.yml` is not.
 
 ## WHAT — Task areas
 
@@ -84,7 +73,7 @@ directions so it cannot drift.
 
 ## WHY — Architectural decisions
 
-- **Distro differences are resolved by a per-family backend behind a trait, not by conditionals inside each task.** Detection reads `/etc/os-release` once at startup and resolves a backend (Debian/RHEL/Arch/SUSE/Alpine). Tasks call the trait and stay distro-agnostic. Adding a distro must mean adding one module, never editing every task — with N tasks, per-task branching would repeat the same `match` N times and each new distro would touch all of them.
+- **Distro differences are resolved by a per-family backend behind a trait, not by conditionals inside each task.** Detection reads `/etc/os-release` once at startup and resolves a backend (Debian/RHEL/Arch/SUSE/Alpine). Tasks call the trait and stay distro-agnostic. Adding a distro must mean adding one module, never editing every task — with N tasks, per-task branching would repeat the same `match` N times and each new distro would touch all of them. The one place a family is named outside a backend is `Task::support`, and that is deliberate: whether a task *runs* on a family is a decision, not a spelling, and the twelve refusals in the tree each cite something measured — which repository has never carried fail2ban, which shipped `Include` wins on RHEL, which installer publishes no digest. It returns `Support` from an exhaustive `match` rather than a list of families, so a new variant fails to compile in every task that has not decided about it; the twenty that work everywhere say so through `supported_everywhere!`, written once, and only the eight with something to explain write the match out. Measured rather than assumed: adding a fifth family produces 31 compile errors naming exactly the sites that must answer, where the previous `&[Family]` produced none and left the new distribution silently unsupported.
 
 - **Tasks are native typed Rust, not embedded shell scripts.** linutil (the inspiration for this tool) embeds `.sh` files described by TOML. That is faster to contribute to but gives up type safety, testability, and compile-time checking, and inherits every difference between distro shells. Since the real value here is the distro abstraction, tasks must be able to *call* it — a shell script cannot.
 
@@ -93,6 +82,10 @@ directions so it cannot drift.
 - **Privileged commands hand the terminal over; the password is never captured by the TUI.** `sudo` prompts on the TTY, but raw mode disables echo and line buffering and the alternate screen hides the prompt, so the TUI leaves both before spawning and restores them after — the pattern ratatui documents for spawning an external editor. The final `clear()` is required, not cosmetic: programs that query terminal colours otherwise leave raw ANSI RGB values printed inside the restored interface. **Rejected:** reading the password into a masked TUI field and piping it to stdin. It would hold the password in process memory, and `sudo` requires a TTY by default. Note `run0` authenticates through polkit and isolates its own prompt, but it is a symlink to `systemd-run` and does not exist without systemd — which is why the mechanism is resolved at runtime rather than assumed.
 
 - **Authenticating once at startup is the fast path, not the only one, so the executor asks before a helper prompts rather than after it has.** The startup `sudo -v` covers the common case, and covers nothing else: Arch expires its timestamp after five minutes (measured, `docs/sudo-timestamp-findings.md`) and a long task outlives it, while `doas` and `run0` have no timestamp to establish at all — on an Alpine box carrying `doas` and no `sudo`, the *first* privileged command is already the one that prompts. What that looked like was reproduced rather than reasoned about: a prompt raised under the interface is written into the alternate screen in raw mode (`\x1b[?1049h[sudo] password for …`), unreadable and unanswerable, so the interface appears to hang. So `LocalExecutor` asks `PrivilegeEscalator::auth_need()` before every privileged command — `sudo -n -v`, `doas -n true` and `run0 --no-ask-password true` each answer without raising a prompt, and only an unrecognised helper answers `Always`, because guessing "will not prompt" is the direction that strands someone at an invisible prompt — and when a prompt is coming it requests the terminal through a `TerminalBroker`. `run0` was assumed unprobeable at first on the grounds that polkit owns its prompt; measuring it on an Arch container with systemd as PID 1 and polkit running showed `--no-ask-password` refuses rather than asks, exiting 1 as an unprivileged user and 0 as root. Both conditions were needed to learn that: without them `run0` cannot reach the bus and every answer looks alike. **Detecting the failure afterwards was rejected:** `doas` without `persist` does not fail, it blocks on a prompt nobody can see, so there is no failure to detect; and matching sudo's stderr means matching another program's user-facing text. **Re-running the task after an auth failure was rejected too:** tasks are not idempotent, and one that got halfway would double-apply. The obligation this creates is that *whoever drains the channel must answer the request* — a caller that only reads it leaves the task thread blocked until the deadline, which a worker test now stands in for the interface to pin.
+
+- **A task is stopped between two commands, and the flag reaches it through the executor rather than through `Task::run`.** Cancellation has to be cooperative because tasks are not idempotent: one killed mid-command leaves the step it was performing half applied, and there is no way to know which half. So `LocalExecutor` refuses the *next* command rather than interrupting the running one, which is the granularity the interface already promises. Routing it through the executor is what keeps the obligation off the twenty-eight tasks — a token threaded through `Task::run` would have to be checked in each of them, and the one that forgot would be the one that could not be stopped. The check precedes authentication, so a stopped task does not go on to ask for a password. **Reporting the intent was rejected:** the request lands between commands, so a task already on its last one finishes, and a status row saying `CANCELLED` over a completed task is how a fully-configured server gets called half-configured — and re-run. The status now names the command the task stopped *before*, and a task that beat the keypress is reported as done with the near miss said out loud.
+
+- **Losing the session counts as not confirming, which is the case the verification window exists for rather than an edge of it.** The countdown lived only in this process, so `ssh.harden` severing the administrator's own connection killed the interface with `SIGHUP` and left in place the very configuration that locked them out — the screen having promised that silence would restore it. `SIGHUP` and `SIGTERM` are caught, and the handler only raises a flag the event loop already polls every hundred milliseconds: a handler may touch only async-signal-safe things, and reverting spawns `cp` through an executor that takes locks, so doing the work there risks a deadlock against the code it interrupted. **`SIGKILL` and a power cut cannot be covered by any program**, so the banner states the limit — "Reverts while this session lives." — rather than implying otherwise: a promise with a silent exception teaches people to disbelieve the whole banner, which costs the warnings beside it too.
 
 - **`sshd -t` approves configurations nobody can connect to, so hardening is measured by a real login.** Validation parses the file; it cannot say whether a client and this daemon agree on a cipher, a key exchange and a MAC. A daemon given `Ciphers 3des-cbc` alone passes `sshd -t` and refuses every client — verified in a container. That is the failure `ssh.harden-strict` is documented as the only tier able to cause, so `tests/integration_connection.rs` starts a daemon and authenticates against it, and `tests/integration_old_client.rs` does so from an OpenSSH 8.4 client against a 10.x server, since an algorithm the server now insists on is one an older client may never have learned. Two harness details are load-bearing and were each found by a test failing for the wrong reason: the daemon must be started *after* the configuration is written (the tasks reload a unit that does not exist in a container, and a daemon started first stops listening), and the login must not be root (`ssh.harden` writes `PermitRootLogin no`, so a root session is refused by design).
 

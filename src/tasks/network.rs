@@ -7,7 +7,6 @@
 //! once and asked about by name.
 
 use crate::backend::{Backend, Capability, firewall_for};
-use crate::distro::Family;
 use crate::domain::firewall::Protocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
@@ -15,16 +14,7 @@ use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families these tasks support.
-///
-/// All four ship nftables and read `/etc/sysctl.d/`, which is read at boot by
-/// both systemd's `systemd-sysctl` and the OpenRC script Alpine uses. RHEL
-/// installs nftables by default but leaves firewalld as the supported
-/// front-end, and the two own overlapping tables — a rule written here can be
-/// one firewalld does not know about.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
+use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
 
 /// The port SSH listens on unless it has been moved.
 ///
@@ -100,9 +90,7 @@ impl Task for FirewallStatus {
          Changes nothing."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -191,11 +179,9 @@ impl Task for EnableFirewall {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::SSH_PORT) else {
             return Vec::new();
         };
@@ -298,11 +284,9 @@ impl Task for AllowPort {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
-    fn consequences(&self, values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
             return Vec::new();
         };
@@ -365,9 +349,7 @@ impl Task for EnableIpForward {
          in order to carry its clients' traffic anywhere."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -397,11 +379,9 @@ impl Task for EnableUnprivilegedPorts {
          a rootless container engine needs in order to serve a website."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
-    fn consequences(&self, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // A running daemon does not re-read this. Docker's own documentation
         // makes the same point, and an administrator who skips it sees a
         // container that still cannot bind 80 with the parameter visibly set.
@@ -438,9 +418,16 @@ fn set_and_report(
 ) -> Result<Outcome> {
     let sysctl = backend.sysctl();
 
-    // Idempotent, and says so. A task that printed nothing when there was
-    // nothing to do would read as having failed silently.
-    if sysctl.holds(executor, setting)? {
+    // Both halves, because either alone is a system that does not behave as
+    // the task describes. A kernel can hold the right value for reasons that
+    // do not outlive a reboot — another tool set it, the image ships it that
+    // way, a container inherits it — and stopping at the running value would
+    // report success over a host where the setting vanishes on restart.
+    //
+    // Docker is where this surfaced: `net.ipv4.ip_forward` is already `1` in
+    // every container, so the task found nothing to do, wrote no drop-in, and
+    // said it was done. The value was real; its persistence was not.
+    if sysctl.holds(executor, setting)? && sysctl.is_persisted(executor, setting)? {
         report(
             progress,
             format!("{} is already {}", setting.key, setting.value),
@@ -466,6 +453,7 @@ fn set_and_report(
 mod tests {
     use super::*;
     use crate::backend::for_family;
+    use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// Runs a task against a mock, returning its outcome and the commands run.
@@ -589,7 +577,10 @@ mod tests {
     fn enabling_the_firewall_warns_about_the_provider() {
         // Everything but SSH is now denied here, and the layer above this host
         // is one the tool cannot see.
-        let consequences = EnableFirewall.consequences(&port_values(EnableFirewall::SSH_PORT, 22));
+        let consequences = EnableFirewall.consequences(
+            for_family(Family::Debian).as_ref(),
+            &port_values(EnableFirewall::SSH_PORT, 22),
+        );
 
         assert_eq!(consequences.len(), 1, "{consequences:?}");
         assert!(consequences[0].is_external());
@@ -682,18 +673,58 @@ mod tests {
     }
 
     #[test]
-    fn a_parameter_already_holding_its_value_is_not_written_again() {
+    fn a_parameter_already_set_and_already_persisted_is_left_alone() {
         // Idempotent, and cheap: re-writing the drop-in would rewrite a file
-        // and re-apply a value that is already live.
+        // and re-apply a value that is already live. Both conditions are
+        // required — see the test below for the half that used to be missed.
         let (outcome, commands) = run(
             &EnableIpForward,
-            vec![Reply::ok("1\n")],
+            vec![
+                Reply::ok("1\n"),                     // the running value
+                Reply::ok(""),                        // test -e: the drop-in exists
+                Reply::ok("net.ipv4.ip_forward = 1"), // and records the value
+            ],
             &ParamValues::new(),
         );
 
         outcome.expect("an already-set parameter must succeed");
 
-        assert_eq!(commands.len(), 1, "only the read must run: {commands:?}");
+        assert!(
+            !commands.iter().any(|command| command.starts_with("tee")),
+            "nothing needed writing: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_value_that_is_live_but_not_persisted_is_written_anyway() {
+        // The bug this replaces. `holds` reads the running value, which a
+        // kernel can hold for reasons that do not outlive a reboot — another
+        // tool set it, the image ships it that way, a container inherits it.
+        // Stopping there reported success over a host where the setting
+        // vanishes on restart, and the task promises "now and after a reboot".
+        //
+        // Found by running the real task in Docker, where
+        // `net.ipv4.ip_forward` is already `1` in every container: the task
+        // wrote no drop-in and said it was done.
+        let (outcome, commands) = run(
+            &EnableIpForward,
+            vec![
+                Reply::ok("1\n"),      // already live
+                Reply::failure(1, ""), // but no drop-in of ours exists
+                Reply::ok(""),         // sysctl -w
+                Reply::ok(""),         // test -e inside the write
+                Reply::ok(""),         // tee
+                Reply::ok(""),         // chmod
+            ],
+            &ParamValues::new(),
+        );
+
+        outcome.expect("the task must succeed");
+
+        assert!(
+            commands.iter().any(|command| command.starts_with("tee")),
+            "the drop-in must be written even though the value was live: {commands:?}"
+        );
     }
 
     #[test]
@@ -733,7 +764,8 @@ mod tests {
     fn lowering_the_unprivileged_port_tells_docker_to_restart() {
         // A running daemon does not re-read this, so the parameter reads as set
         // while the container still cannot bind 80.
-        let consequences = EnableUnprivilegedPorts.consequences(&ParamValues::new());
+        let consequences = EnableUnprivilegedPorts
+            .consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
         assert_eq!(consequences.len(), 1, "{consequences:?}");
         assert_eq!(

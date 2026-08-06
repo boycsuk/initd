@@ -115,6 +115,15 @@ pub struct Image {
     /// Absent from both base images: filtering is a kernel feature and `nft`
     /// is the userspace tool for reaching it, packaged separately.
     pub install_nftables: &'static str,
+    /// Installs the firewalld front-end, where the family presents one.
+    ///
+    /// Only RHEL does. Which front-end holds a host's ruleset is a property of
+    /// the host rather than of the family — a RHEL server runs firewalld, and
+    /// one where the administrator removed it drives `nft` directly — so a
+    /// scenario about the firewall has to give the image what a stock host of
+    /// that family would have. The other three run `true`: honest, and it
+    /// keeps the scenarios from needing a branch.
+    pub install_firewalld: &'static str,
     /// Installs the WireGuard tools, which provide `wg`.
     ///
     /// Both families call the package `wireguard-tools`, which is coincidence
@@ -154,6 +163,7 @@ pub const DEBIAN: Image = Image {
     ssh_unit: "ssh.service",
     needs_static_binary: false,
     install_nftables: "apt-get install -y -qq nftables",
+    install_firewalld: "true",
     install_wireguard: "apt-get install -y -qq wireguard-tools",
     install_sysctl: "apt-get install -y -qq procps",
     query_ssh: "dpkg-query -W -f='${Status}' openssh-server",
@@ -177,6 +187,7 @@ pub const ARCH: Image = Image {
     ssh_unit: "sshd.service",
     needs_static_binary: false,
     install_nftables: "pacman -S --needed --noconfirm nftables",
+    install_firewalld: "true",
     install_wireguard: "pacman -S --needed --noconfirm wireguard-tools",
     // `sysctl` is in the base image here.
     install_sysctl: "true",
@@ -207,6 +218,7 @@ pub const ALPINE: Image = Image {
     // No glibc here, so the default build cannot start.
     needs_static_binary: true,
     install_nftables: "apk add --no-cache nftables",
+    install_firewalld: "true",
     install_wireguard: "apk add --no-cache wireguard-tools",
     // busybox provides `sysctl`.
     install_sysctl: "true",
@@ -254,6 +266,7 @@ pub const RHEL: Image = Image {
     // matrix to demonstrate it rather than describe it.
     needs_static_binary: true,
     install_nftables: "dnf install -y -q nftables",
+    install_firewalld: "dnf install -y -q firewalld",
     install_wireguard: "dnf install -y -q wireguard-tools",
     // Two packages where the other families need one or none. `sysctl` comes
     // from procps-ng rather than procps, and `/etc/sysctl.d` — the directory a

@@ -87,6 +87,30 @@ TUI or CLI:
   - TUI exception: categories are opened one level at a time, with a breadcrumb
     showing the current location and a way back to the parent.
   - CLI exception: the whole tree is printed at once, indented by level.
+- As an **administrator**, I am told why a task cannot run on this machine, so
+  that I can tell a missing package from a deliberate policy from a bug.
+  - Acceptance: a task unsupported here stays visible rather than being hidden;
+    a tool that hides what it will not do cannot be reasoned about.
+  - Acceptance: selecting it explains the refusal in terms of this
+    distribution — what is not packaged, what would override the change, what
+    could not be verified — rather than only marking it unavailable.
+  - Acceptance: the explanation is specific enough to act on, whether that
+    means installing something myself or reporting that the reason is stale.
+- As an **administrator**, I can find a task without knowing which area holds
+  it, so that browsing is not the only way to reach one.
+  - Acceptance: I can search by what I remember — the title as the interface
+    shows it, or the identifier as `cli.md` and my scripts name it.
+  - Acceptance: the search covers every task, not only the group I am looking
+    at, and each result says which area it came from.
+  - Acceptance: case does not matter.
+  - Acceptance: a result takes me to the task rather than running it, so a
+    mistyped query cannot start anything. Running it still needs the same
+    confirmation and the same values as reaching it by browsing.
+  - Acceptance: I am told when nothing matched, rather than shown an empty list
+    that looks the same as a tool with no tasks in it.
+  - TUI exception: the CLI has no cursor to move, and `initd list` already
+    prints every task with its area — piping that to a pager or to `grep` is
+    the same capability by the shell's own means.
 
 ### Accounts
 
@@ -341,6 +365,13 @@ TUI or CLI:
   - Acceptance: the previous configuration goes back on its own if I do not
     confirm within the window. An administrator who has just locked themselves
     out cannot press a key to undo it.
+  - Acceptance: losing the session counts as not confirming. If my connection
+    drops — which is exactly what the change I am verifying can cause — the
+    previous configuration goes back before the tool exits, rather than the
+    countdown dying with it.
+  - Acceptance: I am told what the automatic revert cannot survive, instead of
+    being left to assume it survives everything. A killed-outright process and
+    a machine losing power both leave the change applied.
   - Acceptance: keeping the change needs a deliberate keypress that no
     navigation key can produce by accident.
   - Acceptance: I cannot quit, or start another task, while a change is

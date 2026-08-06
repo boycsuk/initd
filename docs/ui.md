@@ -100,10 +100,21 @@ a clear refusal.
   the breadcrumb of the current path (`Remote Access › SSH`, or `Tasks` at the
   top level). The bottom border carries the census of the level on screen
   (`2 tasks`, `1 category`), which costs no rows. Tasks unsupported on the
-  running distribution stay visible and dimmed.
+  running distribution stay visible and dimmed, and selecting one shows **why**
+  in the detail panel — which repository does not carry it, which shipped
+  configuration would override it, which installer publishes nothing to verify.
+  Dimming says a task is refused; only the reason distinguishes a missing
+  package from a deliberate policy from a bug worth reporting.
 - **Output** — the running task's output, streamed line by line as it is
-  produced, scrollable. Right column. Retains the most recent 5000 lines in a
-  ring buffer, dropping the oldest. The bottom border states whether the view
+  produced, scrollable. Right column. Each command is announced with a `$`
+  prefix before it runs, so the pane reads as a transcript rather than as
+  unattributed lines — it is what an administrator pastes into a bug report.
+  The command is rendered as the task asked for it, without the `sudo`/`doas`
+  wrapper this host resolved, and never carries what was fed on stdin (a
+  WireGuard private key travels that way precisely to stay out of view).
+  A failed task's error is written here as well as into the status row, since
+  the row is a single line and a package manager's stderr does not fit in it.
+  Retains the most recent 5000 lines in a ring buffer, dropping the oldest. The bottom border states whether the view
   is pinned to the newest output (`follow`) or has been scrolled away
   (`detached`), and while following, a `▌` cursor marks where the next line
   will land — a quiet command and a frozen screen otherwise look identical.
@@ -265,10 +276,16 @@ Two rules govern the table:
 reversing: reversal swaps per cell, so a red destructive marker on a reversed
 row would render as a red block and the row's meaning would invert with it.
 
-Roles for elements the interface does not draw yet — the gauge, result glyphs,
-search highlighting — are declared here and in source so the table stays one
+Roles for elements the interface does not draw yet — the gauge, the result
+glyphs, the tree's depth guides, and the styles for a disabled selection and an
+unfocused border — are declared here and in source so the table stays one
 readable reference, and so a new call site picks a role instead of inventing a
-colour.
+colour. `search_match` was one of these until search was built; it is drawn now,
+which is what the list is for.
+
+A role that is declared and never drawn is a promise this document has not yet
+kept, so the list is deliberately explicit rather than left to be discovered by
+grepping for unused constants.
 
 ## Keys
 
@@ -297,6 +314,7 @@ way back.
 | `↓` / `j` | Move to the next row |
 | `g` / `G` | Jump to the first / last row of the level |
 | `Enter` | Open the selected category, or run the selected task; destructive tasks open the dialog first |
+| `/` | Open search over the whole tree |
 | `Esc` / `Backspace` / `←` / `h` | Go back to the parent level; at the top level it reports rather than quitting |
 
 Every row is selectable: a category that could not be selected could not be
@@ -306,6 +324,38 @@ many cannot drop the user out of the program — `q` is the only way out.
 A scrollbar appears on the right edge of the tree only when the level overflows
 the pane; a track drawn against a level that fits is a permanent hint that
 content is hidden when none is.
+
+### Search (semi-modal)
+
+Opened with `/` from the tree. Twenty-eight tasks across six areas is past the
+number anybody keeps a map of, and drilling down one level at a time answers
+"what is in here" rather than "where is it" — without this the only recourse
+was `docs/cli.md`, outside the tool and possibly not on the server.
+
+| Key | Action |
+|-----|--------|
+| (any printable character) | Append to the query; `/` included, since a query is literal |
+| `↑` / `↓` | Move between results; stops at the ends rather than wrapping |
+| `Enter` | Move the tree cursor to that task, without running it |
+| `Backspace` | Delete a character; on an empty query, close the search |
+| `Esc` | Close, leaving the tree cursor where it was |
+
+Matching spans the **whole tree**, not the level on screen, and covers both the
+title and the task id — `docs/cli.md` and any script name the id, while somebody
+who has only used the interface knows the title. It is case-insensitive, and
+the matched span of a title is highlighted (`search_match`) so a row does not
+look like an unexplained hit. Each result carries its breadcrumb and id, since
+a title alone does not say which area it came from. An empty query matches
+everything, which makes opening search the one view listing every task with its
+area beside it.
+
+`Enter` navigates rather than runs. The task is then started from the tree like
+any other, so a result goes through the same confirmation and the same
+parameter form; a path that skipped either would make a mistyped query the most
+dangerous key in the interface.
+
+Search is refused while a task is running or a change is unverified, for the
+same reason `Enter` is: only one task at a time.
 
 ### Output pane
 
@@ -432,6 +482,19 @@ to prevent.
 The default outcome of silence is the safe one. An administrator who has just
 locked themselves out is, by definition, unable to press a key to undo it, so
 the revert happens without them.
+
+Losing the session counts as silence, not as confirmation. A dropped connection
+delivers `SIGHUP` and an ordinary `kill` or `systemctl stop` delivers `SIGTERM`;
+both are caught, and an unconfirmed change goes back before the process exits.
+This is the case the window exists for rather than an edge of it — `ssh.harden`
+can sever the very connection that would confirm it.
+
+Two things it cannot cover, and the banner says so rather than implying
+otherwise with a line reading **"Reverts while this session lives."**: `SIGKILL`
+cannot be caught by any program, and a machine losing power runs no code at
+all. In both the change stays applied. Stating the limit is what makes the rest
+of the banner trustworthy; a promise with a silent exception teaches people to
+disbelieve all of it.
 
 ### Confirmation dialog (modal)
 

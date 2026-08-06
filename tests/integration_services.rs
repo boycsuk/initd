@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{ARCH, DEBIAN, IMAGES, Image, run_in_container, stdout_of};
+use common::{ARCH, DEBIAN, Image, run_in_container, stdout_of};
 
 /// Runs a script and returns both streams together.
 ///
@@ -38,16 +38,12 @@ fn observe_with(image: &Image, install: &str, script: &str) -> String {
     observe(image, &format!("{install} >/dev/null 2>&1; {script}"))
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn the_sysctl_parameters_the_tasks_write_exist_on_both_families() {
-    require_docker!();
-
-    // The runtime half is applied before the drop-in is written precisely so a
-    // parameter this kernel lacks fails before a file is left that makes every
-    // boot log an error. That guard is only worth anything if the parameters
-    // are real, which is what this asserts.
-    for image in IMAGES {
+for_each_image! {
+    fn the_sysctl_parameters_the_tasks_write_exist_on_both_families(image) {
+        // The runtime half is applied before the drop-in is written precisely so a
+        // parameter this kernel lacks fails before a file is left that makes every
+        // boot log an error. That guard is only worth anything if the parameters
+        // are real, which is what this asserts.
         for key in ["net.ipv4.ip_forward", "net.ipv4.ip_unprivileged_port_start"] {
             let observed = observe_with(image, image.install_sysctl, &format!("sysctl -n {key}"));
 
@@ -60,15 +56,11 @@ fn the_sysctl_parameters_the_tasks_write_exist_on_both_families() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn the_sysctl_drop_in_directory_is_read_at_boot() {
-    require_docker!();
-
-    // The tool writes `/etc/sysctl.d/99-initd.conf` rather than appending to
-    // `/etc/sysctl.conf`, which only works if the directory is one the system
-    // actually reads.
-    for image in IMAGES {
+for_each_image! {
+    fn the_sysctl_drop_in_directory_is_read_at_boot(image) {
+        // The tool writes `/etc/sysctl.d/99-initd.conf` rather than appending to
+        // `/etc/sysctl.conf`, which only works if the directory is one the system
+        // actually reads.
         let observed = observe_with(
             image,
             image.install_sysctl,
@@ -83,26 +75,22 @@ fn the_sysctl_drop_in_directory_is_read_at_boot() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn nft_lists_rules_in_the_shape_the_parsing_expects() {
-    require_docker!();
-
-    // `FirewallManager::state` reads ports back out of a listing by splitting
-    // each line into `protocol dport port accept`. That is a claim about how
-    // nft renders a rule, and rendering is nft's decision rather than this
-    // project's — a change there would show up as a firewall reporting no open
-    // ports rather than as an error.
-    //
-    // Skipped where the container cannot reach netlink, which is every run
-    // without NET_ADMIN — even `nft -c` opens a netlink socket to build its
-    // cache before parsing, so there is no syntax-only mode to fall back on.
-    //
-    // Reported as skipped rather than quietly asserted around: a scenario that
-    // passed by checking something weaker would read as coverage of the
-    // listing format while proving nothing about it. Run the suite with
-    // `--cap-add=NET_ADMIN` to exercise this properly.
-    for image in IMAGES {
+for_each_image! {
+    fn nft_lists_rules_in_the_shape_the_parsing_expects(image) {
+        // `FirewallManager::state` reads ports back out of a listing by splitting
+        // each line into `protocol dport port accept`. That is a claim about how
+        // nft renders a rule, and rendering is nft's decision rather than this
+        // project's — a change there would show up as a firewall reporting no open
+        // ports rather than as an error.
+        //
+        // Skipped where the container cannot reach netlink, which is every run
+        // without NET_ADMIN — even `nft -c` opens a netlink socket to build its
+        // cache before parsing, so there is no syntax-only mode to fall back on.
+        //
+        // Reported as skipped rather than quietly asserted around: a scenario that
+        // passed by checking something weaker would read as coverage of the
+        // listing format while proving nothing about it. Run the suite with
+        // `--cap-add=NET_ADMIN` to exercise this properly.
         let observed = observe_with(
             image,
             image.install_nftables,
@@ -116,7 +104,10 @@ fn nft_lists_rules_in_the_shape_the_parsing_expects() {
                 image.name
             );
 
-            continue;
+            // `return` rather than `continue`: each family is its own test
+            // now, so this skips one image instead of abandoning every family
+            // after it in a shared loop.
+            return;
         }
 
         let listed = observe_with(
@@ -141,16 +132,12 @@ fn nft_lists_rules_in_the_shape_the_parsing_expects() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn a_missing_table_is_an_answer_rather_than_a_crash() {
-    require_docker!();
-
-    // A host where this tool has never run has no table of its own, and the
-    // honest answer is that it allows nothing. The implementation reads the
-    // exit code rather than treating it as a failure, which only holds if nft
-    // exits non-zero rather than printing an empty listing.
-    for image in IMAGES {
+for_each_image! {
+    fn a_missing_table_is_an_answer_rather_than_a_crash(image) {
+        // A host where this tool has never run has no table of its own, and the
+        // honest answer is that it allows nothing. The implementation reads the
+        // exit code rather than treating it as a failure, which only holds if nft
+        // exits non-zero rather than printing an empty listing.
         let observed = observe_with(
             image,
             image.install_nftables,
@@ -165,16 +152,12 @@ fn a_missing_table_is_an_answer_rather_than_a_crash() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn wireguard_keys_are_the_length_the_validation_requires() {
-    require_docker!();
-
-    // The tool refuses a key that is not 44 characters, because a truncated
-    // one parses and never completes a handshake. That number comes from
-    // WireGuard's encoding rather than from this project, so it is checked
-    // against the tool that produces it.
-    for image in IMAGES {
+for_each_image! {
+    fn wireguard_keys_are_the_length_the_validation_requires(image) {
+        // The tool refuses a key that is not 44 characters, because a truncated
+        // one parses and never completes a handshake. That number comes from
+        // WireGuard's encoding rather than from this project, so it is checked
+        // against the tool that produces it.
         let observed = observe_with(
             image,
             image.install_wireguard,
@@ -190,15 +173,11 @@ fn wireguard_keys_are_the_length_the_validation_requires() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn a_public_key_is_derived_from_stdin_without_the_private_key_reaching_argv() {
-    require_docker!();
-
-    // The reason `public_key_of` feeds the key on stdin: `/proc/<pid>/cmdline`
-    // is readable by every account on the host. This asserts `wg pubkey`
-    // actually accepts stdin, which is what makes that possible.
-    for image in IMAGES {
+for_each_image! {
+    fn a_public_key_is_derived_from_stdin_without_the_private_key_reaching_argv(image) {
+        // The reason `public_key_of` feeds the key on stdin: `/proc/<pid>/cmdline`
+        // is readable by every account on the host. This asserts `wg pubkey`
+        // actually accepts stdin, which is what makes that possible.
         // `umask 077` before the redirect, because `wg genkey` warns when its
         // output lands in a world-readable file — and it is right to. That
         // warning is what surfaced the same window in this tool's own
@@ -222,15 +201,11 @@ fn a_public_key_is_derived_from_stdin_without_the_private_key_reaching_argv() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn a_preshared_key_is_a_separate_generator() {
-    require_docker!();
-
-    // `generate_keypair` calls `genpsk` as well as `genkey`. If the subcommand
-    // did not exist the keypair would fail at the second step, after the first
-    // had already produced a private key.
-    for image in IMAGES {
+for_each_image! {
+    fn a_preshared_key_is_a_separate_generator(image) {
+        // `generate_keypair` calls `genpsk` as well as `genkey`. If the subcommand
+        // did not exist the keypair would fail at the second step, after the first
+        // had already produced a private key.
         let observed = observe_with(
             image,
             image.install_wireguard,
@@ -246,15 +221,11 @@ fn a_preshared_key_is_a_separate_generator() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn the_wireguard_package_carries_the_tools_under_both_names() {
-    require_docker!();
-
-    // Debian and Arch happen to agree on `wireguard-tools`, which the backend
-    // records as coincidence rather than as a rule. This asserts the package
-    // that name resolves to actually provides `wg`.
-    for image in IMAGES {
+for_each_image! {
+    fn the_wireguard_package_carries_the_tools_under_both_names(image) {
+        // Debian and Arch happen to agree on `wireguard-tools`, which the backend
+        // records as coincidence rather than as a rule. This asserts the package
+        // that name resolves to actually provides `wg`.
         let observed = observe_with(image, image.install_wireguard, "command -v wg");
 
         assert!(
@@ -265,15 +236,11 @@ fn the_wireguard_package_carries_the_tools_under_both_names() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn subordinate_id_files_exist_for_the_rootless_check_to_read() {
-    require_docker!();
-
-    // `has_subordinate_ids` greps both files and treats a missing entry as
-    // "no range". A missing *file* must behave the same way rather than
-    // erroring, since a system that predates the convention has neither.
-    for image in IMAGES {
+for_each_image! {
+    fn subordinate_id_files_exist_for_the_rootless_check_to_read(image) {
+        // `has_subordinate_ids` greps both files and treats a missing entry as
+        // "no range". A missing *file* must behave the same way rather than
+        // erroring, since a system that predates the convention has neither.
         let observed = observe(
             image,
             "grep -q '^nobody:' /etc/subuid >/dev/null 2>&1; echo EXIT=$?",
@@ -286,7 +253,6 @@ fn subordinate_id_files_exist_for_the_rootless_check_to_read() {
         );
     }
 }
-
 #[test]
 #[ignore = "requires docker"]
 fn loginctl_reports_lingering_as_a_whole_property() {
@@ -312,7 +278,6 @@ fn loginctl_reports_lingering_as_a_whole_property() {
         "loginctl must answer with the property or fail, not succeed silently: {observed}"
     );
 }
-
 #[test]
 #[ignore = "requires docker"]
 fn caddy_validates_a_configuration_rather_than_only_parsing_it() {
@@ -338,7 +303,6 @@ fn caddy_validates_a_configuration_rather_than_only_parsing_it() {
         "a well-formed Caddyfile must validate: {observed}"
     );
 }
-
 #[test]
 #[ignore = "requires docker"]
 fn caddy_rejects_a_configuration_it_cannot_parse() {
@@ -360,7 +324,6 @@ fn caddy_rejects_a_configuration_it_cannot_parse() {
         "an unknown directive must not validate: {observed}"
     );
 }
-
 #[test]
 #[ignore = "requires docker"]
 fn the_arch_image_resolves_its_own_package_names() {

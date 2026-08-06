@@ -98,6 +98,14 @@ impl fmt::Display for Command {
 pub enum Stream {
     Stdout,
     Stderr,
+    /// Not a stream of the process: the command line itself, announced before
+    /// it runs.
+    ///
+    /// Carried here rather than as a separate kind of update because the pane
+    /// renders one sequence, and a command has to appear in order with the
+    /// output it produced. It is what makes the pane a transcript somebody can
+    /// paste into a bug report rather than a wall of unattributed lines.
+    Command,
 }
 
 /// A single line of output, tagged with its origin.
@@ -126,6 +134,52 @@ impl Output {
 pub trait Executor {
     /// Runs a command to completion, capturing its output.
     fn run(&self, command: &Command) -> Result<Output>;
+}
+
+/// Somewhere a command's output goes as it is produced.
+///
+/// Deliberately *not* a second `Executor` method. A `run_streaming` beside
+/// `run` existed once and was removed for having no caller: two ways to run a
+/// command means one of them is the one nobody wires up, and its doc-comment
+/// went on describing an arrangement that had stopped being true. There is one
+/// way to run a command; whether anybody is watching is a property of the
+/// executor, not of the call.
+///
+/// `Send` because the lines are read on the reader threads, and the observer
+/// outlives none of them.
+pub trait OutputObserver: Send + Sync {
+    /// Called for each line, from either stream, in arrival order.
+    fn line(&self, line: OutputLine);
+}
+
+/// A flag the interface raises to ask a running task to stop.
+///
+/// Deliberately *not* a parameter of [`Executor::run`], and not a method on the
+/// trait: a task is stopped between its commands, and the executor is already
+/// the only place every command passes through. Threading a token through all
+/// twenty-eight tasks would put the obligation to check it on each of them, and
+/// the one that forgot would be the one that could not be stopped.
+///
+/// Cloning shares the flag rather than copying its value — the interface holds
+/// one end and the worker thread the other.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelToken {
+    /// A token nobody has cancelled yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Asks whatever holds the other end to stop at its next command.
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether cancellation has been asked for.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// Somewhere the terminal can be borrowed from so a helper may prompt.

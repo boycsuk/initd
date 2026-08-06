@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{IMAGES, Image, run_in_container, stdout_of};
+use common::{Image, run_in_container, stdout_of};
 
 /// The group granting administrative rights on an image.
 ///
@@ -51,17 +51,13 @@ fn run_task(image: &Image, script: &str) -> String {
     )
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn the_administrative_group_exists_under_the_name_the_backend_uses() {
-    require_docker!();
-
-    // The silent failure this pins: `usermod -aG sudo` on Arch exits zero
-    // against a group that is not there, leaving an account that looks
-    // provisioned and cannot escalate. The backend answers `sudo` on Debian
-    // and `wheel` on Arch — this asserts the system agrees, which is the half
-    // no mock can check.
-    for image in IMAGES {
+for_each_image! {
+    fn the_administrative_group_exists_under_the_name_the_backend_uses(image) {
+        // The silent failure this pins: `usermod -aG sudo` on Arch exits zero
+        // against a group that is not there, leaving an account that looks
+        // provisioned and cannot escalate. The backend answers `sudo` on Debian
+        // and `wheel` on Arch — this asserts the system agrees, which is the half
+        // no mock can check.
         // Read from the file rather than through `getent`: busybox ships none,
         // which is the difference that makes account reading a capability.
         let observed = run_task(
@@ -81,21 +77,17 @@ fn the_administrative_group_exists_under_the_name_the_backend_uses() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn a_locked_password_still_admits_a_key() {
-    require_docker!();
-
-    // The finding the whole task rests on, verified rather than trusted.
-    // `passwd -l` writes a `!` into the shadow entry; the account is reported
-    // as locked and `sshd` never consults that field for a public key. If this
-    // ever stops being true, `users.lock-root` is doing more work than it
-    // needs to — and if it stays true, the tool is right to use expiry.
-    // Read out of the shadow entry rather than through `passwd -S`, which is a
-    // shadow-utils flag busybox does not carry. The `!` prefix is what `-S`
-    // reports as `L`, and reading the field directly is portable across all
-    // three — and is what the busybox implementation does anyway.
-    for image in IMAGES {
+for_each_image! {
+    fn a_locked_password_still_admits_a_key(image) {
+        // The finding the whole task rests on, verified rather than trusted.
+        // `passwd -l` writes a `!` into the shadow entry; the account is reported
+        // as locked and `sshd` never consults that field for a public key. If this
+        // ever stops being true, `users.lock-root` is doing more work than it
+        // needs to — and if it stays true, the tool is right to use expiry.
+        // Read out of the shadow entry rather than through `passwd -S`, which is a
+        // shadow-utils flag busybox does not carry. The `!` prefix is what `-S`
+        // reports as `L`, and reading the field directly is portable across all
+        // three — and is what the busybox implementation does anyway.
         let observed = run_task(
             image,
             &format!(
@@ -114,15 +106,11 @@ fn a_locked_password_still_admits_a_key() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn expiry_is_what_the_tool_writes_and_the_system_reads_back() {
-    require_docker!();
-
-    // The mechanism `users.lock-root` actually uses. `1` rather than `0`
-    // because shadow(5) documents 0 as ambiguous, and this asserts the system
-    // reads 1 back as a date in the past rather than as "never".
-    for image in IMAGES {
+for_each_image! {
+    fn expiry_is_what_the_tool_writes_and_the_system_reads_back(image) {
+        // The mechanism `users.lock-root` actually uses. `1` rather than `0`
+        // because shadow(5) documents 0 as ambiguous, and this asserts the system
+        // reads 1 back as a date in the past rather than as "never".
         let observed = run_task(
             image,
             &format!(
@@ -154,16 +142,12 @@ fn expiry_is_what_the_tool_writes_and_the_system_reads_back() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn group_membership_reads_back_as_whole_words() {
-    require_docker!();
-
-    // `is_in_group` splits `id -nG` on whitespace and compares whole names,
-    // because `sudo` is a substring of `sudoers`. That is a claim about the
-    // output format of a command this repository does not own, so it is
-    // asserted against the real one.
-    for image in IMAGES {
+for_each_image! {
+    fn group_membership_reads_back_as_whole_words(image) {
+        // `is_in_group` splits `id -nG` on whitespace and compares whole names,
+        // because `sudo` is a substring of `sudoers`. That is a claim about the
+        // output format of a command this repository does not own, so it is
+        // asserted against the real one.
         let group = admin_group(image);
 
         // `addgroup <user> <group>` on busybox, `usermod -aG <group> <user>`
@@ -192,15 +176,11 @@ fn group_membership_reads_back_as_whole_words() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn etc_shells_lists_absolute_paths_one_per_line() {
-    require_docker!();
-
-    // `users.set-shell` refuses a shell absent from this file, and reads it by
-    // comparing whole lines. Both halves depend on the file's shape, which is
-    // a distribution's decision rather than this project's.
-    for image in IMAGES {
+for_each_image! {
+    fn etc_shells_lists_absolute_paths_one_per_line(image) {
+        // `users.set-shell` refuses a shell absent from this file, and reads it by
+        // comparing whole lines. Both halves depend on the file's shape, which is
+        // a distribution's decision rather than this project's.
         let observed = run_task(image, "cat /etc/shells");
 
         let shells: Vec<&str> = observed
@@ -222,16 +202,12 @@ fn etc_shells_lists_absolute_paths_one_per_line() {
     }
 }
 
-#[test]
-#[ignore = "requires docker"]
-fn creating_an_administrator_lands_in_the_right_group_on_both_families() {
-    require_docker!();
-
-    // The task end to end, through the binary rather than through its parts.
-    // What this catches that the unit tests cannot: the backend naming a group
-    // the distribution does not have, which is precisely the case that exits
-    // zero and grants nothing.
-    for image in IMAGES {
+for_each_image! {
+    fn creating_an_administrator_lands_in_the_right_group_on_both_families(image) {
+        // The task end to end, through the binary rather than through its parts.
+        // What this catches that the unit tests cannot: the backend naming a group
+        // the distribution does not have, which is precisely the case that exits
+        // zero and grants nothing.
         let group = admin_group(image);
 
         // `initdadmin` rather than anything shorter: Debian's base image

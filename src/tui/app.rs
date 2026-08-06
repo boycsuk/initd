@@ -12,17 +12,20 @@ use ratatui::widgets::{
 };
 
 use super::confirm::Confirm;
+use super::cursor::TreeCursor;
 use super::field::Field;
 use super::form::Form;
 use super::output::OutputPane;
+use super::search::Search;
+use super::signals::Hangup;
 use super::status::{State, Status};
 use super::verify::Verification;
 use super::worker::{Running, Update};
-use super::{Tui, help, layout, style};
+use super::{Tui, help, layout, search, style};
 use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::i18n::Lang;
 use crate::tasks::params::ParamValues;
@@ -89,6 +92,36 @@ impl Pane {
 ///
 /// Carries the reply channel so that whoever takes the request is obliged to
 /// answer it: a worker thread is blocked on the other end.
+/// Which of the interface's states is in effect, in precedence order.
+///
+/// Derived from [`App::mode`] rather than stored, so there is exactly one
+/// definition of what wins and the compiler requires every reader to answer
+/// for each state. Borrows what it names, since every caller only reads.
+enum Mode<'a> {
+    /// The help overlay is open, above everything else.
+    Help,
+    /// A task is running; nothing new may be started.
+    ///
+    /// Carries nothing: what the interface needs to draw about a running task
+    /// — its spinner, its clock — is read from `running` where the borrow can
+    /// be mutable, and every decision made from the mode is about *which*
+    /// state this is rather than what is in it.
+    Running,
+    /// A change is applied and waiting to be kept or put back.
+    Verifying,
+    /// A parameter form is collecting values.
+    ///
+    /// Also carries nothing: `Form::render` needs `&mut self` for its scroll
+    /// state, which a mode borrowing the rest of `App` could not lend.
+    Filling,
+    /// A destructive task is waiting to be confirmed.
+    Confirming(&'a Confirm),
+    /// A search is open over the task tree.
+    Searching(&'a Search),
+    /// The tree, with nothing modal on top of it.
+    Browsing,
+}
+
 struct AuthRequest {
     program: String,
     args: Vec<String>,
@@ -106,16 +139,13 @@ pub struct App {
     host: HostFacts,
     backend: Box<dyn Backend>,
     executor: Box<dyn Executor>,
-    /// The whole tree, owned so that levels can be borrowed from it.
-    tree: Vec<Node>,
-    /// Indices from the root to the category on screen; empty means the root.
+    /// Where the operator is in the tree, and which row is under the cursor.
     ///
-    /// Positions rather than titles, so nothing breaks if two categories in
-    /// different branches share a name.
-    path: Vec<usize>,
-    /// Cursor position of each level left behind, restored on the way back.
-    cursor_stack: Vec<usize>,
-    list_state: ListState,
+    /// Its own type because it depends on nothing else here — no executor, no
+    /// backend, no terminal — and because the two stacks inside it have to
+    /// move together. Keeping them in one place means the only code that can
+    /// desynchronise them is the code whose job they are.
+    cursor: TreeCursor,
     /// Which pane the movement keys currently address.
     focus: Pane,
     output: OutputPane,
@@ -145,6 +175,17 @@ pub struct App {
     running: Option<Running>,
     /// An applied change waiting to be kept or put back.
     verification: Option<Verification>,
+    /// The open search, while one is being typed.
+    ///
+    /// Semi-modal like the verification window rather than fully modal like a
+    /// form: it takes the keyboard, but the pane beside it keeps rendering, so
+    /// a task's output stays readable while looking for the next one to run.
+    search: Option<Search>,
+    /// Raised when the session this interface runs in is going away.
+    ///
+    /// Default in tests and where registration was declined: a flag nothing
+    /// ever raises simply never fires, which is the behaviour that preceded it.
+    hangup: Hangup,
     /// How far the help overlay is scrolled, while it is showing.
     ///
     /// `None` means it is closed: the overlay has no state worth keeping
@@ -177,10 +218,7 @@ impl App {
             backend,
             executor: Box::new(executor),
             pending_auth: None,
-            tree: tasks::tree(),
-            path: Vec::new(),
-            cursor_stack: Vec::new(),
-            list_state,
+            cursor: TreeCursor::new(tasks::tree()),
             // The tree is where a session starts: nothing has run yet, so
             // there is no output to read.
             focus: Pane::Tree,
@@ -193,46 +231,107 @@ impl App {
             verification: None,
             help: None,
             status: Status::new(),
+            search: None,
+            hangup: Hangup::default(),
             should_quit: false,
         }
     }
 
+    /// Gives the interface a flag raised when the session is going away.
+    ///
+    /// Separate from `new` so that a caller which could not register — and a
+    /// test, which has no session to lose — gets an interface that behaves
+    /// exactly as it did before, rather than one that must pretend.
+    #[must_use]
+    pub fn watching_for_hangup(mut self, hangup: Hangup) -> Self {
+        self.hangup = hangup;
+        self
+    }
+
+    /// What the interface is doing, as one answer rather than six flags.
+    ///
+    /// The modal state is held as six independent `Option`s, which between them
+    /// can represent far more combinations than are reachable — a form open
+    /// while a task runs, a countdown beside a confirmation. None of those
+    /// happen, because the transitions never build them; but *nothing in the
+    /// type says so*, and four separate places used to decide which one wins by
+    /// testing the same fields in their own order.
+    ///
+    /// They had already drifted. `dispatch` refused a key to everything below
+    /// `running`, while `pill` asked about `confirm` first and would have named
+    /// a dialog during a task; `render` drew `confirm` and `form` with
+    /// independent `if`s, so both would appear at once if both existed. No bug
+    /// today, since the states cannot arise — but the correctness rested on
+    /// four readings agreeing, and two of them no longer did.
+    ///
+    /// So precedence is stated once, here, and everything else matches on the
+    /// answer. Deriving it rather than replacing the fields keeps the change
+    /// to what it is worth: an `enum` holding the payloads would touch every
+    /// site that reads or sets one, for the same guarantee this already gives
+    /// the four readers that matter.
+    fn mode(&self) -> Mode<'_> {
+        // Help sits above everything: it is asked for from wherever the
+        // operator is stuck, including on top of a dialog.
+        if self.help.is_some() {
+            return Mode::Help;
+        }
+
+        self.mode_under_help()
+    }
+
+    /// The mode ignoring the help overlay, for the renderer.
+    ///
+    /// Help draws *over* another state rather than instead of it, so what it
+    /// was opened on top of still has to be painted underneath. Every other
+    /// caller wants [`Self::mode`], which reports the state that owns the
+    /// keyboard.
+    fn mode_under_help(&self) -> Mode<'_> {
+        // Then the two that refuse to start anything new, running first: a
+        // task in flight outranks a window over a change already applied.
+        if self.running.is_some() {
+            return Mode::Running;
+        }
+
+        if self.verification.is_some() {
+            return Mode::Verifying;
+        }
+
+        // Then the ways of starting something, innermost first. Search opens
+        // over the tree and a form opens over what search found, so a form
+        // takes the keyboard from the search that led to it.
+        if self.form.is_some() {
+            return Mode::Filling;
+        }
+
+        if let Some(ref confirm) = self.confirm {
+            return Mode::Confirming(confirm);
+        }
+
+        if let Some(ref search) = self.search {
+            return Mode::Searching(search);
+        }
+
+        Mode::Browsing
+    }
+
     /// The nodes of the level currently on screen.
     fn current_level(&self) -> &[Node] {
-        level_at(&self.tree, &self.path)
+        self.cursor.current_level()
     }
 
     /// The node under the cursor, if any.
     fn selected_node(&self) -> Option<&Node> {
-        self.current_level().get(self.list_state.selected()?)
+        self.cursor.selected_node()
     }
 
     /// Titles from the root to the level on screen, for the breadcrumb.
     fn breadcrumb(&self) -> String {
-        let mut nodes = self.tree.as_slice();
-        let mut titles = Vec::new();
-
-        for &index in &self.path {
-            let Some(Node::Category(category)) = nodes.get(index) else {
-                break;
-            };
-
-            titles.push(category.title);
-            nodes = category.children.as_slice();
-        }
-
-        if titles.is_empty() {
-            "Tasks".to_owned()
-        } else {
-            titles.join(" › ")
-        }
+        self.cursor.breadcrumb()
     }
 
     /// Descends into the category under the cursor.
     fn enter_category(&mut self, index: usize) {
-        self.cursor_stack.push(index);
-        self.path.push(index);
-        self.list_state.select(Some(0));
+        self.cursor.enter_category(index);
         self.status.set(State::Ready, "");
     }
 
@@ -240,23 +339,27 @@ impl App {
     ///
     /// At the root there is nowhere to go, so this reports rather than quits:
     /// `q` is the way out, and an `Esc` that sometimes exits the program would
-    /// make going back one level too far a destructive mistake.
+    /// make going back one level too far a destructive mistake. The cursor
+    /// answers whether it moved; phrasing the refusal is the interface's job.
     fn leave_category(&mut self) {
-        if self.path.pop().is_none() {
+        if !self.cursor.leave_category() {
             // A refusal, not a state: the tool is still ready, the key simply
             // had nowhere to go.
             self.status
                 .flash("already at the top level", Instant::now());
-            return;
         }
-
-        let restored = self.cursor_stack.pop().unwrap_or(0);
-        self.list_state.select(Some(restored));
     }
 
     /// Runs the event loop until the user quits.
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
         while !self.should_quit {
+            // First of all: a session that is ending takes the interface with
+            // it, so anything still owed to the operator is owed now.
+            if self.hangup.received() {
+                self.resolve_on_hangup();
+                break;
+            }
+
             // Both before drawing: output that has arrived should appear in
             // this frame, and an expired window should never be shown with a
             // countdown that has already run out.
@@ -320,44 +423,47 @@ impl App {
     /// `Some` means the key was the one that starts the work; everything else
     /// is resolved in place.
     fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
-        if self.help.is_some() {
-            self.on_help_key(key);
-            return None;
-        }
+        // The one place precedence is decided is `mode`; this only says what
+        // each state does with a key. A state added there fails to compile
+        // here until it is answered for, which is the point of deriving it.
+        match self.mode() {
+            Mode::Help => {
+                self.on_help_key(key);
+                None
+            }
+            // While a task runs the interface stays open — scrolling,
+            // switching panes and reading all work — but nothing new may be
+            // started and nothing may be answered. Only one task at a time,
+            // and the keys that would start another are refused rather than
+            // queued.
+            Mode::Running => {
+                self.on_running_key(key);
+                None
+            }
+            // Semi-modal: reading is never blocked while a change is
+            // unverified, but nothing new may be started until it is settled.
+            Mode::Verifying => {
+                self.on_verify_key(key);
+                None
+            }
+            Mode::Filling => self.on_form_key(key),
+            Mode::Confirming(_) => self.on_confirm_key(key),
+            Mode::Searching(_) => {
+                self.on_search_key(key);
+                None
+            }
+            Mode::Browsing => {
+                if self.on_navigation_key(key) {
+                    return None;
+                }
 
-        // While a task runs the interface stays open — scrolling, switching
-        // panes and reading all work — but nothing new may be started and
-        // nothing may be answered. Only one task at a time, and the keys that
-        // would start another are refused rather than queued.
-        if self.running.is_some() {
-            self.on_running_key(key);
-            return None;
-        }
+                if key.code == KeyCode::Enter && self.focus == Pane::Tree {
+                    return self.activate();
+                }
 
-        // Semi-modal: reading is never blocked while a change is unverified,
-        // but nothing new may be started until this one is settled.
-        if self.verification.is_some() {
-            self.on_verify_key(key);
-            return None;
+                None
+            }
         }
-
-        if self.form.is_some() {
-            return self.on_form_key(key);
-        }
-
-        if self.confirm.is_some() {
-            return self.on_confirm_key(key);
-        }
-
-        if self.on_navigation_key(key) {
-            return None;
-        }
-
-        if key.code == KeyCode::Enter && self.focus == Pane::Tree {
-            return self.activate();
-        }
-
-        None
     }
 
     /// Handles the keys that only move around, reporting whether one matched.
@@ -378,6 +484,13 @@ impl App {
             // list is the moment they do not know which key to press.
             KeyCode::Char('?') => {
                 self.help = Some(0);
+                return true;
+            }
+            // Twenty-eight tasks across six areas is past what anybody keeps a
+            // map of, and drilling down one level at a time answers "what is
+            // in here" rather than "where is it".
+            KeyCode::Char('/') => {
+                self.search = Some(Search::new(self.cursor.tree()));
                 return true;
             }
             // The only focus key. Overloading a movement key with focus is how
@@ -533,6 +646,24 @@ impl App {
         }
     }
 
+    /// Puts an unconfirmed change back because the session is ending.
+    ///
+    /// This is the case the verification window exists for rather than an edge
+    /// of it: `ssh.harden` and its neighbours can sever the very session that
+    /// would confirm them, and the daemon answers a dropped connection with
+    /// `SIGHUP`. Without this the countdown dies with the process and the
+    /// configuration that locked the administrator out is the one left behind
+    /// — the interface having promised on screen that silence puts it back.
+    ///
+    /// Silence is still what decides. Losing the session is not confirmation,
+    /// so the change goes back for the same reason a lapsed window does, and
+    /// the operator finds the machine as they left it.
+    fn resolve_on_hangup(&mut self) {
+        if self.verification.is_some() {
+            self.revert_change("the session ended");
+        }
+    }
+
     /// Puts the change back if its window has run out.
     ///
     /// Called from the event loop rather than driven by a key, because the
@@ -546,6 +677,55 @@ impl App {
         if expired {
             self.revert_change("no confirmation");
         }
+    }
+
+    /// Handles a key press while the search is open.
+    ///
+    /// Every printable character is literal, as in a form: a query naming a
+    /// task id contains `.` and `-`, and a `/` typed a second time belongs in
+    /// the query rather than reopening what is already open.
+    fn on_search_key(&mut self, key: KeyEvent) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.search = None;
+                self.status.set(State::Ready, "");
+            }
+            KeyCode::Enter => self.jump_to_selected_match(),
+            KeyCode::Down => search.select_next(),
+            KeyCode::Up => search.select_previous(),
+            // Closing on a backspace that has nothing left to delete: the
+            // query is empty, so the operator is undoing having opened it.
+            KeyCode::Backspace if !search.backspace(self.cursor.tree()) => {
+                self.search = None;
+                self.status.set(State::Ready, "");
+            }
+            KeyCode::Backspace => {}
+            KeyCode::Char(character) => search.push(character, self.cursor.tree()),
+            _ => {}
+        }
+    }
+
+    /// Moves the tree cursor onto the selected match and closes the search.
+    ///
+    /// Navigates rather than running. The task under the cursor is then
+    /// started with `Enter` like any other, so a search result goes through
+    /// the same confirmation and the same parameter form — a path that skipped
+    /// either would make a mistyped query the most dangerous key in the
+    /// interface.
+    fn jump_to_selected_match(&mut self) {
+        let Some(found) = self.search.as_ref().and_then(Search::selected_match) else {
+            return;
+        };
+
+        self.cursor
+            .jump_to(&found.location.path, found.location.index);
+        self.focus = Pane::Tree;
+        self.search = None;
+        self.status.set(State::Ready, "");
     }
 
     /// Handles a key press while the parameter form is open.
@@ -700,7 +880,7 @@ impl App {
 
     /// Acts on the selected row: descends into a category, or runs a task.
     fn activate(&mut self) -> Option<ParamValues> {
-        let index = self.list_state.selected()?;
+        let index = self.cursor.selected()?;
 
         if let Some(Node::Category(_)) = self.current_level().get(index) {
             self.enter_category(index);
@@ -896,15 +1076,28 @@ impl App {
     /// Success and failure are pills of their own, so the outcome is legible
     /// from the left edge without reading the message beside it.
     fn finish_run(&mut self, id: &str, outcome: Result<Outcome>, cancelled: bool) {
-        // Cancellation is reported only once the task has actually stopped,
-        // and it says which steps ran. A tool that claims to have stopped
-        // before it has is how half-configured servers happen.
-        if cancelled {
+        // Cancellation is reported from what the task actually did, not from
+        // the operator having asked: the request arrives between two commands,
+        // and a task already on its last one runs to completion. Reporting the
+        // intent would claim a stop that never happened, which is how a server
+        // gets called half-configured when it is fully configured — and the
+        // reverse, on the next run.
+        if let Err(Error::Cancelled { ref before }) = outcome {
             self.status.set(
                 State::Cancelled,
-                format!("{id} — stopped after the last step"),
+                format!("{id} — stopped before `{before}`"),
             );
             return;
+        }
+
+        // Asked to stop, but the task finished first. Reported as whatever it
+        // actually was, with the near miss said out loud rather than silently
+        // dropped: the operator pressed a key and is owed an answer.
+        if cancelled {
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: "the task finished before it could be stopped".to_owned(),
+            });
         }
 
         // A change that can sever this session is not reported as done: it is
@@ -924,7 +1117,20 @@ impl App {
                     Outcome::Done => self.status.set(State::Done, id),
                 }
             }
-            Err(ref err) => self.status.set(State::Failed, format!("{id} — {err}")),
+            Err(ref err) => {
+                // Into the pane as well as the status row. The row is one
+                // line and is not truncated with an ellipsis, so a package
+                // manager's stderr arriving through `CommandFailed` was cut
+                // mid-sentence with no way to see the rest — and the pane is
+                // the part an administrator can scroll and paste into a bug
+                // report. The row keeps the summary so the outcome is legible
+                // from the left edge without reading the pane.
+                self.output.push(OutputLine {
+                    stream: Stream::Stderr,
+                    text: Lang::from_env().render(&err.to_msg()),
+                });
+                self.status.set(State::Failed, format!("{id} — failed"));
+            }
         }
     }
 
@@ -939,7 +1145,7 @@ impl App {
             return;
         };
 
-        let consequences = task.consequences(&self.ran_with);
+        let consequences = task.consequences(self.backend.as_ref(), &self.ran_with);
 
         if consequences.is_empty() {
             return;
@@ -1019,10 +1225,7 @@ impl App {
 
     /// The task currently under the cursor, if the cursor is on one.
     fn selected_task(&self) -> Option<&dyn Task> {
-        match self.selected_node()? {
-            Node::Task(task) => Some(task.as_ref()),
-            Node::Category(_) => None,
-        }
+        self.cursor.selected_task()
     }
 
     /// Moves the cursor down one row.
@@ -1030,29 +1233,22 @@ impl App {
     /// Every row of a level is selectable now that categories are entered
     /// rather than skipped over.
     fn select_next(&mut self) {
-        let last = self.current_level().len().saturating_sub(1);
-        let current = self.list_state.selected().unwrap_or(0);
-
-        self.list_state
-            .select(Some(current.saturating_add(1).min(last)));
+        self.cursor.select_next();
     }
 
     /// Moves the cursor up one row.
     fn select_previous(&mut self) {
-        let current = self.list_state.selected().unwrap_or(0);
-
-        self.list_state.select(Some(current.saturating_sub(1)));
+        self.cursor.select_previous();
     }
 
     /// Moves the cursor to the first row of the level.
     fn select_first(&mut self) {
-        self.list_state.select(Some(0));
+        self.cursor.select_first();
     }
 
     /// Moves the cursor to the last row of the level.
     fn select_last(&mut self) {
-        self.list_state
-            .select(Some(self.current_level().len().saturating_sub(1)));
+        self.cursor.select_last();
     }
 
     /// Draws the whole interface.
@@ -1078,16 +1274,40 @@ impl App {
 
         // Dialogs draw last, over everything: they are modal, and content
         // showing through one would misrepresent what the keys now do.
-        if let Some(ref confirm) = self.confirm {
-            confirm.render(frame);
+        //
+        // One dialog, chosen by the same precedence the keys follow. These
+        // used to be independent `if`s, which would have drawn a confirmation
+        // and a form on top of each other had both ever existed — and the key
+        // that answered would have gone to only one of them.
+        //
+        // `Filling` is handled outside the match because `Form::render` needs
+        // `&mut self` for its scroll state, which `mode` cannot lend.
+        // One dialog, chosen by the same precedence the keys follow. These
+        // were independent `if`s, which would have drawn a confirmation and a
+        // form on top of each other had both ever existed, while the key
+        // answering went to only one of them.
+        //
+        // `mode_under_help` rather than `mode`, because help is the one state
+        // that draws *over* another rather than instead of it: what it was
+        // opened on top of still has to be underneath.
+        match self.mode_under_help() {
+            Mode::Confirming(confirm) => confirm.render(frame),
+            Mode::Searching(search) => search::render(frame, search),
+            // Asked again below rather than borrowed here: `Form::render`
+            // needs `&mut self` for its scroll state, which `mode` cannot
+            // lend while it is borrowing the rest of `App`.
+            Mode::Filling => {
+                if let Some(ref mut form) = self.form {
+                    form.render(frame);
+                }
+            }
+            // None of these draws a dialog: the countdown is a banner inside
+            // the body, and a running task is the pane itself.
+            Mode::Help | Mode::Running | Mode::Verifying | Mode::Browsing => {}
         }
 
-        if let Some(ref mut form) = self.form {
-            form.render(frame);
-        }
-
-        // Last of all: help is asked for from wherever the operator is stuck,
-        // including on top of a dialog.
+        // Last of all, over whatever the operator was looking at when they
+        // asked for it.
         if let Some(scroll) = self.help {
             help::render(frame, scroll);
         }
@@ -1206,7 +1426,7 @@ impl App {
                 style::SELECTION_UNFOCUSED
             });
 
-        frame.render_stateful_widget(list, tree_area, &mut self.list_state);
+        frame.render_stateful_widget(list, tree_area, self.cursor.list_state());
         self.render_tree_scrollbar(frame, tree_area);
     }
 
@@ -1244,7 +1464,7 @@ impl App {
         }
 
         let mut state =
-            ScrollbarState::new(rows.saturating_sub(viewport)).position(self.list_state.offset());
+            ScrollbarState::new(rows.saturating_sub(viewport)).position(self.cursor.offset());
 
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -1261,7 +1481,20 @@ impl App {
     /// rather than leaving the pane blank.
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
         let description = match self.selected_node() {
-            Some(Node::Task(task)) => task.description().to_owned(),
+            // A task that cannot run here says why, under what it would have
+            // done. The tree already dims the row and the pill already reads
+            // UNSUPPORTED — both of which state *that* it is refused and
+            // neither of which states why, leaving the operator to guess
+            // whether it is a missing package, a policy, or a bug. The reasons
+            // were measured; this is where they were always meant to be read.
+            Some(Node::Task(task)) => match task.unsupported_reason(self.distro.family) {
+                Some(reason) => format!(
+                    "{}\n\nNot available on {}: {reason}.",
+                    task.description(),
+                    self.distro.family
+                ),
+                None => task.description().to_owned(),
+            },
             Some(Node::Category(category)) => {
                 let count = category.task_count();
                 let plural = if count == 1 { "task" } else { "tasks" };
@@ -1360,17 +1593,19 @@ impl App {
     /// does: a destructive task collects its parameters first and confirms
     /// after, so once both are open the confirmation is the live question.
     fn pill(&self) -> State {
-        if self.confirm.is_some() {
-            return State::Confirm;
-        }
-
-        if self.form.is_some() {
-            return State::Input;
-        }
-
-        match self.selected_node() {
-            Some(Node::Task(task)) if !task.supports(self.distro.family) => State::Unsupported,
-            _ => self.status.state(),
+        match self.mode() {
+            // These three carry their own pill through `status`, set when the
+            // state was entered: `Busy` while a task runs, `Verify` while a
+            // change is unsettled. Asking here would duplicate that.
+            Mode::Help | Mode::Running | Mode::Verifying => self.status.state(),
+            Mode::Confirming(_) => State::Confirm,
+            Mode::Filling => State::Input,
+            // Search names no pill of its own: it changes what the keys do,
+            // not what the interface is in the middle of.
+            Mode::Searching(_) | Mode::Browsing => match self.selected_node() {
+                Some(Node::Task(task)) if !task.supports(self.distro.family) => State::Unsupported,
+                _ => self.status.state(),
+            },
         }
     }
 
@@ -1384,10 +1619,12 @@ impl App {
             _ => "run",
         };
 
-        let mut keys = vec![("↑↓", "move"), ("Enter", enter_hint)];
+        // Search is offered from the tree and nowhere else: it exists to reach
+        // a task, and the pane holds no tasks to reach.
+        let mut keys = vec![("↑↓", "move"), ("Enter", enter_hint), ("/", "find")];
 
         // Going back is only offered where there is somewhere to go back to.
-        if !self.path.is_empty() {
+        if !self.cursor.at_root() {
             keys.push(("Esc", "back"));
         }
 
@@ -1407,31 +1644,40 @@ impl App {
     fn render_key_bar(&self, frame: &mut Frame, area: Rect) {
         // While a change is unverified the tree keys are refused, so offering
         // them would advertise actions the state does not allow.
-        let mut keys = match self.focus {
-            // Only the keys the state actually accepts. Offering "Enter run"
-            // while a task is running would name an action that is refused.
-            _ if self.running.is_some() => vec![
+        // Only the keys the state actually accepts. Offering "Enter run" while
+        // a task is running would name an action that is refused — so this
+        // asks the same `mode` the dispatcher does, rather than re-deriving
+        // which state wins and drifting from it.
+        let mut keys = match self.mode() {
+            Mode::Running => vec![
                 ("Ctrl-C", "stop"),
                 ("↑↓", "scroll"),
                 ("w", "wrap"),
                 ("?", "keys"),
             ],
-            _ if self.verification.is_some() => {
-                vec![("K", "keep"), ("R", "revert"), ("↑↓", "scroll")]
-            }
-            Pane::Tree => self.tree_keys(),
-            Pane::Output => vec![
-                ("↑↓", "scroll"),
-                ("G", "follow"),
-                ("w", "wrap"),
-                ("Tab", "tree"),
-            ],
+            Mode::Verifying => vec![("K", "keep"), ("R", "revert"), ("↑↓", "scroll")],
+            Mode::Searching(_) => vec![("↑↓", "move"), ("Enter", "go"), ("Esc", "close")],
+            // Both draw their own keys inside the dialog, where the operator
+            // is already looking; repeating them along the bottom would be
+            // the same hint twice.
+            Mode::Filling | Mode::Confirming(_) => Vec::new(),
+            // The overlay states its own keys, and it covers this row anyway.
+            Mode::Help => Vec::new(),
+            Mode::Browsing => match self.focus {
+                Pane::Tree => self.tree_keys(),
+                Pane::Output => vec![
+                    ("↑↓", "scroll"),
+                    ("G", "follow"),
+                    ("w", "wrap"),
+                    ("Tab", "tree"),
+                ],
+            },
         };
 
         // Quitting is refused while work is outstanding: mid-task it would
         // leave a server half-configured, and mid-verification it would
         // abandon a change with nobody left to put it back.
-        if self.verification.is_none() && self.running.is_none() {
+        if !matches!(self.mode(), Mode::Running | Mode::Verifying) {
             keys.push(("q", "quit"));
         }
 
@@ -1471,6 +1717,16 @@ fn render_verification(frame: &mut Frame, area: Rect, window: &Verification) {
         // the one thing the administrator must do is stated outright.
         Line::styled("Open a second session and check you", style::EMPHASIS),
         Line::styled("can still log in.", style::EMPHASIS),
+        // What the countdown depends on, said rather than implied. A dropped
+        // connection and an ordinary kill both revert, because the signals are
+        // caught; a `SIGKILL` or a machine losing power run no code at all, so
+        // the change would stay. Stating the limit is what makes the sentence
+        // above trustworthy — a promise with a silent exception teaches people
+        // to disbelieve the whole banner.
+        Line::styled(
+            "Reverts while this session lives.",
+            style::CONSEQUENCE_EXTERNAL,
+        ),
     ];
 
     frame.render_widget(
@@ -1614,24 +1870,6 @@ fn render_too_small(frame: &mut Frame) {
     );
 }
 
-/// The nodes reached by following `path` from the root of `tree`.
-///
-/// A path only ever grows by descending into a category, so a step that lands
-/// on anything else cannot happen; it returns the level reached so far rather
-/// than panicking, because a logic error must not take the interface down.
-fn level_at<'a>(tree: &'a [Node], path: &[usize]) -> &'a [Node] {
-    let mut nodes = tree;
-
-    for &index in path {
-        match nodes.get(index) {
-            Some(Node::Category(category)) => nodes = category.children.as_slice(),
-            _ => return nodes,
-        }
-    }
-
-    nodes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1678,7 +1916,7 @@ mod tests {
             .position(|node| matches!(node, Node::Category(c) if c.title == title))
             .unwrap_or_else(|| panic!("the level must contain {title}"));
 
-        app.list_state.select(Some(index));
+        app.cursor.list_state().select(Some(index));
         app.enter_category(index);
     }
 
@@ -1690,7 +1928,7 @@ mod tests {
             .position(|node| matches!(node, Node::Category(_)))
             .expect("the level must contain a category");
 
-        app.list_state.select(Some(index));
+        app.cursor.list_state().select(Some(index));
         app.enter_category(index);
     }
 
@@ -1698,8 +1936,8 @@ mod tests {
     fn starts_at_the_root_level_with_a_row_selected() {
         let app = test_app(Family::Debian);
 
-        assert!(app.path.is_empty(), "navigation must start at the root");
-        assert_eq!(app.list_state.selected(), Some(0));
+        assert!(app.cursor.at_root(), "navigation must start at the root");
+        assert_eq!(app.cursor.selected(), Some(0));
     }
 
     #[test]
@@ -1721,7 +1959,7 @@ mod tests {
         enter_first_category(&mut app);
 
         assert_eq!(app.current_level().len(), expected);
-        assert_eq!(app.path, vec![0]);
+        assert_eq!(app.cursor.path(), vec![0]);
     }
 
     #[test]
@@ -1730,15 +1968,15 @@ mod tests {
 
         // Move off the first row so the restored cursor is distinguishable.
         app.select_next();
-        let before = app.list_state.selected().expect("a row must be selected");
+        let before = app.cursor.selected().expect("a row must be selected");
         let index = before;
         app.enter_category(index);
 
         app.leave_category();
 
-        assert!(app.path.is_empty(), "the root must be restored");
+        assert!(app.cursor.at_root(), "the root must be restored");
         assert_eq!(
-            app.list_state.selected(),
+            app.cursor.selected(),
             Some(before),
             "the cursor must return to the row that was entered"
         );
@@ -1750,7 +1988,7 @@ mod tests {
 
         app.leave_category();
 
-        assert!(app.path.is_empty());
+        assert!(app.cursor.at_root());
         assert!(
             !app.should_quit,
             "Esc at the root must not exit the program"
@@ -1763,7 +2001,7 @@ mod tests {
 
         enter_first_category(&mut app);
 
-        let selected = app.list_state.selected().expect("a row must be selected");
+        let selected = app.cursor.selected().expect("a row must be selected");
         assert!(
             selected < app.current_level().len(),
             "the cursor must point inside the new level"
@@ -1778,12 +2016,12 @@ mod tests {
         for _ in 0..100 {
             app.select_next();
         }
-        let last = app.list_state.selected().expect("selection must persist");
+        let last = app.cursor.selected().expect("selection must persist");
 
         for _ in 0..100 {
             app.select_previous();
         }
-        let first = app.list_state.selected().expect("selection must persist");
+        let first = app.cursor.selected().expect("selection must persist");
 
         assert_eq!(first, 0);
         assert_eq!(last, app.current_level().len() - 1);
@@ -1797,7 +2035,7 @@ mod tests {
         enter_first_category(&mut app);
 
         for expected in 0..app.current_level().len() {
-            assert_eq!(app.list_state.selected(), Some(expected));
+            assert_eq!(app.cursor.selected(), Some(expected));
             app.select_next();
         }
     }
@@ -1891,13 +2129,13 @@ mod tests {
             });
         }
 
-        let before = app.list_state.selected();
+        let before = app.cursor.selected();
 
         app.focus = Pane::Output;
         press(&mut app, KeyCode::Char('k'));
 
         assert_eq!(
-            app.list_state.selected(),
+            app.cursor.selected(),
             before,
             "the tree cursor must not move while the output has focus"
         );
@@ -1975,7 +2213,7 @@ mod tests {
             }
 
             for index in 0..app.current_level().len() {
-                app.list_state.select(Some(index));
+                app.cursor.list_state().select(Some(index));
 
                 match app.current_level().get(index) {
                     Some(Node::Task(task)) if task.id() == id => return true,
@@ -2207,6 +2445,65 @@ mod tests {
     }
 
     #[test]
+    fn losing_the_session_puts_an_unconfirmed_change_back() {
+        // The case the window exists for, and the one it used to miss. The
+        // countdown lived only in this process, so an `ssh.harden` that severed
+        // the administrator's own connection took the interface down with it —
+        // and the configuration that locked them out was the one left in place,
+        // the screen having promised that silence would restore it.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        app.hangup.raise();
+        app.resolve_on_hangup();
+
+        assert!(
+            app.verification.is_none(),
+            "a change nobody confirmed must go back when the session ends"
+        );
+        assert!(
+            app.status
+                .message(Instant::now())
+                .contains("the session ended"),
+            "the report must say why it went back: {:?}",
+            app.status.message(Instant::now())
+        );
+    }
+
+    #[test]
+    fn losing_the_session_with_nothing_pending_reverts_nothing() {
+        // The other direction: a hangup is not itself a reason to undo work,
+        // only a reason to stop waiting for a confirmation that cannot arrive.
+        let mut app = test_app(Family::Debian);
+
+        app.hangup.raise();
+        app.resolve_on_hangup();
+
+        assert_eq!(app.status.state(), State::Ready);
+    }
+
+    #[test]
+    fn a_kept_change_survives_the_session_ending() {
+        // Keeping is a confirmation, so it closes the window outright. Nothing
+        // is left for a hangup to put back, and a later signal must not undo a
+        // change the administrator explicitly accepted.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        press(&mut app, KeyCode::Char('K'));
+        assert!(app.verification.is_none(), "keeping must close the window");
+
+        app.hangup.raise();
+        app.resolve_on_hangup();
+
+        assert_ne!(
+            app.status.state(),
+            State::Failed,
+            "a kept change must not be reverted by a later hangup"
+        );
+    }
+
+    #[test]
     fn nothing_new_can_be_started_while_a_change_is_unverified() {
         // One unsettled change at a time: starting another would leave two
         // reverts outstanding with no way to say which is which.
@@ -2398,7 +2695,7 @@ mod tests {
         // would otherwise redirect the walk somewhere with a different shape.
         enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
-        app.list_state.select(Some(1));
+        app.cursor.list_state().select(Some(1));
         app.enter_category(1);
 
         println!();
@@ -2582,7 +2879,7 @@ mod tests {
         let mut app = test_app(Family::Debian);
         enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
-        app.list_state.select(Some(1));
+        app.cursor.list_state().select(Some(1));
         app.enter_category(1);
 
         let rows = render_to_rows(&mut app, 80, 24);
@@ -2681,7 +2978,7 @@ mod tests {
         enter_first_category(&mut app);
         enter_first_category(&mut app);
         // Remote Access > SSH > Configuration holds the destructive tasks.
-        app.list_state.select(Some(1));
+        app.cursor.list_state().select(Some(1));
         app.enter_category(1);
 
         let rows = render_to_rows(&mut app, 80, 24);
@@ -2947,18 +3244,268 @@ mod tests {
     #[test]
     fn a_cancelled_task_reports_where_it_stopped() {
         // A tool that says only "cancelled" leaves the operator guessing what
-        // ran and what did not.
+        // ran and what did not, so the command it stopped before is named.
         let mut app = test_app(Family::Debian);
 
-        app.finish_run("ssh.install", Ok(Outcome::Done), true);
+        app.finish_run(
+            "ssh.install",
+            Err(Error::Cancelled {
+                before: "systemctl restart ssh.service".to_owned(),
+            }),
+            true,
+        );
 
         assert_eq!(app.status.state(), State::Cancelled);
         assert!(
             app.status
                 .message(Instant::now())
-                .contains("after the last step"),
+                .contains("systemctl restart ssh.service"),
             "got {:?}",
             app.status.message(Instant::now())
+        );
+    }
+
+    /// Types a query into an open search, one key at a time.
+    fn type_query(app: &mut App, query: &str) {
+        for character in query.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn one_state_owns_the_keyboard_even_when_several_are_set() {
+        // The states below cannot arise together through any transition — but
+        // nothing in the type says so, and four places used to decide which
+        // one wins by testing the same fields in their own order. Two had
+        // already drifted: `pill` asked about `confirm` before `running`, and
+        // `render` drew `confirm` and `form` with independent `if`s.
+        //
+        // Setting them by hand is the only way to ask what the readers would
+        // do if they ever disagreed. They now all read `mode`, so the answer
+        // is one answer.
+        let mut app = test_app(Family::Debian);
+
+        app.confirm = Some(Confirm::new("Harden", "dangerous"));
+        app.form = Some(Form::new(
+            "Change the port",
+            vec![crate::tasks::params::Param::new(
+                "port",
+                "Port",
+                crate::tasks::params::ParamKind::Port,
+            )],
+        ));
+
+        assert!(
+            matches!(app.mode(), Mode::Filling),
+            "a form outranks the confirmation it was opened from"
+        );
+
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        assert!(
+            matches!(app.mode(), Mode::Running),
+            "a running task outranks every way of starting another"
+        );
+
+        app.help = Some(0);
+
+        assert!(
+            matches!(app.mode(), Mode::Help),
+            "help is asked for from wherever the operator is stuck"
+        );
+        assert!(
+            matches!(app.mode_under_help(), Mode::Running),
+            "and the state underneath still has to be drawn"
+        );
+    }
+
+    #[test]
+    fn the_key_bar_names_only_what_the_current_state_accepts() {
+        // The bar is derived from the same `mode` the dispatcher routes on, so
+        // it cannot advertise a key the state would refuse. `q` is the one
+        // worth pinning: it is refused while work is outstanding, and a bar
+        // offering it there names the one action that cannot be taken.
+        let mut app = test_app(Family::Debian);
+
+        assert!(
+            rendered_keys(&mut app).contains("q"),
+            "browsing may be quit: {:?}",
+            rendered_keys(&mut app)
+        );
+
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        let keys = rendered_keys(&mut app);
+
+        assert!(!keys.contains(" q "), "a running task refuses q: {keys:?}");
+        assert!(keys.contains("Ctrl-C"), "and offers the way out: {keys:?}");
+    }
+
+    /// The key bar as one string, for asserting what it offers.
+    ///
+    /// Drawn through the whole interface rather than in isolation, since the
+    /// bar is one of the things a narrow terminal drops and asserting on it
+    /// out of context would not notice.
+    fn rendered_keys(app: &mut App) -> String {
+        render_to_rows(app, 100, 30).join("\n")
+    }
+
+    #[test]
+    fn search_jumps_the_cursor_to_the_task_it_found() {
+        // The point of searching: reaching a task without knowing which of the
+        // six areas holds it. A result that cannot be jumped to is a list.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "wireguard.install");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.search.is_none(), "jumping must close the search");
+        assert_eq!(
+            app.selected_task().map(Task::id),
+            Some("wireguard.install"),
+            "the cursor must land on the task, in its own level"
+        );
+    }
+
+    #[test]
+    fn a_search_result_is_reached_by_the_same_route_as_any_other_task() {
+        // Navigating rather than running: a jump that started the task would
+        // skip the confirmation and the parameter form, making a mistyped
+        // query the most dangerous key in the interface.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "wireguard.install");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.running.is_none(), "the jump must not start anything");
+        assert!(app.form.is_none(), "nor open the form on its own");
+
+        // And the breadcrumb reflects where the cursor actually is, so leaving
+        // the category goes somewhere that makes sense.
+        assert!(
+            app.breadcrumb().contains("WireGuard"),
+            "got {:?}",
+            app.breadcrumb()
+        );
+    }
+
+    #[test]
+    fn a_slash_typed_into_a_query_is_literal() {
+        // `/` opens search; inside one it is an ordinary character, and a task
+        // id could contain it. Reopening would discard what had been typed.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "ssh/");
+
+        let query = app.search.as_ref().map(Search::query);
+
+        assert_eq!(query, Some("ssh/"), "the slash belongs in the query");
+    }
+
+    #[test]
+    fn escape_closes_the_search_without_moving_the_cursor() {
+        let mut app = test_app(Family::Debian);
+        let before = app.cursor.selected();
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "wireguard");
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_none());
+        assert_eq!(
+            app.cursor.selected(),
+            before,
+            "abandoning a search must leave the cursor where it was"
+        );
+    }
+
+    #[test]
+    fn search_is_refused_while_a_task_is_running() {
+        // Only one task at a time, so the keys that would start another are
+        // refused rather than queued — search exists to start one.
+        let mut app = test_app(Family::Debian);
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        press(&mut app, KeyCode::Char('/'));
+
+        assert!(app.search.is_none(), "a running task must refuse search");
+    }
+
+    #[test]
+    fn a_failure_is_readable_in_the_pane_rather_than_only_in_the_status_row() {
+        // The status row is one line and is not truncated with an ellipsis, so
+        // a package manager's stderr arriving through `CommandFailed` was cut
+        // mid-sentence with nowhere to read the rest. The pane can be scrolled
+        // and pasted into a bug report; the row keeps the summary.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run(
+            "ssh.install",
+            Err(Error::CommandFailed {
+                command: "apt-get install -y openssh-server".to_owned(),
+                code: 100,
+                stderr: "E: Unable to locate package openssh-server".to_owned(),
+            }),
+            false,
+        );
+
+        assert_eq!(app.status.state(), State::Failed);
+        assert!(
+            app.output
+                .lines()
+                .iter()
+                .any(|line| line.text.contains("Unable to locate package")),
+            "the detail must be readable in the pane: {:?}",
+            app.output.lines()
+        );
+    }
+
+    #[test]
+    fn a_task_that_finished_before_stopping_is_not_called_cancelled() {
+        // The bug this guards: the interface used to report CANCELLED from the
+        // operator having *asked*, so a task that ran to completion was shown
+        // as stopped. Acting on that belief is how a change gets applied twice.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run("ssh.install", Ok(Outcome::Done), true);
+
+        assert_eq!(
+            app.status.state(),
+            State::Done,
+            "a task that finished must be reported as done, not cancelled"
+        );
+    }
+
+    #[test]
+    fn a_near_miss_is_said_out_loud_rather_than_dropped() {
+        // The operator pressed a key and is owed an answer, even when the task
+        // beat them to the finish.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run("ssh.install", Ok(Outcome::Done), true);
+
+        assert!(
+            app.output
+                .lines()
+                .iter()
+                .any(|line| line.text.contains("finished before it could be stopped")),
+            "got {:?}",
+            app.output.lines()
         );
     }
 
@@ -3149,19 +3696,66 @@ mod tests {
     #[test]
     fn an_unsupported_task_says_so_in_the_status_pill() {
         // The pill is the one place that always states what Enter would do.
-        let mut app = test_app(Family::Arch);
-        let arch_supports_everything = tasks::all_tasks()
-            .iter()
-            .all(|task| task.supports(Family::Arch));
+        // Driven onto a task that is genuinely refused rather than hoping the
+        // cursor lands on one: the old version returned early when the family
+        // supported everything, so it could pass having rendered nothing.
+        let mut app = test_app(Family::Rhel);
 
-        if arch_supports_everything {
-            // Nothing to assert on this tree yet; the branch exists so the
-            // test starts failing the day an Arch-unsupported task lands.
-            return;
-        }
+        jump_to_unsupported(&mut app, Family::Rhel);
 
         let rows = render_to_rows(&mut app, 80, 24);
-        assert!(rows[22].contains("READY") || rows[22].contains("UNSUPPORTED"));
+
+        assert!(
+            rows.iter().any(|row| row.contains("UNSUPPORTED")),
+            "the pill must name the refusal: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_task_explains_itself_rather_than_only_refusing() {
+        // The reason used to live in a test table, where the operator being
+        // told "unsupported" could never see it — while the comment above the
+        // tree claimed unsupported tasks stayed visible *with their reason*.
+        // Dimming a row says that it is refused; only this says why, which is
+        // the difference between a missing package, a policy, and a bug.
+        let mut app = test_app(Family::Rhel);
+
+        let expected = jump_to_unsupported(&mut app, Family::Rhel);
+        let rows = render_to_rows(&mut app, 100, 30).join(" ");
+
+        // The first few words, since the panel wraps and the reasons are long.
+        let opening: String = expected
+            .split_whitespace()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            rows.contains("Not available on"),
+            "the detail must say the task cannot run here: {rows}"
+        );
+        assert!(
+            rows.contains(&opening),
+            "and must carry the reason ({opening:?}): {rows}"
+        );
+    }
+
+    /// Puts the cursor on a task this family refuses, and returns the reason.
+    ///
+    /// Panics rather than skipping if every task is supported: a helper that
+    /// quietly did nothing would make both tests above pass on a tree where
+    /// they assert nothing.
+    fn jump_to_unsupported(app: &mut App, family: Family) -> &'static str {
+        let (location, reason) = tasks::located_tasks(&tasks::tree())
+            .into_iter()
+            .find_map(|(location, task)| {
+                task.unsupported_reason(family)
+                    .map(|reason| (location, reason))
+            })
+            .expect("some task must be unsupported on this family");
+
+        app.cursor.jump_to(&location.path, location.index);
+        reason
     }
 
     #[test]
