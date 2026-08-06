@@ -206,3 +206,342 @@ pub fn is_valid_public_key(line: &str) -> Result<()> {
 const fn is_base64_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::for_family;
+    use crate::distro::Family;
+    use crate::exec::mock::{MockExecutor, Reply};
+    use crate::tasks::ssh::fixtures::{ROOT_PASSWD, TEST_KEY};
+
+    /// The values `AuthorizeKey` declares, as the interface would collect them.
+    fn key_values(user: &str, key: &str) -> ParamValues {
+        let mut values = ParamValues::new();
+        values.set(AuthorizeKey::USER, user);
+        values.set(AuthorizeKey::KEY, key);
+        values
+    }
+
+    #[test]
+    fn accepts_well_formed_public_keys() {
+        for key_type in ["ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256"] {
+            let key = format!("{key_type} AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcH x");
+            assert!(
+                is_valid_public_key(&key).is_ok(),
+                "{key_type} must be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_public_keys() {
+        // A malformed key makes sshd ignore the entire authorized_keys file.
+        for bad in [
+            "",
+            "not-a-key-type AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcH",
+            "ssh-ed25519",
+            "ssh-ed25519 short",
+            "ssh-ed25519 has spaces and!invalid$chars@@@@@@@@@@@@@@@@@@@@",
+        ] {
+            assert!(
+                is_valid_public_key(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_key_smuggling_a_second_line() {
+        // `split_whitespace` treats a newline like any other separator, so a
+        // value carrying one reads as a single key while `authorized_keys`
+        // receives two entries — the second one nobody approved. The CLI hands
+        // its argument straight to this check, so it is the only barrier.
+        let smuggled = format!(
+            "{TEST_KEY}\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcH attacker"
+        );
+
+        assert!(
+            is_valid_public_key(&smuggled).is_err(),
+            "a value spanning two lines is two keys, not one"
+        );
+    }
+
+    #[test]
+    fn rejects_a_key_carrying_a_carriage_return() {
+        // sshd splits on \r as well, so it smuggles an entry the same way.
+        let smuggled = format!(
+            "{TEST_KEY}\rssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcH attacker"
+        );
+
+        assert!(is_valid_public_key(&smuggled).is_err());
+    }
+
+    #[test]
+    fn authorising_a_key_sets_the_permissions_sshd_requires() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::failure(1, ""),  // authorized_keys absent
+            Reply::ok(""),          // test -e inside write
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let commands = mock.recorded_lines();
+        assert!(
+            commands.iter().any(|c| c == "install -d -m 700 /root/.ssh"),
+            "~/.ssh must be 700: {commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| c == "chmod 600 /root/.ssh/authorized_keys"),
+            "authorized_keys must be 600: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_new_authorized_keys_is_restricted_before_it_holds_a_key() {
+        // The property, and the reason it is asserted on the order rather than
+        // on the final mode: `tee` creates a file with the shell's umask, so
+        // writing the key first leaves it world-readable until the chmod lands
+        // one privileged command later. A local account can read it in that
+        // window, or hold it open and influence which keys sshd honours. The
+        // fix is the one `wg0.conf` already carries — create empty, restrict,
+        // then write — and a test that only checks the mode at the end passes
+        // against both orders.
+        // Strict: the subject is the order, so a command appearing between the
+        // chmod and the write must fail this rather than answer success from
+        // nowhere.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::failure(1, ""),  // test -e: authorized_keys absent
+            Reply::ok(""),          // test -e, opening the empty write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee: create it empty
+            Reply::ok(""),          // chmod 600, before any key exists
+            Reply::ok(""),          // chown file
+            Reply::ok(""),          // test -e, opening the real write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee: the key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let commands = mock.recorded_lines();
+        let chmod = commands
+            .iter()
+            .position(|c| c == "chmod 600 /root/.ssh/authorized_keys")
+            .expect("the file must be restricted");
+        let wrote_key = mock
+            .recorded()
+            .iter()
+            .position(|c| {
+                c.program == "tee"
+                    && c.stdin
+                        .as_deref()
+                        .is_some_and(|data| data.contains(TEST_KEY))
+            })
+            .expect("the key must be written");
+
+        assert!(
+            chmod < wrote_key,
+            "the mode must be set before the key is written: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn an_existing_authorized_keys_keeps_the_keys_already_in_it() {
+        // The other direction of the same change: a file that already exists
+        // is appended to, never truncated first — the keys in it are other
+        // people's access.
+        const OTHER_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther other@host";
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(OTHER_KEY),   // holding somebody else's key
+            Reply::ok(""),          // test -e inside write
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let written = mock
+            .recorded()
+            .iter()
+            .find_map(|c| (c.program == "tee").then(|| c.stdin.clone()).flatten())
+            .expect("the file must be written");
+
+        assert!(written.contains(OTHER_KEY), "{written:?}");
+        assert!(written.contains(TEST_KEY), "{written:?}");
+    }
+
+    #[test]
+    fn a_key_is_written_where_passwd_says_the_home_is() {
+        // The bug: the path was built as `/home/<user>`, with `/root` as the
+        // one exception. That is a convention, not a rule — a relocated or
+        // system account has its home elsewhere — and a key written to a path
+        // sshd never reads grants nothing while reporting success. `ssh.harden`
+        // may then disable passwords for an account whose key did not land.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::ok("deploy:x:1001:1001::/srv/deploy:/bin/sh"),
+            Reply::ok(""),         // install -d
+            Reply::ok(""),         // chown dir
+            Reply::failure(1, ""), // test -e: authorized_keys absent
+            Reply::ok(""),         // test -e, opening the empty write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: create it empty
+            Reply::ok(""),         // chmod
+            Reply::ok(""),         // chown file
+            Reply::ok(""),         // test -e, opening the real write
+            Reply::ok(""),         // cp -p: backup
+            Reply::ok(""),         // tee: the key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("deploy", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let commands = mock.recorded_lines();
+
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.contains("/srv/deploy/.ssh/authorized_keys")),
+            "the key must go where passwd says: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("/home/deploy")),
+            "and never to the guessed path: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn authorising_the_same_key_twice_does_not_duplicate_it() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // and already holds the key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("a duplicate key must be a no-op");
+
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "an already-present key must not be written again"
+        );
+    }
+
+    #[test]
+    fn authorising_a_key_keeps_existing_ones() {
+        let existing = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQfakebodyvaluehere someone@else";
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::ok(""),          // install -d
+            Reply::ok(""),          // chown dir
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(existing),    // holding somebody else's key
+            Reply::ok(""),          // test -e, opening the write
+            Reply::ok(""),          // cp -p: backup
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // chown file
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect("authorising must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the file must be written");
+
+        assert!(
+            written.contains(existing),
+            "existing keys are other people's access"
+        );
+        assert!(written.contains(TEST_KEY));
+    }
+
+    #[test]
+    fn authorising_rejects_an_invalid_key_before_touching_the_system() {
+        let mock = MockExecutor::new();
+        let backend = for_family(Family::Debian);
+
+        let err = AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", "definitely not a key"),
+                &mut |_| {},
+            )
+            .expect_err("an invalid key must be rejected");
+
+        assert!(matches!(err, Error::InvalidPublicKey { .. }), "{err:?}");
+        assert!(
+            mock.recorded().is_empty(),
+            "validation must happen before any command runs"
+        );
+    }
+}
