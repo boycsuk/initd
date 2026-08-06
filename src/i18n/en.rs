@@ -156,6 +156,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::UnknownRelease { version, known } => {
             format!("this build cannot verify {version}; it knows: {known}")
         }
+        Msg::CapabilityUnavailable { capability } => {
+            format!("this distribution has no mechanism for {capability}")
+        }
         Msg::TimerNotEnabled { timer } => {
             format!(
                 "{timer} is not enabled, so the policy was written and nothing \

@@ -6,6 +6,7 @@
 
 pub mod account_writer;
 pub mod accounts;
+pub mod automatic_updates;
 pub mod binaries;
 pub mod files;
 pub mod firewall;
@@ -19,6 +20,7 @@ pub mod wireguard;
 
 pub use account_writer::AccountWriter;
 pub use accounts::AccountReader;
+pub use automatic_updates::{AutomaticUpdates, UpdatePolicy};
 pub use binaries::BinaryInstaller;
 pub use files::FileEditor;
 pub use firewall::FirewallManager;

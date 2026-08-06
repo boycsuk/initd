@@ -4,6 +4,7 @@
 //! also ships `ssh.socket` alongside `ssh.service`, which matters when
 //! changing the port — see the SSH port task.
 
+use super::apt_periodic::AptPeriodic;
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
@@ -17,8 +18,9 @@ use super::wg_tools::WgTools;
 use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
-    AccountReader, AccountWriter, BinaryInstaller, FileEditor, FirewallManager, PackageManager,
-    SelinuxManager, ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
+    AccountReader, AccountWriter, AutomaticUpdates, BinaryInstaller, FileEditor, FirewallManager,
+    PackageManager, SelinuxManager, ServiceManager, SysctlManager, UserServiceManager,
+    WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -124,6 +126,7 @@ pub struct DebianBackend {
     wireguard: WgTools,
     user_services: SystemdUserServices,
     binaries: ReleaseInstaller,
+    automatic_updates: AptPeriodic,
 }
 
 impl DebianBackend {
@@ -138,6 +141,7 @@ impl DebianBackend {
             wireguard: WgTools::new(),
             user_services: SystemdUserServices::new(),
             binaries: ReleaseInstaller::new(),
+            automatic_updates: AptPeriodic::new(),
         }
     }
 }
@@ -232,6 +236,10 @@ impl Backend for DebianBackend {
         const FIREWALLS: &[&dyn FirewallManager] = &[&Nftables::new()];
 
         FIREWALLS
+    }
+
+    fn automatic_updates(&self) -> Option<&dyn AutomaticUpdates> {
+        Some(&self.automatic_updates)
     }
 
     fn sysctl(&self) -> &dyn SysctlManager {

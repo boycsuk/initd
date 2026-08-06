@@ -12,6 +12,7 @@
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
+use crate::domain::UpdatePolicy;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Check, Conflict, Consequence, Reason};
@@ -234,12 +235,11 @@ impl Task for InstallCrowdsec {
 }
 
 /// Applies security updates without being asked.
+///
+/// Holds no path and no syntax. Where the policy is written and how it is
+/// spelled belong to the family — this task names the intent and lets
+/// [`crate::domain::AutomaticUpdates`] express it.
 pub struct UnattendedUpgrades;
-
-impl UnattendedUpgrades {
-    /// Where the policy this tool writes lives.
-    const POLICY: &'static str = "/etc/apt/apt.conf.d/51initd-unattended";
-}
 
 impl Task for UnattendedUpgrades {
     fn id(&self) -> &'static str {
@@ -298,6 +298,16 @@ impl Task for UnattendedUpgrades {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
+        // Asked of the backend rather than assumed to exist. A family with no
+        // mechanism is not a family where this quietly does nothing: the task
+        // declares itself unsupported there, and this is the guard that makes
+        // the declaration structural rather than a promise.
+        let updates = backend
+            .automatic_updates()
+            .ok_or(Error::CapabilityUnavailable {
+                capability: "unattended updates",
+            })?;
+
         backend.packages().install(
             executor,
             backend.package_for(Capability::UnattendedUpgrades),
@@ -305,25 +315,16 @@ impl Task for UnattendedUpgrades {
 
         // Security only, and no automatic reboot. A tool that reboots a server
         // on its own schedule is one nobody can plan around; the consequence
-        // says a reboot is needed rather than taking it.
-        //
-        // `51` orders this after the package's own `50unattended-upgrades`, so
-        // these values win without that file being edited.
-        let policy = "// Managed by initd.\n\
-             APT::Periodic::Update-Package-Lists \"1\";\n\
-             APT::Periodic::Unattended-Upgrade \"1\";\n\
-             Unattended-Upgrade::Automatic-Reboot \"false\";\n";
+        // says a reboot is needed rather than taking it. How that is spelled —
+        // which file, which syntax — belongs to the family, not here.
+        updates.configure(executor, UpdatePolicy::SECURITY_ONLY)?;
 
-        backend.files().write(executor, Self::POLICY, policy)?;
-
-        // Read back rather than assumed: the package ships a debconf question
-        // whose answer decides whether any of this runs, and a policy file
-        // alone does not enable the timer.
-        let check = Command::new("systemctl").args(["is-enabled", "apt-daily-upgrade.timer"]);
-
-        if executor.run(&check)?.stdout.trim() != "enabled" {
+        // Read back rather than assumed: on Debian the package ships a debconf
+        // question whose answer decides whether any of this runs, and a policy
+        // file alone does not enable the timer.
+        if !updates.is_scheduled(executor)? {
             return Err(Error::TimerNotEnabled {
-                timer: "apt-daily-upgrade.timer".to_owned(),
+                timer: updates.timer().to_owned(),
             });
         }
 
@@ -444,6 +445,26 @@ mod tests {
         // the reason rather than the tool inventing a different operation.
         assert!(UnattendedUpgrades.supports(Family::Debian));
         assert!(!UnattendedUpgrades.supports(Family::Arch));
+    }
+
+    #[test]
+    fn a_family_without_a_mechanism_offers_none_to_write_with() {
+        // The shape this refactor bought. The task used to build `/etc/apt`
+        // paths and APT syntax itself, so the only thing keeping an APT policy
+        // off an Arch host was the support declaration — a promise rather than
+        // a structure. Now the backend has to offer a mechanism, and three of
+        // the four families offer none.
+        for family in [Family::Arch, Family::Alpine, Family::Rhel] {
+            assert!(
+                for_family(family).automatic_updates().is_none(),
+                "{family} must offer no mechanism"
+            );
+        }
+
+        assert!(
+            for_family(Family::Debian).automatic_updates().is_some(),
+            "Debian is the one family with one"
+        );
     }
 
     #[test]

@@ -233,6 +233,15 @@ pub enum Error {
     /// a policy alone can sit on a host that never applies it.
     TimerNotEnabled { timer: String },
 
+    /// The family has no mechanism for a capability the task needs.
+    ///
+    /// Distinct from a command failing: nothing was attempted, because there
+    /// was nothing on this system to attempt it with. Reachable only if a task
+    /// declares itself supported on a family whose backend offers no
+    /// implementation — a disagreement between two declarations, which is why
+    /// it names the capability rather than a command.
+    CapabilityUnavailable { capability: &'static str },
+
     /// Caddy rejected its configuration.
     InvalidCaddyfile { details: String },
 
@@ -394,6 +403,9 @@ impl Error {
             Self::UnknownRelease { version, known } => Msg::UnknownRelease {
                 version: version.clone(),
                 known: known.clone(),
+            },
+            Self::CapabilityUnavailable { capability } => Msg::CapabilityUnavailable {
+                capability: (*capability).to_owned(),
             },
             Self::TimerNotEnabled { timer } => Msg::TimerNotEnabled {
                 timer: timer.clone(),

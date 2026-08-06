@@ -171,6 +171,9 @@ pub enum Msg {
     InvalidCaddyfile {
         details: String,
     },
+    CapabilityUnavailable {
+        capability: String,
+    },
     TimerNotEnabled {
         timer: String,
     },
