@@ -9,13 +9,11 @@
 //! busybox applet on Alpine, and absent on Arch. `useradd` is the one the
 //! shadow suite defines and behaves the same wherever the suite is installed.
 
+use super::posix_accounts;
 use super::systemd::run_checked;
 use crate::domain::account_writer::{AccountWriter, LockMethod, PasswordPolicy};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
-
-/// Where the list of acceptable login shells lives.
-const SHELLS_FILE: &str = "/etc/shells";
 
 /// Expiry date written to lock an account, in days since the epoch.
 ///
@@ -92,18 +90,7 @@ impl AccountWriter for ShadowAccounts {
     }
 
     fn is_in_group(&self, executor: &dyn Executor, user: &str, group: &str) -> Result<bool> {
-        // `id -nG` lists the groups by name, space separated. Matching whole
-        // words rather than a substring: `sudo` is a substring of `sudoers`,
-        // and a membership check that answers yes for the wrong group is how
-        // an account gets reported as an administrator when it is not.
-        let command = Command::new("id").args(["-nG", user]);
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Ok(false);
-        }
-
-        Ok(output.stdout.split_whitespace().any(|name| name == group))
+        posix_accounts::is_in_group(executor, user, group)
     }
 
     fn set_shell(&self, executor: &dyn Executor, user: &str, shell: &str) -> Result<()> {
@@ -152,26 +139,7 @@ impl AccountWriter for ShadowAccounts {
     }
 
     fn valid_shells(&self, executor: &dyn Executor) -> Result<Vec<String>> {
-        let command = Command::new("cat").arg(SHELLS_FILE);
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Err(Error::CommandFailed {
-                command: command.to_string(),
-                code: output.code,
-                stderr: output.stderr,
-            });
-        }
-
-        Ok(output
-            .stdout
-            .lines()
-            .map(str::trim)
-            // Comments and blank lines are not shells. A `#` line offered as a
-            // choice would be accepted by the form and refused by the system.
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_owned)
-            .collect())
+        posix_accounts::valid_shells(executor)
     }
 }
 

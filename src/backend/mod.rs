@@ -12,6 +12,7 @@ pub mod debian;
 pub mod firewalld;
 pub mod nftables;
 pub mod openrc;
+pub mod posix_accounts;
 pub mod procfs_sysctl;
 pub mod release_installer;
 pub mod rhel;

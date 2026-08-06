@@ -14,6 +14,7 @@
 //!   still read back out of `/etc/shadow` directly, since `chage` is only
 //!   worth pulling in for the write.
 
+use super::posix_accounts;
 use crate::domain::account_writer::{AccountWriter, LockMethod, PasswordPolicy};
 use crate::domain::accounts::{AccountReader, home_from_passwd_line};
 use crate::error::{Error, Result};
@@ -24,9 +25,6 @@ const PASSWD: &str = "/etc/passwd";
 
 /// Where password ageing is recorded.
 const SHADOW: &str = "/etc/shadow";
-
-/// Where the list of acceptable login shells lives.
-const SHELLS: &str = "/etc/shells";
 
 /// Index of the expiry field in a shadow entry, counting from zero.
 ///
@@ -169,15 +167,8 @@ impl AccountWriter for BusyboxAccountWriter {
 
     fn is_in_group(&self, executor: &dyn Executor, user: &str, group: &str) -> Result<bool> {
         // busybox provides `id`, and its `-nG` output is the same
-        // space-separated list. Compared as whole words for the same reason:
-        // `wheel` is a substring of `wheelgroup`.
-        let output = executor.run(&Command::new("id").args(["-nG", user]))?;
-
-        if !output.success() {
-            return Ok(false);
-        }
-
-        Ok(output.stdout.split_whitespace().any(|name| name == group))
+        // space-separated list, which is why this is the shared one.
+        posix_accounts::is_in_group(executor, user, group)
     }
 
     fn set_shell(&self, executor: &dyn Executor, user: &str, shell: &str) -> Result<()> {
@@ -236,24 +227,7 @@ impl AccountWriter for BusyboxAccountWriter {
     }
 
     fn valid_shells(&self, executor: &dyn Executor) -> Result<Vec<String>> {
-        let command = Command::new("cat").arg(SHELLS);
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Err(Error::CommandFailed {
-                command: command.to_string(),
-                code: output.code,
-                stderr: output.stderr,
-            });
-        }
-
-        Ok(output
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_owned)
-            .collect())
+        posix_accounts::valid_shells(executor)
     }
 }
 
