@@ -4,8 +4,8 @@
 #
 # It uses nothing but the shell. Earlier attempts measured a compiled binary
 # built by root and run through layers of `su`, and reported refusals that
-# turned out to belong to the harness rather than to sudo — see
-# `docs/sudo-timestamp-findings.md`.
+# turned out to belong to the harness rather than to sudo. Which is why this
+# one uses nothing the harness could be blamed for.
 #
 # It asks the question in the order that matters:
 #

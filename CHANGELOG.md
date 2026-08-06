@@ -78,6 +78,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before a destructive change looking less deliberate than the form that asks
   for a port.
 
+### Removed
+- `docs/sudo-timestamp-findings.md` and `docs/tui-specification.html`, and the
+  nine references that pointed at them. Four were in code and one in a probe
+  script, so the deletion alone would have left doc comments citing files that
+  are not there — the drift this project treats as worse than no documentation.
+  The sudo measurements are cited through `tests/fixtures/validate-sudo-*.sh`
+  instead, which still exist and are what produced them; the claim stays
+  measured rather than becoming an assertion. `docs/ui.md` stops calling itself
+  a summary of a fuller specification and is now the visual contract outright,
+  which is what it had effectively become. Both files remain in git history.
+
 ### Documentation
 - `CLAUDE.md` says RHEL is implemented, because it is: `Family::Rhel` is in
   `Family::ALL`, `rockylinux:9` is in the container matrix, and 22 of the 28
