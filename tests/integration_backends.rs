@@ -21,19 +21,29 @@
 //!   with "openrc did not boot", because the container was booted by something
 //!   else. The scenario asserts the enable half and pins the refusal.
 //!
-//! - **semanage cannot be tested in an ordinary container at all**, and the
-//!   scenario here proves that rather than pretending otherwise. There is no
-//!   SELinux policy store, so every invocation fails with `SELinux policy is
-//!   not managed`. What is asserted is the shape of that failure, so the day an
-//!   image does carry a policy store, this fails and the real labelling
-//!   scenario can be written.
+//! - **semanage** manages the policy store, which is a matter of writing files
+//!   under `/etc/selinux` rather than of enforcing anything — so labelling and
+//!   listing are observable, without `--privileged`. What is *not* observable
+//!   is whether a label takes effect: that needs a kernel enforcing SELinux,
+//!   which a container shares with its host and cannot be given. So these
+//!   scenarios assert the type name and the labelling, and claim nothing about
+//!   enforcement.
 //!
-//! Both refusals were measured twice. The first probe piped them through
-//! `head`, which reports the *pipeline's* status rather than the command's, and
-//! made both look like they exited 0 — the same shape of mistake as a
-//! comparison tool that is missing and reports "differs". Redirecting to a file
-//! and reading `$?` gives 1 for both. The tests failed on the wrong claim,
-//! which is how it was caught.
+//! Two measurements here were wrong before they were right, both in the
+//! direction of concluding less than was true.
+//!
+//! The first piped the OpenRC and semanage refusals through `head`, which
+//! reports the *pipeline's* status rather than the command's, making both look
+//! like they exited 0. Redirecting to a file and reading `$?` gives 1. The
+//! tests failed on the false claim, which is how it surfaced.
+//!
+//! The second installed `policycoreutils-python-utils` alone and concluded from
+//! `SELinux policy is not managed` that semanage could not be observed in a
+//! container at all — and this file said so. It needs
+//! `selinux-policy-targeted` beside it: the command without a policy to manage
+//! is not the same as a container that cannot manage one. The rule the suite
+//! already had — check a tool against the image before relying on it — applies
+//! to what the tool *needs* as much as to whether it is installed.
 
 mod common;
 
@@ -152,44 +162,107 @@ fn openrc_refuses_to_report_status_without_having_booted() {
     );
 }
 
+/// Installs `semanage` *and* a policy for it to manage.
+///
+/// Both halves, which is the thing an earlier reading of this got wrong.
+/// `policycoreutils-python-utils` provides the command; without
+/// `selinux-policy-targeted` there is no store behind it, and every invocation
+/// fails with `SELinux policy is not managed`. Installing only the first led to
+/// the conclusion that semanage could not be observed in a container at all.
+///
+/// No `--privileged` is needed: managing the policy store is a matter of
+/// writing files under `/etc/selinux`, not of enforcing anything. Nothing here
+/// claims the labels take effect — that needs a kernel enforcing SELinux, which
+/// a container shares with its host and cannot be given.
+const WITH_SELINUX: &str =
+    "dnf install -y -q policycoreutils-python-utils selinux-policy-targeted >/dev/null 2>&1";
+
 #[test]
 #[ignore = "requires docker"]
-fn semanage_cannot_label_anything_in_a_container() {
+fn semanage_labels_a_port_and_reports_it_back() {
     require_docker!();
     require_runnable!(&RHEL);
 
-    // This scenario exists to stop a *different* one being written. `semanage`
-    // is the highest-risk thing the RHEL backend does — a port sshd is told to
-    // listen on that SELinux has not labelled makes the daemon fail to start,
-    // from a file that is valid and that `sshd -t` approved — so a container
-    // test for it is the obvious thing to reach for.
+    // The highest-risk thing the RHEL backend does, and until now checked by a
+    // mock alone. A port sshd is told to listen on that SELinux has not
+    // labelled does not produce a permission error: the daemon fails to start,
+    // from a configuration file that is valid and that `sshd -t` approved.
     //
-    // It cannot work. A container has no SELinux policy store, so every
-    // invocation fails with `SELinux policy is not managed` and changes
-    // nothing. A scenario that labelled a port and asserted on the result
-    // would be asserting against a tool that never ran — passing for a reason
-    // unrelated to the code, and going on passing if the labelling broke.
-    //
-    // So what is asserted is the reason the honest test is absent. If an image
-    // ever does carry a policy store this fails, and whoever sees it can write
-    // the real scenario: label a port, move sshd onto it, and watch the daemon
-    // either bind or refuse.
+    // What this settles is that `ssh_port_t` is the right type name and that
+    // the label lands where `semanage port -l` reports it — both claims about
+    // Red Hat's policy rather than about this repository, and both invisible to
+    // a mock that agrees with whatever the code says.
     let output = run_in_container(
         &RHEL,
-        "dnf install -y -q policycoreutils-python-utils >/dev/null 2>&1; \
-         semanage port -a -t ssh_port_t -p tcp 2222 >/tmp/sem 2>&1; \
-         echo semanage_exit=$?; cat /tmp/sem",
+        &format!(
+            "{WITH_SELINUX}; \
+             semanage port -a -t ssh_port_t -p tcp 2222 >/tmp/add 2>&1; \
+             echo add_exit=$?; \
+             semanage port -l | grep '^ssh_port_t'"
+        ),
     );
 
     let text = stdout_of(&output);
 
     assert!(
-        text.contains("SELinux policy is not managed"),
-        "a container has no policy store; if this changed, the real labelling \
-         scenario can now be written: {text}"
+        common::has_line(&text, "add_exit=0"),
+        "labelling must succeed: {text}"
     );
     assert!(
-        common::has_line(&text, "semanage_exit=1"),
-        "and the failure is visible in the exit code: {text}"
+        text.lines().any(|line| {
+            line.starts_with("ssh_port_t")
+                && line.contains("tcp")
+                && line
+                    .split_whitespace()
+                    .any(|field| field.trim_end_matches(',') == "2222")
+        }),
+        "the port must appear under ssh_port_t: {text}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn labelling_a_port_twice_is_not_an_error() {
+    require_docker!();
+    require_runnable!(&RHEL);
+
+    // Re-running `ssh.change-port` on a host already labelled must not report a
+    // problem that is not one. The backend covers this by trying `-a` and
+    // falling through to `-m` on failure, with a comment stating that "`-a`
+    // adds and fails if the port is already labelled".
+    //
+    // That premise is wrong, at least on this policycoreutils. A second `-a`
+    // prints "already defined, modifying instead" and exits **0** — semanage
+    // does the fallback itself. The code is still correct, because the second
+    // command simply never runs; the reasoning written beside it was not.
+    //
+    // Pinned in both directions: the re-add succeeds, and `-m` on an existing
+    // port succeeds too, so whichever path the implementation takes is one this
+    // has observed rather than assumed.
+    let output = run_in_container(
+        &RHEL,
+        &format!(
+            "{WITH_SELINUX}; \
+             semanage port -a -t ssh_port_t -p tcp 2222 >/dev/null 2>&1; \
+             semanage port -a -t ssh_port_t -p tcp 2222 >/tmp/readd 2>&1; \
+             echo readd_exit=$?; cat /tmp/readd; \
+             semanage port -m -t ssh_port_t -p tcp 2222 >/dev/null 2>&1; \
+             echo modify_exit=$?"
+        ),
+    );
+
+    let text = stdout_of(&output);
+
+    assert!(
+        common::has_line(&text, "readd_exit=0"),
+        "a second add must not fail, which is why the fallback never runs: {text}"
+    );
+    assert!(
+        text.contains("already defined, modifying instead"),
+        "and semanage must say it did the modify itself: {text}"
+    );
+    assert!(
+        common::has_line(&text, "modify_exit=0"),
+        "the fallback path must also work, since the code may still take it: {text}"
     );
 }

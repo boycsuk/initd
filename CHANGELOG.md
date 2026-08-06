@@ -59,6 +59,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which now skips a single image rather than the remainder of the matrix.
 
 ### Added
+- Tasks run as tasks in a container, on all four families. Five of twenty-eight
+  reached one before; eleven scenarios now cover the account, sysctl, firewall
+  and WireGuard tasks end to end — running the task and then reading the system
+  through a different mechanism, since asking the tool whether the tool
+  succeeded is how a mock agrees with itself. It found the sysctl persistence
+  bug fixed above on its first run. What a plain container cannot settle is
+  stated rather than skipped: sysctls are the host's and `/proc/sys` is mounted
+  read-only, so the refusal path is what is asserted, with the measured note
+  that `--privileged` does make the success path work.
 - Container scenarios for `firewalld`, `openrc` and `semanage`, the three
   backends a whole family each depends on and that had only ever answered to a
   mock — the arrangement `integration_systemd` exists because of. What each can
@@ -66,12 +75,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fully offline, so its port and service queries are asserted against real zone
   state; OpenRC enables and lists without an init, so the enable half is real
   while `status` refuses because the container was booted by something else.
-  `semanage` cannot be tested in a container at all — there is no SELinux policy
-  store — so the scenario asserts *that*, which is what stops a plausible test
-  being written against a tool that never ran. The first measurement of both
-  refusals was wrong: piping through `head` reports the pipeline's exit code
-  rather than the command's, making both look like they exited 0 when they exit
-  1. The tests failed on the wrong claim, which is how it was caught.
+  `semanage` labels a port and reports it back, without `--privileged`: managing
+  the policy store is a matter of writing files under `/etc/selinux` rather than
+  of enforcing anything. Two measurements were wrong before they were right,
+  both concluding less than was true — piping the refusals through `head`
+  reported the pipeline's exit code rather than the command's, and installing
+  `policycoreutils-python-utils` without `selinux-policy-targeted` gave a
+  semanage with no policy to manage, which read as a container that could not
+  manage one. The second correction turned an asserted impossibility into two
+  real scenarios.
+- `semanage port -a` on a port already labelled does not fail: it prints
+  "already defined, modifying instead" and exits 0, doing the fallback itself.
+  The comment beside the add-then-modify sequence claimed the opposite. The
+  sequence stays — the outcome is right either way, and an older policycoreutils
+  may well fail where this one recovers — but both paths are now pinned by a
+  scenario rather than by a premise.
 
 ### Changed
 - `tasks::ssh` becomes a directory module. It was 992 lines of production code

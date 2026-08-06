@@ -49,11 +49,19 @@ impl SelinuxManager for Semanage {
     }
 
     fn allow_ssh_port(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<()> {
-        // `-a` adds and fails if the port is already labelled; `-m` modifies
-        // and fails if it is not. Neither is idempotent on its own, so the
-        // add is tried first and a failure falls through to the modify —
-        // which is what makes re-running the task on a host already labelled
-        // succeed rather than report a problem that is not one.
+        // Add first, fall through to modify. The reasoning originally written
+        // here was that `-a` fails on a port already labelled and `-m` fails on
+        // one that is not, so neither is idempotent alone — which turned out to
+        // be wrong about the first half. Measured against policycoreutils on
+        // Rocky 9: a second `-a` prints "already defined, modifying instead"
+        // and exits 0, doing the fallback itself.
+        //
+        // The sequence stays because the outcome is right either way and the
+        // premise is not one this project controls: an older or a differently
+        // built policycoreutils may well fail where this one recovers, and the
+        // fallback costs nothing when it is never reached.
+        // `tests/integration_backends.rs` pins both paths, so whichever one a
+        // host takes is one that has been observed.
         let add = Command::new("semanage")
             .args([
                 "port",
