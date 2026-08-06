@@ -17,25 +17,7 @@ use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Check, Conflict, Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families supporting the log-parsing banner.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
-
-/// Families packaging the reputation-network banner.
-///
-/// Alpine does not, so the task is shown unsupported there rather than being
-/// offered a package name `apk` would reject.
-const CROWDSEC_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch];
-
-/// Families supporting unattended upgrades.
-///
-/// Debian only, and deliberately. Arch is a rolling release with no equivalent
-/// mechanism: upgrading it unattended means pulling whatever landed today,
-/// including changes that need manual intervention. Inventing a different
-/// operation under the same task id would make the two families silently
-/// disagree about what the task does.
-const UPGRADE_SUPPORTED: &[Family] = &[Family::Debian];
+use crate::tasks::{Category, Node, Progress, Support, Task};
 
 /// The port SSH listens on unless it has been moved.
 const DEFAULT_SSH_PORT: u32 = 22;
@@ -105,8 +87,15 @@ impl Task for InstallFail2ban {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
+            Family::Rhel => Support::No(
+                "has never been in a base repository, in any release. Being \
+                 Python there is no static binary to verify, and `sshguard` is \
+                 EPEL-only too — RHEL ships no log-scanning tool of its own",
+            ),
+        }
     }
 
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
@@ -182,8 +171,19 @@ impl Task for InstallCrowdsec {
         true
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        CROWDSEC_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch => Support::Yes,
+            Family::Alpine => Support::No(
+                "Alpine does not package it, so the task is shown unsupported \
+                 rather than being offered a package name `apk` would reject",
+            ),
+            Family::Rhel => Support::No(
+                "publishes no checksums with its releases, and its documented \
+                 install pipes a script into a shell to register a repository \
+                 — the pattern this project rejects in its own installer",
+            ),
+        }
     }
 
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
@@ -256,8 +256,27 @@ impl Task for UnattendedUpgrades {
          behaviour is still yours to decide."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        UPGRADE_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian => Support::Yes,
+            Family::Arch => Support::No(
+                "a rolling release with no equivalent mechanism: upgrading it \
+                 unattended means pulling whatever landed today, including \
+                 changes that need manual intervention",
+            ),
+            Family::Alpine => Support::No(
+                "Alpine ships no unattended-upgrades equivalent; inventing one \
+                 under this task id would make the families silently disagree \
+                 about what the task does",
+            ),
+            Family::Rhel => Support::No(
+                "packaged, but under a name that moved: `dnf-automatic` on \
+                 RHEL 9, `dnf5-plugin-automatic` on RHEL 10, with four timers \
+                 collapsed to one. The backend resolves a family rather than a \
+                 release, so it cannot name both — and either name is wrong on \
+                 half the family",
+            ),
+        }
     }
 
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {

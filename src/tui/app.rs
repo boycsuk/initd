@@ -1481,7 +1481,20 @@ impl App {
     /// rather than leaving the pane blank.
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
         let description = match self.selected_node() {
-            Some(Node::Task(task)) => task.description().to_owned(),
+            // A task that cannot run here says why, under what it would have
+            // done. The tree already dims the row and the pill already reads
+            // UNSUPPORTED — both of which state *that* it is refused and
+            // neither of which states why, leaving the operator to guess
+            // whether it is a missing package, a policy, or a bug. The reasons
+            // were measured; this is where they were always meant to be read.
+            Some(Node::Task(task)) => match task.unsupported_reason(self.distro.family) {
+                Some(reason) => format!(
+                    "{}\n\nNot available on {}: {reason}.",
+                    task.description(),
+                    self.distro.family
+                ),
+                None => task.description().to_owned(),
+            },
             Some(Node::Category(category)) => {
                 let count = category.task_count();
                 let plural = if count == 1 { "task" } else { "tasks" };
@@ -3683,19 +3696,66 @@ mod tests {
     #[test]
     fn an_unsupported_task_says_so_in_the_status_pill() {
         // The pill is the one place that always states what Enter would do.
-        let mut app = test_app(Family::Arch);
-        let arch_supports_everything = tasks::all_tasks()
-            .iter()
-            .all(|task| task.supports(Family::Arch));
+        // Driven onto a task that is genuinely refused rather than hoping the
+        // cursor lands on one: the old version returned early when the family
+        // supported everything, so it could pass having rendered nothing.
+        let mut app = test_app(Family::Rhel);
 
-        if arch_supports_everything {
-            // Nothing to assert on this tree yet; the branch exists so the
-            // test starts failing the day an Arch-unsupported task lands.
-            return;
-        }
+        jump_to_unsupported(&mut app, Family::Rhel);
 
         let rows = render_to_rows(&mut app, 80, 24);
-        assert!(rows[22].contains("READY") || rows[22].contains("UNSUPPORTED"));
+
+        assert!(
+            rows.iter().any(|row| row.contains("UNSUPPORTED")),
+            "the pill must name the refusal: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_task_explains_itself_rather_than_only_refusing() {
+        // The reason used to live in a test table, where the operator being
+        // told "unsupported" could never see it — while the comment above the
+        // tree claimed unsupported tasks stayed visible *with their reason*.
+        // Dimming a row says that it is refused; only this says why, which is
+        // the difference between a missing package, a policy, and a bug.
+        let mut app = test_app(Family::Rhel);
+
+        let expected = jump_to_unsupported(&mut app, Family::Rhel);
+        let rows = render_to_rows(&mut app, 100, 30).join(" ");
+
+        // The first few words, since the panel wraps and the reasons are long.
+        let opening: String = expected
+            .split_whitespace()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            rows.contains("Not available on"),
+            "the detail must say the task cannot run here: {rows}"
+        );
+        assert!(
+            rows.contains(&opening),
+            "and must carry the reason ({opening:?}): {rows}"
+        );
+    }
+
+    /// Puts the cursor on a task this family refuses, and returns the reason.
+    ///
+    /// Panics rather than skipping if every task is supported: a helper that
+    /// quietly did nothing would make both tests above pass on a tree where
+    /// they assert nothing.
+    fn jump_to_unsupported(app: &mut App, family: Family) -> &'static str {
+        let (location, reason) = tasks::located_tasks(&tasks::tree())
+            .into_iter()
+            .find_map(|(location, task)| {
+                task.unsupported_reason(family)
+                    .map(|reason| (location, reason))
+            })
+            .expect("some task must be unsupported on this family");
+
+        app.cursor.jump_to(&location.path, location.index);
+        reason
     }
 
     #[test]

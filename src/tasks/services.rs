@@ -15,31 +15,7 @@ use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families the web server tasks support.
-///
-/// All four, though not by the same mechanism: three package Caddy and RHEL
-/// installs the checksummed release, which is one artefact per architecture
-/// because Caddy is Go and links against nothing. The two configuration tasks
-/// are unaffected by which route put the binary there — the Caddyfile is the
-/// same file either way.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
-
-/// Families the rootless container engine supports.
-///
-/// Alpine is absent because it has no per-user service manager at all: the
-/// engine runs under the account's own systemd instance, and OpenRC has no
-/// equivalent. That is a missing mechanism rather than a different spelling,
-/// so the task declares it unsupported instead of failing at run time.
-///
-/// RHEL is present but reaches the engine differently: Red Hat ships Podman
-/// and packages no Docker, so the task registers Docker's own repository after
-/// checking its signing key against a fingerprint published independently of
-/// it. That check is the condition of being here at all — the same reasoning
-/// keeps CrowdSec out, whose repository publishes no fingerprint to check
-/// against.
-const ROOTLESS_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Rhel];
+use crate::tasks::{Category, Node, Progress, Support, Task, supported_everywhere};
 
 /// The user unit a rootless engine installs.
 const DOCKER_USER_SERVICE: &str = "docker.service";
@@ -107,8 +83,18 @@ impl Task for InstallDockerRootless {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        ROOTLESS_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            // RHEL reaches the engine differently — Red Hat ships Podman and
+            // packages no Docker — but it gets there: the task registers
+            // Docker's own repository after checking its signing key against a
+            // fingerprint published independently of it.
+            Family::Debian | Family::Arch | Family::Rhel => Support::Yes,
+            Family::Alpine => Support::No(
+                "no per-user service manager at all: the engine runs under the \
+                 account's own systemd instance, and OpenRC has no equivalent",
+            ),
+        }
     }
 
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
@@ -265,9 +251,7 @@ impl Task for InstallCaddy {
          tool administers the server, it does not describe what you deploy on it."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn consequences(&self, backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![
@@ -368,9 +352,7 @@ impl Task for ValidateCaddy {
          Changes nothing."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -425,9 +407,7 @@ impl Task for CaddySecurityHeaders {
         true
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,

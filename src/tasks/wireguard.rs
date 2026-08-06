@@ -14,7 +14,6 @@
 use std::fmt::Write as _;
 
 use crate::backend::{Backend, Capability};
-use crate::distro::Family;
 use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
@@ -24,10 +23,7 @@ use crate::tasks::consequence::{
 };
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families these tasks support.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
+use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
 
 /// The interface this tool manages.
 ///
@@ -92,9 +88,7 @@ impl Task for WireguardStatus {
          configured. Changes nothing."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -172,9 +166,7 @@ impl Task for InstallWireguard {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
@@ -319,9 +311,7 @@ impl Task for AddPeer {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -486,6 +476,7 @@ fn first_address(subnet: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::backend::for_family;
+    use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// A syntactically valid key, for tests that do not care which one.

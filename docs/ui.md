@@ -100,7 +100,11 @@ a clear refusal.
   the breadcrumb of the current path (`Remote Access › SSH`, or `Tasks` at the
   top level). The bottom border carries the census of the level on screen
   (`2 tasks`, `1 category`), which costs no rows. Tasks unsupported on the
-  running distribution stay visible and dimmed.
+  running distribution stay visible and dimmed, and selecting one shows **why**
+  in the detail panel — which repository does not carry it, which shipped
+  configuration would override it, which installer publishes nothing to verify.
+  Dimming says a task is refused; only the reason distinguishes a missing
+  package from a deliberate policy from a bug worth reporting.
 - **Output** — the running task's output, streamed line by line as it is
   produced, scrollable. Right column. Each command is announced with a `$`
   prefix before it runs, so the pane reads as a transcript rather than as

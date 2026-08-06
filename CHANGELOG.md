@@ -47,6 +47,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a second `run` method that can fall out of use unnoticed.
 
 ### Changed
+- A task declares support as an exhaustive `match` on the family, carrying the
+  reason when it refuses. `supported_families` returned a `&[Family]`, which
+  the compiler cannot check for exhaustiveness — so adding a family and
+  forgetting a task produced a task that was *silently* unsupported, and the
+  tool would start on the new distribution and grey out every row. A test
+  inverted that default to catch it, at the cost of a table of twelve
+  exceptions kept in sync by hand. Verified rather than assumed: adding a fifth
+  family now produces 31 compile errors naming the exact tasks that must
+  decide, where before it produced none. The fourteen `SUPPORTED` consts are
+  gone, and a `supported_everywhere!` macro covers the twenty-one tasks that
+  work on all four, so the ones that do not are the ones you see.
+- The reasons those twelve tasks are refused now reach the operator. They were
+  measured — which repository has never carried fail2ban, which shipped
+  `Include` wins on RHEL, which installer publishes no digest — and they lived
+  in a test table, invisible in the binary, while the code above the tree
+  claimed unsupported tasks stayed visible *with their reason*. Selecting one
+  now shows it in the detail panel. Dimming a row says a task is refused; only
+  the reason separates a missing package from a policy from a bug worth
+  reporting.
 - Tree navigation moves to `tui::cursor::TreeCursor`. It depended on none of
   what the rest of `app.rs` does — no executor, no backend, no terminal — which
   made it the one part of the interface that could be tested without building

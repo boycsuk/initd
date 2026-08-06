@@ -15,33 +15,7 @@ use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewal
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families every SSH task supports.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
-
-/// Families that let this tool choose the SSH cryptography.
-///
-/// RHEL is absent, and it is the one place its `Include` costs anything. Its
-/// `sshd_config` opens with `Include /etc/ssh/sshd_config.d/*.conf` and sshd
-/// honours the *first* occurrence of a directive, so the shipped
-/// `50-redhat.conf` is read before anything this tool appends. That file names
-/// few directives, but among them — through a nested include of
-/// `/etc/crypto-policies/back-ends/opensshserver.config` — are exactly the
-/// three this task exists to set. Measured against a daemon rather than
-/// reasoned about: `Ciphers aes256-gcm@openssh.com` written to the main file
-/// left `sshd -T` still reporting the full policy list, and `sshd -t` approved
-/// the file either way.
-///
-/// A drop-in numbered below 50 does win, and was confirmed to. It is not used,
-/// because on RHEL the cryptography a daemon accepts is the system's decision
-/// rather than one application's: `update-crypto-policies` sets it for every
-/// service at once, and a file contradicting it in silence would leave two
-/// answers to the same question with nothing reporting the disagreement. The
-/// other hardening tiers are unaffected — `PermitRootLogin`,
-/// `PasswordAuthentication`, `Port` and `AllowUsers` are named nowhere in the
-/// drop-in and take effect from the main file.
-const CRYPTO_SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine];
+use crate::tasks::{Category, Node, Progress, Support, Task, supported_everywhere};
 
 /// Where a user's authorised keys live, relative to their home directory.
 const AUTHORIZED_KEYS_RELATIVE: &str = ".ssh/authorized_keys";
@@ -127,9 +101,7 @@ impl Task for InstallSsh {
          starts at boot."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -249,9 +221,7 @@ impl Task for HardenSsh {
         true
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -342,8 +312,21 @@ impl Task for HardenSshStrict {
         true
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        CRYPTO_SUPPORTED
+    fn support(&self, family: Family) -> Support {
+        match family {
+            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
+            Family::Rhel => Support::No(
+                "the only task RHEL's `Include` costs anything. Its shipped \
+                 `50-redhat.conf` is read before the main file and carries the \
+                 crypto policies, which are exactly the ciphers, key exchanges \
+                 and MACs this tier sets — measured against a daemon, not \
+                 inferred: the value written was absent from `sshd -T` while \
+                 `sshd -t` approved the file. A drop-in numbered below 50 does \
+                 win, and is not used, because on RHEL that choice belongs to \
+                 `update-crypto-policies` system-wide rather than to one \
+                 application contradicting it",
+            ),
+        }
     }
 
     fn run(
@@ -500,9 +483,7 @@ impl Task for AuthorizeKey {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -652,9 +633,7 @@ impl Task for ChangePort {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
@@ -915,9 +894,7 @@ impl Task for RestrictUsers {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,

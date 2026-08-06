@@ -87,6 +87,15 @@ TUI or CLI:
   - TUI exception: categories are opened one level at a time, with a breadcrumb
     showing the current location and a way back to the parent.
   - CLI exception: the whole tree is printed at once, indented by level.
+- As an **administrator**, I am told why a task cannot run on this machine, so
+  that I can tell a missing package from a deliberate policy from a bug.
+  - Acceptance: a task unsupported here stays visible rather than being hidden;
+    a tool that hides what it will not do cannot be reasoned about.
+  - Acceptance: selecting it explains the refusal in terms of this
+    distribution — what is not packaged, what would override the change, what
+    could not be verified — rather than only marking it unavailable.
+  - Acceptance: the explanation is specific enough to act on, whether that
+    means installing something myself or reporting that the reason is stale.
 - As an **administrator**, I can find a task without knowing which area holds
   it, so that browsing is not the only way to reach one.
   - Acceptance: I can search by what I remember — the title as the interface

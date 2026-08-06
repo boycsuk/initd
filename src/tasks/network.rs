@@ -7,7 +7,6 @@
 //! once and asked about by name.
 
 use crate::backend::{Backend, Capability, firewall_for};
-use crate::distro::Family;
 use crate::domain::firewall::Protocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
@@ -15,16 +14,7 @@ use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task};
-
-/// Families these tasks support.
-///
-/// All four ship nftables and read `/etc/sysctl.d/`, which is read at boot by
-/// both systemd's `systemd-sysctl` and the OpenRC script Alpine uses. RHEL
-/// installs nftables by default but leaves firewalld as the supported
-/// front-end, and the two own overlapping tables — a rule written here can be
-/// one firewalld does not know about.
-const SUPPORTED: &[Family] = &[Family::Debian, Family::Arch, Family::Alpine, Family::Rhel];
+use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
 
 /// The port SSH listens on unless it has been moved.
 ///
@@ -100,9 +90,7 @@ impl Task for FirewallStatus {
          Changes nothing."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -191,9 +179,7 @@ impl Task for EnableFirewall {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::SSH_PORT) else {
@@ -298,9 +284,7 @@ impl Task for AllowPort {
         ]
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::PORT) else {
@@ -365,9 +349,7 @@ impl Task for EnableIpForward {
          in order to carry its clients' traffic anywhere."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn run(
         &self,
@@ -397,9 +379,7 @@ impl Task for EnableUnprivilegedPorts {
          a rootless container engine needs in order to serve a website."
     }
 
-    fn supported_families(&self) -> &'static [Family] {
-        SUPPORTED
-    }
+    supported_everywhere!();
 
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // A running daemon does not re-read this. Docker's own documentation
@@ -466,6 +446,7 @@ fn set_and_report(
 mod tests {
     use super::*;
     use crate::backend::for_family;
+    use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// Runs a task against a mock, returning its outcome and the commands run.
