@@ -46,8 +46,9 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
 
-      # Both, because the container matrix mounts one per image: Debian and
-      # Arch run the ordinary build, and Alpine has no glibc to run it with.
+      # Both, because the container matrix mounts one per image: Debian, Arch
+      # and Rocky run the ordinary build, and Alpine has no glibc to run it
+      # with.
       # A missing musl build does not fail those scenarios — they skip — so
       # the job would pass having tested one family fewer.
       - name: Build the binaries the container tests mount

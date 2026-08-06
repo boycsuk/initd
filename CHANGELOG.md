@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `users.lock-root` asks the account database where a home is, instead of
+  assuming `/home/{user}`. It carried its own copy of `has_authorized_key`,
+  and the copy predated the fix that `ssh::has_authorized_key` documents and
+  pins with a test — so an administrator whose home is elsewhere held a key the
+  guard could not see. That failed safe (the lock was refused rather than
+  granted), but the two answers were drifting apart in front of the one
+  operation whose recovery is the provider's rescue console. The copy also
+  counted any line that was neither blank nor a comment as a key, so a file
+  holding `garbage` satisfied it; the shared one parses the key. The fixture in
+  that file changed for the same reason — the short placeholder was never a
+  valid key, and only the lax criterion admitted it.
+
+### Changed
+- `report` is defined once rather than in each of the seven task modules that
+  use it. What the copies duplicated was not the four lines but the decision:
+  the shape of an output line could be changed in none of them alone.
+- `selinux` and `firewalls` are answered by defaults on the `Backend` trait.
+  Debian, Arch and Alpine gave identical answers — the first byte for byte,
+  comment included — and only RHEL diverges, in both. The trait already used
+  this shape for four other capabilities.
+- `/etc/shells` and `id -nG` are read from `backend::posix_accounts` rather
+  than once per account suite. shadow-utils and busybox differ in how they
+  *write* accounts, which is why both modules exist; these two questions were
+  not among the differences, diverging only in whether a constant was called
+  `SHELLS` or `SHELLS_FILE`. The whole-word group comparison now has tests of
+  its own: it was covered only through its callers, and the `sudo`/`sudoers`
+  substring case is the one that reports an ordinary account as an
+  administrator.
+- The confirmation dialog's title is drawn with a style role. It was the one
+  panel title in the interface drawn with none, which left the dialog shown
+  before a destructive change looking less deliberate than the form that asks
+  for a port.
+
+### Documentation
+- `CLAUDE.md` says RHEL is implemented, because it is: `Family::Rhel` is in
+  `Family::ALL`, `rockylinux:9` is in the container matrix, and 22 of the 28
+  tasks run there. Two sections claimed otherwise, one of them listing it under
+  "deliberately not built yet — absent by decision". That entry predicted that
+  adding a family would mean adding a module and editing no task; RHEL is the
+  measurement that confirms it, so it is now cited as evidence rather than
+  deleted. Only SUSE remains admitted-but-absent.
+- The structure map lists the six backend modules and three domain traits it
+  had fallen behind on — `firewalld`, `semanage`, `rpm_repositories`,
+  `apt_periodic`, `openrc`, `busybox_accounts`, and the SELinux, repository and
+  automatic-update traits. Three of those predate RHEL, so the list had been
+  stale since Alpine.
+- The minisign claim was measured instead of counted. It said "packaged on all
+  three families"; there are four, and on `rockylinux:9` minisign is in no base
+  repository — it installs only after EPEL, a third-party repository, is
+  enabled. Which strengthens the reason for declining to require it: the cost
+  is not the same everywhere.
+- `docs/conventions.md` describes this project. It was a mirror of the
+  template's generic rules — SQL injection, uploaded files, constant-time
+  comparison, `npm audit`, "don't trust the client" — none of which apply here,
+  while the prohibitions that do (no distro branching inside a task, no
+  `Command` outside `src/exec/`, no `unwrap` in production) appeared nowhere.
+  It exists for the reader who only sees `docs/`, which is exactly the reader
+  who could not have known any of them.
+- The four dead references to `backend.md` in `conventions.md` and
+  `user-stories.md` name `cli.md`, and the exit code those two interactive-only
+  tasks return is documented. `2`, not `1` — verified against the binary — and
+  a script that retries on `1` must not retry them.
+
 ### Added
 - Seventeen more tasks run as tasks in a container. Eleven of twenty-eight
   reached one before; the account, sysctl, firewall and WireGuard scenarios are

@@ -151,6 +151,10 @@ administrator proves from a second session that they can still get in,
 reverting on its own when they cannot. The CLI exits immediately, so it has no
 window to offer and nothing rolls a mistake back.
 
+Both exit `2`, not `1`: the request was never going to run, which is an
+invocation error rather than a task that tried and failed. A script that
+retries on `1` must not retry these.
+
 ### `initd authorize-key <user> <key>`
 
 Appends a public key to a user's `authorized_keys`, creating `~/.ssh` with the
@@ -273,6 +277,10 @@ backup path to a session that may already be the last one open.
 
 The task's own guards still apply wherever it runs: every named account must
 exist, and at least one must hold an authorised key.
+
+Both refusals exit `2`. The distinction this file sells to scripts holds here:
+`1` is a task that ran and failed, `2` is a request the CLI would not accept —
+and one of these never reached a command.
 
 ### Partially applied directives
 

@@ -6,7 +6,7 @@
 ## WHAT — Stack
 - Rust (latest stable, edition 2024) — single statically-linked binary
 - TUI: `ratatui` + `crossterm` (task tree browser with live command output)
-- Target: Linux servers, multi-distro (Debian/Ubuntu, Arch and Alpine implemented; RHEL/SUSE admitted by the design)
+- Target: Linux servers, multi-distro (Debian/Ubuntu, RHEL/Rocky/Alma, Arch and Alpine implemented; SUSE admitted by the design)
 - Database: none — state lives in the host system itself
 
 ## WHAT — Versions
@@ -24,6 +24,7 @@
 - Dev: `cargo run`
 - Build: `cargo build --release --target x86_64-unknown-linux-musl`
 - Test: `cargo nextest run`
+- Container tests: `cargo nextest run --run-ignored all` (needs Docker; the scenarios that pull Debian, Arch, Alpine and Rocky images are `#[ignore]` so an ordinary run stays fast)
 - Lint: `cargo clippy --all-targets --all-features -- -D warnings`
 - Typecheck: `cargo check --all-targets`
 - Format: `cargo fmt --all`
@@ -34,10 +35,10 @@
 - `src/error.rs` — domain error type; carries structured data only, never display text
 - `src/i18n/` — message catalogue + locale resolution (dependency-free; every user-facing string goes through it)
 - `src/distro/` — `/etc/os-release` detection and family resolution
-- `src/backend/` — one module per distro family, each resolving the names a capability has there, plus the implementations they share: `systemd` and `systemd_user`, `unix_files`, `unix_accounts` and `shadow_accounts`, `nftables`, `procfs_sysctl`, `wg_tools`, `release_installer`
-- `src/domain/` — capability traits: packages, services and user services, files, account reading and writing, firewall, sysctl, WireGuard, verified binaries
+- `src/backend/` — one module per distro family (`debian`, `rhel`, `arch`, `alpine`), each resolving the names a capability has there, plus the implementations they share: `systemd`, `systemd_user` and `openrc`; `unix_files`; `unix_accounts`, `shadow_accounts`, `busybox_accounts` and `posix_accounts` (what the two account suites do identically); `nftables` and `firewalld`; `procfs_sysctl`; `semanage`; `rpm_repositories` and `apt_periodic`; `wg_tools`; `release_installer`
+- `src/domain/` — capability traits: packages, services and user services, files, account reading and writing, firewall, sysctl, WireGuard, verified binaries, SELinux, package repositories, automatic updates
 - `src/tasks/` — the task tree exposed by the TUI (each task is typed Rust, declares supported distros)
-- `src/tui/` — navigation and state in `app.rs`, drawing in `render.rs`, execution output pane
+- `src/tui/` — navigation and state in `app.rs`, drawing in `render.rs`, execution output pane; `signals.rs` catches the dropped connection and `verify.rs` runs the window that a silent session reverts
 - `src/exec/` — `Executor` trait + `LocalExecutor` (the single choke point for running commands), `MockExecutor` and `PrivilegeEscalator`
 - `tests/` — integration tests
 - `docs/` — portable contract (see below)
@@ -73,7 +74,7 @@ directions so it cannot drift.
 
 ## WHY — Architectural decisions
 
-- **Distro differences are resolved by a per-family backend behind a trait, not by conditionals inside each task.** Detection reads `/etc/os-release` once at startup and resolves a backend (Debian/RHEL/Arch/SUSE/Alpine). Tasks call the trait and stay distro-agnostic. Adding a distro must mean adding one module, never editing every task — with N tasks, per-task branching would repeat the same `match` N times and each new distro would touch all of them. The one place a family is named outside a backend is `Task::support`, and that is deliberate: whether a task *runs* on a family is a decision, not a spelling, and the twelve refusals in the tree each cite something measured — which repository has never carried fail2ban, which shipped `Include` wins on RHEL, which installer publishes no digest. It returns `Support` from an exhaustive `match` rather than a list of families, so a new variant fails to compile in every task that has not decided about it; the twenty that work everywhere say so through `supported_everywhere!`, written once, and only the eight with something to explain write the match out. Measured rather than assumed: adding a fifth family produces 31 compile errors naming exactly the sites that must answer, where the previous `&[Family]` produced none and left the new distribution silently unsupported.
+- **Distro differences are resolved by a per-family backend behind a trait, not by conditionals inside each task.** Detection reads `/etc/os-release` once at startup and resolves a backend (Debian/RHEL/Arch/Alpine). Tasks call the trait and stay distro-agnostic. Adding a distro must mean adding one module, never editing every task — with N tasks, per-task branching would repeat the same `match` N times and each new distro would touch all of them. The one place a family is named outside a backend is `Task::support`, and that is deliberate: whether a task *runs* on a family is a decision, not a spelling, and the twelve refusals in the tree each cite something measured — which repository has never carried fail2ban, which shipped `Include` wins on RHEL, which installer publishes no digest. It returns `Support` from an exhaustive `match` rather than a list of families, so a new variant fails to compile in every task that has not decided about it; the twenty that work everywhere say so through `supported_everywhere!`, written once, and only the eight with something to explain write the match out. Measured rather than assumed: adding a fifth family produces 31 compile errors naming exactly the sites that must answer, where the previous `&[Family]` produced none and left the new distribution silently unsupported.
 
 - **Tasks are native typed Rust, not embedded shell scripts.** linutil (the inspiration for this tool) embeds `.sh` files described by TOML. That is faster to contribute to but gives up type safety, testability, and compile-time checking, and inherits every difference between distro shells. Since the real value here is the distro abstraction, tasks must be able to *call* it — a shell script cannot.
 
@@ -111,13 +112,13 @@ directions so it cannot drift.
 
 - **Static musl binaries, not glibc.** A binary linked against a recent glibc fails on older servers — exactly the machines an administration tool needs to reach. musl links statically and runs anywhere, which matters more here than the marginal performance difference.
 
-- **The `curl | sh` installer verifies checksums before executing.** Piping a remote script into a shell runs unverified remote code, and this tool runs as root. Checksum verification against a published GitHub Release is the minimum mitigation; the release binaries are the source of truth, the install script is only a convenience wrapper. The check is exercised rather than assumed — `tests/integration_installer.rs` serves a release and replaces the binary after its digest was computed, so a script that verified nothing would fail there. What it does *not* defend against is stated in the script and the release notes: anyone able to publish a release writes both the binary and its digest. **Signing was considered and declined.** It would close exactly that gap, and nothing else — a signature only matters if this repository's publish permissions are compromised. The cost falls on every install: `minisign` is packaged on all three families and preinstalled on none, so requiring it turns the one-line bootstrap into three commands on a freshly provisioned server, which is the case the script exists for. Degrading gracefully instead — verify the signature where the tool exists, warn where it does not — was rejected as worse than either: a warning nobody can act on trains people to ignore it.
+- **The `curl | sh` installer verifies checksums before executing.** Piping a remote script into a shell runs unverified remote code, and this tool runs as root. Checksum verification against a published GitHub Release is the minimum mitigation; the release binaries are the source of truth, the install script is only a convenience wrapper. The check is exercised rather than assumed — `tests/integration_installer.rs` serves a release and replaces the binary after its digest was computed, so a script that verified nothing would fail there. What it does *not* defend against is stated in the script and the release notes: anyone able to publish a release writes both the binary and its digest. **Signing was considered and declined.** It would close exactly that gap, and nothing else — a signature only matters if this repository's publish permissions are compromised. The cost falls on every install, and it is not the same cost everywhere: `minisign` is packaged and preinstalled on none of the four families, and on RHEL it is not in the base repositories at all — measured on `rockylinux:9`, where BaseOS, AppStream and Extras carry no such package and it installs only once EPEL, a third-party repository, has been enabled. So requiring it turns the one-line bootstrap into three commands on a freshly provisioned Debian or Arch box, and into "add a third-party repository first" on RHEL, which is a strange thing for a script whose purpose is to verify provenance to ask of someone. Degrading gracefully instead — verify the signature where the tool exists, warn where it does not — was rejected as worse than either: a warning nobody can act on trains people to ignore it.
 
 ## WHAT — Deliberately not built yet
 
 Absent by decision, not oversight. The design admits each without rework:
 
-- **RHEL and SUSE families.** Adding one means adding a backend module, never editing a task.
+- **The SUSE family.** Adding one means adding a backend module, never editing a task — which is what adding RHEL demonstrated: `src/backend/rhel.rs` plus `firewalld`, `semanage` and `rpm_repositories`, and not one task rewritten. This entry predicted that before it was tested; RHEL is the measurement, so the claim now rests on something rather than on the design's own confidence.
 - **Remote execution over SSH.** The `Executor` trait exists precisely so this becomes a second implementation; `LocalExecutor` is the only one today.
 - **General package administration.** Installing arbitrary packages is a
   different shape of task from the ones here: every task in the tree today
