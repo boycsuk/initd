@@ -25,6 +25,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
 use super::{layout, style};
+use crate::i18n::{Lang, Msg};
 use crate::tasks::{Node, TaskLocation, located_tasks};
 
 /// Width of the overlay, in columns.
@@ -188,7 +189,10 @@ fn match_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
 }
 
 /// Draws the search overlay over the interface.
-pub fn render(frame: &mut Frame, search: &Search) {
+///
+/// `lang` renders the chrome around the query only. The query itself is what
+/// the operator typed, and the results are titles and ids the tasks own.
+pub fn render(frame: &mut Frame, search: &Search, lang: Lang) {
     let area = layout::centred(WIDTH, HEIGHT, frame.area());
 
     // Clear first, or the interface underneath shows through.
@@ -196,22 +200,21 @@ pub fn render(frame: &mut Frame, search: &Search) {
 
     let items: Vec<ListItem> = search.matches().iter().map(row).collect();
 
-    // Stated rather than left to be inferred from an empty list: "no matches"
-    // and "the tree is empty" look alike otherwise.
-    let footer = if search.matches().is_empty() {
-        " no matches · Esc closes ".to_owned()
+    let footer = lang.render(&if search.matches().is_empty() {
+        Msg::SearchNoMatches
     } else {
-        format!(
-            " {} of {} · ↑↓ move · Enter goes there · Esc closes ",
-            search.selected() + 1,
-            search.matches().len()
-        )
-    };
+        Msg::SearchFooter {
+            position: search.selected() + 1,
+            total: search.matches().len(),
+        }
+    });
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(style::BORDER_FOCUSED)
-        .title(format!(" search: {}▌ ", search.query()))
+        .title(lang.render(&Msg::SearchTitle {
+            query: search.query().to_owned(),
+        }))
         .title_bottom(footer);
 
     let mut state = ListState::default();

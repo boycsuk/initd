@@ -27,7 +27,7 @@ use crate::distro::Distro;
 use crate::distro::host::HostFacts;
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
-use crate::i18n::Lang;
+use crate::i18n::{Lang, Msg, RevertReason};
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::{self, Node, Task};
@@ -47,9 +47,6 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Taken from the manifest so the interface cannot claim a release the binary
 /// is not.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Right-aligned hint in the header.
-const HELP_HINT: &str = "? help";
 
 /// Lines a page key moves the output by.
 const PAGE_SCROLL: usize = 10;
@@ -192,6 +189,14 @@ pub struct App {
     /// between openings, and it always starts at the top.
     help: Option<u16>,
     status: Status,
+    /// The locale every user-facing string is rendered through.
+    ///
+    /// Resolved once here rather than per message. Errors reach the catalogue
+    /// rarely enough that `Lang::from_env()` at the call site cost nothing, but
+    /// the interface's own chrome is rendered on every frame — a key bar alone
+    /// is a dozen labels — and reading the environment that often is a new hot
+    /// path for an answer that cannot change while the process runs.
+    lang: Lang,
     should_quit: bool,
 }
 
@@ -233,6 +238,7 @@ impl App {
             status: Status::new(),
             search: None,
             hangup: Hangup::default(),
+            lang: Lang::from_env(),
             should_quit: false,
         }
     }
@@ -345,8 +351,10 @@ impl App {
         if !self.cursor.leave_category() {
             // A refusal, not a state: the tool is still ready, the key simply
             // had nowhere to go.
-            self.status
-                .flash("already at the top level", Instant::now());
+            self.status.flash(
+                self.lang.render(&Msg::StatusAlreadyAtTopLevel),
+                Instant::now(),
+            );
         }
     }
 
@@ -567,12 +575,13 @@ impl App {
             // Quitting mid-task is how a server ends up half-configured, so it
             // is refused with the way to actually stop.
             KeyCode::Char('q') => self.status.flash(
-                "a task is running — Ctrl-C to stop it first",
+                self.lang.render(&Msg::StatusTaskRunningQuitRefused),
                 Instant::now(),
             ),
-            _ => self
-                .status
-                .flash("a task is already running", Instant::now()),
+            _ => self.status.flash(
+                self.lang.render(&Msg::StatusTaskAlreadyRunning),
+                Instant::now(),
+            ),
         }
     }
 
@@ -584,7 +593,7 @@ impl App {
 
         if running.is_cancelling() {
             self.status.flash(
-                "already stopping — waiting for the current step",
+                self.lang.render(&Msg::StatusAlreadyStopping),
                 Instant::now(),
             );
             return;
@@ -594,8 +603,10 @@ impl App {
         // Not "cancelled": the task has been asked to stop and has not yet
         // done so. Saying otherwise before the step finishes would be a lie
         // about what state the machine is in.
-        self.status
-            .set(State::Running, "stopping after the current step...");
+        self.status.set(
+            State::Running,
+            self.lang.render(&Msg::StatusStoppingAfterCurrentStep),
+        );
     }
 
     /// Handles a key press while the help overlay is showing.
@@ -610,7 +621,7 @@ impl App {
 
         // The frame is not known here, so the clamp uses the reference size;
         // `render` clamps again against the real one.
-        let limit = help::max_scroll(Rect::new(0, 0, 80, 24));
+        let limit = help::max_scroll(Rect::new(0, 0, 80, 24), self.lang);
 
         self.help = match key.code {
             KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_add(1).min(limit)),
@@ -633,7 +644,7 @@ impl App {
     fn on_verify_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('K') => self.keep_change(),
-            KeyCode::Char('R') => self.revert_change("reverted"),
+            KeyCode::Char('R') => self.revert_change(RevertReason::Requested),
             KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
             KeyCode::Up => self.output.scroll_up(1),
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
@@ -642,7 +653,7 @@ impl App {
             // window is the one state where doing nothing has consequences.
             _ => self
                 .status
-                .flash("K keeps this change, R puts it back", Instant::now()),
+                .flash(self.lang.render(&Msg::StatusVerifyKeysOnly), Instant::now()),
         }
     }
 
@@ -660,7 +671,7 @@ impl App {
     /// the operator finds the machine as they left it.
     fn resolve_on_hangup(&mut self) {
         if self.verification.is_some() {
-            self.revert_change("the session ended");
+            self.revert_change(RevertReason::SessionEnded);
         }
     }
 
@@ -675,7 +686,7 @@ impl App {
             .is_some_and(|window| window.has_expired(Instant::now()));
 
         if expired {
-            self.revert_change("no confirmation");
+            self.revert_change(RevertReason::NoConfirmation);
         }
     }
 
@@ -743,11 +754,14 @@ impl App {
                 // lose, so it closes outright.
                 if form.is_untouched() || form.cancel_armed() {
                     self.form = None;
-                    self.status.set(State::Ready, "cancelled");
+                    self.status
+                        .set(State::Ready, self.lang.render(&Msg::StatusCancelled));
                 } else {
                     form.arm_cancel();
-                    self.status
-                        .flash("press Esc again to discard what you typed", Instant::now());
+                    self.status.flash(
+                        self.lang.render(&Msg::StatusPressEscAgainToDiscard),
+                        Instant::now(),
+                    );
                 }
 
                 return None;
@@ -817,8 +831,10 @@ impl App {
         // one is wrong.
         if let Some(index) = form.first_invalid() {
             form.focus_on(index);
-            self.status
-                .flash("fill in every field first", Instant::now());
+            self.status.flash(
+                self.lang.render(&Msg::StatusFillEveryFieldFirst),
+                Instant::now(),
+            );
             return None;
         }
 
@@ -875,7 +891,8 @@ impl App {
     fn cancel_confirmation(&mut self) {
         self.confirm = None;
         self.pending_values = ParamValues::new();
-        self.status.set(State::Ready, "cancelled");
+        self.status
+            .set(State::Ready, self.lang.render(&Msg::StatusCancelled));
     }
 
     /// Acts on the selected row: descends into a category, or runs a task.
@@ -892,7 +909,10 @@ impl App {
         if !task.supports(self.distro.family) {
             // Pressing Enter on a row the host cannot run is a refusal, not a
             // state change: the reason flashes and the tool stays where it was.
-            let reason = format!("{} is not supported on {}", task.id(), self.distro.family);
+            let reason = self.lang.render(&Msg::StatusTaskNotSupported {
+                task: task.id().to_owned(),
+                family: self.distro.family.to_string(),
+            });
             self.status.flash(reason, Instant::now());
             return None;
         }
@@ -918,10 +938,10 @@ impl App {
             return;
         };
 
-        self.confirm = Some(Confirm::new(task.title(), task.description()).with_warning(
-            "This operation can lock you out of a server you reach over SSH. \
-             Make sure you have another way in before continuing.",
-        ));
+        self.confirm = Some(
+            Confirm::new(task.title(), task.description())
+                .with_warning(self.lang.render(&Msg::ConfirmLockoutWarning)),
+        );
     }
 
     /// Executes the selected task, streaming its output into the pane.
@@ -987,7 +1007,7 @@ impl App {
         for request in requests {
             self.output.push(OutputLine {
                 stream: Stream::Stderr,
-                text: Lang::from_env().render(&crate::i18n::Msg::AuthenticationRequested {
+                text: self.lang.render(&Msg::AuthenticationRequested {
                     mechanism: request.mechanism.clone(),
                 }),
             });
@@ -1057,12 +1077,12 @@ impl App {
         if granted {
             self.output.push(OutputLine {
                 stream: Stream::Stdout,
-                text: Lang::from_env().render(&crate::i18n::Msg::AuthenticationGranted),
+                text: self.lang.render(&Msg::AuthenticationGranted),
             });
         } else {
             self.output.push(OutputLine {
                 stream: Stream::Stderr,
-                text: Lang::from_env().render(&crate::i18n::Msg::AuthenticationRefused {
+                text: self.lang.render(&Msg::AuthenticationRefused {
                     mechanism: request.mechanism.clone(),
                 }),
             });
@@ -1085,7 +1105,10 @@ impl App {
         if let Err(Error::Cancelled { ref before }) = outcome {
             self.status.set(
                 State::Cancelled,
-                format!("{id} — stopped before `{before}`"),
+                self.lang.render(&Msg::StatusStoppedBefore {
+                    task: id.to_owned(),
+                    before: before.clone(),
+                }),
             );
             return;
         }
@@ -1096,7 +1119,7 @@ impl App {
         if cancelled {
             self.output.push(OutputLine {
                 stream: Stream::Stderr,
-                text: "the task finished before it could be stopped".to_owned(),
+                text: self.lang.render(&Msg::StatusFinishedBeforeItCouldStop),
             });
         }
 
@@ -1127,9 +1150,14 @@ impl App {
                 // from the left edge without reading the pane.
                 self.output.push(OutputLine {
                     stream: Stream::Stderr,
-                    text: Lang::from_env().render(&err.to_msg()),
+                    text: self.lang.render(&err.to_msg()),
                 });
-                self.status.set(State::Failed, format!("{id} — failed"));
+                self.status.set(
+                    State::Failed,
+                    self.lang.render(&Msg::StatusTaskFailed {
+                        task: id.to_owned(),
+                    }),
+                );
             }
         }
     }
@@ -1151,7 +1179,7 @@ impl App {
             return;
         }
 
-        let lang = Lang::from_env();
+        let lang = self.lang;
 
         self.output.push(OutputLine {
             stream: Stream::Stdout,
@@ -1159,7 +1187,7 @@ impl App {
         });
         self.output.push(OutputLine {
             stream: Stream::Stdout,
-            text: "Consequences:".to_owned(),
+            text: lang.render(&Msg::OutputConsequencesHeading),
         });
 
         for consequence in consequences {
@@ -1180,8 +1208,12 @@ impl App {
     fn begin_verification(&mut self, task: &str, revert: Revert) {
         let window = Verification::new(task, revert, Instant::now());
 
-        self.status
-            .set(State::Verify, format!("{task} — applied, not yet kept"));
+        self.status.set(
+            State::Verify,
+            self.lang.render(&Msg::StatusAppliedNotYetKept {
+                task: task.to_owned(),
+            }),
+        );
         self.verification = Some(window);
     }
 
@@ -1191,15 +1223,19 @@ impl App {
             return;
         };
 
-        self.status
-            .set(State::Done, format!("{} — kept", window.task));
+        self.status.set(
+            State::Done,
+            self.lang.render(&Msg::StatusKept {
+                task: window.task.clone(),
+            }),
+        );
     }
 
     /// Puts an applied change back, closing its window.
     ///
     /// A revert that itself fails is reported rather than swallowed: the
     /// administrator has to know the machine is in neither state.
-    fn revert_change(&mut self, reason: &str) {
+    fn revert_change(&mut self, reason: RevertReason) {
         let Some(window) = self.verification.take() else {
             return;
         };
@@ -1211,14 +1247,20 @@ impl App {
         match outcome {
             Ok(()) => self.status.set(
                 State::Done,
-                format!(
-                    "{} — {reason}, previous configuration restored",
-                    window.task
-                ),
+                self.lang.render(&Msg::StatusReverted {
+                    task: window.task.clone(),
+                    reason,
+                }),
             ),
+            // The revert's own failure is rendered through the catalogue like
+            // any other error, and interpolated into the line naming the task:
+            // what failed is the restore, and the operator needs both halves.
             Err(ref err) => self.status.set(
                 State::Failed,
-                format!("{} — could not restore: {err}", window.task),
+                self.lang.render(&Msg::StatusRevertFailed {
+                    task: window.task.clone(),
+                    error: self.lang.render(&err.to_msg()),
+                }),
             ),
         }
     }
@@ -1226,6 +1268,16 @@ impl App {
     /// The task currently under the cursor, if the cursor is on one.
     fn selected_task(&self) -> Option<&dyn Task> {
         self.cursor.selected_task()
+    }
+
+    /// Whether pressing Enter on the selected row would do anything.
+    ///
+    /// A category always would — it opens. A task only where this host
+    /// supports it. Categories answer `true` rather than being excluded, so a
+    /// row that *is* actionable is never drawn as if it were not.
+    fn selected_is_runnable(&self) -> bool {
+        self.selected_task()
+            .is_none_or(|task| task.supports(self.distro.family))
     }
 
     /// Moves the cursor down one row.
@@ -1258,7 +1310,7 @@ impl App {
     /// worse than a clear refusal.
     fn render(&mut self, frame: &mut Frame) {
         if !layout::is_usable(frame.area()) {
-            render_too_small(frame);
+            render_too_small(frame, self.lang);
             return;
         }
 
@@ -1280,25 +1332,22 @@ impl App {
         // and a form on top of each other had both ever existed — and the key
         // that answered would have gone to only one of them.
         //
-        // `Filling` is handled outside the match because `Form::render` needs
-        // `&mut self` for its scroll state, which `mode` cannot lend.
-        // One dialog, chosen by the same precedence the keys follow. These
-        // were independent `if`s, which would have drawn a confirmation and a
-        // form on top of each other had both ever existed, while the key
-        // answering went to only one of them.
-        //
         // `mode_under_help` rather than `mode`, because help is the one state
         // that draws *over* another rather than instead of it: what it was
         // opened on top of still has to be underneath.
         match self.mode_under_help() {
-            Mode::Confirming(confirm) => confirm.render(frame),
-            Mode::Searching(search) => search::render(frame, search),
+            Mode::Confirming(confirm) => confirm.render(frame, self.lang),
+            Mode::Searching(search) => search::render(frame, search, self.lang),
             // Asked again below rather than borrowed here: `Form::render`
             // needs `&mut self` for its scroll state, which `mode` cannot
             // lend while it is borrowing the rest of `App`.
             Mode::Filling => {
+                // Copied out first: the form is borrowed mutably for its
+                // scroll state, which leaves the rest of `App` unreadable.
+                let lang = self.lang;
+
                 if let Some(ref mut form) = self.form {
-                    form.render(frame);
+                    form.render(frame, lang);
                 }
             }
             // None of these draws a dialog: the countdown is a banner inside
@@ -1309,7 +1358,7 @@ impl App {
         // Last of all, over whatever the operator was looking at when they
         // asked for it.
         if let Some(scroll) = self.help {
-            help::render(frame, scroll);
+            help::render(frame, self.lang, scroll);
         }
     }
 
@@ -1336,36 +1385,44 @@ impl App {
             };
 
             vec![
-                Span::styled(" initd", style::HEADING),
+                Span::styled(self.lang.render(&Msg::HeaderTitle), style::HEADING),
                 separator(),
                 Span::styled(self.host.hostname.clone(), style::EMPHASIS),
                 Span::raw("  "),
-                Span::styled("tasks", tree),
+                Span::styled(self.lang.render(&Msg::HeaderPaneTree), tree),
                 Span::styled(" / ", style::BLOCK_SUBTITLE),
-                Span::styled("output", output),
+                Span::styled(self.lang.render(&Msg::HeaderPaneOutput), output),
             ]
         } else {
             vec![
-                Span::styled(" initd", style::HEADING),
+                Span::styled(self.lang.render(&Msg::HeaderTitle), style::HEADING),
                 Span::styled(format!(" {VERSION}"), style::BLOCK_SUBTITLE),
                 separator(),
                 Span::styled(self.host.hostname.clone(), style::EMPHASIS),
                 separator(),
                 Span::styled(self.distro.display_name().to_owned(), style::NORMAL),
                 separator(),
-                Span::styled(format!("root via {}", self.host.privilege), style::NORMAL),
+                Span::styled(
+                    self.lang.render(&Msg::HeaderPrivilege {
+                        mechanism: self.host.privilege.to_string(),
+                    }),
+                    style::NORMAL,
+                ),
             ]
         };
 
         // The help hint is dropped rather than allowed to wrap onto a row the
-        // header does not have.
+        // header does not have. Measured from the rendered text rather than
+        // from a constant: a translation is a different width, and a hint
+        // budgeted by English would wrap in any language whose word is longer.
+        let hint = self.lang.render(&Msg::HeaderHelpHint);
         let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
-        let hint_width = HELP_HINT.chars().count() + 1;
+        let hint_width = hint.chars().count() + 1;
 
         if used + hint_width <= area.width as usize {
             let gap = area.width as usize - used - hint_width;
             spans.push(Span::raw(" ".repeat(gap)));
-            spans.push(Span::styled(HELP_HINT, style::BLOCK_SUBTITLE));
+            spans.push(Span::styled(hint, style::BLOCK_SUBTITLE));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1420,12 +1477,29 @@ impl App {
             // The selected row stays visible while focus is elsewhere, drawn
             // differently: losing the cursor on Tab would mean hunting for it
             // again on the way back.
-            .highlight_style(if tree_focused {
-                style::SELECTION_FOCUSED
-            } else {
-                style::SELECTION_UNFOCUSED
+            //
+            // A row whose task cannot run here is drawn differently again. The
+            // blue of the ordinary cursor reads as "press Enter", and pressing
+            // it on an unsupported task does nothing — which looks like the
+            // interface ignoring the key rather than the host refusing the
+            // task. The pill and the detail pane both say so once the row is
+            // selected; this makes the row itself say it too, before the eye
+            // has moved. Colour is not carrying it alone: `MARKER_UNSUPPORTED`
+            // is already in the flag column of the same row.
+            .highlight_style(match (tree_focused, self.selected_is_runnable()) {
+                (true, true) => style::SELECTION_FOCUSED,
+                (true, false) => style::SELECTION_DISABLED,
+                (false, _) => style::SELECTION_UNFOCUSED,
             });
 
+        // These two are ordered, not merely sequential. Drawing the list is what
+        // *writes* the scroll offset — `render_stateful_widget` mutates the
+        // `ListState` it is lent, moving the window when the cursor has left it —
+        // and the scrollbar below reads that same offset to place its thumb.
+        // Swapping them draws the thumb from the previous frame's offset, so the
+        // track lags the selection by one keypress. Nothing catches it: both
+        // orders compile, both draw a scrollbar, and a test that presses a key
+        // once and looks at the result sees a plausible position either way.
         frame.render_stateful_widget(list, tree_area, self.cursor.list_state());
         self.render_tree_scrollbar(frame, tree_area);
     }
@@ -1439,14 +1513,14 @@ impl App {
                 Layout::vertical([Constraint::Length(VERIFY_BANNER_ROWS), Constraint::Min(3)])
                     .areas(right_area);
 
-            render_verification(frame, banner, window);
+            render_verification(frame, banner, window, self.lang);
             self.output
-                .render(frame, log, "output", self.focus == Pane::Output);
+                .render(frame, log, self.lang, self.focus == Pane::Output);
         } else if self.output.is_empty() {
             self.render_detail(frame, right_area);
         } else {
             self.output
-                .render(frame, right_area, "output", self.focus == Pane::Output);
+                .render(frame, right_area, self.lang, self.focus == Pane::Output);
         }
     }
 
@@ -1488,27 +1562,30 @@ impl App {
             // whether it is a missing package, a policy, or a bug. The reasons
             // were measured; this is where they were always meant to be read.
             Some(Node::Task(task)) => match task.unsupported_reason(self.distro.family) {
+                // The blank line between the two is written here rather than
+                // in the catalogue: the description above it is the task's own
+                // words, and running the two together would read as one
+                // sentence written by whoever wrote the task.
                 Some(reason) => format!(
-                    "{}\n\nNot available on {}: {reason}.",
+                    "{}\n\n{}",
                     task.description(),
-                    self.distro.family
+                    self.lang.render(&Msg::DetailUnsupported {
+                        family: self.distro.family.to_string(),
+                        reason: reason.to_owned(),
+                    })
                 ),
                 None => task.description().to_owned(),
             },
-            Some(Node::Category(category)) => {
-                let count = category.task_count();
-                let plural = if count == 1 { "task" } else { "tasks" };
-                format!(
-                    "{} — {} {} inside.\n\nPress Enter to open.",
-                    category.title, count, plural
-                )
-            }
+            Some(Node::Category(category)) => self.lang.render(&Msg::DetailCategoryContents {
+                title: category.title.to_owned(),
+                count: category.task_count(),
+            }),
             None => String::new(),
         };
 
         let title = match self.selected_node() {
-            Some(Node::Task(task)) => task.title(),
-            _ => "Detail",
+            Some(Node::Task(task)) => task.title().to_owned(),
+            _ => self.lang.render(&Msg::DetailTitle),
         };
 
         let paragraph = Paragraph::new(description)
@@ -1517,7 +1594,7 @@ impl App {
                     .borders(Borders::ALL)
                     .border_style(style::border(self.focus == Pane::Output))
                     .title(Span::styled(
-                        truncate_head(title, area.width.saturating_sub(4)),
+                        truncate_head(&title, area.width.saturating_sub(4)),
                         style::PANE_TITLE,
                     )),
             )
@@ -1535,16 +1612,17 @@ impl App {
             .count();
         let tasks = level.len() - categories;
 
+        // Each part is rendered whole rather than assembled from a count and a
+        // noun here: agreeing the plural is the language's job, and the
+        // catalogue is where a language that inflects differently can do it.
         let parts: Vec<String> = [
-            (categories, "category", "categories"),
-            (tasks, "task", "tasks"),
+            Msg::CensusCategories { count: categories },
+            Msg::CensusTasks { count: tasks },
         ]
         .iter()
-        .filter(|(count, _, _)| *count > 0)
-        .map(|(count, singular, plural)| {
-            let noun = if *count == 1 { singular } else { plural };
-            format!("{count} {noun}")
-        })
+        .zip([categories, tasks])
+        .filter(|(_, count)| *count > 0)
+        .map(|(message, _)| self.lang.render(message))
         .collect();
 
         format!(" {} ", parts.join(", "))
@@ -1559,7 +1637,10 @@ impl App {
         let state = self.pill();
 
         let mut spans = vec![
-            Span::styled(format!(" {} ", state.label()), state.style()),
+            Span::styled(
+                format!(" {} ", self.lang.render(&state.label())),
+                state.style(),
+            ),
             Span::raw("  "),
             Span::styled(self.status.message(now), style::NORMAL),
         ];
@@ -1613,24 +1694,28 @@ impl App {
     ///
     /// `Enter` opens a category but runs a task, so the hint names which of
     /// the two it is rather than listing both every time.
-    fn tree_keys(&self) -> Vec<(&'static str, &'static str)> {
+    fn tree_keys(&self) -> Vec<(&'static str, Msg)> {
         let enter_hint = match self.selected_node() {
-            Some(Node::Category(_)) => "open",
-            _ => "run",
+            Some(Node::Category(_)) => Msg::KeyBarOpen,
+            _ => Msg::KeyBarRun,
         };
 
         // Search is offered from the tree and nowhere else: it exists to reach
         // a task, and the pane holds no tasks to reach.
-        let mut keys = vec![("↑↓", "move"), ("Enter", enter_hint), ("/", "find")];
+        let mut keys = vec![
+            ("↑↓", Msg::KeyBarMove),
+            ("Enter", enter_hint),
+            ("/", Msg::KeyBarFind),
+        ];
 
         // Going back is only offered where there is somewhere to go back to.
         if !self.cursor.at_root() {
-            keys.push(("Esc", "back"));
+            keys.push(("Esc", Msg::KeyBarBack));
         }
 
         // Switching panes is pointless with nothing to read.
         if !self.output.is_empty() {
-            keys.push(("Tab", "output"));
+            keys.push(("Tab", Msg::KeyBarOutput));
         }
 
         keys
@@ -1650,13 +1735,21 @@ impl App {
         // which state wins and drifting from it.
         let mut keys = match self.mode() {
             Mode::Running => vec![
-                ("Ctrl-C", "stop"),
-                ("↑↓", "scroll"),
-                ("w", "wrap"),
-                ("?", "keys"),
+                ("Ctrl-C", Msg::KeyBarStop),
+                ("↑↓", Msg::KeyBarScroll),
+                ("w", Msg::KeyBarWrap),
+                ("?", Msg::KeyBarKeys),
             ],
-            Mode::Verifying => vec![("K", "keep"), ("R", "revert"), ("↑↓", "scroll")],
-            Mode::Searching(_) => vec![("↑↓", "move"), ("Enter", "go"), ("Esc", "close")],
+            Mode::Verifying => vec![
+                ("K", Msg::KeyBarKeep),
+                ("R", Msg::KeyBarRevert),
+                ("↑↓", Msg::KeyBarScroll),
+            ],
+            Mode::Searching(_) => vec![
+                ("↑↓", Msg::KeyBarMove),
+                ("Enter", Msg::KeyBarGo),
+                ("Esc", Msg::KeyBarClose),
+            ],
             // Both draw their own keys inside the dialog, where the operator
             // is already looking; repeating them along the bottom would be
             // the same hint twice.
@@ -1666,10 +1759,10 @@ impl App {
             Mode::Browsing => match self.focus {
                 Pane::Tree => self.tree_keys(),
                 Pane::Output => vec![
-                    ("↑↓", "scroll"),
-                    ("G", "follow"),
-                    ("w", "wrap"),
-                    ("Tab", "tree"),
+                    ("↑↓", Msg::KeyBarScroll),
+                    ("G", Msg::KeyBarFollow),
+                    ("w", Msg::KeyBarWrap),
+                    ("Tab", Msg::KeyBarTree),
                 ],
             },
         };
@@ -1678,13 +1771,19 @@ impl App {
         // leave a server half-configured, and mid-verification it would
         // abandon a change with nobody left to put it back.
         if !matches!(self.mode(), Mode::Running | Mode::Verifying) {
-            keys.push(("q", "quit"));
+            keys.push(("q", Msg::KeyBarQuit));
         }
 
         let mut spans = Vec::with_capacity(keys.len() * 3);
         for (key, label) in keys {
+            // The spaces around each pair are the bar's own separation rather
+            // than part of either word, so they stay here: a label that
+            // carried them could not be reused where the spacing differs.
             spans.push(Span::styled(format!(" {key}"), style::KEYBAR_KEY));
-            spans.push(Span::styled(format!(" {label} "), style::KEYBAR_LABEL));
+            spans.push(Span::styled(
+                format!(" {} ", self.lang.render(&label)),
+                style::KEYBAR_LABEL,
+            ));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1696,27 +1795,33 @@ impl App {
 /// It states three things in order: that the change is applied but not yet
 /// permanent, how long is left, and what to press. The countdown is red
 /// because it is the one number on screen that acts on its own.
-fn render_verification(frame: &mut Frame, area: Rect, window: &Verification) {
+fn render_verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang) {
     let lines = vec![
         Line::from(vec![
-            Span::styled(" VERIFY ", style::STATUS_BUSY),
+            Span::styled(lang.render(&Msg::VerifyBadge), style::STATUS_BUSY),
             Span::raw("  "),
-            Span::styled("applied, ", style::NORMAL),
-            Span::styled("not yet kept", style::EMPHASIS),
+            Span::styled(lang.render(&Msg::VerifyApplied), style::NORMAL),
+            Span::styled(lang.render(&Msg::VerifyNotYetKept), style::EMPHASIS),
         ]),
         Line::from(vec![
-            Span::styled("reverting in ", style::DANGER_TEXT),
+            Span::styled(lang.render(&Msg::VerifyRevertingIn), style::DANGER_TEXT),
             Span::styled(window.countdown(Instant::now()), style::EMPHASIS),
             Span::raw("   "),
             Span::styled("K", style::KEYBAR_KEY),
-            Span::styled(" keep   ", style::KEYBAR_LABEL),
+            Span::styled(lang.render(&Msg::VerifyKeepKey), style::KEYBAR_LABEL),
             Span::styled("R", style::KEYBAR_KEY),
-            Span::styled(" revert now", style::KEYBAR_LABEL),
+            Span::styled(lang.render(&Msg::VerifyRevertKey), style::KEYBAR_LABEL),
         ]),
         // The instruction that matters: the tool cannot check this itself, so
         // the one thing the administrator must do is stated outright.
-        Line::styled("Open a second session and check you", style::EMPHASIS),
-        Line::styled("can still log in.", style::EMPHASIS),
+        Line::styled(
+            lang.render(&Msg::VerifyCheckSecondSessionLine1),
+            style::EMPHASIS,
+        ),
+        Line::styled(
+            lang.render(&Msg::VerifyCheckSecondSessionLine2),
+            style::EMPHASIS,
+        ),
         // What the countdown depends on, said rather than implied. A dropped
         // connection and an ordinary kill both revert, because the signals are
         // caught; a `SIGKILL` or a machine losing power run no code at all, so
@@ -1724,7 +1829,7 @@ fn render_verification(frame: &mut Frame, area: Rect, window: &Verification) {
         // above trustworthy — a promise with a silent exception teaches people
         // to disbelieve the whole banner.
         Line::styled(
-            "Reverts while this session lives.",
+            lang.render(&Msg::VerifySessionScopeCaveat),
             style::CONSEQUENCE_EXTERNAL,
         ),
     ];
@@ -1853,14 +1958,13 @@ fn truncate_head(text: &str, width: u16) -> String {
 }
 
 /// Draws the refusal shown on a terminal too small for a legible interface.
-fn render_too_small(frame: &mut Frame) {
-    let message = format!(
-        "initd needs at least {}×{} .\nThis terminal is {}×{}.",
-        layout::MIN_WIDTH,
-        layout::MIN_HEIGHT,
-        frame.area().width,
-        frame.area().height,
-    );
+fn render_too_small(frame: &mut Frame, lang: Lang) {
+    let message = lang.render(&Msg::TerminalTooSmall {
+        min_width: layout::MIN_WIDTH,
+        min_height: layout::MIN_HEIGHT,
+        width: frame.area().width,
+        height: frame.area().height,
+    });
 
     frame.render_widget(
         Paragraph::new(message)
@@ -2676,6 +2780,68 @@ mod tests {
             .collect()
     }
 
+    /// Renders and returns the colour pair the selected tree row was drawn with.
+    ///
+    /// The companion of [`render_to_rows`], which keeps only the symbols. A
+    /// selection style carries no text of its own, so a row's *appearance* is
+    /// unassertable from the grid alone — and the difference between a cursor
+    /// that invites Enter and one that does not is entirely appearance.
+    ///
+    /// The cell is read two columns in. One is the border itself, which is
+    /// drawn in the pane's own style and would answer `BORDER_FOCUSED` for
+    /// every row — the reading that made the first version of this helper
+    /// report cyan regardless of what the highlight had done.
+    fn selected_row_style(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> (Option<ratatui::style::Color>, Option<ratatui::style::Color>) {
+        // Below the split width only one pane is drawn, and the tree's
+        // rectangle is then whichever pane holds focus — so reading it with
+        // focus elsewhere would report the output pane's style as if it were a
+        // row's, plausibly and wrongly. Refused here rather than left to
+        // produce a colour pair that looks like an answer.
+        assert_eq!(
+            app.focus,
+            Pane::Tree,
+            "this reads the tree's rectangle, so the tree must be drawn in it"
+        );
+
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| app.render(frame))
+            .expect("drawing must not fail");
+
+        let buffer = terminal.backend().buffer().clone();
+
+        // The tree's own rectangle, asked of the same layout the renderer used,
+        // rather than guessed. Computing the row from the list offset alone
+        // lands on the pane title and reports the *border's* style for every
+        // row — which is what the first version of this helper did, and why it
+        // answered cyan whatever the highlight had done.
+        let body = layout::frame(Rect::new(0, 0, width, height)).body;
+        let (tree, _) = layout::body(body, layout::BodyLayout::for_width(body.width));
+        let selected = app
+            .cursor
+            .list_state()
+            .selected()
+            .expect("a row must be selected");
+        let offset = app.cursor.offset();
+
+        // One row down for the pane's top border, one column in for its left.
+        let y = tree.y + 1 + u16::try_from(selected - offset).expect("a visible row");
+
+        // The colour pair alone. A rendered cell also carries whatever the row
+        // beneath the highlight contributed — `underline_color`, and the `DIM`
+        // an unsupported row's own text style adds — so comparing whole
+        // `Style`s would fail on differences the highlight did not make.
+        let cell = buffer[(tree.x + 1, y)].style();
+
+        (cell.fg, cell.bg)
+    }
+
     /// Prints the rendered grid, for diffing against the mockups by eye.
     ///
     /// Ignored by default: it asserts nothing and exists as a viewer. Run with
@@ -2955,7 +3121,10 @@ mod tests {
         assert!(narrow.contains("web-01"), "got {narrow:?}");
 
         let wide = render_to_rows(&mut app, 140, 24)[0].clone();
-        assert!(wide.contains(HELP_HINT), "got {wide:?}");
+        assert!(
+            wide.contains(&Lang::En.render(&Msg::HeaderHelpHint)),
+            "got {wide:?}"
+        );
     }
 
     #[test]
@@ -3708,6 +3877,45 @@ mod tests {
         assert!(
             rows.iter().any(|row| row.contains("UNSUPPORTED")),
             "the pill must name the refusal: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn the_cursor_on_an_unsupported_task_is_not_drawn_as_an_invitation() {
+        // The blue cursor reads as "press Enter", and pressing it here does
+        // nothing — which looks like the interface dropping the key rather than
+        // the host refusing the task. The pill and the detail pane both say so,
+        // but only after the eye has moved off the row.
+        //
+        // Colour is not carrying this alone: the same row already shows
+        // `MARKER_UNSUPPORTED` in its flag column, so a monochrome terminal
+        // loses nothing.
+        let mut app = test_app(Family::Rhel);
+
+        jump_to_unsupported(&mut app, Family::Rhel);
+
+        assert_eq!(
+            selected_row_style(&mut app, 80, 24),
+            (style::SELECTION_DISABLED.fg, style::SELECTION_DISABLED.bg),
+            "a row that cannot run must not wear the cursor that invites Enter"
+        );
+    }
+
+    #[test]
+    fn the_cursor_on_a_runnable_task_still_invites_enter() {
+        // The other direction, and the reason it is a separate test: a
+        // predicate stuck at `false` would satisfy the assertion above while
+        // drawing every row in the tree as refused. Neither scenario catches
+        // that alone.
+        let mut app = test_app(Family::Debian);
+
+        enter_named_category(&mut app, "Remote Access");
+        enter_first_category(&mut app);
+
+        assert_eq!(
+            selected_row_style(&mut app, 80, 24),
+            (style::SELECTION_FOCUSED.fg, style::SELECTION_FOCUSED.bg),
+            "a runnable row must keep the ordinary cursor"
         );
     }
 

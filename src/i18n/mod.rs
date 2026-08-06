@@ -1,12 +1,28 @@
 //! Message catalogue and locale resolution.
 //!
-//! Every user-facing string in `initd` goes through this module. Nothing else
-//! embeds display text, so adding a language means adding one catalogue module
-//! and one `match` arm — never touching call sites.
+//! Every user-facing string in `initd` goes through this module — errors,
+//! consequences, and the interface's own chrome. Nothing else embeds display
+//! text, so adding a language means adding one catalogue module and one `match`
+//! arm, never touching call sites.
+//!
+//! Two kinds of string deliberately stay out, and both are the same
+//! distinction: they are not words in a language.
+//!
+//! - **Key glyphs and drawing symbols** — `Tab`, `↑ k`, `│`, `✓`. Translating
+//!   `Tab` would describe a keyboard the operator does not have.
+//! - **Task data** — ids, titles, descriptions, and the reasons a task gives
+//!   for refusing a family. These belong to the task rather than to the
+//!   interface; they reach the screen through `Task`, which the catalogue does
+//!   not sit behind.
 //!
 //! The design is deliberately dependency-free. The catalogue is a closed enum
 //! rendered by an exhaustive `match`, so a message that lacks a translation is
 //! a compile error rather than a runtime lookup miss.
+//!
+//! Callers that render on every frame resolve the locale once and hold it —
+//! `App` keeps a `Lang` field — rather than calling [`Lang::from_env`] per
+//! message. An error reaches the catalogue rarely; a key bar is a dozen labels
+//! sixty times a second.
 
 mod en;
 
@@ -259,6 +275,377 @@ pub enum Msg {
     Terminal {
         source: String,
     },
+
+    // --- Interface: status pills ---
+    //
+    // The words inside the status pill. Payload-free, deliberately: it is what
+    // lets the pill stay resolvable from a `State` alone, and it keeps
+    // `docs/ui.md`'s table of pill words a table of one thing per row.
+    PillReady,
+    PillRunning,
+    PillDone,
+    PillFailed,
+    PillCancelled,
+    PillVerify,
+    PillConfirm,
+    PillInput,
+    PillUnsupported,
+
+    // --- Interface: help ---
+    //
+    // Section titles and the description beside each key. The key glyphs
+    // themselves stay literals: `Tab` and `↑ k` name keys on a keyboard rather
+    // than words in a language, and translating them would describe a keyboard
+    // the operator does not have.
+    HelpTitle,
+    HelpSectionAnywhere,
+    HelpSectionTree,
+    HelpSectionSearch,
+    HelpSectionRunning,
+    HelpSectionOutput,
+    HelpSectionForms,
+    HelpSectionConfirmation,
+    HelpSectionLockout,
+    HelpMoveFocus,
+    HelpThisHelp,
+    HelpQuit,
+    HelpPreviousRow,
+    HelpNextRow,
+    HelpFirstLastRow,
+    HelpOpenOrRun,
+    HelpFind,
+    HelpBack,
+    HelpFilter,
+    HelpBetweenResults,
+    HelpGoToTask,
+    HelpCloseSearch,
+    HelpStopAfterCommand,
+    HelpScrollOutput,
+    HelpFocusOutput,
+    HelpScrollLine,
+    HelpScrollPage,
+    HelpOldestLine,
+    HelpNewestLine,
+    HelpWrap,
+    HelpNextField,
+    HelpNextFieldOrSubmit,
+    HelpFieldEnds,
+    HelpClearAround,
+    HelpDeleteWord,
+    HelpCancelForm,
+    HelpApply,
+    HelpCancel,
+    HelpBetweenAnswers,
+    HelpKeep,
+    HelpRevert,
+    HelpAutoRevert,
+    HelpTypeGlyph,
+    HelpWaitGlyph,
+    HelpMoreBelow {
+        percent: u16,
+    },
+    HelpAnyKeyCloses,
+
+    // --- Interface: confirm ---
+    //
+    // The two answers and the line telling the operator how to give one. The
+    // answers carry their own padding in the catalogue rather than at the call
+    // site: they are drawn as highlighted badges, and a translation whose word
+    // needs different spacing to sit inside one has no way to say so from here.
+    ConfirmYes,
+    ConfirmNo,
+    ConfirmKeyHint,
+
+    // --- Interface: output ---
+    //
+    // The pane's title and the word saying whether the view is pinned. Both
+    // are payload-free: the title names one pane, and the two follow states
+    // are a closed pair rather than a value to interpolate.
+    OutputTitle,
+    OutputFollowing,
+    OutputDetached,
+
+    // --- Interface: forms ---
+    //
+    // The dialog's own chrome. What a field is called, what it currently holds
+    // and what is wrong with it all come from the task's `Param`, so none of
+    // that is here: those are the task's data, and a form that renamed them
+    // would be describing a different task.
+    /// Which of several fields the cursor is on. Carries both numbers rather
+    /// than a rendered `2 of 3`, since a language that words the pair
+    /// differently — or orders it the other way — cannot say so from the call
+    /// site.
+    FormFieldCounter {
+        index: usize,
+        total: usize,
+    },
+    FormKeyField,
+    /// What `Enter` does once every field would be accepted.
+    FormKeyContinue,
+    /// What `Enter` does while a field would still be rejected. Stated as the
+    /// remedy rather than as a refusal: it sits where `continue` sits, and the
+    /// operator reading it is looking for what to do next.
+    FormKeyIncomplete,
+    FormKeyCancel,
+
+    // --- Interface: search ---
+    //
+    // The chrome around the query. The query itself is never rendered through
+    // the catalogue: it is what the operator typed, and translating it would
+    // change what they are searching for.
+    SearchTitle {
+        query: String,
+    },
+    /// Said rather than left to be inferred from an empty list: "no matches"
+    /// and "the tree is empty" look alike otherwise.
+    SearchNoMatches,
+    /// Position in the results, with the keys that act on them. `total` is
+    /// carried so the language can agree its own plural — English does not
+    /// here, but a catalogue that only received the rendered pair could not
+    /// start.
+    SearchFooter {
+        position: usize,
+        total: usize,
+    },
+
+    // --- Interface: header ---
+    //
+    // The one-line band naming the tool and the machine. The hostname, the
+    // distribution's display name and the version are interpolated
+    // untranslated: they are what the machine calls itself, and a header that
+    // renamed them would be describing a different host.
+    /// The tool's own name, leading the header. Carries its leading space
+    /// because it is the first span on the row and nothing else insets it.
+    HeaderTitle,
+    /// Which pane is showing, on a terminal narrow enough that only one fits.
+    /// Two variants rather than one with a payload: they are drawn as separate
+    /// spans so the showing one can be emphasised, and a single rendered pair
+    /// could not be styled apart.
+    HeaderPaneTree,
+    HeaderPaneOutput,
+    /// How root is obtained, stated in the header rather than when a task
+    /// fails: "this will need a password" is worth knowing before starting.
+    HeaderPrivilege {
+        mechanism: String,
+    },
+    /// The right-aligned hint pointing at the help overlay. Carries its key
+    /// glyph, unlike the key bar's labels, because it is drawn as one span
+    /// rather than as a glyph and a label styled apart — and it is measured
+    /// before it is drawn, so the width has to include the glyph.
+    HeaderHelpHint,
+
+    // --- Interface: detail pane ---
+    //
+    // What the selected row would do, before anything has run. A task's title
+    // and description are the task's own data and never come from here; only
+    // the sentences the pane wraps around them do.
+    /// Why a task the host cannot run is refused. The reason is the task's,
+    /// measured per family, and is interpolated as written.
+    DetailUnsupported {
+        family: String,
+        reason: String,
+    },
+    /// What a category holds, since a category has no description of its own.
+    /// `count` is carried rather than a rendered `3 tasks`, so the language
+    /// agrees its own plural.
+    DetailCategoryContents {
+        title: String,
+        count: usize,
+    },
+    /// The pane's title where the cursor is on a category, which lends no
+    /// title of its own.
+    DetailTitle,
+
+    // --- Interface: tree census ---
+    //
+    // What the level on screen holds, riding the tree's bottom border. Two
+    // messages rather than one joined line: which of the two appears depends
+    // on what the level contains, and a language that joins them differently
+    // resolves that where the parts are still separate.
+    CensusCategories {
+        count: usize,
+    },
+    CensusTasks {
+        count: usize,
+    },
+
+    // --- Interface: verification banner ---
+    //
+    // The highest-risk copy in the interface: it stands over a change that can
+    // sever the administrator's own connection, and what it promises is what
+    // decides whether they trust the countdown.
+    //
+    // Three things are said in order, and a translation must keep the order:
+    // that the change is applied but *not* permanent, how long is left, and
+    // what to press. Anything that reads as "done" belongs to `keep`, never
+    // here — a banner that sounds settled is one nobody answers.
+    /// The banner's own badge. Padded because it is drawn as a highlighted
+    /// pill like the status one, and the spaces are the pill's inside edge.
+    VerifyBadge,
+    /// Split from `VerifyNotYetKept` rather than one sentence: the second half
+    /// is emphasised and the first is not, and a single span could not be.
+    VerifyApplied,
+    /// The half that carries the meaning, which is why it is the emphasised
+    /// one. A translation must not soften it into "pending" or "awaiting
+    /// confirmation": the operative fact is that this will be undone.
+    VerifyNotYetKept,
+    /// Precedes the countdown, which is styled as danger because it is the one
+    /// number on screen that acts on its own. Reads as a statement of what
+    /// will happen, not as an offer.
+    VerifyRevertingIn,
+    /// The two keys' labels, padded to sit against their key glyph. `K` and
+    /// `R` themselves are keys on a keyboard and stay literal.
+    VerifyKeepKey,
+    VerifyRevertKey,
+    /// The instruction that matters, over two lines because it is wrapped by
+    /// hand to the banner's width. The tool cannot check this itself, so the
+    /// one thing the administrator must actually do is stated outright rather
+    /// than implied by the countdown — a window that only counts down does not
+    /// tell anyone what to do with the time.
+    VerifyCheckSecondSessionLine1,
+    VerifyCheckSecondSessionLine2,
+    /// The limit of the promise, said rather than left implied. A dropped
+    /// connection and an ordinary kill both revert, because those signals are
+    /// caught; `SIGKILL` and a power cut run no code at all, so the change
+    /// would stay. Stating that is what makes the line above trustworthy — a
+    /// promise with a silent exception teaches people to disbelieve the whole
+    /// banner, which costs the warnings beside it too. A translation that
+    /// drops this line breaks the banner rather than shortening it.
+    VerifySessionScopeCaveat,
+
+    // --- Interface: key bar ---
+    //
+    // The labels beside each key glyph along the bottom row. The glyphs
+    // themselves — `↑↓`, `Enter`, `Esc`, `Tab`, `Ctrl-C`, `K`, `R`, `w`, `G`,
+    // `q`, `/` — stay literals for the same reason the help overlay's do: they
+    // name keys on a keyboard rather than words in a language.
+    //
+    // Each label is a verb naming what the key does *here*, so `KeyBarOpen`
+    // and `KeyBarRun` are separate messages even though one key produces both:
+    // `Enter` opens a category and runs a task, and which it is has to be said.
+    KeyBarOpen,
+    KeyBarRun,
+    KeyBarMove,
+    KeyBarFind,
+    KeyBarBack,
+    KeyBarOutput,
+    KeyBarStop,
+    KeyBarScroll,
+    KeyBarWrap,
+    KeyBarKeys,
+    KeyBarKeep,
+    KeyBarRevert,
+    KeyBarGo,
+    KeyBarClose,
+    KeyBarFollow,
+    KeyBarTree,
+    KeyBarQuit,
+
+    // --- Interface: status messages ---
+    //
+    // What the status row says beside its pill. Task ids and command names are
+    // interpolated as written: they are what the operator would type or search
+    // for, and translating them would name something that does not exist.
+    /// Refusals raised by a key the current state will not accept. Each names
+    /// the way out rather than only the refusal — an operator who pressed a
+    /// key is looking for what to press instead.
+    StatusTaskRunningQuitRefused,
+    StatusTaskAlreadyRunning,
+    StatusAlreadyStopping,
+    /// Deliberately not "cancelled": the task has been *asked* to stop and has
+    /// not yet done so. Claiming otherwise before the step finishes would be a
+    /// lie about what state the machine is in.
+    StatusStoppingAfterCurrentStep,
+    StatusAlreadyAtTopLevel,
+    /// The two keys the verification window will accept, for every other key.
+    /// Refused rather than ignored: an unanswered window is the one state
+    /// where doing nothing has consequences.
+    StatusVerifyKeysOnly,
+    StatusCancelled,
+    /// The second-press prompt before a form with typed values is discarded.
+    StatusPressEscAgainToDiscard,
+    StatusFillEveryFieldFirst,
+    /// Said out loud rather than silently dropped: the operator pressed a key
+    /// and is owed an answer, even when the answer is that it arrived late.
+    StatusFinishedBeforeItCouldStop,
+    /// Pressing Enter on a row this host cannot run. A refusal, not a state
+    /// change, so it flashes and the tool stays where it was.
+    StatusTaskNotSupported {
+        task: String,
+        family: String,
+    },
+    StatusTaskFailed {
+        task: String,
+    },
+    /// Reported from what the task actually did rather than from the operator
+    /// having asked: the request arrives between two commands, so a task
+    /// already on its last one runs to completion. Naming the command it
+    /// stopped *before* is what tells the operator what ran and what did not.
+    StatusStoppedBefore {
+        task: String,
+        before: String,
+    },
+    /// A change that can sever this session is not reported as done. It is
+    /// applied, and held open until the administrator proves they can get in.
+    StatusAppliedNotYetKept {
+        task: String,
+    },
+    StatusKept {
+        task: String,
+    },
+    /// Names why the change went back, since silence, a keypress and a lost
+    /// session all reach here and mean different things to whoever returns.
+    StatusReverted {
+        task: String,
+        reason: RevertReason,
+    },
+    /// A revert that itself failed, reported rather than swallowed: the
+    /// administrator has to know the machine is in neither state.
+    StatusRevertFailed {
+        task: String,
+        error: String,
+    },
+    /// Heads the consequences a finished task declared, written into the
+    /// output pane where there is room to read them.
+    OutputConsequencesHeading,
+
+    // --- Interface: confirmation warning ---
+    //
+    /// The lockout warning on a destructive task's confirmation. Names the
+    /// remedy — have another way in — rather than only the risk, because by
+    /// the time this is on screen the operator has already decided to proceed
+    /// and the useful sentence is the one they can act on.
+    ConfirmLockoutWarning,
+
+    // --- Interface: terminal too small ---
+    //
+    /// A stated requirement rather than a partial interface: a garbled layout
+    /// on a production server is worse than a clear refusal, so both the
+    /// minimum and the actual size are given and the operator can see by how
+    /// much the window must grow.
+    TerminalTooSmall {
+        min_width: u16,
+        min_height: u16,
+        width: u16,
+        height: u16,
+    },
+}
+
+/// Why an applied change was put back.
+///
+/// A closed set rather than a string, because the three cases mean genuinely
+/// different things to whoever returns to the machine: one was decided, one
+/// was never answered, and one was interrupted. Carrying it as data keeps the
+/// wording in the catalogue while the call sites stay a choice between three
+/// named situations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevertReason {
+    /// The operator pressed `R`.
+    Requested,
+    /// The session went away before anything was confirmed.
+    SessionEnded,
+    /// The window ran out with nobody answering it.
+    NoConfirmation,
 }
 
 #[cfg(test)]

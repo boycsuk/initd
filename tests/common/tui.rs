@@ -79,8 +79,16 @@ impl Tui {
         // correctly omitted what they were looking for. `-x`/`-y` are kept as
         // well: where they are honoured the window opens at the right size and
         // never redraws.
+        // `LC_ALL=C` pins the language the interface renders in. Every string
+        // on screen resolves through the message catalogue against the
+        // environment, so a scenario grepping the pane for `VERIFY` is asking a
+        // question about a locale as much as about the interface — and an image
+        // whose environment named a language this build did not carry would
+        // fail here for a reason no assertion mentions. `C` resolves to English
+        // by the catalogue's own rule, and is the one value present on every
+        // base image.
         let started = container.exec(&format!(
-            "tmux new-session -d -s {SESSION} -x {WIDTH} -y {HEIGHT} initd; \
+            "LC_ALL=C tmux new-session -d -s {SESSION} -x {WIDTH} -y {HEIGHT} initd; \
              tmux resize-window -t {SESSION} -x {WIDTH} -y {HEIGHT} 2>/dev/null; \
              tmux display-message -p -t {SESSION} '#{{pane_width}}x#{{pane_height}}'"
         ));

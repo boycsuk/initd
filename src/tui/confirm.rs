@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::{layout, style};
+use crate::i18n::{Lang, Msg};
 
 /// The dialog's share of the screen, as `docs/ui.md` specifies it.
 const WIDTH_PERCENT: u16 = 60;
@@ -60,7 +61,11 @@ impl Confirm {
     }
 
     /// Renders the dialog centred over the interface.
-    pub fn render(&self, frame: &mut Frame) {
+    ///
+    /// The title, body and warning arrive as text because they are the task's
+    /// own words, chosen before the dialog opened; `lang` renders only the
+    /// chrome the dialog itself owns — the two answers and the key hint.
+    pub fn render(&self, frame: &mut Frame, lang: Lang) {
         let area = layout::centred_percent(WIDTH_PERCENT, HEIGHT_PERCENT, frame.area());
 
         // Clear first, or the interface underneath shows through the dialog.
@@ -117,13 +122,13 @@ impl Confirm {
         }
 
         frame.render_widget(
-            Paragraph::new(self.choice_line()).alignment(Alignment::Left),
+            Paragraph::new(self.choice_line(lang)).alignment(Alignment::Left),
             choice_area,
         );
     }
 
     /// The yes/no line, with the current selection highlighted.
-    fn choice_line(&self) -> Line<'static> {
+    fn choice_line(&self, lang: Lang) -> Line<'static> {
         let (yes, no) = if self.accepted {
             (style::CHOICE_SELECTED, style::CHOICE_NORMAL)
         } else {
@@ -131,10 +136,10 @@ impl Confirm {
         };
 
         Line::from(vec![
-            Span::styled(" Yes ", yes),
+            Span::styled(lang.render(&Msg::ConfirmYes), yes),
             Span::raw("   "),
-            Span::styled(" No ", no),
-            Span::raw("      (Tab to switch, Enter to confirm, Esc to cancel)"),
+            Span::styled(lang.render(&Msg::ConfirmNo), no),
+            Span::raw(lang.render(&Msg::ConfirmKeyHint)),
         ])
     }
 }
@@ -150,7 +155,7 @@ mod tests {
                 .expect("the test backend must build");
 
         terminal
-            .draw(|frame| confirm.render(frame))
+            .draw(|frame| confirm.render(frame, Lang::En))
             .expect("the dialog must draw");
 
         terminal
@@ -161,6 +166,16 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// One of the answers, as it is drawn.
+    ///
+    /// Trimmed of the badge padding the catalogue carries: what the assertions
+    /// are about is whether the word survived being laid out, and a screen
+    /// dumped row by row has already lost the spaces around it to the cells
+    /// beside it.
+    fn answer(message: &Msg) -> String {
+        Lang::En.render(message).trim().to_owned()
     }
 
     /// A description long enough to fill the dialog at any usable size.
@@ -182,8 +197,14 @@ mod tests {
 
         let screen = rendered(&confirm, 80, 24);
 
-        assert!(screen.contains("Yes"), "the choice must be drawn: {screen}");
-        assert!(screen.contains("No"), "the choice must be drawn: {screen}");
+        assert!(
+            screen.contains(&answer(&Msg::ConfirmYes)),
+            "the choice must be drawn: {screen}"
+        );
+        assert!(
+            screen.contains(&answer(&Msg::ConfirmNo)),
+            "the choice must be drawn: {screen}"
+        );
     }
 
     #[test]
@@ -200,7 +221,10 @@ mod tests {
             screen.contains("lock you out"),
             "the warning must survive a long body: {screen}"
         );
-        assert!(screen.contains("Yes"), "and so must the choice: {screen}");
+        assert!(
+            screen.contains(&answer(&Msg::ConfirmYes)),
+            "and so must the choice: {screen}"
+        );
     }
 
     #[test]
@@ -217,7 +241,10 @@ mod tests {
             screen.contains("lock you out"),
             "the warning must survive the smallest usable terminal: {screen}"
         );
-        assert!(screen.contains("Yes"), "and so must the choice: {screen}");
+        assert!(
+            screen.contains(&answer(&Msg::ConfirmYes)),
+            "and so must the choice: {screen}"
+        );
     }
 
     #[test]
@@ -255,7 +282,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
 
         terminal
-            .draw(|frame| Confirm::new("Change port", "Continue?").render(frame))
+            .draw(|frame| Confirm::new("Change port", "Continue?").render(frame, Lang::En))
             .expect("drawing must not fail");
 
         let buffer = terminal.backend().buffer().clone();

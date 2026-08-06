@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{layout, style};
+use crate::i18n::{Lang, Msg};
 
 /// Width the overlay is drawn at, before clamping to the terminal.
 const WIDTH: u16 = 70;
@@ -26,9 +27,18 @@ const WIDTH: u16 = 70;
 const HEIGHT: u16 = 24;
 
 /// One group of bindings, as it appears in the overlay.
+///
+/// Titles and descriptions are [`Msg`]s rather than text, so the wording lives
+/// in the catalogue with every other user-facing string. The table stays a
+/// `const` because every message it names is payload-free — a variant carrying
+/// a `String` could not appear in one.
+///
+/// The key glyphs stay literals. `Tab` and `↑ k` name keys on a keyboard
+/// rather than words in a language, and translating them would describe a
+/// keyboard the operator does not have.
 struct Section {
-    title: &'static str,
-    keys: &'static [(&'static str, &'static str)],
+    title: Msg,
+    keys: &'static [(&'static str, Msg)],
 }
 
 /// Every binding the interface has, grouped by where it applies.
@@ -38,93 +48,109 @@ struct Section {
 /// list of forty bindings readable.
 const SECTIONS: &[Section] = &[
     Section {
-        title: "Anywhere",
+        title: Msg::HelpSectionAnywhere,
         keys: &[
-            ("Tab", "move focus between the tree and the output"),
-            ("?", "this help"),
-            ("q", "quit"),
+            ("Tab", Msg::HelpMoveFocus),
+            ("?", Msg::HelpThisHelp),
+            ("q", Msg::HelpQuit),
         ],
     },
     Section {
-        title: "Task tree",
+        title: Msg::HelpSectionTree,
         keys: &[
-            ("↑ k", "previous row"),
-            ("↓ j", "next row"),
-            ("g G", "first / last row"),
-            ("Enter", "open a category, or run a task"),
-            ("/", "find a task anywhere in the tree"),
-            ("Esc ← h", "back to the parent level"),
+            ("↑ k", Msg::HelpPreviousRow),
+            ("↓ j", Msg::HelpNextRow),
+            ("g G", Msg::HelpFirstLastRow),
+            ("Enter", Msg::HelpOpenOrRun),
+            ("/", Msg::HelpFind),
+            ("Esc ← h", Msg::HelpBack),
         ],
     },
     Section {
-        title: "Search",
+        title: Msg::HelpSectionSearch,
         keys: &[
-            ("(type)", "filter by title or task id"),
-            ("↑ ↓", "move between results"),
-            ("Enter", "go to the task, without running it"),
-            ("Esc", "close, leaving the cursor where it was"),
+            // The glyph column here is a word rather than a key name, so it is
+            // the one entry in it that the catalogue owns.
+            ("", Msg::HelpFilter),
+            ("↑ ↓", Msg::HelpBetweenResults),
+            ("Enter", Msg::HelpGoToTask),
+            ("Esc", Msg::HelpCloseSearch),
         ],
     },
     // Listed because this is when somebody most needs it: a task three minutes
     // in is exactly when `?` gets pressed, and the key bar that also shows
     // Ctrl-C is dropped on a terminal under 24 rows.
     Section {
-        title: "While a task runs",
+        title: Msg::HelpSectionRunning,
         keys: &[
-            ("Ctrl-C", "stop after the current command"),
-            ("↑ ↓", "scroll the output"),
-            ("Tab", "move focus to the output"),
+            ("Ctrl-C", Msg::HelpStopAfterCommand),
+            ("↑ ↓", Msg::HelpScrollOutput),
+            ("Tab", Msg::HelpFocusOutput),
         ],
     },
     Section {
-        title: "Output",
+        title: Msg::HelpSectionOutput,
         keys: &[
-            ("↑ k / ↓ j", "scroll a line"),
-            ("PageUp/Down", "scroll a page"),
-            ("g", "oldest retained line"),
-            ("G f", "newest output, and follow it"),
-            ("w", "wrap long lines"),
+            ("↑ k / ↓ j", Msg::HelpScrollLine),
+            ("PageUp/Down", Msg::HelpScrollPage),
+            ("g", Msg::HelpOldestLine),
+            ("G f", Msg::HelpNewestLine),
+            ("w", Msg::HelpWrap),
         ],
     },
     Section {
-        title: "Forms",
+        title: Msg::HelpSectionForms,
         keys: &[
-            ("Tab", "next field"),
-            ("Enter", "next field, or submit on the last"),
-            ("Ctrl-A/E", "start / end of the value"),
-            ("Ctrl-U/K", "clear before / after the cursor"),
-            ("Ctrl-W", "delete the previous word"),
-            ("Esc", "cancel (twice, if anything is typed)"),
+            ("Tab", Msg::HelpNextField),
+            ("Enter", Msg::HelpNextFieldOrSubmit),
+            ("Ctrl-A/E", Msg::HelpFieldEnds),
+            ("Ctrl-U/K", Msg::HelpClearAround),
+            ("Ctrl-W", Msg::HelpDeleteWord),
+            ("Esc", Msg::HelpCancelForm),
         ],
     },
     Section {
-        title: "Confirmation",
+        title: Msg::HelpSectionConfirmation,
         keys: &[
-            ("y", "apply"),
-            ("n Esc", "cancel"),
-            ("← →", "move between the answers"),
+            ("y", Msg::HelpApply),
+            ("n Esc", Msg::HelpCancel),
+            ("← →", Msg::HelpBetweenAnswers),
         ],
     },
     Section {
-        title: "After a change that could lock you out",
+        title: Msg::HelpSectionLockout,
         keys: &[
-            ("K", "keep the change"),
-            ("R", "put the previous configuration back"),
-            ("(wait)", "puts it back on its own after 60s"),
+            ("K", Msg::HelpKeep),
+            ("R", Msg::HelpRevert),
+            ("", Msg::HelpAutoRevert),
         ],
     },
 ];
 
+/// The glyph shown for an entry whose key column is a word, not a key.
+///
+/// `(type)` and `(wait)` describe *doing* something rather than pressing a
+/// named key, so their wording belongs to the locale while every other glyph
+/// in the column does not. Resolved here rather than stored in [`SECTIONS`],
+/// which stays `const`.
+fn glyph_for(lang: Lang, key: &'static str, description: &Msg) -> String {
+    match description {
+        Msg::HelpFilter => lang.render(&Msg::HelpTypeGlyph),
+        Msg::HelpAutoRevert => lang.render(&Msg::HelpWaitGlyph),
+        _ => key.to_owned(),
+    }
+}
+
 /// Draws the overlay over the interface.
 ///
 /// `scroll` is how far down the list has been moved, in lines.
-pub fn render(frame: &mut Frame, scroll: u16) {
+pub fn render(frame: &mut Frame, lang: Lang, scroll: u16) {
     let area = layout::centred(WIDTH, HEIGHT, frame.area());
 
     // Clear first, or the interface underneath shows through.
     frame.render_widget(Clear, area);
 
-    let all = lines();
+    let all = lines(lang);
     let visible_height = area.height.saturating_sub(2);
     let max_scroll = (all.len() as u16).saturating_sub(visible_height);
     let scroll = scroll.min(max_scroll);
@@ -132,18 +158,20 @@ pub fn render(frame: &mut Frame, scroll: u16) {
     // The hint says which keys move the list, but only while there is
     // something below the fold to move to.
     let footer = if max_scroll > 0 {
-        format!(
-            " ↑↓ more · any other key closes  ({}%) ",
-            percentage(scroll, max_scroll)
-        )
+        lang.render(&Msg::HelpMoreBelow {
+            percent: percentage(scroll, max_scroll),
+        })
     } else {
-        " any key closes ".to_owned()
+        lang.render(&Msg::HelpAnyKeyCloses)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(style::BORDER_FOCUSED)
-        .title(Span::styled(" Keys ", style::PANE_TITLE))
+        .title(Span::styled(
+            lang.render(&Msg::HelpTitle),
+            style::PANE_TITLE,
+        ))
         .title_bottom(Span::styled(footer, style::BLOCK_SUBTITLE));
 
     let inner = block.inner(area);
@@ -164,12 +192,12 @@ const fn percentage(scroll: u16, max_scroll: u16) -> u16 {
 ///
 /// The caller clamps its own offset with this, so pressing down at the bottom
 /// does nothing rather than scrolling into blank space.
-pub fn max_scroll(area: Rect) -> u16 {
+pub fn max_scroll(area: Rect, lang: Lang) -> u16 {
     let height = layout::centred(WIDTH, HEIGHT, area)
         .height
         .saturating_sub(2);
 
-    (lines().len() as u16).saturating_sub(height)
+    (lines(lang).len() as u16).saturating_sub(height)
 }
 
 /// The overlay's full contents.
@@ -177,16 +205,18 @@ pub fn max_scroll(area: Rect) -> u16 {
 /// Every section is built whether or not it fits: the list scrolls rather than
 /// dropping what will not fit, because the sections most worth reading — the
 /// keys that cannot be guessed from anywhere else — are the ones at the end.
-fn lines() -> Vec<Line<'static>> {
+fn lines(lang: Lang) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     for section in SECTIONS {
-        lines.push(Line::styled(section.title, style::HEADING));
+        lines.push(Line::styled(lang.render(&section.title), style::HEADING));
 
         for (key, description) in section.keys {
+            let glyph = glyph_for(lang, key, description);
+
             lines.push(Line::from(vec![
-                Span::styled(format!("  {key:<12}"), style::KEYBAR_KEY),
-                Span::styled(*description, style::NORMAL),
+                Span::styled(format!("  {glyph:<12}"), style::KEYBAR_KEY),
+                Span::styled(lang.render(description), style::NORMAL),
             ]));
         }
 
@@ -201,14 +231,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_entry_with_no_key_glyph_gets_one_from_the_catalogue() {
+        // Two rows describe doing something rather than pressing a named key,
+        // so their glyph column is a word and belongs to the locale. They carry
+        // an empty key in `SECTIONS` and `glyph_for` supplies the word — a
+        // pairing nothing but this test enforces. A third such row added
+        // without its arm would render an empty column, which reads as a
+        // binding with no key rather than as a mistake.
+        for section in SECTIONS {
+            for (key, description) in section.keys {
+                if !key.is_empty() {
+                    continue;
+                }
+
+                assert!(
+                    !glyph_for(Lang::En, key, description).is_empty(),
+                    "an entry with no key glyph needs an arm in glyph_for: {description:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_section_states_at_least_one_key() {
         for section in SECTIONS {
-            assert!(
-                !section.keys.is_empty(),
-                "section {} lists nothing",
-                section.title
-            );
-            assert!(!section.title.is_empty());
+            let title = Lang::En.render(&section.title);
+
+            assert!(!section.keys.is_empty(), "section {title} lists nothing");
+            assert!(!title.is_empty());
         }
     }
 
@@ -218,7 +268,7 @@ mod tests {
         // rest of the interface, so they must be findable here.
         let verify = SECTIONS
             .iter()
-            .find(|section| section.title.contains("lock you out"))
+            .find(|section| Lang::En.render(&section.title).contains("lock you out"))
             .expect("the verification keys must have a section");
 
         let keys: Vec<&str> = verify.keys.iter().map(|(key, _)| *key).collect();
@@ -231,13 +281,14 @@ mod tests {
     fn every_section_is_built_whether_or_not_it_fits() {
         // The sections most worth reading are the ones at the end, so the list
         // scrolls rather than dropping what will not fit.
-        let all = lines();
+        let all = lines(Lang::En);
 
         for section in SECTIONS {
+            let title = Lang::En.render(&section.title);
+
             assert!(
-                all.iter().any(|line| line.to_string() == section.title),
-                "section {} must be present",
-                section.title
+                all.iter().any(|line| line.to_string() == title),
+                "section {title} must be present"
             );
         }
     }
@@ -247,7 +298,7 @@ mod tests {
         // At the reference size the overlay does not fit, which is exactly the
         // case that used to lose the verification keys.
         assert!(
-            max_scroll(Rect::new(0, 0, 80, 24)) > 0,
+            max_scroll(Rect::new(0, 0, 80, 24), Lang::En) > 0,
             "the reference size must offer scrolling"
         );
     }
@@ -261,7 +312,7 @@ mod tests {
         assert_eq!(huge.height, HEIGHT);
         assert_eq!(huge.width, WIDTH);
         assert!(
-            max_scroll(Rect::new(0, 0, 200, 200)) > 0,
+            max_scroll(Rect::new(0, 0, 200, 200), Lang::En) > 0,
             "the list is longer than the overlay at any terminal size"
         );
     }
@@ -273,7 +324,7 @@ mod tests {
 
         assert!(area.width <= 60);
         assert!(area.height <= 15);
-        assert!(!lines().is_empty(), "something must still be shown");
+        assert!(!lines(Lang::En).is_empty(), "something must still be shown");
     }
 
     #[test]

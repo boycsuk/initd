@@ -16,6 +16,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::field::Field;
 use super::{layout, style};
+use crate::i18n::{Lang, Msg};
 use crate::tasks::params::{Param, ParamValues};
 
 /// Width the dialog is drawn at, before clamping to the terminal.
@@ -136,7 +137,11 @@ impl Form {
     }
 
     /// Renders the dialog centred over the interface.
-    pub fn render(&mut self, frame: &mut Frame) {
+    ///
+    /// The title arrives as text because it is the task's own, chosen before
+    /// the form opened; `lang` renders only the chrome the dialog itself owns
+    /// — the field counter and the key hints.
+    pub fn render(&mut self, frame: &mut Frame, lang: Lang) {
         let height = CHROME_ROWS + ROWS_PER_FIELD * self.fields.len() as u16;
         let area = layout::centred(DIALOG_WIDTH, height, frame.area());
 
@@ -151,11 +156,11 @@ impl Form {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        self.render_fields(frame, inner);
+        self.render_fields(frame, inner, lang);
     }
 
     /// Draws each field, its validation note, and the footer.
-    fn render_fields(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_fields(&mut self, frame: &mut Frame, area: Rect, lang: Lang) {
         // Two cells of the box's own border are not available to the text.
         let field_width = area.width.saturating_sub(4) as usize;
         let focus = self.focus;
@@ -171,7 +176,10 @@ impl Form {
             let (visible, cursor) = field.visible(field_width);
 
             let counter = if total > 1 {
-                format!("{} of {total}  ", index + 1)
+                lang.render(&Msg::FormFieldCounter {
+                    index: index + 1,
+                    total,
+                })
             } else {
                 String::new()
             };
@@ -222,20 +230,22 @@ impl Form {
             lines.push(note_line(field));
         }
 
+        // The key glyphs stay literals for the reason `help.rs` states: `Tab`
+        // and `Esc` name keys on a keyboard rather than words in a language.
         lines.push(Line::from(vec![
             Span::styled("Tab", style::KEYBAR_KEY),
-            Span::styled(" field   ", style::KEYBAR_LABEL),
+            Span::styled(lang.render(&Msg::FormKeyField), style::KEYBAR_LABEL),
             Span::styled("Enter", style::KEYBAR_KEY),
             Span::styled(
-                if self.is_valid() {
-                    " continue   "
+                lang.render(&if self.is_valid() {
+                    Msg::FormKeyContinue
                 } else {
-                    " (fill every field)   "
-                },
+                    Msg::FormKeyIncomplete
+                }),
                 style::KEYBAR_LABEL,
             ),
             Span::styled("Esc", style::KEYBAR_KEY),
-            Span::styled(" cancel", style::KEYBAR_LABEL),
+            Span::styled(lang.render(&Msg::FormKeyCancel), style::KEYBAR_LABEL),
         ]));
 
         frame.render_widget(Paragraph::new(lines), area);
