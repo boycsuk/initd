@@ -12,19 +12,11 @@ use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::binaries::{Artefact, Release};
 use crate::error::{Error, Result};
-use crate::exec::{Command, Executor, OutputLine, Stream};
+use crate::exec::{Command, Executor};
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Support, Task, supported_everywhere};
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
-}
+use crate::tasks::{Category, Node, Progress, Support, Task, report, supported_everywhere};
 
 /// Builds the developer environment category.
 pub fn category() -> Category {

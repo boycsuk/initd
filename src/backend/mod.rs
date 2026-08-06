@@ -12,6 +12,7 @@ pub mod debian;
 pub mod firewalld;
 pub mod nftables;
 pub mod openrc;
+pub mod posix_accounts;
 pub mod procfs_sysctl;
 pub mod release_installer;
 pub mod rhel;
@@ -24,6 +25,8 @@ pub mod unix_accounts;
 pub mod unix_files;
 pub mod wg_tools;
 
+use crate::backend::nftables::Nftables;
+use crate::backend::semanage::NoSelinux;
 use crate::distro::{Distro, Family};
 use crate::domain::{
     AccountReader, AccountWriter, AutomaticUpdates, BinaryInstaller, FileEditor, FirewallManager,
@@ -139,7 +142,17 @@ pub trait Backend {
     /// `ufw` is deliberately absent for the same reason it always was: it wraps
     /// whichever backend is installed, so driving both it and `nft` on one host
     /// is how a rule becomes invisible to the tool that did not write it.
-    fn firewalls(&self) -> &[&dyn FirewallManager];
+    ///
+    /// nftables alone by default, which is what three of the four families
+    /// answer. Where Debian has `ufw` active the nftables implementation
+    /// reports itself unavailable rather than fighting it, so the single
+    /// candidate still holds there. RHEL overrides this: it is the one family
+    /// offering two, and the order it puts them in is load-bearing.
+    fn firewalls(&self) -> &[&dyn FirewallManager] {
+        const FIREWALLS: &[&dyn FirewallManager] = &[&Nftables::new()];
+
+        FIREWALLS
+    }
 
     /// Kernel parameters.
     fn sysctl(&self) -> &dyn SysctlManager;
@@ -193,7 +206,15 @@ pub trait Backend {
     /// Families without one return an implementation that reports nothing
     /// enforcing, so a task asks the same question everywhere rather than
     /// branching on the distribution.
-    fn selinux(&self) -> &dyn SelinuxManager;
+    /// Nothing enforces by default, which is the answer on three of the four
+    /// families: a constant rather than a question put to the host. Tasks still
+    /// ask, which is what keeps the check out of them. RHEL is the one family
+    /// that has one, and whether it is *enforcing* is asked of the host there.
+    fn selinux(&self) -> &dyn SelinuxManager {
+        const SELINUX: &NoSelinux = &NoSelinux::new();
+
+        SELINUX
+    }
 
     /// WireGuard key material and interface state.
     fn wireguard(&self) -> &dyn WireguardTools;

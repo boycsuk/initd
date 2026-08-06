@@ -9,11 +9,12 @@
 use crate::backend::Backend;
 use crate::domain::account_writer::{LockMethod, PasswordPolicy};
 use crate::error::{Error, Result};
-use crate::exec::{Executor, OutputLine, Stream};
+use crate::exec::Executor;
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
+use crate::tasks::ssh::has_authorized_key;
+use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
 
 /// The account whose lock is dangerous enough to warrant its own guard.
 const ROOT: &str = "root";
@@ -24,14 +25,6 @@ const ROOT: &str = "root";
 /// families out of the box, and changing it afterwards is what
 /// [`SetShell`] is for.
 const DEFAULT_SHELL: &str = "/bin/bash";
-
-/// Reports a step to the caller as a normal output line.
-fn report(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
-}
 
 /// Builds the account administration category.
 pub fn category() -> Category {
@@ -351,30 +344,21 @@ impl LockRoot {
     }
 }
 
-/// Whether an account has at least one entry in `authorized_keys`.
-fn has_authorized_key(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
-    let path = format!("/home/{user}/.ssh/authorized_keys");
-    let files = backend.files();
-
-    if !files.exists(executor, &path)? {
-        return Ok(false);
-    }
-
-    // A file that exists but holds only comments authorises nobody, so the
-    // contents decide rather than the file's presence.
-    Ok(files
-        .read(executor, &path)?
-        .lines()
-        .map(str::trim)
-        .any(|line| !line.is_empty() && !line.starts_with('#')))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::for_family;
     use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    /// A key that passes validation, not merely a non-empty line.
+    ///
+    /// The shorter placeholder that stood here satisfied the check this file
+    /// used to carry — which asked only that a line be neither blank nor a
+    /// comment — and fails the shared one, which parses the key. The fixture
+    /// was never a valid key; only the old criterion was lax enough to admit
+    /// it, and a guard that admits `garbage` is not guarding `users.lock-root`.
+    const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ user@host";
 
     /// Values for a task taking a single named parameter.
     fn values(name: &'static str, value: &str) -> ParamValues {
@@ -557,12 +541,16 @@ mod tests {
             vec![
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
                 Reply::ok("alice sudo"),
-                Reply::ok(""),                               // file exists
-                Reply::ok("ssh-ed25519 AAAAC3Nza key@host"), // holds a key
-                Reply::ok("Account expires\t: never"),       // not yet locked
-                Reply::ok(""),                               // re-check: exists
-                Reply::ok("ssh-ed25519 AAAAC3Nza key@host"), // re-check: still there
-                Reply::ok(""),                               // usermod
+                // The home comes from passwd rather than from `/home/{user}`,
+                // so each key check spends a `getent` before reading the file.
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
+                Reply::ok(""),                                         // file exists
+                Reply::ok(TEST_KEY),                                   // holds a key
+                Reply::ok("Account expires\t: never"),                 // not yet locked
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
+                Reply::ok(""),                                         // re-check: exists
+                Reply::ok(TEST_KEY),                                   // re-check: still there
+                Reply::ok(""),                                         // usermod
             ],
             &values(LockRoot::ADMIN, "alice"),
         );
@@ -592,10 +580,12 @@ mod tests {
             vec![
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
                 Reply::ok("alice sudo"),
-                Reply::ok(""),                               // file exists
-                Reply::ok("ssh-ed25519 AAAAC3Nza key@host"), // holds a key
-                Reply::ok("Account expires\t: never"),       // not yet locked
-                Reply::failure(1, ""),                       // re-check: gone
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
+                Reply::ok(""),                                         // file exists
+                Reply::ok(TEST_KEY),                                   // holds a key
+                Reply::ok("Account expires\t: never"),                 // not yet locked
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
+                Reply::failure(1, ""),                                 // re-check: key file gone
             ],
             &values(LockRoot::ADMIN, "alice"),
         );
@@ -619,8 +609,9 @@ mod tests {
             vec![
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
                 Reply::ok("alice sudo"),
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
                 Reply::ok(""),
-                Reply::ok("ssh-ed25519 AAAAC3Nza key@host"),
+                Reply::ok(TEST_KEY),
                 Reply::ok("Account expires\t: Jan 02, 1970"), // already locked
             ],
             &values(LockRoot::ADMIN, "alice"),

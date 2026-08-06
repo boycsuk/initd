@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `users.lock-root` asks the account database where a home is, instead of
+  assuming `/home/{user}`. It carried its own copy of `has_authorized_key`,
+  and the copy predated the fix that `ssh::has_authorized_key` documents and
+  pins with a test — so an administrator whose home is elsewhere held a key the
+  guard could not see. That failed safe (the lock was refused rather than
+  granted), but the two answers were drifting apart in front of the one
+  operation whose recovery is the provider's rescue console. The copy also
+  counted any line that was neither blank nor a comment as a key, so a file
+  holding `garbage` satisfied it; the shared one parses the key. The fixture in
+  that file changed for the same reason — the short placeholder was never a
+  valid key, and only the lax criterion admitted it.
+
+### Changed
+- The SSH tasks each live in a file of their own, and `src/tasks/ssh/mod.rs`
+  drops from 2065 lines to 211. Only ~520 of those were production code; the
+  rest was a single `mod tests` covering five groups — two of which were
+  orphans. `harden.rs` and `keys.rs` had been extracted as modules earlier, and
+  both times the production code moved while its tests stayed behind: neither
+  file had a `mod tests` at all, so 25 of the 56 tests belonged to files that
+  already existed. The three tasks still defined there now get the same
+  treatment: `install.rs`, `port.rs` and `allow_users.rs`.
+  `warn_if_socket_activated` and `DEFAULT_SSH_PORT` travel to `port.rs`, their
+  only caller, and stop being surface of the module. What stays is what more
+  than one task needs, plus the three tests that compare tasks against each
+  other — `destructive_tasks_are_marked_as_such` asserts that harden and port
+  are destructive *and* that install is not, and splitting it would have kept
+  the assertions while losing the comparison. Verified as a pure move by
+  diffing the sorted output of `cargo nextest list`: the same 678 names before
+  and after, rather than the same count, since a test dropped and another
+  renamed would leave the total unchanged.
+- `report` is defined once rather than in each of the seven task modules that
+  use it. What the copies duplicated was not the four lines but the decision:
+  the shape of an output line could be changed in none of them alone.
+- `selinux` and `firewalls` are answered by defaults on the `Backend` trait.
+  Debian, Arch and Alpine gave identical answers — the first byte for byte,
+  comment included — and only RHEL diverges, in both. The trait already used
+  this shape for four other capabilities.
+- `/etc/shells` and `id -nG` are read from `backend::posix_accounts` rather
+  than once per account suite. shadow-utils and busybox differ in how they
+  *write* accounts, which is why both modules exist; these two questions were
+  not among the differences, diverging only in whether a constant was called
+  `SHELLS` or `SHELLS_FILE`. The whole-word group comparison now has tests of
+  its own: it was covered only through its callers, and the `sudo`/`sudoers`
+  substring case is the one that reports an ordinary account as an
+  administrator.
+- The confirmation dialog's title is drawn with a style role. It was the one
+  panel title in the interface drawn with none, which left the dialog shown
+  before a destructive change looking less deliberate than the form that asks
+  for a port.
+
+### Documentation
+- `CLAUDE.md` says RHEL is implemented, because it is: `Family::Rhel` is in
+  `Family::ALL`, `rockylinux:9` is in the container matrix, and 22 of the 28
+  tasks run there. Two sections claimed otherwise, one of them listing it under
+  "deliberately not built yet — absent by decision". That entry predicted that
+  adding a family would mean adding a module and editing no task; RHEL is the
+  measurement that confirms it, so it is now cited as evidence rather than
+  deleted. Only SUSE remains admitted-but-absent.
+- The structure map lists the six backend modules and three domain traits it
+  had fallen behind on — `firewalld`, `semanage`, `rpm_repositories`,
+  `apt_periodic`, `openrc`, `busybox_accounts`, and the SELinux, repository and
+  automatic-update traits. Three of those predate RHEL, so the list had been
+  stale since Alpine.
+- The minisign claim was measured instead of counted. It said "packaged on all
+  three families"; there are four, and on `rockylinux:9` minisign is in no base
+  repository — it installs only after EPEL, a third-party repository, is
+  enabled. Which strengthens the reason for declining to require it: the cost
+  is not the same everywhere.
+- `docs/conventions.md` describes this project. It was a mirror of the
+  template's generic rules — SQL injection, uploaded files, constant-time
+  comparison, `npm audit`, "don't trust the client" — none of which apply here,
+  while the prohibitions that do (no distro branching inside a task, no
+  `Command` outside `src/exec/`, no `unwrap` in production) appeared nowhere.
+  It exists for the reader who only sees `docs/`, which is exactly the reader
+  who could not have known any of them.
+- The four dead references to `backend.md` in `conventions.md` and
+  `user-stories.md` name `cli.md`, and the exit code those two interactive-only
+  tasks return is documented. `2`, not `1` — verified against the binary — and
+  a script that retries on `1` must not retry them.
+
 ### Added
 - Seventeen more tasks run as tasks in a container. Eleven of twenty-eight
   reached one before; the account, sysctl, firewall and WireGuard scenarios are

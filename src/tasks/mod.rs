@@ -20,7 +20,7 @@ pub mod wireguard;
 use crate::backend::Backend;
 use crate::distro::Family;
 use crate::error::Result;
-use crate::exec::{Executor, OutputLine};
+use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::consequence::Consequence;
 use crate::tasks::params::{Param, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -29,6 +29,18 @@ use crate::tasks::revert::Outcome;
 ///
 /// The CLI prints these lines; the TUI streams them into its output pane.
 pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
+
+/// Reports a step to the caller as a normal output line.
+///
+/// Here rather than in each task module: the seven that report progress had
+/// written this identically, so the shape of an output line was a decision
+/// recorded in seven places and changeable in none of them alone.
+pub(crate) fn report(progress: Progress<'_>, text: impl Into<String>) {
+    progress(OutputLine {
+        stream: Stream::Stdout,
+        text: text.into(),
+    });
+}
 
 /// Whether a task runs on a family, and the reason when it does not.
 ///
@@ -220,7 +232,9 @@ impl Category {
 /// adding a line here and a module beside it — never restructuring the tree.
 ///
 /// `Remote Access` is named for what its members do rather than for a protocol:
-/// SSH grants shell access and WireGuard, once it lands, grants network access.
+/// SSH grants shell access and WireGuard grants network access. The name was
+/// chosen before WireGuard existed and did not have to change when it arrived,
+/// which is what it was chosen for.
 pub fn tree() -> Vec<Node> {
     vec![
         // Identity comes first because the rest depends on there being a safe

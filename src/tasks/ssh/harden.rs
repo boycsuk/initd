@@ -34,7 +34,7 @@ use super::{has_authorized_key, reload_ssh, report, revertible};
 /// Keyboard-interactive authentication is absent deliberately: its keyword
 /// differs by version and is probed rather than assumed. See
 /// [`keyboard_interactive_keywords`].
-pub(super) const SAFE_DIRECTIVES: [(&str, &str); 17] = [
+const SAFE_DIRECTIVES: [(&str, &str); 17] = [
     ("PermitRootLogin", "no"),
     ("PasswordAuthentication", "no"),
     ("PubkeyAuthentication", "yes"),
@@ -313,4 +313,479 @@ fn disable_keyboard_interactive(
     }
 
     Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::for_family;
+    use crate::distro::Family;
+    use crate::exec::mock::{MockExecutor, Reply};
+    use crate::tasks::ssh::fixtures::{ROOT_PASSWD, TEST_KEY, no_values};
+
+    #[test]
+    fn hardening_refuses_without_an_authorised_key() {
+        // The lockout guard: disabling passwords with no key stranded the
+        // administrator outside the server.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::failure(1, ""),  // authorized_keys does not exist
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect_err("hardening without a key must refuse");
+
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForRoot
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn hardening_sets_every_safe_directive() {
+        // Iterates the table rather than listing directives again, so a pair
+        // added there is covered here without this test being edited.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("hardening must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        for (directive, value) in SAFE_DIRECTIVES {
+            assert!(
+                written.contains(&format!("{directive} {value}")),
+                "{directive} is missing from the written config"
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_sets_no_crypto_directives() {
+        // The tier boundary: narrowing algorithms can strand a client that
+        // could connect before, so it belongs to the strict task.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        for directive in ["Ciphers", "KexAlgorithms", "MACs", "AllowTcpForwarding"] {
+            assert!(
+                !written.contains(directive),
+                "{directive} belongs to the strict tier, got: {written}"
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_writes_the_keyword_this_sshd_understands() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::ok(""),          // probe: KbdInteractiveAuthentication accepted
+            Reply::failure(
+                1,
+                "command-line: line 0: Bad configuration option: ChallengeResponseAuthentication",
+            ),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("KbdInteractiveAuthentication no"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("ChallengeResponseAuthentication no"),
+            "a keyword this sshd rejects must not be written, got: {written}"
+        );
+    }
+
+    #[test]
+    fn hardening_falls_back_to_the_legacy_keyword() {
+        // OpenSSH before 6.9 does not know the current name. Writing it would
+        // cost the whole change, not just this directive.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::failure(
+                1,
+                "command-line: line 0: Bad configuration option: KbdInteractiveAuthentication",
+            ),
+            Reply::ok(""), // probe: ChallengeResponseAuthentication accepted
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("ChallengeResponseAuthentication no"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("KbdInteractiveAuthentication no"),
+            "got: {written}"
+        );
+    }
+
+    #[test]
+    fn hardening_skips_keyboard_interactive_when_neither_keyword_is_known() {
+        // The property that makes probing worth its cost: one unusable keyword
+        // must not take the other sixteen directives down with it.
+        let bad_option = |keyword: &str| {
+            Reply::failure(
+                1,
+                format!("command-line: line 0: Bad configuration option: {keyword}"),
+            )
+        };
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            bad_option("KbdInteractiveAuthentication"),
+            bad_option("ChallengeResponseAuthentication"),
+        ]);
+        let backend = for_family(Family::Debian);
+        let mut warnings = Vec::new();
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            })
+            .expect("the other directives must still apply");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must still be written");
+
+        assert!(
+            !written.contains("KbdInteractive") && !written.contains("ChallengeResponse"),
+            "no unrecognised keyword may be written, got: {written}"
+        );
+        for (directive, value) in SAFE_DIRECTIVES {
+            assert!(
+                written.contains(&format!("{directive} {value}")),
+                "{directive} must survive a failed probe"
+            );
+        }
+        assert!(
+            warnings.iter().any(|w| w.contains("keyboard-interactive")),
+            "the skip must be reported, got: {warnings:?}"
+        );
+    }
+
+    /// Scripts the four `ssh -Q` queries the strict tier makes, in order.
+    fn query_replies(kex: &str, cipher: &str, mac: &str, host_key: &str) -> [Reply; 4] {
+        [
+            Reply::ok(kex),
+            Reply::ok(cipher),
+            Reply::ok(mac),
+            Reply::ok(host_key),
+        ]
+    }
+
+    #[test]
+    fn strict_hardening_writes_only_supported_algorithms() {
+        let mut replies = vec![
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+        ];
+        replies.extend(query_replies(
+            "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
+            // No chacha20 on this build: it must not reach the file.
+            "aes256-gcm@openssh.com\naes256-ctr\n",
+            "hmac-sha2-512-etm@openssh.com\nhmac-sha2-256-etm@openssh.com\n",
+            "ssh-ed25519\nrsa-sha2-512\n",
+        ));
+        let mock = MockExecutor::with_replies(replies);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("strict hardening must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(
+            written.contains("Ciphers aes256-gcm@openssh.com,aes256-ctr"),
+            "got: {written}"
+        );
+        assert!(
+            !written.contains("chacha20"),
+            "an algorithm this build lacks must not be written, got: {written}"
+        );
+        assert!(written.contains("RequiredRSASize 3072"), "got: {written}");
+        assert!(written.contains("AllowTcpForwarding no"), "got: {written}");
+    }
+
+    #[test]
+    fn strict_hardening_skips_a_directive_it_cannot_query() {
+        // `ssh` absent, or a query name this release does not know. The task
+        // still has other work to do and must finish it.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+            Reply::failure(255, "Unsupported query"),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("a failed query must not fail the task");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must still be written");
+
+        for directive in ["Ciphers", "KexAlgorithms", "MACs", "HostKeyAlgorithms"] {
+            assert!(
+                !written.contains(directive),
+                "{directive} must be left at the default, got: {written}"
+            );
+        }
+        assert!(written.contains("RequiredRSASize 3072"), "got: {written}");
+    }
+
+    #[test]
+    fn strict_hardening_warns_when_it_skips_a_directive() {
+        // A directive the administrator asked for must never be silently
+        // absent from the result.
+        let mut replies = vec![
+            Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ];
+        replies.extend(query_replies(
+            "curve25519-sha256\ndiffie-hellman-group16-sha512\n",
+            // Only one hardened cipher survives: below the floor.
+            "3des-cbc\naes256-ctr\n",
+            "hmac-sha2-512-etm@openssh.com\nhmac-sha2-256-etm@openssh.com\n",
+            "ssh-ed25519\nrsa-sha2-512\n",
+        ));
+        let mock = MockExecutor::with_replies(replies);
+        let backend = for_family(Family::Debian);
+        let mut warnings = Vec::new();
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            })
+            .expect("runs");
+
+        assert!(
+            warnings.iter().any(|w| w.contains("Ciphers")),
+            "the skipped directive must be named, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_refuses_without_an_authorised_key() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::failure(1, ""),  // authorized_keys does not exist
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect_err("strict hardening without a key must refuse");
+
+        assert!(
+            matches!(
+                err,
+                Error::LockoutRisk {
+                    kind: Lockout::NoKeyForRoot
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            "nothing may be written when the guard trips"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_reloads_rather_than_restarts() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        let commands = mock.recorded_lines();
+        assert!(
+            commands.iter().any(|c| c.contains("reload")),
+            "got: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("restart")),
+            "restarting drops the administrator's own session, got: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn strict_hardening_offers_a_revert() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let outcome = HardenSshStrict
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("runs");
+
+        assert!(
+            outcome.is_revertible(),
+            "narrowing algorithms can strand a client, so it must be undoable"
+        );
+    }
+
+    #[test]
+    fn hardening_disables_root_login_and_passwords() {
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"), // read sshd_config
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),          // authorized_keys exists
+            Reply::ok(TEST_KEY),    // it contains a valid key
+            Reply::ok(""),          // test -e for the write
+            Reply::ok(""),          // cp backup
+            Reply::ok(""),          // tee
+            Reply::ok(""),          // sshd -t
+            Reply::ok(""),          // systemctl reload
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("hardening must succeed");
+
+        let written = mock
+            .recorded()
+            .into_iter()
+            .find(|cmd| cmd.program == "tee")
+            .and_then(|cmd| cmd.stdin)
+            .expect("the config must be written");
+
+        assert!(written.contains("PermitRootLogin no"));
+        assert!(written.contains("PasswordAuthentication no"));
+    }
+
+    #[test]
+    fn hardening_reloads_rather_than_restarts() {
+        // Restarting would drop the administrator's own session.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("Port 22\n"),
+            Reply::ok(ROOT_PASSWD), // getent passwd: root's home
+            Reply::ok(""),
+            Reply::ok(TEST_KEY),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        HardenSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |_| {})
+            .expect("hardening must succeed");
+
+        let commands = mock.recorded_lines();
+        assert!(commands.iter().any(|c| c.contains("systemctl reload")));
+        assert!(!commands.iter().any(|c| c.contains("systemctl restart")));
+    }
 }

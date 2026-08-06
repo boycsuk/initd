@@ -7,7 +7,8 @@
 > be able to list every capability without opening the source or the other
 > docs.
 >
-> **What this file is NOT.** Not the API (`backend.md` lists endpoints), not
+> **What this file is NOT.** Not the programmatic contract (`cli.md` lists
+> subcommands, arguments and exit codes), not
 > the visual map (`ui.md` lists screens and tokens), not implementation. A
 > story says *what the user achieves and why*, never *how it is built*.
 >
@@ -41,8 +42,8 @@ Add nested lines only when they carry contract-level information:
   camera"*.
 
 Keep stories outcome-focused. "I can reset my password" is a story; "the
-reset button is blue" is not (that is `ui.md`), and "calls `POST /auth/reset`"
-is not (that is `backend.md`).
+reset button is blue" is not (that is `ui.md`), and "runs `initd run
+users.lock-root`" is not (that is `cli.md`).
 
 ## Interfaces
 

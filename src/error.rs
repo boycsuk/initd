@@ -33,6 +33,14 @@ pub enum Lockout {
     NoKeyForAllowedUsers { users: String },
 }
 
+/// Everything this tool can fail at, as data rather than as a sentence.
+///
+/// Each variant carries what went wrong and nothing about how to say it: the
+/// wording lives in [`crate::i18n`], which renders these through an exhaustive
+/// match. That is what makes a missing translation a compile error instead of a
+/// message that silently comes out in the wrong language — and what lets the
+/// TUI and the CLI report the same failure differently without either of them
+/// parsing a string the other wrote.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// `/etc/os-release` could not be read.
