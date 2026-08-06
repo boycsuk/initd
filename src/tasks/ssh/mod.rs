@@ -4,6 +4,8 @@
 //! unit names and command syntax all arrive through the backend — that is the
 //! property this whole design exists to provide.
 
+#[cfg(test)]
+pub mod fixtures;
 pub mod harden;
 pub mod keys;
 
@@ -526,17 +528,7 @@ mod tests {
     use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
-    /// For tasks that declare no parameters.
-    fn no_values() -> ParamValues {
-        ParamValues::new()
-    }
-
-    /// The values `AuthorizeKey` declares, as the interface would collect them.
-    /// A passwd entry for root, as `getent` returns it.
-    ///
-    /// The home directory is read from here rather than assumed, so every
-    /// scenario that authorises a key has to answer the lookup first.
-    const ROOT_PASSWD: &str = "root:x:0:0:root:/root:/bin/bash";
+    use super::fixtures::{ROOT_PASSWD, TEST_KEY, no_values};
 
     /// Passwd entries for the two ordinary accounts the allow-list tests name.
     const ALICE_PASSWD: &str = "alice:x:1000:1000::/home/alice:/bin/sh";
@@ -668,9 +660,6 @@ mod tests {
         assert!(InstallSsh.supports(Family::Debian));
         assert!(InstallSsh.supports(Family::Arch));
     }
-
-    /// A valid ed25519 key body, long enough to pass structural validation.
-    const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ user@host";
 
     #[test]
     fn accepts_well_formed_public_keys() {
