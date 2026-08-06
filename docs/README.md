@@ -39,13 +39,13 @@ kind:
 - **`conventions.md`** — *how to write the code* in this project (typing,
   error handling, security, git, output). The three above describe *what the
   system does*; this one describes *how contributors should build it*. It is a
-  **portable mirror of `.claude/rules/`**: Claude Code reads the canonical
-  rules from `.claude/rules/` automatically, but a tool that does not run
-  Claude Code (Xcode, a sandboxed editor, a different assistant) only sees
-  `docs/`. Without `conventions.md` such a tool knows what to build but not how
-  to build it to this project's standards. `.claude/rules/` stays the source of
-  truth; `conventions.md` is its summary for everyone else, and must be
-  re-synced when the rules change.
+  **portable mirror of `~/.claude/rules/`**: Claude Code reads the canonical
+  rules from `~/.claude/rules/` — global config outside this repository —
+  automatically, but a tool that does not run Claude Code (Xcode, a sandboxed
+  editor, a different assistant) only sees `docs/`. Without `conventions.md`
+  such a tool knows what to build but not how to build it to this project's
+  standards. `~/.claude/rules/` stays the source of truth; `conventions.md` is
+  its summary for everyone else, and must be re-synced when the rules change.
 
 Add more files (`cli.md`, `bot.md`, `events.md`, …) only when there is a *new
 producer or consumer of contracts* another part of the system must understand

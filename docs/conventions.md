@@ -2,15 +2,20 @@
 
 > **What this file is.** The coding conventions of this project, distilled so
 > that any tool or contributor can follow them — including ones that do NOT run
-> Claude Code and therefore never see `.claude/rules/`. If you are an AI or an
+> Claude Code and therefore never see `~/.claude/rules/`. If you are an AI or an
 > editor working in this repo (Xcode, a sandboxed subdir, a different
 > assistant), **read this file and follow it** before writing or changing code.
 >
 > **Source of truth.** The canonical, always-current version of these rules
-> lives in `.claude/rules/` (`code-quality.md`, `security.md`, `workflow.md`,
-> `ai-collaboration.md`), which Claude Code loads automatically. This file is a
-> portable mirror of those rules for everyone else. If the two ever disagree,
-> `.claude/rules/` wins — and the mirror should be re-synced (see the footer).
+> lives in `~/.claude/rules/` (`code-quality.md`, `security.md`, `workflow.md`,
+> `ai-collaboration.md`) — global Claude Code config, outside this repository,
+> loaded automatically in every project. This file is a portable mirror of those
+> rules for everyone else. If the two ever disagree: for the maintainer, who has
+> the global rules loaded, `~/.claude/rules/` wins and this mirror should be
+> re-synced (see the footer); for everyone else, who cannot see that directory,
+> **this file is the reference** — follow it. A project may also add its own
+> `.claude/rules/<topic>.md`; those are project-local additions on top of the
+> global set, not the canonical source above.
 >
 > **What this file is NOT.** Not the product contract — that is `cli.md`
 > (the programmatic contract), `ui.md` (visual), and `user-stories.md`
@@ -158,8 +163,8 @@ measured, or would defeat the architecture:
 
 ---
 
-*Maintenance: this is a hand-distilled mirror of `.claude/rules/`. When a rule
+*Maintenance: this is a hand-distilled mirror of `~/.claude/rules/`. When a rule
 there changes, update the matching bullet here (and vice-versa, routing the
-canonical wording back into `.claude/rules/`). `/update-docs` and `/compound`
+canonical wording back into `~/.claude/rules/`). `/update-docs` and `/compound`
 flag this file when rules change; without Claude Code, keep it in sync by
 hand. Keep it a concise summary — link to depth, do not paste whole rules.*

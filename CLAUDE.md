@@ -1,7 +1,7 @@
 # Project: initd
 
 > Structure: WHAT / WHY / HOW. Keep this file <200 lines. Critical rules must be backed by a hook — this file is advisory.
-> Extended conventions live in `.claude/rules/`: rules with a `paths:` frontmatter field load only for matching files; the rest load every session.
+> Extended conventions live in `~/.claude/rules/` (global config, outside this repo): rules with a `paths:` frontmatter field load only for matching files; the rest load every session. A portable copy for tools that don't run Claude Code is in `docs/conventions.md`.
 
 ## WHAT — Stack
 - Rust (latest stable, edition 2024) — single statically-linked binary
@@ -128,11 +128,11 @@ Absent by decision, not oversight. The design admits each without rework:
   because a second interface is a different topology and not a different value.
 
 ## HOW — Conventions
-Detailed conventions live in `.claude/rules/` (those with a `paths:` field load only for matching files; the rest load every session):
-- Code quality → `.claude/rules/code-quality.md` (loads for source files via `paths:`)
-- Security → `.claude/rules/security.md`
-- Workflow → `.claude/rules/workflow.md`
-- AI collaboration → `.claude/rules/ai-collaboration.md`
+Detailed conventions live in `~/.claude/rules/` — global Claude Code config, outside this repository, applied to every project (those with a `paths:` field load only for matching files; the rest load every session). `docs/conventions.md` is the portable mirror for tools that don't run Claude Code:
+- Code quality → `~/.claude/rules/code-quality.md` (loads for source files via `paths:`)
+- Security → `~/.claude/rules/security.md`
+- Workflow → `~/.claude/rules/workflow.md`
+- AI collaboration → `~/.claude/rules/ai-collaboration.md`
 
 **Minimum rules that apply everywhere:**
 - Follow the existing style in neighboring files before inventing new patterns.
@@ -164,7 +164,7 @@ Detailed conventions live in `.claude/rules/` (those with a `paths:` field load 
 - Branch model: feature branches by default. The `guard-push-main` hook blocks direct pushes to main/master. If this project intentionally lives on main (solo project, prototype, scratch repo), add `"allowPushToMain": true` to `.claude/settings.local.json` (see `settings.local.json.example`). Force pushes stay blocked regardless.
 
 ## Portable docs — `docs/`
-- `docs/` is the **portable contract** of this project, split across self-maintained files: `cli.md` (the programmatic contract — subcommands, arguments, exit codes; this was `backend.md`, renamed because `initd` exposes no network API), `ui.md` (the visual contract of the TUI — panels, keys, style roles), `user-stories.md` (the behavioral contract — everything the user can do, interface-agnostic), and `conventions.md` (how to write the code — a portable mirror of `.claude/rules/` for tools that don't run Claude Code). It exists so that tools or contributors who can only see one slice of the repo (Xcode workspace, embedded subdir, sandboxed editor) can still build the right mental model and follow the same conventions. Each file carries its own maintenance rules in its header, so it stays usable even where `/update-docs` is not available. See `docs/README.md`.
+- `docs/` is the **portable contract** of this project, split across self-maintained files: `cli.md` (the programmatic contract — subcommands, arguments, exit codes; this was `backend.md`, renamed because `initd` exposes no network API), `ui.md` (the visual contract of the TUI — panels, keys, style roles), `user-stories.md` (the behavioral contract — everything the user can do, interface-agnostic), and `conventions.md` (how to write the code — a portable mirror of `~/.claude/rules/` for tools that don't run Claude Code). It exists so that tools or contributors who can only see one slice of the repo (Xcode workspace, embedded subdir, sandboxed editor) can still build the right mental model and follow the same conventions. Each file carries its own maintenance rules in its header, so it stays usable even where `/update-docs` is not available. See `docs/README.md`.
 - **Coverage over depth.** Every capability the system exposes must appear in `docs/`, even if as a one-liner. A reader of `docs/` should be able to answer *"what can this system do?"* without opening the source. Detail per entry can be shallow; the list of entries must be exhaustive.
 - **Mandatory step at task close.** Before declaring any task done, ask yourself: *"did this change a contract another part of the system relies on?"* If yes, run `/update-docs` **before** `/commit`. This is non-negotiable — desynced docs are worse than no docs.
 - **What counts as a contract change** (update required):

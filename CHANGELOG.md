@@ -118,6 +118,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `user-stories.md` name `cli.md`, and the exit code those two interactive-only
   tasks return is documented. `2`, not `1` — verified against the binary — and
   a script that retries on `1` must not retry them.
+- The conventions are pointed at `~/.claude/rules/`, where they actually live.
+  `CLAUDE.md`, `docs/README.md` and `docs/conventions.md` all named
+  `.claude/rules/`, a path that does not exist in this repository — the four
+  files are global Claude Code config, applied to every project. So the three
+  documents that exist to tell a newcomer where the rules are sent them to an
+  empty directory, and `docs/conventions.md` sent them there *as the source of
+  truth over itself*, which is precisely backwards for the reader it was
+  written for: someone who only sees `docs/` cannot open `~/.claude/rules/` at
+  all. The precedence is now stated per reader — canonical for the maintainer,
+  who has them loaded; the mirror is the reference for everyone else — and a
+  project-local `.claude/rules/` is noted as an addition on top, not the
+  canonical set.
 
 ### Added
 - Seventeen more tasks run as tasks in a container. Eleven of twenty-eight
