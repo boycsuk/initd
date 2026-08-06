@@ -276,10 +276,16 @@ Two rules govern the table:
 reversing: reversal swaps per cell, so a red destructive marker on a reversed
 row would render as a red block and the row's meaning would invert with it.
 
-Roles for elements the interface does not draw yet — the gauge, result glyphs,
-search highlighting — are declared here and in source so the table stays one
+Roles for elements the interface does not draw yet — the gauge, the result
+glyphs, the tree's depth guides, and the styles for a disabled selection and an
+unfocused border — are declared here and in source so the table stays one
 readable reference, and so a new call site picks a role instead of inventing a
-colour.
+colour. `search_match` was one of these until search was built; it is drawn now,
+which is what the list is for.
+
+A role that is declared and never drawn is a promise this document has not yet
+kept, so the list is deliberately explicit rather than left to be discovered by
+grepping for unused constants.
 
 ## Keys
 
