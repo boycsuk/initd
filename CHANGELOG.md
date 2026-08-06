@@ -21,6 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid key, and only the lax criterion admitted it.
 
 ### Changed
+- `src/tui/app.rs` gives up the key handlers, the run's life and the privilege
+  request: `dispatch.rs`, `execution.rs` and `auth.rs`. Its production code
+  drops from 1295 lines to ~495, leaving the struct, the constructor, the event
+  loop and the trivial navigation. Worth stating plainly, since the file sizes
+  suggest otherwise: only `auth` is genuinely decoupled — it reaches three of
+  `App`'s twenty fields and owns `pending_auth`. `dispatch` reaches fourteen and
+  `execution` twelve, sharing seven between them, so those two are as coupled to
+  `App` as they ever were; what changed is that a reader looking for what `Esc`
+  does has one place to look. The module docs say so rather than implying a
+  separation that is not there. Nothing moved at any call site: Rust allows a
+  type's methods across several `impl` blocks, so `self.on_key(..)` still works
+  from `run`.
+- The interface's shared test fixtures live in `tui::fixtures`. `test_app`
+  builds the whole `App` and belongs to no single module. Two test blocks moved
+  with the code they exercise — navigation, which needs no keys, no rendering
+  and no running task, and the one auth test that had been buried among the
+  render ones. The dispatch, execution and render tests stay together
+  deliberately: they share `press`, `render_to_rows`, `select_task` and two
+  more between them — `press` alone is used by 53 tests across all three — and
+  a fixture that drifts between two copies is worse than a long file.
 - The SSH tasks each live in a file of their own, and `src/tasks/ssh/mod.rs`
   drops from 2065 lines to 211. Only ~520 of those were production code; the
   rest was a single `mod tests` covering five groups — two of which were
