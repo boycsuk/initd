@@ -8,6 +8,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Seventeen more tasks run as tasks in a container. Eleven of twenty-eight
+  reached one before; the account, sysctl, firewall and WireGuard scenarios are
+  joined by the firewall, hardening, developer-environment and lockout tasks,
+  each run and then read back through a different mechanism than the one that
+  wrote it. Three assumptions did not survive contact with a container and are
+  recorded rather than smoothed over: `users.lock-root` and `ssh.allow-users`
+  exit **2** rather than 1, since the CLI refuses them as requests that were
+  never going to run — the distinction `docs/cli.md` sells to scripts;
+  `firewall.allow-port` names the *program* it could not find rather than the
+  abstraction, which is the more useful message; and every image ships root
+  already password-less, so the scenario compares the account database before
+  and after instead of matching a pattern that was never true.
+- `tests/integration_privileged.rs`, for what an ordinary container withholds.
+  Docker mounts `/proc/sys` read-only and grants no `CAP_NET_ADMIN`, so
+  `integration_tasks` can only pin those tasks as the refusals they are — which
+  leaves the half they exist for unobserved. This is where `sysctl.ip-forward`
+  is watched applying a value the kernel is running, where the drop-in is read
+  back, and where `firewall.enable` loads a ruleset that is then queried through
+  the front-end's own tool rather than through this one. It skips rather than
+  fails where the host will not grant `--privileged`, for the reason
+  `integration_systemd` already skips: a rootless Docker has not found a bug.
+  Unlike that binary it needs no `--cgroupns=host` — nothing here boots an init.
+  Whether the host grants the capability is asked as its own question first,
+  by writing a namespaced sysctl in a throwaway container and restoring it. The
+  first version inferred it from the scenario's own stderr instead, which cannot
+  work: that stream carries the container's shell as well as Docker, and one of
+  the tasks under test is named `sysctl.unprivileged-ports` — so a scenario
+  failing while naming the task it ran would have been read as a host refusing
+  the flag, and a real regression would have reported itself as a skip. Caught
+  in review rather than by a run, since every run so far was on a host that
+  grants it.
+- The selected row says it cannot run, rather than only the pill saying so.
+  `selection_disabled` was declared in `style.rs` and drawn nowhere: the
+  ordinary blue cursor reads as "press Enter", and pressing it on an unsupported
+  task does nothing, which looks like the interface dropping the key rather than
+  the host refusing the task. The pill and the detail pane both say so — after
+  the eye has moved off the row. Colour is not carrying it alone; the same row
+  already shows `·` in its flag column.
+
+### Fixed
+- A container that never started is reported as such rather than as a violated
+  exit-code contract. `exit_code_of` returned `-1` where no code came back, and
+  the caller compared that against a number from `docs/cli.md` — so a Docker
+  daemon too busy to start a container failed
+  `the_documented_exit_codes_hold`, which reads as the CLI having broken its
+  promise to scripts and sends whoever sees it to `main.rs` for a defect that is
+  not there. Observed once in a full run of 1033 tests and never in isolation,
+  which is the shape of the problem rather than a coincidence: this branch adds
+  around eighty containers to the suite, so it made an existing latent fault
+  likelier rather than introducing one. It now panics naming the image, the
+  arguments and both streams. A test that could not ask its question has not
+  answered it.
+
+### Changed
+- Every user-facing string in the interface goes through the message catalogue.
+  `src/i18n/mod.rs` and `CLAUDE.md` both claimed this already, and it was true
+  of errors and consequences and not of the interface's own chrome — pill words,
+  key-bar labels, the help overlay, the verification banner were literals in the
+  rendering code. A second language would have produced a half-translated
+  screen, which is worse than an untranslated one. All eight TUI modules
+  resolve through the catalogue now, in 183 variants. Key glyphs (`Tab`, `↑ k`)
+  and drawing symbols stay out, as do the tasks' own ids and titles: none is a
+  word in a language. Modules that draw every frame hold a resolved `Lang`
+  instead of reading the environment per message. Verified by dumping 736
+  rendered frames before and after and diffing them byte for byte — 21,252
+  lines identical — because a migration that changes what is on screen is a
+  regression nothing in the suite was watching for. `docs/ui.md` now says which
+  locale its tables document, and `integration_tui.rs` pins `LC_ALL`, being a
+  test that greps a real screen for `VERIFY`.
+- Drawing moved out of `app.rs` into `src/tui/render.rs`, as free functions
+  taking `&App` — the shape `search.rs` already used, which makes "drawing does
+  not mutate" something the compiler checks rather than a convention. Production
+  code in `app.rs` drops by roughly a third. Two exceptions survive and are the
+  interesting part: `render_tree` needs `&mut` because `render_stateful_widget`
+  is where ratatui *writes* the scroll offset, which the scrollbar drawn
+  immediately afterwards reads back — both orders compile and draw a plausible
+  scrollbar, so the dependency is now named at the call site instead of being
+  invisible. `render_right` was declared `&mut self` and mutated nothing.
+
+### Added
 - `initd version`, also accepted as `--version` and `-V`. The tool had no way
   to say which build it was, so a bug report against it could not be acted on.
 - A `LICENSE` file. `Cargo.toml` declared MIT and the repository shipped no
