@@ -335,8 +335,8 @@ impl Executor for LocalExecutor {
 /// *inherits* the terminal rather than getting `/dev/null`, which is not a
 /// detail: both Debian and Arch key sudo's authentication timestamp by
 /// terminal, and a process with no terminal on stdin is refused even when the
-/// session that spawned it has authenticated. Measured on both, in
-/// `docs/sudo-timestamp-findings.md`.
+/// session that spawned it has authenticated. Measured on both, with the
+/// probes in `tests/fixtures/validate-sudo-*.sh`.
 fn stdin_for(command: &Command) -> Stdio {
     if command.stdin.is_some() {
         Stdio::piped()

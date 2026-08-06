@@ -33,10 +33,6 @@ user achieve* (user-stories). A capability shows up in `user-stories.md` as an
 outcome, in `ui.md` as the panel it lives in, and in `cli.md` as the subcommand
 behind it — same feature, three lenses, no duplication of detail.
 
-`ui.md` has a companion rather than a peer: **`tui-specification.html`** is a
-rendered reference of the interface, linked from `ui.md` and subordinate to it.
-Where the two disagree, `ui.md` is the contract — the HTML is a picture of it.
-
 Alongside the three product-contract files there is a fourth, different in
 kind:
 

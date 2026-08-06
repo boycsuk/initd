@@ -15,13 +15,11 @@
 > own theme, so this file names *roles* and the named colors bound to them.
 > Layout is expressed in rows and percentages, the only units a terminal has.
 >
-> **The full visual specification** lives beside this file as
-> `tui-specification.html`: nine screens drawn as literal character grids at
-> 80×24 and 120×40, plus the complete keyboard map, style table, layout
-> geometry and state machine. This file is the summary contract; that one is
-> the reference the implementation is diffed against. Where they disagree, this
-> file describes what is built and the specification describes what is
-> intended.
+> **This file is the visual contract**, not a summary of one. A rendered
+> specification used to sit beside it; it was removed rather than kept in step,
+> because two documents describing one interface diverge and the reader cannot
+> tell which is current. What the implementation is diffed against are the
+> rendering tests, which assert on a real buffer.
 >
 > **How to keep it true (no tooling required).** Plain Markdown — maintain it
 > by hand in any editor. With Claude Code, `/update-docs` updates it from the
@@ -547,8 +545,8 @@ authentication timestamp sudo leaves behind. Later privileged commands reuse
 that timestamp, which is what lets a task's output stream into the pane instead
 of the interface being torn down and rebuilt around every command.
 
-Two properties this depends on, measured on real Debian 13 and Arch systems and
-recorded in `sudo-timestamp-findings.md`:
+Two properties this depends on, measured on real Debian 13 and Arch systems
+with the probes in `tests/fixtures/validate-sudo-*.sh`:
 
 - Both key the timestamp by **terminal**, so spawned commands inherit stdin
   rather than being given `/dev/null` — a process with no terminal is refused

@@ -123,7 +123,8 @@ pub fn with_terminal_released<T>(
 /// later commands reuse, so a task can run inside the interface instead of the
 /// screen being torn down and rebuilt around every privileged command.
 ///
-/// Verified on Debian 13 and Arch: see `docs/sudo-timestamp-findings.md`.
+/// Verified on Debian 13 and Arch containers, with the probes in
+/// `tests/fixtures/validate-sudo-*.sh`.
 fn preauthenticate(escalator: &dyn crate::exec::privilege::PrivilegeEscalator) {
     let Some((program, args)) = escalator.preauth_command() else {
         return;

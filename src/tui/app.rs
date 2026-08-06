@@ -1022,9 +1022,9 @@ mod tests {
 
     /// Renders the app into an off-screen buffer and returns it as text rows.
     ///
-    /// The mockups in `docs/tui-specification.html` are literal character
-    /// grids, so the interface is checked against a real buffer rather than by
-    /// reasoning about constraints.
+    /// The interface is checked against a real buffer rather than by reasoning
+    /// about constraints: a layout that satisfies every constraint on paper can
+    /// still put a row somewhere nobody can read it.
     fn render_to_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
