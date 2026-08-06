@@ -105,6 +105,32 @@ impl SysctlManager for ProcfsSysctl {
 
         Ok(())
     }
+
+    fn is_persisted(&self, executor: &dyn Executor, setting: Setting) -> Result<bool> {
+        use crate::domain::FileEditor;
+
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        // No drop-in at all is an answer rather than a failure: this tool has
+        // never written here.
+        if !files.exists(executor, DROP_IN)? {
+            return Ok(false);
+        }
+
+        // Only this tool's own drop-in is consulted. A value another file sets
+        // may well survive a reboot, but nothing here can promise the two are
+        // read in an order that leaves ours winning — and the honest response
+        // to "somebody else may have set it" is to write ours anyway, which is
+        // what returning false does.
+        Ok(files
+            .read(executor, DROP_IN)?
+            .lines()
+            .filter(|line| Self::declares(line, setting.key))
+            .any(|line| {
+                line.split_once('=')
+                    .is_some_and(|(_, value)| value.trim() == setting.value)
+            }))
+    }
 }
 
 #[cfg(test)]

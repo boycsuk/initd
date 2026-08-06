@@ -418,9 +418,16 @@ fn set_and_report(
 ) -> Result<Outcome> {
     let sysctl = backend.sysctl();
 
-    // Idempotent, and says so. A task that printed nothing when there was
-    // nothing to do would read as having failed silently.
-    if sysctl.holds(executor, setting)? {
+    // Both halves, because either alone is a system that does not behave as
+    // the task describes. A kernel can hold the right value for reasons that
+    // do not outlive a reboot — another tool set it, the image ships it that
+    // way, a container inherits it — and stopping at the running value would
+    // report success over a host where the setting vanishes on restart.
+    //
+    // Docker is where this surfaced: `net.ipv4.ip_forward` is already `1` in
+    // every container, so the task found nothing to do, wrote no drop-in, and
+    // said it was done. The value was real; its persistence was not.
+    if sysctl.holds(executor, setting)? && sysctl.is_persisted(executor, setting)? {
         report(
             progress,
             format!("{} is already {}", setting.key, setting.value),
@@ -666,18 +673,58 @@ mod tests {
     }
 
     #[test]
-    fn a_parameter_already_holding_its_value_is_not_written_again() {
+    fn a_parameter_already_set_and_already_persisted_is_left_alone() {
         // Idempotent, and cheap: re-writing the drop-in would rewrite a file
-        // and re-apply a value that is already live.
+        // and re-apply a value that is already live. Both conditions are
+        // required — see the test below for the half that used to be missed.
         let (outcome, commands) = run(
             &EnableIpForward,
-            vec![Reply::ok("1\n")],
+            vec![
+                Reply::ok("1\n"),                     // the running value
+                Reply::ok(""),                        // test -e: the drop-in exists
+                Reply::ok("net.ipv4.ip_forward = 1"), // and records the value
+            ],
             &ParamValues::new(),
         );
 
         outcome.expect("an already-set parameter must succeed");
 
-        assert_eq!(commands.len(), 1, "only the read must run: {commands:?}");
+        assert!(
+            !commands.iter().any(|command| command.starts_with("tee")),
+            "nothing needed writing: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_value_that_is_live_but_not_persisted_is_written_anyway() {
+        // The bug this replaces. `holds` reads the running value, which a
+        // kernel can hold for reasons that do not outlive a reboot — another
+        // tool set it, the image ships it that way, a container inherits it.
+        // Stopping there reported success over a host where the setting
+        // vanishes on restart, and the task promises "now and after a reboot".
+        //
+        // Found by running the real task in Docker, where
+        // `net.ipv4.ip_forward` is already `1` in every container: the task
+        // wrote no drop-in and said it was done.
+        let (outcome, commands) = run(
+            &EnableIpForward,
+            vec![
+                Reply::ok("1\n"),      // already live
+                Reply::failure(1, ""), // but no drop-in of ours exists
+                Reply::ok(""),         // sysctl -w
+                Reply::ok(""),         // test -e inside the write
+                Reply::ok(""),         // tee
+                Reply::ok(""),         // chmod
+            ],
+            &ParamValues::new(),
+        );
+
+        outcome.expect("the task must succeed");
+
+        assert!(
+            commands.iter().any(|command| command.starts_with("tee")),
+            "the drop-in must be written even though the value was live: {commands:?}"
+        );
     }
 
     #[test]

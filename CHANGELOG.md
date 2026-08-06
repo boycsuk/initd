@@ -155,6 +155,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task that stopped running a command the script still claims.
 
 ### Fixed
+- A kernel parameter already holding its value is still persisted. The task
+  asked `holds`, which reads the *running* value, and returned early when it
+  matched — writing no drop-in and reporting success. A kernel can hold the
+  right value for reasons that do not outlive a reboot: another tool set it,
+  the image ships it that way, a container inherits it. The task promises "now
+  and after a reboot" and delivered only the first half, on exactly the hosts
+  where the second half was the only part still needed. `SysctlManager` gains
+  `is_persisted`, and the early return now requires both. Found by running the
+  real task in Docker, where `net.ipv4.ip_forward` is already `1` in every
+  container — the mock had been agreeing that there was nothing to do.
 - A key is written where the passwd database says the home is, rather than at
   a guessed `/home/<user>`. The guess had `/root` as its one exception, which
   is a convention rather than a rule: system accounts live under `/var/lib`
