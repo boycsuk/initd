@@ -4,18 +4,22 @@
 //! unit names and command syntax all arrive through the backend — that is the
 //! property this whole design exists to provide.
 
+pub mod harden;
+pub mod keys;
+
+pub use harden::{HardenSsh, HardenSshStrict};
+pub use keys::{AuthorizeKey, is_valid_public_key};
+
 use crate::backend::{Backend, Capability};
-use crate::distro::Family;
 use crate::domain::files::Backup;
 use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
-use crate::tasks::algorithms;
 use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::sshd_config;
-use crate::tasks::{Category, Node, Progress, Support, Task, supported_everywhere};
+use crate::tasks::{Category, Node, Progress, Task, supported_everywhere};
 
 /// Where a user's authorised keys live, relative to their home directory.
 const AUTHORIZED_KEYS_RELATIVE: &str = ".ssh/authorized_keys";
@@ -74,6 +78,19 @@ pub fn category() -> Category {
             )),
         ],
     )
+}
+
+/// Wraps a configuration backup as the undo for a change already applied.
+///
+/// A change with no backup — a file that did not exist — has nothing to put
+/// back, so it finishes rather than offering an undo that would delete it.
+fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
+    backup.map_or(Outcome::Done, |backup| {
+        Outcome::Revertible(Revert::ConfigFile {
+            backup,
+            service: backend.service_for(Capability::Ssh),
+        })
+    })
 }
 
 /// Reports a step to the caller as a normal output line.
@@ -138,452 +155,6 @@ impl Task for InstallSsh {
         // their way in, so there is nothing worth offering to undo.
         Ok(Outcome::Done)
     }
-}
-
-/// Directives the safe tier sets.
-///
-/// Every one either matches an OpenSSH default or tightens something no
-/// ordinary client depends on, so none can strand a client that could connect
-/// before. Anything that narrows what a client must speak — algorithms,
-/// forwarding — belongs to the strict tier instead.
-///
-/// Keyboard-interactive authentication is absent deliberately: its keyword
-/// differs by version and is probed rather than assumed. See
-/// [`keyboard_interactive_keywords`].
-const SAFE_DIRECTIVES: [(&str, &str); 17] = [
-    ("PermitRootLogin", "no"),
-    ("PasswordAuthentication", "no"),
-    ("PubkeyAuthentication", "yes"),
-    // Six attempts is the default; three still admits a mistyped passphrase
-    // while halving what a brute-force attempt gets per connection.
-    ("MaxAuthTries", "3"),
-    // The default of 120 seconds holds an unauthenticated slot open long
-    // enough to be worth exhausting.
-    ("LoginGraceTime", "30"),
-    ("X11Forwarding", "no"),
-    ("AllowAgentForwarding", "no"),
-    ("PermitEmptyPasswords", "no"),
-    ("HostbasedAuthentication", "no"),
-    ("IgnoreRhosts", "yes"),
-    ("StrictModes", "yes"),
-    ("PermitUserEnvironment", "no"),
-    // Verbose logging records the fingerprint each login used, which is what
-    // makes an unexpected key visible after the fact.
-    ("LogLevel", "VERBOSE"),
-    ("ClientAliveInterval", "300"),
-    ("ClientAliveCountMax", "2"),
-    ("MaxSessions", "10"),
-    ("PermitTunnel", "no"),
-];
-
-/// The keywords for keyboard-interactive authentication, newest first.
-///
-/// `KbdInteractiveAuthentication` is the current name and is unknown before
-/// OpenSSH 6.9; `ChallengeResponseAuthentication` is a deprecated alias since
-/// 8.7 and is on a removal path. No single keyword is safe across the range,
-/// so both are probed and every one this sshd accepts is written. On a version
-/// that knows both they are aliases holding the same value, which is what
-/// stops the pair disagreeing.
-const KEYBOARD_INTERACTIVE_KEYWORDS: [&str; 2] = [
-    "KbdInteractiveAuthentication",
-    "ChallengeResponseAuthentication",
-];
-
-/// Applies the SSH hardening that cannot strand a client.
-///
-/// Destructive: applied to a server the administrator reaches over SSH without
-/// a working key, it locks them out. The task refuses to disable password
-/// authentication when no authorised key exists.
-pub struct HardenSsh;
-
-impl Task for HardenSsh {
-    fn id(&self) -> &'static str {
-        "ssh.harden"
-    }
-
-    fn title(&self) -> &'static str {
-        "Harden the SSH configuration"
-    }
-
-    fn description(&self) -> &'static str {
-        "Disables root login, password authentication, agent and X11 \
-         forwarding, tunnelling and user environments; limits authentication \
-         attempts to 3 and the login grace period to 30 seconds; disconnects \
-         idle sessions after 10 minutes; and turns on verbose logging so the \
-         key each login used is recorded. None of these can stop a client that \
-         could connect before from connecting, provided it holds a key. \
-         Requires an authorised key for root, keeps a backup of the previous \
-         configuration, and holds the change open until you confirm you can \
-         still log in."
-    }
-
-    fn is_destructive(&self) -> bool {
-        true
-    }
-
-    supported_everywhere!();
-
-    fn run(
-        &self,
-        executor: &dyn Executor,
-        backend: &dyn Backend,
-        _values: &ParamValues,
-        progress: Progress<'_>,
-    ) -> Result<Outcome> {
-        let files = backend.files();
-        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
-
-        // Disabling password authentication without a key in place is the
-        // documented way administrators lock themselves out of a server.
-        if !has_authorized_key(executor, backend, "root")? {
-            return Err(Error::LockoutRisk {
-                kind: Lockout::NoKeyForRoot,
-            });
-        }
-
-        report(
-            progress,
-            format!("Applying {} hardening directives...", SAFE_DIRECTIVES.len()),
-        );
-
-        let hardened = SAFE_DIRECTIVES
-            .into_iter()
-            .fold(contents, |acc, (directive, value)| {
-                sshd_config::set_directive(&acc, directive, value)
-            });
-
-        let hardened = disable_keyboard_interactive(executor, &hardened, progress)?;
-
-        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
-
-        if let Some(ref backup) = backup {
-            report(
-                progress,
-                format!("Previous configuration saved to {}", backup.copy),
-            );
-        }
-
-        reload_ssh(executor, backend, progress)?;
-
-        // `sshd -t` proved the syntax and the reload proved the daemon
-        // accepted it, but neither proves the administrator can still log in:
-        // the key this task requires might not be the one their client offers.
-        // So the change is offered back until they say otherwise.
-        Ok(revertible(backup, backend))
-    }
-}
-
-/// Directives the strict tier sets besides the algorithm lists.
-///
-/// `RequiredRSASize` may only ever be raised, and 3072 is the smallest size
-/// current guidance accepts. `AllowTcpForwarding no` is the one directive here
-/// an administrator is likely to want back: it stops port forwarding, which
-/// tunnels and remote development tooling rely on.
-const STRICT_DIRECTIVES: [(&str, &str); 2] =
-    [("RequiredRSASize", "3072"), ("AllowTcpForwarding", "no")];
-
-/// Narrows the algorithms and forwarding sshd will accept.
-///
-/// Destructive in a way the safe tier is not: a client too old to speak any
-/// surviving algorithm can no longer connect at all.
-pub struct HardenSshStrict;
-
-impl Task for HardenSshStrict {
-    fn id(&self) -> &'static str {
-        "ssh.harden-strict"
-    }
-
-    fn title(&self) -> &'static str {
-        "Harden the SSH cryptography"
-    }
-
-    fn description(&self) -> &'static str {
-        "Restricts the key exchange, cipher, MAC and host key algorithms to a \
-         modern set, requires RSA keys of at least 3072 bits, and disables TCP \
-         forwarding, which stops tunnelling and remote development tools. Only \
-         algorithms this OpenSSH reports it supports are written, and a list \
-         that would be narrowed to fewer than two is left at the system \
-         default and reported. Old clients may no longer be able to connect. \
-         Requires an authorised key for root, keeps a backup, and holds the \
-         change open until you confirm you can still log in."
-    }
-
-    fn is_destructive(&self) -> bool {
-        true
-    }
-
-    fn support(&self, family: Family) -> Support {
-        match family {
-            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
-            Family::Rhel => Support::No(
-                "the only task RHEL's `Include` costs anything. Its shipped \
-                 `50-redhat.conf` is read before the main file and carries the \
-                 crypto policies, which are exactly the ciphers, key exchanges \
-                 and MACs this tier sets — measured against a daemon, not \
-                 inferred: the value written was absent from `sshd -T` while \
-                 `sshd -t` approved the file. A drop-in numbered below 50 does \
-                 win, and is not used, because on RHEL that choice belongs to \
-                 `update-crypto-policies` system-wide rather than to one \
-                 application contradicting it",
-            ),
-        }
-    }
-
-    fn run(
-        &self,
-        executor: &dyn Executor,
-        backend: &dyn Backend,
-        _values: &ParamValues,
-        progress: Progress<'_>,
-    ) -> Result<Outcome> {
-        let files = backend.files();
-        let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
-
-        // Same guard as the safe tier. This task disables no password, but a
-        // configuration that strands the administrator's client is just as
-        // unrecoverable as one that refuses their password.
-        if !has_authorized_key(executor, backend, "root")? {
-            return Err(Error::LockoutRisk {
-                kind: Lockout::NoKeyForRoot,
-            });
-        }
-
-        report(progress, "Narrowing the accepted algorithms...");
-
-        let mut hardened = contents;
-
-        for class in algorithms::ALL_CLASSES {
-            match algorithms::hardened_for(executor, class) {
-                Some(value) => {
-                    report(progress, format!("{}: {value}", class.directive()));
-                    hardened = sshd_config::set_directive(&hardened, class.directive(), &value);
-                }
-                // Skipping is the safe outcome, not a compromise: the
-                // compiled-in default admits a reasonable range, while a list
-                // narrowed too far refuses clients for no gain. Reported so
-                // that a directive the administrator asked for is never
-                // silently absent.
-                None => progress(OutputLine {
-                    stream: Stream::Stderr,
-                    text: format!(
-                        "warning: {} left at the system default — this OpenSSH supports too \
-                         few of the hardened algorithms to narrow it safely",
-                        class.directive()
-                    ),
-                }),
-            }
-        }
-
-        let hardened = STRICT_DIRECTIVES
-            .into_iter()
-            .fold(hardened, |acc, (directive, value)| {
-                sshd_config::set_directive(&acc, directive, value)
-            });
-
-        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
-
-        if let Some(ref backup) = backup {
-            report(
-                progress,
-                format!("Previous configuration saved to {}", backup.copy),
-            );
-        }
-
-        reload_ssh(executor, backend, progress)?;
-
-        Ok(revertible(backup, backend))
-    }
-}
-
-/// Turns off keyboard-interactive authentication under whichever keyword this
-/// sshd recognises.
-///
-/// Writing a keyword the daemon does not know is not a warning: `sshd -t`
-/// rejects the file, `write_validated` restores the backup, and every other
-/// directive set alongside it is lost. So each candidate is probed first and
-/// only the accepted ones are written. When none is accepted the setting is
-/// left alone and said so — the sixteen directives that did apply are worth
-/// more than the one that could not.
-fn disable_keyboard_interactive(
-    executor: &dyn Executor,
-    contents: &str,
-    progress: Progress<'_>,
-) -> Result<String> {
-    let mut updated = contents.to_owned();
-    let mut applied = false;
-
-    for keyword in KEYBOARD_INTERACTIVE_KEYWORDS {
-        if sshd_config::accepts_directive(executor, keyword, "no")? {
-            updated = sshd_config::set_directive(&updated, keyword, "no");
-            applied = true;
-        }
-    }
-
-    if !applied {
-        progress(OutputLine {
-            stream: Stream::Stderr,
-            text: "warning: keyboard-interactive authentication left unchanged — this sshd \
-                   recognises neither keyword for it"
-                .to_owned(),
-        });
-    }
-
-    Ok(updated)
-}
-
-/// Wraps a configuration backup as the undo for a change already applied.
-///
-/// A change with no backup — a file that did not exist — has nothing to put
-/// back, so it finishes rather than offering an undo that would delete it.
-fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
-    backup.map_or(Outcome::Done, |backup| {
-        Outcome::Revertible(Revert::ConfigFile {
-            backup,
-            service: backend.service_for(Capability::Ssh),
-        })
-    })
-}
-
-/// Adds a public key to a user's `authorized_keys`.
-///
-/// Fieldless: the user and the key are declared as parameters and collected
-/// when the task is run, so the tree can offer it without inventing values.
-pub struct AuthorizeKey;
-
-impl AuthorizeKey {
-    /// Name of the parameter holding the account to authorise the key for.
-    pub const USER: &'static str = "user";
-    /// Name of the parameter holding the key itself.
-    pub const KEY: &'static str = "key";
-}
-
-impl Task for AuthorizeKey {
-    fn id(&self) -> &'static str {
-        "ssh.authorize-key"
-    }
-
-    fn title(&self) -> &'static str {
-        "Authorise a public key"
-    }
-
-    fn description(&self) -> &'static str {
-        "Appends a public key to the user's authorized_keys, creating ~/.ssh \
-         with the strict permissions sshd requires."
-    }
-
-    fn params(&self) -> Vec<Param> {
-        vec![
-            // root is offered because it is the account that always exists,
-            // not because it is the one to prefer.
-            Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_initial("root")
-                .with_hint("the account the key authorises"),
-            Param::new(Self::KEY, "Public key", ParamKind::PublicKey)
-                .with_hint("paste the contents of a .pub file"),
-        ]
-    }
-
-    supported_everywhere!();
-
-    fn run(
-        &self,
-        executor: &dyn Executor,
-        backend: &dyn Backend,
-        values: &ParamValues,
-        progress: Progress<'_>,
-    ) -> Result<Outcome> {
-        let user = values.get(Self::USER)?.to_owned();
-        let key = values.get(Self::KEY)?.trim().to_owned();
-        let key = key.as_str();
-
-        is_valid_public_key(key)?;
-
-        let files = backend.files();
-        // Asked of the passwd database rather than assumed to be `/home/<user>`:
-        // a key written where sshd does not read it grants nothing, silently.
-        let home = backend.accounts().home_dir(executor, &user)?;
-        let ssh_dir = format!("{home}/.ssh");
-        let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
-
-        // sshd silently ignores authorized_keys when the directory or file is
-        // group- or world-accessible, so the modes are part of the operation
-        // rather than an afterthought.
-        files.create_dir(executor, &ssh_dir, SSH_DIR_MODE)?;
-        files.set_owner(executor, &ssh_dir, &user)?;
-
-        let present = files.exists(executor, &path)?;
-
-        let existing = if present {
-            files.read(executor, &path)?
-        } else {
-            String::new()
-        };
-
-        if key_is_present(&existing, key) {
-            report(progress, "The key is already authorised; nothing to do");
-            return Ok(Outcome::Done);
-        }
-
-        report(progress, format!("Adding the key to {path}..."));
-
-        // Append rather than replace: other keys in the file are other
-        // people's access.
-        let mut updated = existing;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str(key);
-        updated.push('\n');
-
-        // A new file is created empty, restricted, and only then written. The
-        // other order leaves the file world-readable for as long as the two
-        // privileged commands take — brief, and long enough for any account on
-        // the box to read it or, worse, to hold it open and influence which
-        // keys sshd honours. An empty file discloses nothing, which is what
-        // makes the ordering possible. Same lesson as `wg0.conf`.
-        //
-        // An existing file keeps its own mode: it was created this way, and
-        // rewriting it is what the append below is for.
-        if !present {
-            files.write(executor, &path, "")?;
-            files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
-            files.set_owner(executor, &path, &user)?;
-        }
-
-        files.write(executor, &path, &updated)?;
-
-        // Re-stated for a file that already existed, since a file left by
-        // something else may carry a mode sshd refuses to read.
-        if present {
-            files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
-            files.set_owner(executor, &path, &user)?;
-        }
-
-        report(progress, "Key authorised");
-
-        // Authorising a key only ever grants access; undoing it is the
-        // dangerous direction, so it is not offered here.
-        Ok(Outcome::Done)
-    }
-}
-
-/// Whether the key is already present, comparing the type and body only.
-///
-/// The trailing comment is ignored: the same key added from two machines
-/// carries two different comments but grants identical access.
-fn key_is_present(contents: &str, key: &str) -> bool {
-    let fingerprint = key_fingerprint(key);
-
-    contents
-        .lines()
-        .any(|line| key_fingerprint(line.trim()) == fingerprint)
-}
-
-/// The identifying part of a key line: its type and body, without the comment.
-fn key_fingerprint(line: &str) -> Option<(&str, &str)> {
-    let mut parts = line.split_whitespace();
-
-    Some((parts.next()?, parts.next()?))
 }
 
 /// Changes the port sshd listens on.
@@ -807,49 +378,6 @@ fn reload_ssh(
     backend.services().reload(executor, service)
 }
 
-/// Validates the shape of an `authorized_keys` entry.
-///
-/// Only structural validation: type prefix plus a base64-looking body. Full
-/// cryptographic verification is `ssh-keygen`'s job, and a malformed key would
-/// make sshd ignore the whole file.
-pub fn is_valid_public_key(line: &str) -> Result<()> {
-    let invalid = |reason: &str| Error::InvalidPublicKey {
-        reason: reason.to_owned(),
-    };
-
-    // Before anything else: `split_whitespace` treats a line break like any
-    // other separator, so a value carrying one would validate as a single key
-    // and then be written verbatim as two entries in `authorized_keys` — the
-    // second of them never approved. `AuthorizeKey` only trims the outer
-    // whitespace, and the CLI hands its argument straight here without passing
-    // through the interface's per-keystroke filter, so this is the barrier.
-    if line.contains(['\n', '\r']) {
-        return Err(invalid("a key cannot span more than one line"));
-    }
-
-    let mut parts = line.split_whitespace();
-    let key_type = parts.next().ok_or_else(|| invalid("the line is empty"))?;
-
-    if !VALID_KEY_PREFIXES.contains(&key_type) {
-        return Err(invalid(&format!("unrecognised key type: {key_type}")));
-    }
-
-    let body = parts
-        .next()
-        .ok_or_else(|| invalid("the key has no body after its type"))?;
-
-    if body.len() < 32 || !body.bytes().all(is_base64_byte) {
-        return Err(invalid("the key body is not valid base64"));
-    }
-
-    Ok(())
-}
-
-/// Whether a byte may appear in base64 content.
-const fn is_base64_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
-}
-
 /// Restricts SSH login to a named set of accounts.
 ///
 /// Fieldless: the accounts are declared as a parameter and collected when the
@@ -991,8 +519,10 @@ impl Task for RestrictUsers {
 
 #[cfg(test)]
 mod tests {
+    use super::harden::SAFE_DIRECTIVES;
     use super::*;
     use crate::backend::for_family;
+    use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// For tasks that declare no parameters.

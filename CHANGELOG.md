@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a second `run` method that can fall out of use unnoticed.
 
 ### Changed
+- `tasks::ssh` becomes a directory module. It was 992 lines of production code
+  holding six tasks, and two of them formed subjects of their own: everything
+  about `authorized_keys` — the file that decides who may log in, where a mode
+  matters as much as a content — and the two hardening tiers, which share a
+  shape nothing else there has, writing a table of directives wholesale and
+  rolling them back together. `mod.rs` keeps 520 lines and the tasks that edit
+  one value at a time. That `algorithms` stopped being reachable from the
+  parent is the evidence the cut followed a real seam rather than a line count.
 - A task declares support as an exhaustive `match` on the family, carrying the
   reason when it refuses. `supported_families` returned a `&[Family]`, which
   the compiler cannot check for exhaustiveness — so adding a family and
