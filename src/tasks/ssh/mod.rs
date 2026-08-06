@@ -342,7 +342,16 @@ fn warn_if_socket_activated(
 ///
 /// Read through the file editor rather than `std::fs` so it works under
 /// privilege escalation, and so a missing file is a plain `false`.
-fn has_authorized_key(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
+///
+/// `pub(crate)` because `users.lock-root` asks the same question before it
+/// removes the last password on the box, and asking it a second way is how the
+/// two answers drift: the copy that lived there resolved the home as
+/// `/home/{user}`, which is the assumption this function exists to avoid.
+pub(crate) fn has_authorized_key(
+    executor: &dyn Executor,
+    backend: &dyn Backend,
+    user: &str,
+) -> Result<bool> {
     // An account that does not exist holds no key, which is an answer rather
     // than a failure: this runs over the accounts named in `AllowUsers`, and
     // one of them being absent is exactly what the caller is checking for.
