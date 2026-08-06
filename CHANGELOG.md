@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `g` in the output pane no longer crashes the interface. It scrolls to the
+  top by asking for `usize::MAX` lines, and the pane added that to its current
+  offset before clamping the result — so the addition overflowed and panicked
+  in debug. Release was the worse half: `+` wraps silently there, so the same
+  key would have jumped to an arbitrary position without saying anything, in a
+  program that runs as root. The clamp was already there and could not help;
+  an addition that has overflowed cannot be brought back by bounding it
+  afterwards.
 - `users.lock-root` asks the account database where a home is, instead of
   assuming `/home/{user}`. It carried its own copy of `has_authorized_key`,
   and the copy predated the fix that `ssh::has_authorized_key` documents and

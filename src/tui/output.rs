@@ -115,9 +115,19 @@ impl OutputPane {
     }
 
     /// Scrolls towards older output, detaching from the tail.
+    ///
+    /// `saturating_add` rather than `+`, because `g` scrolls to the top by
+    /// asking for `usize::MAX` and the sum overflowed before the clamp below
+    /// could bound it — a panic in debug, and in release a silent wrap to a
+    /// small offset, which is the same key jumping somewhere arbitrary. The
+    /// clamp cannot save an addition that has already overflowed; it has to
+    /// not overflow.
     pub fn scroll_up(&mut self, amount: usize) {
         self.follow = false;
-        self.scroll_offset = (self.scroll_offset + amount).min(self.lines.len().saturating_sub(1));
+        self.scroll_offset = self
+            .scroll_offset
+            .saturating_add(amount)
+            .min(self.lines.len().saturating_sub(1));
     }
 
     /// Scrolls back towards the newest output.
@@ -356,6 +366,34 @@ mod tests {
 
         pane.scroll_down(100);
         assert_eq!(pane.scroll_offset, 0, "cannot scroll past the bottom");
+    }
+
+    #[test]
+    fn scrolling_to_the_top_does_not_overflow() {
+        // `g` scrolls to the top by asking for `usize::MAX`, and the offset was
+        // added to it before being clamped: a panic in debug, and in release a
+        // silent wrap that jumps somewhere arbitrary. Reached with one
+        // keystroke on a running task, in a program that runs as root.
+        let mut pane = OutputPane::new();
+        for i in 0..10 {
+            pane.push(line(&format!("line {i}")));
+        }
+
+        pane.scroll_up(3);
+        pane.scroll_up(usize::MAX);
+
+        assert_eq!(pane.scroll_offset, 9, "the oldest of ten lines");
+    }
+
+    #[test]
+    fn scrolling_to_the_top_of_an_empty_pane_is_not_a_crash() {
+        // `g` before anything has run: the clamp reads `len() - 1` on an empty
+        // pane, which is the other end of the same arithmetic.
+        let mut pane = OutputPane::new();
+
+        pane.scroll_up(usize::MAX);
+
+        assert_eq!(pane.scroll_offset, 0);
     }
 
     #[test]
