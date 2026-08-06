@@ -90,3 +90,39 @@ impl App {
         outcome.map(|_| ())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::distro::Family;
+    use crate::tui::fixtures::test_app;
+
+    #[test]
+    fn a_superseded_authentication_request_is_refused_rather_than_dropped() {
+        // Both requests have a thread blocked on them. Overwriting the first
+        // without answering would leave that thread waiting out the deadline.
+        let mut app = test_app(Family::Debian);
+        let (first, first_answer) = std::sync::mpsc::channel();
+        let (second, _second_answer) = std::sync::mpsc::channel();
+
+        app.pending_auth = Some(AuthRequest {
+            program: "sudo".to_owned(),
+            args: vec!["-v".to_owned()],
+            mechanism: "sudo".to_owned(),
+            reply: first,
+        });
+
+        app.supersede_pending_auth(AuthRequest {
+            program: "sudo".to_owned(),
+            args: vec!["-v".to_owned()],
+            mechanism: "sudo".to_owned(),
+            reply: second,
+        });
+
+        assert_eq!(
+            first_answer.try_recv(),
+            Ok(false),
+            "the superseded request must be answered, not abandoned"
+        );
+    }
+}

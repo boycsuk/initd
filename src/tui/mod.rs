@@ -15,9 +15,12 @@ pub mod cursor;
 pub mod dispatch;
 pub mod execution;
 pub mod field;
+#[cfg(test)]
+pub mod fixtures;
 pub mod form;
 pub mod help;
 pub mod layout;
+pub mod navigation;
 pub mod output;
 pub mod render;
 pub mod search;
