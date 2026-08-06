@@ -15,11 +15,12 @@ use super::confirm::Confirm;
 use super::field::Field;
 use super::form::Form;
 use super::output::OutputPane;
+use super::search::Search;
 use super::signals::Hangup;
 use super::status::{State, Status};
 use super::verify::Verification;
 use super::worker::{Running, Update};
-use super::{Tui, help, layout, style};
+use super::{Tui, help, layout, search, style};
 use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
@@ -146,6 +147,12 @@ pub struct App {
     running: Option<Running>,
     /// An applied change waiting to be kept or put back.
     verification: Option<Verification>,
+    /// The open search, while one is being typed.
+    ///
+    /// Semi-modal like the verification window rather than fully modal like a
+    /// form: it takes the keyboard, but the pane beside it keeps rendering, so
+    /// a task's output stays readable while looking for the next one to run.
+    search: Option<Search>,
     /// Raised when the session this interface runs in is going away.
     ///
     /// Default in tests and where registration was declined: a flag nothing
@@ -199,6 +206,7 @@ impl App {
             verification: None,
             help: None,
             status: Status::new(),
+            search: None,
             hangup: Hangup::default(),
             should_quit: false,
         }
@@ -366,6 +374,14 @@ impl App {
             return None;
         }
 
+        // Ahead of the form, which is modal and would otherwise swallow `/` —
+        // and behind `running` and `verification`, since neither admits
+        // starting another task and search exists to start one.
+        if self.search.is_some() {
+            self.on_search_key(key);
+            return None;
+        }
+
         if self.form.is_some() {
             return self.on_form_key(key);
         }
@@ -403,6 +419,13 @@ impl App {
             // list is the moment they do not know which key to press.
             KeyCode::Char('?') => {
                 self.help = Some(0);
+                return true;
+            }
+            // Twenty-eight tasks across six areas is past what anybody keeps a
+            // map of, and drilling down one level at a time answers "what is
+            // in here" rather than "where is it".
+            KeyCode::Char('/') => {
+                self.search = Some(Search::new(&self.tree));
                 return true;
             }
             // The only focus key. Overloading a movement key with focus is how
@@ -589,6 +612,60 @@ impl App {
         if expired {
             self.revert_change("no confirmation");
         }
+    }
+
+    /// Handles a key press while the search is open.
+    ///
+    /// Every printable character is literal, as in a form: a query naming a
+    /// task id contains `.` and `-`, and a `/` typed a second time belongs in
+    /// the query rather than reopening what is already open.
+    fn on_search_key(&mut self, key: KeyEvent) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.search = None;
+                self.status.set(State::Ready, "");
+            }
+            KeyCode::Enter => self.jump_to_selected_match(),
+            KeyCode::Down => search.select_next(),
+            KeyCode::Up => search.select_previous(),
+            // Closing on a backspace that has nothing left to delete: the
+            // query is empty, so the operator is undoing having opened it.
+            KeyCode::Backspace if !search.backspace(&self.tree) => {
+                self.search = None;
+                self.status.set(State::Ready, "");
+            }
+            KeyCode::Backspace => {}
+            KeyCode::Char(character) => search.push(character, &self.tree),
+            _ => {}
+        }
+    }
+
+    /// Moves the tree cursor onto the selected match and closes the search.
+    ///
+    /// Navigates rather than running. The task under the cursor is then
+    /// started with `Enter` like any other, so a search result goes through
+    /// the same confirmation and the same parameter form — a path that skipped
+    /// either would make a mistyped query the most dangerous key in the
+    /// interface.
+    fn jump_to_selected_match(&mut self) {
+        let Some(found) = self.search.as_ref().and_then(Search::selected_match) else {
+            return;
+        };
+
+        self.path.clone_from(&found.location.path);
+        // The cursor stack records the row left behind at each level; jumping
+        // did not pass through them, so what it would restore is a guess. The
+        // path's own indices are the honest answer — leaving the category
+        // returns to the row holding it.
+        self.cursor_stack.clone_from(&found.location.path);
+        self.list_state.select(Some(found.location.index));
+        self.focus = Pane::Tree;
+        self.search = None;
+        self.status.set(State::Ready, "");
     }
 
     /// Handles a key press while the parameter form is open.
@@ -1155,6 +1232,10 @@ impl App {
             form.render(frame);
         }
 
+        if let Some(ref search) = self.search {
+            search::render(frame, search);
+        }
+
         // Last of all: help is asked for from wherever the operator is stuck,
         // including on top of a dialog.
         if let Some(scroll) = self.help {
@@ -1453,7 +1534,9 @@ impl App {
             _ => "run",
         };
 
-        let mut keys = vec![("↑↓", "move"), ("Enter", enter_hint)];
+        // Search is offered from the tree and nowhere else: it exists to reach
+        // a task, and the pane holds no tasks to reach.
+        let mut keys = vec![("↑↓", "move"), ("Enter", enter_hint), ("/", "find")];
 
         // Going back is only offered where there is somewhere to go back to.
         if !self.path.is_empty() {
@@ -3104,6 +3187,101 @@ mod tests {
             "got {:?}",
             app.status.message(Instant::now())
         );
+    }
+
+    /// Types a query into an open search, one key at a time.
+    fn type_query(app: &mut App, query: &str) {
+        for character in query.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn search_jumps_the_cursor_to_the_task_it_found() {
+        // The point of searching: reaching a task without knowing which of the
+        // six areas holds it. A result that cannot be jumped to is a list.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "wireguard.install");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.search.is_none(), "jumping must close the search");
+        assert_eq!(
+            app.selected_task().map(Task::id),
+            Some("wireguard.install"),
+            "the cursor must land on the task, in its own level"
+        );
+    }
+
+    #[test]
+    fn a_search_result_is_reached_by_the_same_route_as_any_other_task() {
+        // Navigating rather than running: a jump that started the task would
+        // skip the confirmation and the parameter form, making a mistyped
+        // query the most dangerous key in the interface.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "wireguard.install");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.running.is_none(), "the jump must not start anything");
+        assert!(app.form.is_none(), "nor open the form on its own");
+
+        // And the breadcrumb reflects where the cursor actually is, so leaving
+        // the category goes somewhere that makes sense.
+        assert!(
+            app.breadcrumb().contains("WireGuard"),
+            "got {:?}",
+            app.breadcrumb()
+        );
+    }
+
+    #[test]
+    fn a_slash_typed_into_a_query_is_literal() {
+        // `/` opens search; inside one it is an ordinary character, and a task
+        // id could contain it. Reopening would discard what had been typed.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "ssh/");
+
+        let query = app.search.as_ref().map(Search::query);
+
+        assert_eq!(query, Some("ssh/"), "the slash belongs in the query");
+    }
+
+    #[test]
+    fn escape_closes_the_search_without_moving_the_cursor() {
+        let mut app = test_app(Family::Debian);
+        let before = app.list_state.selected();
+
+        press(&mut app, KeyCode::Char('/'));
+        type_query(&mut app, "wireguard");
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_none());
+        assert_eq!(
+            app.list_state.selected(),
+            before,
+            "abandoning a search must leave the cursor where it was"
+        );
+    }
+
+    #[test]
+    fn search_is_refused_while_a_task_is_running() {
+        // Only one task at a time, so the keys that would start another are
+        // refused rather than queued — search exists to start one.
+        let mut app = test_app(Family::Debian);
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        press(&mut app, KeyCode::Char('/'));
+
+        assert!(app.search.is_none(), "a running task must refuse search");
     }
 
     #[test]

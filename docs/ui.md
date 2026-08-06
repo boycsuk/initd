@@ -304,6 +304,7 @@ way back.
 | `↓` / `j` | Move to the next row |
 | `g` / `G` | Jump to the first / last row of the level |
 | `Enter` | Open the selected category, or run the selected task; destructive tasks open the dialog first |
+| `/` | Open search over the whole tree |
 | `Esc` / `Backspace` / `←` / `h` | Go back to the parent level; at the top level it reports rather than quitting |
 
 Every row is selectable: a category that could not be selected could not be
@@ -313,6 +314,38 @@ many cannot drop the user out of the program — `q` is the only way out.
 A scrollbar appears on the right edge of the tree only when the level overflows
 the pane; a track drawn against a level that fits is a permanent hint that
 content is hidden when none is.
+
+### Search (semi-modal)
+
+Opened with `/` from the tree. Twenty-eight tasks across six areas is past the
+number anybody keeps a map of, and drilling down one level at a time answers
+"what is in here" rather than "where is it" — without this the only recourse
+was `docs/cli.md`, outside the tool and possibly not on the server.
+
+| Key | Action |
+|-----|--------|
+| (any printable character) | Append to the query; `/` included, since a query is literal |
+| `↑` / `↓` | Move between results; stops at the ends rather than wrapping |
+| `Enter` | Move the tree cursor to that task, without running it |
+| `Backspace` | Delete a character; on an empty query, close the search |
+| `Esc` | Close, leaving the tree cursor where it was |
+
+Matching spans the **whole tree**, not the level on screen, and covers both the
+title and the task id — `docs/cli.md` and any script name the id, while somebody
+who has only used the interface knows the title. It is case-insensitive, and
+the matched span of a title is highlighted (`search_match`) so a row does not
+look like an unexplained hit. Each result carries its breadcrumb and id, since
+a title alone does not say which area it came from. An empty query matches
+everything, which makes opening search the one view listing every task with its
+area beside it.
+
+`Enter` navigates rather than runs. The task is then started from the tree like
+any other, so a result goes through the same confirmation and the same
+parameter form; a path that skipped either would make a mistyped query the most
+dangerous key in the interface.
+
+Search is refused while a task is running or a change is unverified, for the
+same reason `Enter` is: only one task at a time.
 
 ### Output pane
 

@@ -232,6 +232,58 @@ fn collect_tasks(nodes: Vec<Node>, out: &mut Vec<Box<dyn Task>>) {
     }
 }
 
+/// Where a task sits in the tree: the indices to reach it, and the categories
+/// it sits under.
+///
+/// Separate from [`all_tasks`], which flattens the tree and discards the route
+/// through it. Search needs the route — a result nobody can jump to is a list,
+/// not a way of getting anywhere — and the titles, because "Install the SSH
+/// server" means something different under `Remote Access › SSH` than the same
+/// words would elsewhere.
+pub struct TaskLocation {
+    /// Index of the task within its own level.
+    pub index: usize,
+    /// Indices from the root to the category holding it.
+    pub path: Vec<usize>,
+    /// Titles of those categories, outermost first.
+    pub titles: Vec<&'static str>,
+}
+
+/// Locates every task in the tree, in tree order, keeping the route to each.
+pub fn located_tasks(nodes: &[Node]) -> Vec<(TaskLocation, &dyn Task)> {
+    let mut found = Vec::new();
+    locate_tasks(nodes, &mut Vec::new(), &mut Vec::new(), &mut found);
+    found
+}
+
+/// Walks `nodes`, carrying the path and titles taken to reach them.
+fn locate_tasks<'a>(
+    nodes: &'a [Node],
+    path: &mut Vec<usize>,
+    titles: &mut Vec<&'static str>,
+    out: &mut Vec<(TaskLocation, &'a dyn Task)>,
+) {
+    for (index, node) in nodes.iter().enumerate() {
+        match node {
+            Node::Task(task) => out.push((
+                TaskLocation {
+                    index,
+                    path: path.clone(),
+                    titles: titles.clone(),
+                },
+                task.as_ref(),
+            )),
+            Node::Category(category) => {
+                path.push(index);
+                titles.push(category.title);
+                locate_tasks(&category.children, path, titles, out);
+                titles.pop();
+                path.pop();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

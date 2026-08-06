@@ -52,7 +52,28 @@ const SECTIONS: &[Section] = &[
             ("↓ j", "next row"),
             ("g G", "first / last row"),
             ("Enter", "open a category, or run a task"),
+            ("/", "find a task anywhere in the tree"),
             ("Esc ← h", "back to the parent level"),
+        ],
+    },
+    Section {
+        title: "Search",
+        keys: &[
+            ("(type)", "filter by title or task id"),
+            ("↑ ↓", "move between results"),
+            ("Enter", "go to the task, without running it"),
+            ("Esc", "close, leaving the cursor where it was"),
+        ],
+    },
+    // Listed because this is when somebody most needs it: a task three minutes
+    // in is exactly when `?` gets pressed, and the key bar that also shows
+    // Ctrl-C is dropped on a terminal under 24 rows.
+    Section {
+        title: "While a task runs",
+        keys: &[
+            ("Ctrl-C", "stop after the current command"),
+            ("↑ ↓", "scroll the output"),
+            ("Tab", "move focus to the output"),
         ],
     },
     Section {

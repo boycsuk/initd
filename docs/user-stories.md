@@ -87,6 +87,21 @@ TUI or CLI:
   - TUI exception: categories are opened one level at a time, with a breadcrumb
     showing the current location and a way back to the parent.
   - CLI exception: the whole tree is printed at once, indented by level.
+- As an **administrator**, I can find a task without knowing which area holds
+  it, so that browsing is not the only way to reach one.
+  - Acceptance: I can search by what I remember — the title as the interface
+    shows it, or the identifier as `cli.md` and my scripts name it.
+  - Acceptance: the search covers every task, not only the group I am looking
+    at, and each result says which area it came from.
+  - Acceptance: case does not matter.
+  - Acceptance: a result takes me to the task rather than running it, so a
+    mistyped query cannot start anything. Running it still needs the same
+    confirmation and the same values as reaching it by browsing.
+  - Acceptance: I am told when nothing matched, rather than shown an empty list
+    that looks the same as a tool with no tasks in it.
+  - TUI exception: the CLI has no cursor to move, and `initd list` already
+    prints every task with its area — piping that to a pager or to `grep` is
+    the same capability by the shell's own means.
 
 ### Accounts
 
