@@ -9,8 +9,11 @@
 //!    following the pattern ratatui documents for spawning an editor.
 
 pub mod app;
+pub mod auth;
 pub mod confirm;
 pub mod cursor;
+pub mod dispatch;
+pub mod execution;
 pub mod field;
 pub mod form;
 pub mod help;

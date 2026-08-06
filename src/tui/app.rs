@@ -2,29 +2,27 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::Rect;
+use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::widgets::ListState;
 
+use super::auth::AuthRequest;
 use super::confirm::Confirm;
 use super::cursor::TreeCursor;
-use super::field::Field;
 use super::form::Form;
 use super::output::OutputPane;
 use super::search::Search;
 use super::signals::Hangup;
 use super::status::{State, Status};
 use super::verify::Verification;
-use super::worker::{Running, Update};
-use super::{Tui, help, render};
+use super::worker::Running;
+use super::{Tui, render};
 use crate::backend::Backend;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
-use crate::error::{Error, Result};
-use crate::exec::{Executor, OutputLine, Stream};
-use crate::i18n::{Lang, Msg, RevertReason};
+use crate::error::Result;
+use crate::exec::Executor;
+use crate::i18n::{Lang, Msg};
 use crate::tasks::params::ParamValues;
-use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::{self, Node, Task};
 
 /// How long to wait for a key before redrawing.
@@ -44,13 +42,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub(super) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Lines a page key moves the output by.
-const PAGE_SCROLL: usize = 10;
+pub(super) const PAGE_SCROLL: usize = 10;
 
 /// Rows the verification banner occupies: its top border and four lines.
 pub(super) const VERIFY_BANNER_ROWS: u16 = 5;
 
 /// Lines a page key moves the help overlay by.
-const HELP_PAGE: u16 = 10;
+pub(super) const HELP_PAGE: u16 = 10;
 
 /// Which pane the movement keys act on.
 ///
@@ -66,7 +64,7 @@ pub enum Pane {
 
 impl Pane {
     /// The pane `Tab` moves to.
-    const fn other(self) -> Self {
+    pub(super) const fn other(self) -> Self {
         match self {
             Self::Tree => Self::Output,
             Self::Output => Self::Tree,
@@ -108,13 +106,6 @@ pub(super) enum Mode<'a> {
     Browsing,
 }
 
-struct AuthRequest {
-    program: String,
-    args: Vec<String>,
-    mechanism: String,
-    reply: std::sync::mpsc::Sender<bool>,
-}
-
 /// The running application.
 ///
 /// Navigation is drill-down: exactly one level of the tree is on screen at a
@@ -123,8 +114,8 @@ pub struct App {
     pub(super) distro: Distro,
     /// Facts about the machine, probed once at startup.
     pub(super) host: HostFacts,
-    backend: Box<dyn Backend>,
-    executor: Box<dyn Executor>,
+    pub(super) backend: Box<dyn Backend>,
+    pub(super) executor: Box<dyn Executor>,
     /// Where the operator is in the tree, and which row is under the cursor.
     ///
     /// Its own type because it depends on nothing else here — no executor, no
@@ -137,17 +128,17 @@ pub struct App {
     pub(super) output: OutputPane,
     /// The parameter form, while one is being filled in.
     pub(super) form: Option<Form>,
-    confirm: Option<Confirm>,
+    pub(super) confirm: Option<Confirm>,
     /// A helper waiting for the terminal, until the next turn of the loop.
     ///
     /// Held rather than served where it arrives: draining happens without the
     /// terminal in hand, and restoring the screen needs it.
-    pending_auth: Option<AuthRequest>,
+    pub(super) pending_auth: Option<AuthRequest>,
     /// Values collected from the form, held until the task actually runs.
     ///
     /// A destructive task with parameters passes through the form and then the
     /// confirmation, and the values have to survive the step between.
-    pending_values: ParamValues,
+    pub(super) pending_values: ParamValues,
 
     /// The values the running task was started with.
     ///
@@ -156,7 +147,7 @@ pub struct App {
     /// with — moving to port 2222 invalidates a firewall rule naming 22, while
     /// re-running with 22 invalidates nothing — so reporting them needs the
     /// values to outlive the launch.
-    ran_with: ParamValues,
+    pub(super) ran_with: ParamValues,
     /// The task currently running, if any.
     pub(super) running: Option<Running>,
     /// An applied change waiting to be kept or put back.
@@ -166,7 +157,7 @@ pub struct App {
     /// Semi-modal like the verification window rather than fully modal like a
     /// form: it takes the keyboard, but the pane beside it keeps rendering, so
     /// a task's output stays readable while looking for the next one to run.
-    search: Option<Search>,
+    pub(super) search: Option<Search>,
     /// Raised when the session this interface runs in is going away.
     ///
     /// Default in tests and where registration was declined: a flag nothing
@@ -186,7 +177,7 @@ pub struct App {
     /// is a dozen labels — and reading the environment that often is a new hot
     /// path for an answer that cannot change while the process runs.
     pub(super) lang: Lang,
-    should_quit: bool,
+    pub(super) should_quit: bool,
 }
 
 impl App {
@@ -325,7 +316,7 @@ impl App {
     }
 
     /// Descends into the category under the cursor.
-    fn enter_category(&mut self, index: usize) {
+    pub(super) fn enter_category(&mut self, index: usize) {
         self.cursor.enter_category(index);
         self.status.set(State::Ready, "");
     }
@@ -336,7 +327,7 @@ impl App {
     /// `q` is the way out, and an `Esc` that sometimes exits the program would
     /// make going back one level too far a destructive mistake. The cursor
     /// answers whether it moved; phrasing the refusal is the interface's job.
-    fn leave_category(&mut self) {
+    pub(super) fn leave_category(&mut self) {
         if !self.cursor.leave_category() {
             // A refusal, not a state: the tool is still ready, the key simply
             // had nowhere to go.
@@ -403,859 +394,8 @@ impl App {
         Ok(())
     }
 
-    /// Handles a key press, routing to whichever dialog is open.
-    ///
-    /// Modal dialogs are checked first and swallow everything: inside a form,
-    /// `j`, `k`, `/` and `q` are literal characters, not commands.
-    /// No key needs the terminal any more: starting a task hands it to a
-    /// thread rather than to a child process, so the whole path is testable.
-    fn on_key(&mut self, key: KeyEvent) {
-        if let Some(values) = self.dispatch(key) {
-            self.run_selected(values);
-        }
-    }
-
-    /// Routes a key press, returning the values to run the selected task with.
-    ///
-    /// `Some` means the key was the one that starts the work; everything else
-    /// is resolved in place.
-    fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
-        // The one place precedence is decided is `mode`; this only says what
-        // each state does with a key. A state added there fails to compile
-        // here until it is answered for, which is the point of deriving it.
-        match self.mode() {
-            Mode::Help => {
-                self.on_help_key(key);
-                None
-            }
-            // While a task runs the interface stays open — scrolling,
-            // switching panes and reading all work — but nothing new may be
-            // started and nothing may be answered. Only one task at a time,
-            // and the keys that would start another are refused rather than
-            // queued.
-            Mode::Running => {
-                self.on_running_key(key);
-                None
-            }
-            // Semi-modal: reading is never blocked while a change is
-            // unverified, but nothing new may be started until it is settled.
-            Mode::Verifying => {
-                self.on_verify_key(key);
-                None
-            }
-            Mode::Filling => self.on_form_key(key),
-            Mode::Confirming(_) => self.on_confirm_key(key),
-            Mode::Searching(_) => {
-                self.on_search_key(key);
-                None
-            }
-            Mode::Browsing => {
-                if self.on_navigation_key(key) {
-                    return None;
-                }
-
-                if key.code == KeyCode::Enter && self.focus == Pane::Tree {
-                    return self.activate();
-                }
-
-                None
-            }
-        }
-    }
-
-    /// Handles the keys that only move around, reporting whether one matched.
-    ///
-    /// Running a task is deliberately not here: it needs the terminal handed
-    /// to a child process, and keeping that out of the navigation path is what
-    /// lets every key below be exercised without one.
-    fn on_navigation_key(&mut self, key: KeyEvent) -> bool {
-        // Keys that mean the same thing whichever pane holds focus.
-        match key.code {
-            // `q` quits from any level; `Esc` means "go back", so that leaving
-            // one level too many cannot drop the user out of the program.
-            KeyCode::Char('q') => {
-                self.should_quit = true;
-                return true;
-            }
-            // Available from anywhere, since the moment someone needs the key
-            // list is the moment they do not know which key to press.
-            KeyCode::Char('?') => {
-                self.help = Some(0);
-                return true;
-            }
-            // Twenty-eight tasks across six areas is past what anybody keeps a
-            // map of, and drilling down one level at a time answers "what is
-            // in here" rather than "where is it".
-            KeyCode::Char('/') => {
-                self.search = Some(Search::new(self.cursor.tree()));
-                return true;
-            }
-            // The only focus key. Overloading a movement key with focus is how
-            // keys start leaking between panes.
-            KeyCode::Tab => {
-                self.focus = self.focus.other();
-                return true;
-            }
-            _ => {}
-        }
-
-        match self.focus {
-            Pane::Tree => self.on_tree_key(key),
-            Pane::Output => self.on_output_key(key),
-        }
-    }
-
-    /// Handles a movement key while the tree holds focus.
-    ///
-    /// `Enter` is not here: it runs a task, which needs the terminal.
-    fn on_tree_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
-                self.leave_category();
-            }
-            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
-            KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
-            KeyCode::Char('g') => self.select_first(),
-            KeyCode::Char('G') => self.select_last(),
-            _ => return false,
-        }
-
-        true
-    }
-
-    /// Handles a key press while the output pane holds focus.
-    ///
-    /// Reading is never blocked, so these stay available while a task runs.
-    fn on_output_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
-            KeyCode::Up | KeyCode::Char('k') => self.output.scroll_up(1),
-            KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
-            KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
-            KeyCode::Char('g') => self.output.scroll_up(usize::MAX),
-            // `G` and `f` both re-attach to the tail: one is the counterpart
-            // of scrolling away, the other names what it does.
-            KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
-            KeyCode::Char('w') => self.output.toggle_wrap(),
-            KeyCode::Esc => self.focus = Pane::Tree,
-            _ => return false,
-        }
-
-        true
-    }
-
-    /// Handles a key press while a task is running.
-    ///
-    /// Reading is never blocked — the log of what is happening is the reason
-    /// to be watching — but every key that would change something is refused.
-    fn on_running_key(&mut self, key: KeyEvent) {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-
-        match key.code {
-            KeyCode::Char('c') if control => self.cancel_running(),
-            KeyCode::Tab => self.focus = self.focus.other(),
-            KeyCode::Char('?') => self.help = Some(0),
-            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
-            KeyCode::Up | KeyCode::Char('k') => self.output.scroll_up(1),
-            KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
-            KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
-            KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
-            KeyCode::Char('w') => self.output.toggle_wrap(),
-            // Quitting mid-task is how a server ends up half-configured, so it
-            // is refused with the way to actually stop.
-            KeyCode::Char('q') => self.status.flash(
-                self.lang.render(&Msg::StatusTaskRunningQuitRefused),
-                Instant::now(),
-            ),
-            _ => self.status.flash(
-                self.lang.render(&Msg::StatusTaskAlreadyRunning),
-                Instant::now(),
-            ),
-        }
-    }
-
-    /// Asks the running task to stop at its next step boundary.
-    fn cancel_running(&mut self) {
-        let Some(running) = self.running.as_mut() else {
-            return;
-        };
-
-        if running.is_cancelling() {
-            self.status.flash(
-                self.lang.render(&Msg::StatusAlreadyStopping),
-                Instant::now(),
-            );
-            return;
-        }
-
-        running.cancel();
-        // Not "cancelled": the task has been asked to stop and has not yet
-        // done so. Saying otherwise before the step finishes would be a lie
-        // about what state the machine is in.
-        self.status.set(
-            State::Running,
-            self.lang.render(&Msg::StatusStoppingAfterCurrentStep),
-        );
-    }
-
-    /// Handles a key press while the help overlay is showing.
-    ///
-    /// The movement keys scroll it; everything else closes it, including the
-    /// key that opened it. An overlay that has to be dismissed a particular
-    /// way traps whoever opened it by accident.
-    fn on_help_key(&mut self, key: KeyEvent) {
-        let Some(scroll) = self.help else {
-            return;
-        };
-
-        // The frame is not known here, so the clamp uses the reference size;
-        // `render` clamps again against the real one.
-        let limit = help::max_scroll(Rect::new(0, 0, 80, 24), self.lang);
-
-        self.help = match key.code {
-            KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_add(1).min(limit)),
-            KeyCode::Up | KeyCode::Char('k') => Some(scroll.saturating_sub(1)),
-            KeyCode::PageDown => Some(scroll.saturating_add(HELP_PAGE).min(limit)),
-            KeyCode::PageUp => Some(scroll.saturating_sub(HELP_PAGE)),
-            KeyCode::Home | KeyCode::Char('g') => Some(0),
-            KeyCode::End | KeyCode::Char('G') => Some(limit),
-            _ => None,
-        };
-    }
-
-    /// Handles a key press while a change is applied but not yet kept.
-    ///
-    /// `K` and `R` are uppercase deliberately: lowercase `k` is "move up"
-    /// everywhere else in this interface, and this is the one place where a
-    /// mistyped navigation key would do something unrecoverable. Scrolling
-    /// stays available, because reading the log of what just happened is
-    /// exactly what the administrator needs in order to decide.
-    fn on_verify_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('K') => self.keep_change(),
-            KeyCode::Char('R') => self.revert_change(RevertReason::Requested),
-            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
-            KeyCode::Up => self.output.scroll_up(1),
-            KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
-            KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
-            // Every other key is refused rather than ignored: an unanswered
-            // window is the one state where doing nothing has consequences.
-            _ => self
-                .status
-                .flash(self.lang.render(&Msg::StatusVerifyKeysOnly), Instant::now()),
-        }
-    }
-
-    /// Puts an unconfirmed change back because the session is ending.
-    ///
-    /// This is the case the verification window exists for rather than an edge
-    /// of it: `ssh.harden` and its neighbours can sever the very session that
-    /// would confirm them, and the daemon answers a dropped connection with
-    /// `SIGHUP`. Without this the countdown dies with the process and the
-    /// configuration that locked the administrator out is the one left behind
-    /// — the interface having promised on screen that silence puts it back.
-    ///
-    /// Silence is still what decides. Losing the session is not confirmation,
-    /// so the change goes back for the same reason a lapsed window does, and
-    /// the operator finds the machine as they left it.
-    fn resolve_on_hangup(&mut self) {
-        if self.verification.is_some() {
-            self.revert_change(RevertReason::SessionEnded);
-        }
-    }
-
-    /// Puts the change back if its window has run out.
-    ///
-    /// Called from the event loop rather than driven by a key, because the
-    /// whole point is that it happens when nobody is pressing anything.
-    fn expire_verification(&mut self) {
-        let expired = self
-            .verification
-            .as_ref()
-            .is_some_and(|window| window.has_expired(Instant::now()));
-
-        if expired {
-            self.revert_change(RevertReason::NoConfirmation);
-        }
-    }
-
-    /// Handles a key press while the search is open.
-    ///
-    /// Every printable character is literal, as in a form: a query naming a
-    /// task id contains `.` and `-`, and a `/` typed a second time belongs in
-    /// the query rather than reopening what is already open.
-    fn on_search_key(&mut self, key: KeyEvent) {
-        let Some(search) = self.search.as_mut() else {
-            return;
-        };
-
-        match key.code {
-            KeyCode::Esc => {
-                self.search = None;
-                self.status.set(State::Ready, "");
-            }
-            KeyCode::Enter => self.jump_to_selected_match(),
-            KeyCode::Down => search.select_next(),
-            KeyCode::Up => search.select_previous(),
-            // Closing on a backspace that has nothing left to delete: the
-            // query is empty, so the operator is undoing having opened it.
-            KeyCode::Backspace if !search.backspace(self.cursor.tree()) => {
-                self.search = None;
-                self.status.set(State::Ready, "");
-            }
-            KeyCode::Backspace => {}
-            KeyCode::Char(character) => search.push(character, self.cursor.tree()),
-            _ => {}
-        }
-    }
-
-    /// Moves the tree cursor onto the selected match and closes the search.
-    ///
-    /// Navigates rather than running. The task under the cursor is then
-    /// started with `Enter` like any other, so a search result goes through
-    /// the same confirmation and the same parameter form — a path that skipped
-    /// either would make a mistyped query the most dangerous key in the
-    /// interface.
-    fn jump_to_selected_match(&mut self) {
-        let Some(found) = self.search.as_ref().and_then(Search::selected_match) else {
-            return;
-        };
-
-        self.cursor
-            .jump_to(&found.location.path, found.location.index);
-        self.focus = Pane::Tree;
-        self.search = None;
-        self.status.set(State::Ready, "");
-    }
-
-    /// Handles a key press while the parameter form is open.
-    ///
-    /// Every printable character is literal here. Only `Tab`, `Enter`, `Esc`,
-    /// the arrows and the `Ctrl-*` bindings stay commands.
-    fn on_form_key(&mut self, key: KeyEvent) -> Option<ParamValues> {
-        let form = self.form.as_mut()?;
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-
-        match key.code {
-            KeyCode::Esc => {
-                // Discarding a form with work in it on a single keystroke is
-                // how typed values get lost; an untouched one has nothing to
-                // lose, so it closes outright.
-                if form.is_untouched() || form.cancel_armed() {
-                    self.form = None;
-                    self.status
-                        .set(State::Ready, self.lang.render(&Msg::StatusCancelled));
-                } else {
-                    form.arm_cancel();
-                    self.status.flash(
-                        self.lang.render(&Msg::StatusPressEscAgainToDiscard),
-                        Instant::now(),
-                    );
-                }
-
-                return None;
-            }
-            // Any other key means the operator carried on, so a stale "press
-            // Esc again" cannot be answered several actions later.
-            _ => form.disarm_cancel(),
-        }
-
-        // Keys that move between fields act on the form; the rest act on
-        // whichever field has focus. Resolving which of the two a key means
-        // before touching either keeps the focus guard in one place instead of
-        // repeated around every editing key.
-        let edit: fn(&mut Field) = match key.code {
-            KeyCode::Tab | KeyCode::Down => {
-                form.focus_next();
-                return None;
-            }
-            KeyCode::BackTab | KeyCode::Up => {
-                form.focus_previous();
-                return None;
-            }
-            KeyCode::Enter => return self.submit_form(),
-            // Readline's bindings win inside a text field.
-            KeyCode::Char('u') if control => Field::clear_before_cursor,
-            KeyCode::Char('k') if control => Field::clear_after_cursor,
-            KeyCode::Char('w') if control => Field::delete_word,
-            KeyCode::Char('a') if control => Field::home,
-            KeyCode::Char('e') if control => Field::end,
-            KeyCode::Char(character) if !control => {
-                if let Some(field) = form.focused_mut() {
-                    field.insert(character);
-                }
-
-                return None;
-            }
-            KeyCode::Backspace => Field::backspace,
-            KeyCode::Delete => Field::delete,
-            KeyCode::Left => Field::left,
-            KeyCode::Right => Field::right,
-            KeyCode::Home => Field::home,
-            KeyCode::End => Field::end,
-            _ => return None,
-        };
-
-        if let Some(field) = form.focused_mut() {
-            edit(field);
-        }
-
-        None
-    }
-
-    /// Submits the form, or moves to the field standing in the way.
-    ///
-    /// On a field that is not the last, `Enter` advances rather than
-    /// submitting: it is the same key that moves through a form everywhere
-    /// else, and submitting early would surprise.
-    fn submit_form(&mut self) -> Option<ParamValues> {
-        let form = self.form.as_mut()?;
-
-        if !form.on_last_field() {
-            form.focus_next();
-            return None;
-        }
-
-        // Pointing at the offending field beats refusing without saying which
-        // one is wrong.
-        if let Some(index) = form.first_invalid() {
-            form.focus_on(index);
-            self.status.flash(
-                self.lang.render(&Msg::StatusFillEveryFieldFirst),
-                Instant::now(),
-            );
-            return None;
-        }
-
-        let values = form.values();
-        self.form = None;
-
-        let destructive = self
-            .selected_task()
-            .is_some_and(crate::tasks::Task::is_destructive);
-
-        if destructive {
-            // The values are held for the confirmation to run with once the
-            // operator consents.
-            self.pending_values = values;
-            self.open_confirmation();
-            return None;
-        }
-
-        Some(values)
-    }
-
-    /// Handles a key press while the confirmation dialog is open.
-    fn on_confirm_key(&mut self, key: KeyEvent) -> Option<ParamValues> {
-        let confirm = self.confirm.as_mut()?;
-
-        match key.code {
-            KeyCode::Tab | KeyCode::Left | KeyCode::Right => confirm.toggle(),
-            // `n` and `Esc` both mean the safe answer, so the reflex to back
-            // out of something lands on it whichever key it reaches for.
-            KeyCode::Esc | KeyCode::Char('n' | 'N') => self.cancel_confirmation(),
-            KeyCode::Char('y' | 'Y') => return self.accept_confirmation(),
-            KeyCode::Enter => {
-                if confirm.accepted {
-                    return self.accept_confirmation();
-                }
-
-                self.cancel_confirmation();
-            }
-            _ => {}
-        }
-
-        None
-    }
-
-    /// Closes the dialog and yields the values the task should run with.
-    fn accept_confirmation(&mut self) -> Option<ParamValues> {
-        self.confirm = None;
-
-        // Collected by the form before this dialog opened.
-        Some(std::mem::take(&mut self.pending_values))
-    }
-
-    /// Closes the dialog, discarding anything collected for the task.
-    fn cancel_confirmation(&mut self) {
-        self.confirm = None;
-        self.pending_values = ParamValues::new();
-        self.status
-            .set(State::Ready, self.lang.render(&Msg::StatusCancelled));
-    }
-
-    /// Acts on the selected row: descends into a category, or runs a task.
-    fn activate(&mut self) -> Option<ParamValues> {
-        let index = self.cursor.selected()?;
-
-        if let Some(Node::Category(_)) = self.current_level().get(index) {
-            self.enter_category(index);
-            return None;
-        }
-
-        let task = self.selected_task()?;
-
-        if !task.supports(self.distro.family) {
-            // Pressing Enter on a row the host cannot run is a refusal, not a
-            // state change: the reason flashes and the tool stays where it was.
-            let reason = self.lang.render(&Msg::StatusTaskNotSupported {
-                task: task.id().to_owned(),
-                family: self.distro.family.to_string(),
-            });
-            self.status.flash(reason, Instant::now());
-            return None;
-        }
-
-        // Values first, then consent, then the work: the confirmation states
-        // what will happen, and it cannot do that before it knows the values.
-        if task.needs_input() {
-            self.form = Some(Form::new(task.title(), task.params()));
-            return None;
-        }
-
-        if task.is_destructive() {
-            self.open_confirmation();
-            return None;
-        }
-
-        Some(ParamValues::new())
-    }
-
-    /// Opens the confirmation for the selected task.
-    fn open_confirmation(&mut self) {
-        let Some(task) = self.selected_task() else {
-            return;
-        };
-
-        self.confirm = Some(
-            Confirm::new(task.title(), task.description())
-                .with_warning(self.lang.render(&Msg::ConfirmLockoutWarning)),
-        );
-    }
-
-    /// Executes the selected task, streaming its output into the pane.
-    fn run_selected(&mut self, values: ParamValues) {
-        let Some(Node::Task(task)) = self.selected_node() else {
-            return;
-        };
-
-        let id = task.id();
-
-        self.output.clear();
-        self.status.set(State::Running, id);
-        // Reading what is about to happen is the natural thing to do next.
-        self.focus = Pane::Output;
-
-        // Kept because consequences are declared from the values the task ran
-        // with, and those are reported once it finishes — by which point the
-        // originals have been moved onto the worker thread.
-        self.ran_with = values.clone();
-
-        // The task runs on its own thread and reports back through a channel,
-        // which the event loop drains each tick. Running it inline would
-        // freeze the interface for the duration: no output as it arrives, no
-        // way to cancel, and no clock for the verification window.
-        self.running = Some(Running::start(id, self.distro.clone(), values));
-    }
-
-    /// Takes whatever the running task has reported since the last redraw.
-    fn poll_running(&mut self) {
-        let Some(running) = self.running.as_mut() else {
-            return;
-        };
-
-        let mut outcome = None;
-        // Collected rather than applied inside the loop, which holds a mutable
-        // borrow of `running`. Order is preserved either way: the lines a task
-        // wrote before asking are pushed as they are drained.
-        let mut requests = Vec::new();
-
-        for update in running.drain() {
-            match update {
-                Update::Line(line) => self.output.push(line),
-                Update::NeedsAuthentication {
-                    program,
-                    args,
-                    mechanism,
-                    reply,
-                } => requests.push(AuthRequest {
-                    program,
-                    args,
-                    mechanism,
-                    reply,
-                }),
-                Update::Finished(result) => outcome = Some(result),
-            }
-        }
-
-        // Read while the borrow is still in hand, so the requests below can
-        // take `self` mutably.
-        let cancelled = running.is_cancelling();
-        let id = running.task_id;
-
-        for request in requests {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::AuthenticationRequested {
-                    mechanism: request.mechanism.clone(),
-                }),
-            });
-
-            self.supersede_pending_auth(request);
-        }
-
-        let Some(outcome) = outcome else {
-            return;
-        };
-
-        self.running = None;
-
-        self.finish_run(id, outcome, cancelled);
-    }
-
-    /// Records a request for the terminal, answering any it displaces.
-    ///
-    /// A second request while one is outstanding would strand the thread
-    /// waiting on the first, so the displaced one is refused rather than
-    /// dropped. One task authenticates once at a time in practice; this keeps
-    /// that something the code states rather than something it relies on.
-    fn supersede_pending_auth(&mut self, request: AuthRequest) {
-        if let Some(superseded) = self.pending_auth.replace(request) {
-            let _ = superseded.reply.send(false);
-        }
-    }
-
-    /// Hands the terminal to a helper that needs to prompt, and answers.
-    ///
-    /// The reply is sent on every path, including the one where restoring the
-    /// terminal fails: a worker thread is blocked on the other end, and
-    /// letting it wait for the deadline instead of telling it no would stall a
-    /// task for five minutes over an error already in hand.
-    ///
-    /// A send failure is ignored, as elsewhere: it means the thread is gone,
-    /// which is not this loop's problem to solve.
-    fn serve_pending_auth(&mut self, terminal: &mut Tui) -> Result<()> {
-        let Some(request) = self.pending_auth.take() else {
-            return Ok(());
-        };
-
-        let outcome = super::with_terminal_released(terminal, || {
-            // Every stream inherited: the helper has to reach the terminal to
-            // prompt, and on sudo the timestamp it writes is keyed by it.
-            let status = std::process::Command::new(&request.program)
-                .args(&request.args)
-                .stdin(std::process::Stdio::inherit())
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
-                .status()
-                .map_err(|source| crate::error::Error::CommandIo {
-                    command: request.program.clone(),
-                    source,
-                })?;
-
-            Ok(status.success())
-        });
-
-        let granted = match &outcome {
-            Ok(granted) => *granted,
-            Err(_) => false,
-        };
-
-        let _ = request.reply.send(granted);
-
-        if granted {
-            self.output.push(OutputLine {
-                stream: Stream::Stdout,
-                text: self.lang.render(&Msg::AuthenticationGranted),
-            });
-        } else {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::AuthenticationRefused {
-                    mechanism: request.mechanism.clone(),
-                }),
-            });
-        }
-
-        outcome.map(|_| ())
-    }
-
-    /// Records how a finished task ended.
-    ///
-    /// Success and failure are pills of their own, so the outcome is legible
-    /// from the left edge without reading the message beside it.
-    fn finish_run(&mut self, id: &str, outcome: Result<Outcome>, cancelled: bool) {
-        // Cancellation is reported from what the task actually did, not from
-        // the operator having asked: the request arrives between two commands,
-        // and a task already on its last one runs to completion. Reporting the
-        // intent would claim a stop that never happened, which is how a server
-        // gets called half-configured when it is fully configured — and the
-        // reverse, on the next run.
-        if let Err(Error::Cancelled { ref before }) = outcome {
-            self.status.set(
-                State::Cancelled,
-                self.lang.render(&Msg::StatusStoppedBefore {
-                    task: id.to_owned(),
-                    before: before.clone(),
-                }),
-            );
-            return;
-        }
-
-        // Asked to stop, but the task finished first. Reported as whatever it
-        // actually was, with the near miss said out loud rather than silently
-        // dropped: the operator pressed a key and is owed an answer.
-        if cancelled {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::StatusFinishedBeforeItCouldStop),
-            });
-        }
-
-        // A change that can sever this session is not reported as done: it is
-        // applied, and held open until the administrator proves they can still
-        // get in. A failing task is reported in the status row rather than
-        // tearing the interface down — the administrator stays in control.
-        match outcome {
-            Ok(result) => {
-                // Stated before the verification window opens, so what the
-                // change invalidated is on screen while there is still an undo
-                // available. A failed task invalidates nothing, which is why
-                // this sits on the success path only.
-                self.report_consequences(id);
-
-                match result {
-                    Outcome::Revertible(revert) => self.begin_verification(id, revert),
-                    Outcome::Done => self.status.set(State::Done, id),
-                }
-            }
-            Err(ref err) => {
-                // Into the pane as well as the status row. The row is one
-                // line and is not truncated with an ellipsis, so a package
-                // manager's stderr arriving through `CommandFailed` was cut
-                // mid-sentence with no way to see the rest — and the pane is
-                // the part an administrator can scroll and paste into a bug
-                // report. The row keeps the summary so the outcome is legible
-                // from the left edge without reading the pane.
-                self.output.push(OutputLine {
-                    stream: Stream::Stderr,
-                    text: self.lang.render(&err.to_msg()),
-                });
-                self.status.set(
-                    State::Failed,
-                    self.lang.render(&Msg::StatusTaskFailed {
-                        task: id.to_owned(),
-                    }),
-                );
-            }
-        }
-    }
-
-    /// Writes what the finished task invalidated into the output pane.
-    ///
-    /// Reported, never acted on: the administrator decides what to do about
-    /// each one. Warnings the tool cannot verify carry a different marker from
-    /// those it can, since presenting both alike would imply the provider's
-    /// firewall had been checked when nothing checked it.
-    fn report_consequences(&mut self, id: &str) {
-        let Some(task) = tasks::find(id) else {
-            return;
-        };
-
-        let consequences = task.consequences(self.backend.as_ref(), &self.ran_with);
-
-        if consequences.is_empty() {
-            return;
-        }
-
-        let lang = self.lang;
-
-        self.output.push(OutputLine {
-            stream: Stream::Stdout,
-            text: String::new(),
-        });
-        self.output.push(OutputLine {
-            stream: Stream::Stdout,
-            text: lang.render(&Msg::OutputConsequencesHeading),
-        });
-
-        for consequence in consequences {
-            let marker = if consequence.is_external() {
-                "⚠"
-            } else {
-                "!"
-            };
-
-            self.output.push(OutputLine {
-                stream: Stream::Stdout,
-                text: format!("  {marker} {}", lang.render(&consequence.message())),
-            });
-        }
-    }
-
-    /// Opens the window in which an applied change can still be undone.
-    fn begin_verification(&mut self, task: &str, revert: Revert) {
-        let window = Verification::new(task, revert, Instant::now());
-
-        self.status.set(
-            State::Verify,
-            self.lang.render(&Msg::StatusAppliedNotYetKept {
-                task: task.to_owned(),
-            }),
-        );
-        self.verification = Some(window);
-    }
-
-    /// Keeps an applied change, closing its window.
-    fn keep_change(&mut self) {
-        let Some(window) = self.verification.take() else {
-            return;
-        };
-
-        self.status.set(
-            State::Done,
-            self.lang.render(&Msg::StatusKept {
-                task: window.task.clone(),
-            }),
-        );
-    }
-
-    /// Puts an applied change back, closing its window.
-    ///
-    /// A revert that itself fails is reported rather than swallowed: the
-    /// administrator has to know the machine is in neither state.
-    fn revert_change(&mut self, reason: RevertReason) {
-        let Some(window) = self.verification.take() else {
-            return;
-        };
-
-        let outcome = window
-            .revert()
-            .apply(self.executor.as_ref(), self.backend.as_ref());
-
-        match outcome {
-            Ok(()) => self.status.set(
-                State::Done,
-                self.lang.render(&Msg::StatusReverted {
-                    task: window.task.clone(),
-                    reason,
-                }),
-            ),
-            // The revert's own failure is rendered through the catalogue like
-            // any other error, and interpolated into the line naming the task:
-            // what failed is the restore, and the operator needs both halves.
-            Err(ref err) => self.status.set(
-                State::Failed,
-                self.lang.render(&Msg::StatusRevertFailed {
-                    task: window.task.clone(),
-                    error: self.lang.render(&err.to_msg()),
-                }),
-            ),
-        }
-    }
-
     /// The task currently under the cursor, if the cursor is on one.
-    fn selected_task(&self) -> Option<&dyn Task> {
+    pub(super) fn selected_task(&self) -> Option<&dyn Task> {
         self.cursor.selected_task()
     }
 
@@ -1273,22 +413,22 @@ impl App {
     ///
     /// Every row of a level is selectable now that categories are entered
     /// rather than skipped over.
-    fn select_next(&mut self) {
+    pub(super) fn select_next(&mut self) {
         self.cursor.select_next();
     }
 
     /// Moves the cursor up one row.
-    fn select_previous(&mut self) {
+    pub(super) fn select_previous(&mut self) {
         self.cursor.select_previous();
     }
 
     /// Moves the cursor to the first row of the level.
-    fn select_first(&mut self) {
+    pub(super) fn select_first(&mut self) {
         self.cursor.select_first();
     }
 
     /// Moves the cursor to the last row of the level.
-    fn select_last(&mut self) {
+    pub(super) fn select_last(&mut self) {
         self.cursor.select_last();
     }
 }
@@ -1306,6 +446,13 @@ mod tests {
     use crate::backend::for_family;
     use crate::distro::Family;
     use crate::exec::mock::MockExecutor;
+    // Named here rather than at the top of the file: the production code that
+    // used these moved to the sibling modules, and only the tests still reach
+    // for them from here.
+    use crate::error::Error;
+    use crate::tasks::revert::{Outcome, Revert};
+    use crossterm::event::{KeyCode, KeyEvent};
+    use ratatui::layout::Rect;
 
     fn test_distro(family: Family) -> Distro {
         Distro {
