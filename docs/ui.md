@@ -102,8 +102,15 @@ a clear refusal.
   (`2 tasks`, `1 category`), which costs no rows. Tasks unsupported on the
   running distribution stay visible and dimmed.
 - **Output** — the running task's output, streamed line by line as it is
-  produced, scrollable. Right column. Retains the most recent 5000 lines in a
-  ring buffer, dropping the oldest. The bottom border states whether the view
+  produced, scrollable. Right column. Each command is announced with a `$`
+  prefix before it runs, so the pane reads as a transcript rather than as
+  unattributed lines — it is what an administrator pastes into a bug report.
+  The command is rendered as the task asked for it, without the `sudo`/`doas`
+  wrapper this host resolved, and never carries what was fed on stdin (a
+  WireGuard private key travels that way precisely to stay out of view).
+  A failed task's error is written here as well as into the status row, since
+  the row is a single line and a package manager's stderr does not fit in it.
+  Retains the most recent 5000 lines in a ring buffer, dropping the oldest. The bottom border states whether the view
   is pinned to the newest output (`follow`) or has been scrolled away
   (`detached`), and while following, a `▌` cursor marks where the next line
   will land — a quiet command and a frozen screen otherwise look identical.

@@ -980,7 +980,20 @@ impl App {
                     Outcome::Done => self.status.set(State::Done, id),
                 }
             }
-            Err(ref err) => self.status.set(State::Failed, format!("{id} — {err}")),
+            Err(ref err) => {
+                // Into the pane as well as the status row. The row is one
+                // line and is not truncated with an ellipsis, so a package
+                // manager's stderr arriving through `CommandFailed` was cut
+                // mid-sentence with no way to see the rest — and the pane is
+                // the part an administrator can scroll and paste into a bug
+                // report. The row keeps the summary so the outcome is legible
+                // from the left edge without reading the pane.
+                self.output.push(OutputLine {
+                    stream: Stream::Stderr,
+                    text: Lang::from_env().render(&err.to_msg()),
+                });
+                self.status.set(State::Failed, format!("{id} — failed"));
+            }
         }
     }
 
@@ -3090,6 +3103,35 @@ mod tests {
                 .contains("systemctl restart ssh.service"),
             "got {:?}",
             app.status.message(Instant::now())
+        );
+    }
+
+    #[test]
+    fn a_failure_is_readable_in_the_pane_rather_than_only_in_the_status_row() {
+        // The status row is one line and is not truncated with an ellipsis, so
+        // a package manager's stderr arriving through `CommandFailed` was cut
+        // mid-sentence with nowhere to read the rest. The pane can be scrolled
+        // and pasted into a bug report; the row keeps the summary.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run(
+            "ssh.install",
+            Err(Error::CommandFailed {
+                command: "apt-get install -y openssh-server".to_owned(),
+                code: 100,
+                stderr: "E: Unable to locate package openssh-server".to_owned(),
+            }),
+            false,
+        );
+
+        assert_eq!(app.status.state(), State::Failed);
+        assert!(
+            app.output
+                .lines()
+                .iter()
+                .any(|line| line.text.contains("Unable to locate package")),
+            "the detail must be readable in the pane: {:?}",
+            app.output.lines()
         );
     }
 

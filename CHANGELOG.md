@@ -27,6 +27,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The permissions were whatever the repository defaulted to, and each container
   job pulls four distribution images.
 
+### Added
+- The output pane shows what the task is actually doing. `docs/ui.md` promised
+  output "streamed line by line as it is produced" and `user-stories.md`
+  promised it "appears as the task produces it"; neither was true. Commands
+  were run through `wait_with_output()`, which captures at the end, and no task
+  forwarded any of it — so `apt install` could take two minutes behind a single
+  hand-written line, and a failure was a one-line status row carrying a stderr
+  cut off mid-sentence. `LocalExecutor` now drains both pipes on their own
+  threads and hands each line to an `OutputObserver` as it arrives, still
+  collecting both streams so callers that classify a failure by its stderr are
+  unaffected. Each command is announced with a `$` prefix first, rendered as
+  the task asked for it rather than wrapped in whichever escalation helper the
+  host resolved, and never carrying stdin — which is what keeps a WireGuard
+  private key out of the pane. A failed task's error goes to the pane as well
+  as the status row, where it can be scrolled and pasted into a bug report.
+  This restores the shape removed in `813b690`, which went not because it was
+  wrong but because nothing called it; it is a property of the executor now
+  rather than a second `run` method that can fall out of use unnoticed.
+
 ### Changed
 - A consequence's check is phrased by the firewall front-end that holds the
   host's ruleset, so `Task::consequences` now takes the backend. Three tasks

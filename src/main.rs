@@ -107,6 +107,9 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
         &mut |line| match line.stream {
             exec::Stream::Stdout => println!("{}", line.text),
             exec::Stream::Stderr => eprintln!("{}", line.text),
+            // Diagnostic rather than output: `initd run … > file` should
+            // capture what the task produced, not a transcript of how.
+            exec::Stream::Command => eprintln!("$ {}", line.text),
         },
     )?;
 

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::distro::Distro;
 use crate::error::Error;
-use crate::exec::{CancelToken, OutputLine, TerminalBroker};
+use crate::exec::{CancelToken, OutputLine, OutputObserver, TerminalBroker};
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
 
@@ -63,6 +63,24 @@ struct ChannelBroker {
     updates: Sender<Update>,
     mechanism: String,
     deadline: Duration,
+}
+
+/// Forwards a command's output to the interface as it arrives.
+///
+/// The same channel the task's own progress lines travel on, so a step a task
+/// announces and the output of the command it announced land in one order —
+/// two channels would interleave by luck.
+struct ChannelObserver {
+    updates: Sender<Update>,
+}
+
+impl OutputObserver for ChannelObserver {
+    fn line(&self, line: OutputLine) {
+        // A send failure means the interface is gone. The task keeps running
+        // to completion rather than being abandoned midway, exactly as its own
+        // progress lines do.
+        let _ = self.updates.send(Update::Line(line));
+    }
 }
 
 impl TerminalBroker for ChannelBroker {
@@ -148,7 +166,10 @@ impl Running {
             // forgot would be the one that could not be stopped.
             let executor =
                 crate::exec::local::LocalExecutor::with_broker(escalator, Box::new(broker))
-                    .cancelled_by(flag);
+                    .cancelled_by(flag)
+                    .observed_by(std::sync::Arc::new(ChannelObserver {
+                        updates: sender.clone(),
+                    }));
 
             let Some(task) = crate::tasks::find(task_id) else {
                 // Unreachable through the interface, which only offers tasks

@@ -3,10 +3,15 @@
 //! The only real [`Executor`] today. Remote execution over SSH would be a
 //! second implementation of the same trait.
 
+use std::io::{BufRead as _, BufReader};
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 
-use super::{CancelToken, Command, Executor, Output, TerminalBroker};
+use super::{
+    CancelToken, Command, Executor, Output, OutputLine, OutputObserver, Stream, TerminalBroker,
+};
 use crate::error::{Error, Result};
 use crate::exec::privilege::{AuthNeed, PrivilegeEscalator};
 
@@ -24,6 +29,12 @@ pub struct LocalExecutor {
     /// `None` on the command line: there is no interface to press a key, and a
     /// terminal `Ctrl-C` already signals the whole process group.
     cancel: Option<CancelToken>,
+    /// Where each line goes as the command produces it.
+    ///
+    /// `None` on the command line, where the child's output is already on the
+    /// terminal the operator is looking at. The interface takes the screen
+    /// away, so it has to be handed the lines instead.
+    observer: Option<Arc<dyn OutputObserver>>,
 }
 
 impl LocalExecutor {
@@ -33,6 +44,7 @@ impl LocalExecutor {
             escalator,
             broker: None,
             cancel: None,
+            observer: None,
         }
     }
 
@@ -45,6 +57,7 @@ impl LocalExecutor {
             escalator,
             broker: Some(broker),
             cancel: None,
+            observer: None,
         }
     }
 
@@ -53,6 +66,86 @@ impl LocalExecutor {
     pub fn cancelled_by(mut self, cancel: CancelToken) -> Self {
         self.cancel = Some(cancel);
         self
+    }
+
+    /// Sends each line to `observer` as the command produces it.
+    ///
+    /// Without one the output is still captured and returned; the difference
+    /// is only whether anybody sees it before the command ends.
+    #[must_use]
+    pub fn observed_by(mut self, observer: Arc<dyn OutputObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// Runs a child, draining both pipes concurrently and reporting each line.
+    ///
+    /// Both pipes are read on their own threads, and neither may be read to
+    /// completion before the other starts: a child that fills the pipe nobody
+    /// is draining blocks writing to it, forever, while this waits for the
+    /// stream it chose to read first. That is a deadlock reachable by any
+    /// command chatty enough on the wrong stream — `apt` is.
+    ///
+    /// Lines are also collected, so `Output` still carries the whole of both
+    /// streams: callers that classify a failure by its stderr, like the sshd
+    /// config validation, must not have to observe to keep working.
+    fn stream_child(
+        &self,
+        child: &mut std::process::Child,
+        observer: &Arc<dyn OutputObserver>,
+    ) -> (String, String) {
+        let (sender, lines) = mpsc::channel();
+
+        let readers: Vec<_> = [
+            child.stdout.take().map(|pipe| {
+                (
+                    Stream::Stdout,
+                    Box::new(pipe) as Box<dyn std::io::Read + Send>,
+                )
+            }),
+            child.stderr.take().map(|pipe| {
+                (
+                    Stream::Stderr,
+                    Box::new(pipe) as Box<dyn std::io::Read + Send>,
+                )
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(stream, pipe)| spawn_reader(pipe, stream, sender.clone()))
+        .collect();
+
+        // The senders held here would keep the channel open after both readers
+        // finish, and the drain below would never end.
+        drop(sender);
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        for line in lines {
+            // `Command` is announced by `run`, never read off a pipe, so the
+            // readers below can only produce the two real streams.
+            if let Stream::Stdout | Stream::Stderr = line.stream {
+                let sink = if line.stream == Stream::Stdout {
+                    &mut stdout
+                } else {
+                    &mut stderr
+                };
+
+                sink.push_str(&line.text);
+                sink.push('\n');
+            }
+
+            observer.line(line);
+        }
+
+        for reader in readers {
+            // A reader panicking is not worth failing the command over: the
+            // process still ran, and its exit code is the answer being sought.
+            let _ = reader.join();
+        }
+
+        (stdout, stderr)
     }
 
     /// Refuses to start a command once the operator has asked the task to stop.
@@ -174,6 +267,18 @@ impl Executor for LocalExecutor {
         // then invisible and unanswerable.
         self.ensure_authenticated(command)?;
 
+        // The command before its output, so the pane reads as a transcript.
+        // Rendered from the `Command` rather than from what was spawned, so a
+        // privileged one appears as the task asked for it rather than wrapped
+        // in whichever helper this host resolved — and `Display` omits stdin,
+        // which is what keeps a WireGuard private key out of the pane.
+        if let Some(observer) = self.observer.as_ref() {
+            observer.line(OutputLine {
+                stream: Stream::Command,
+                text: command.to_string(),
+            });
+        }
+
         let (program, args) = self.resolve(command)?;
 
         let mut child = StdCommand::new(&program)
@@ -186,21 +291,41 @@ impl Executor for LocalExecutor {
 
         let writer = spawn_stdin_writer(&mut child, command);
 
-        let output = child
-            .wait_with_output()
-            .map_err(|source| Error::CommandIo {
-                command: command.to_string(),
-                source,
-            })?;
+        // Two paths because only one of them can exist at a time:
+        // `wait_with_output` takes the pipes, and draining them line by line
+        // needs to have taken them first. The observed path is the interface's;
+        // the other is the command line's, where the child's output already
+        // reaches the terminal the operator is reading.
+        let (code, stdout, stderr) = match self.observer.as_ref() {
+            Some(observer) => {
+                let (stdout, stderr) = self.stream_child(&mut child, observer);
+
+                let status = child.wait().map_err(|source| Error::CommandIo {
+                    command: command.to_string(),
+                    source,
+                })?;
+
+                (status.code(), stdout, stderr)
+            }
+            None => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|source| Error::CommandIo {
+                        command: command.to_string(),
+                        source,
+                    })?;
+
+                (
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stdout).into_owned(),
+                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                )
+            }
+        };
 
         join_stdin_writer(writer, command)?;
 
-        Self::finish(
-            command,
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        )
+        Self::finish(command, code, stdout, stderr)
     }
 }
 
@@ -218,6 +343,28 @@ fn stdin_for(command: &Command) -> Stdio {
     } else {
         Stdio::inherit()
     }
+}
+
+/// Reads one pipe line by line, forwarding each on the channel.
+///
+/// A line that is not valid UTF-8 ends that stream rather than failing the
+/// command: the process is still waited on and its exit code still answers.
+fn spawn_reader(
+    pipe: Box<dyn std::io::Read + Send>,
+    stream: Stream,
+    sender: mpsc::Sender<OutputLine>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        for line in BufReader::new(pipe).lines() {
+            let Ok(text) = line else { break };
+
+            // A send failure means the drain has gone; nothing would read
+            // anything sent after it.
+            if sender.send(OutputLine { stream, text }).is_err() {
+                break;
+            }
+        }
+    })
 }
 
 /// Writes the command's stdin payload on a separate thread.
@@ -417,6 +564,136 @@ mod tests {
 
         assert_eq!(out.stdout.trim(), "hello");
         assert_eq!(times_asked(&asked), 1);
+    }
+
+    /// An observer that keeps every line it was handed.
+    #[derive(Debug, Default)]
+    struct Recorder {
+        lines: std::sync::Mutex<Vec<OutputLine>>,
+    }
+
+    impl OutputObserver for Recorder {
+        fn line(&self, line: OutputLine) {
+            self.lines
+                .lock()
+                .expect("no test panics while holding this")
+                .push(line);
+        }
+    }
+
+    impl Recorder {
+        /// The recorded lines, as `stream:text`.
+        fn seen(&self) -> Vec<String> {
+            self.lines
+                .lock()
+                .expect("no test panics while holding this")
+                .iter()
+                .map(|line| {
+                    let stream = match line.stream {
+                        Stream::Stdout => "out",
+                        Stream::Stderr => "err",
+                        Stream::Command => "cmd",
+                    };
+                    format!("{stream}:{}", line.text)
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn an_observer_is_handed_each_line_of_both_streams() {
+        let recorder = Arc::new(Recorder::default());
+        let executor = LocalExecutor::new(Box::new(NoEscalation))
+            .observed_by(Arc::clone(&recorder) as Arc<dyn OutputObserver>);
+
+        executor
+            .run(&Command::new("sh").args(["-c", "echo one; echo two >&2; echo three"]))
+            .expect("sh must run");
+
+        let seen = recorder.seen();
+
+        assert!(seen.contains(&"out:one".to_owned()), "{seen:?}");
+        assert!(seen.contains(&"err:two".to_owned()), "{seen:?}");
+        assert!(seen.contains(&"out:three".to_owned()), "{seen:?}");
+    }
+
+    #[test]
+    fn observing_does_not_stop_the_output_being_returned() {
+        // The property every existing caller depends on: `sshd_config`
+        // classifies a failure by reading stderr off the returned `Output`,
+        // and it does not observe. Streaming must add a second reader of the
+        // lines, not move them.
+        let recorder = Arc::new(Recorder::default());
+        let executor = LocalExecutor::new(Box::new(NoEscalation))
+            .observed_by(Arc::clone(&recorder) as Arc<dyn OutputObserver>);
+
+        let out = executor
+            .run(&Command::new("sh").args(["-c", "echo captured; echo failed >&2; exit 3"]))
+            .expect("sh must run");
+
+        assert_eq!(out.code, 3);
+        assert_eq!(out.stdout.trim(), "captured");
+        assert_eq!(out.stderr.trim(), "failed");
+    }
+
+    #[test]
+    fn a_command_chatty_on_one_stream_does_not_deadlock() {
+        // Both pipes are drained concurrently. Reading one to completion first
+        // hangs forever on a child that fills the other: the child blocks
+        // writing to a pipe nobody empties, and never reaches the exit this
+        // would be waiting for. `apt` is chatty enough on stderr to reach it.
+        //
+        // 64 KiB comfortably exceeds a 64 KiB pipe buffer once the newline of
+        // each line is counted, so this hangs rather than fails if the
+        // concurrency is lost.
+        let recorder = Arc::new(Recorder::default());
+        let executor = LocalExecutor::new(Box::new(NoEscalation))
+            .observed_by(Arc::clone(&recorder) as Arc<dyn OutputObserver>);
+
+        let out = executor
+            .run(&Command::new("sh").args([
+                "-c",
+                "i=0; while [ $i -lt 4000 ]; do \
+                 echo 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' >&2; i=$((i+1)); done; echo done",
+            ]))
+            .expect("a chatty command must finish");
+
+        assert!(out.success());
+        assert_eq!(out.stdout.trim(), "done");
+        assert_eq!(out.stderr.lines().count(), 4000);
+    }
+
+    #[test]
+    fn without_an_observer_the_output_is_still_captured() {
+        // The command line builds no observer and must behave as it did.
+        let executor = LocalExecutor::new(Box::new(NoEscalation));
+
+        let out = executor
+            .run(&Command::new("sh").args(["-c", "echo plain; echo loud >&2"]))
+            .expect("sh must run");
+
+        assert_eq!(out.stdout.trim(), "plain");
+        assert_eq!(out.stderr.trim(), "loud");
+    }
+
+    #[test]
+    fn a_command_reading_stdin_still_streams_its_output() {
+        // The stdin writer runs on its own thread beside the two readers; a
+        // payload larger than the pipe buffer deadlocks if any of the three
+        // waits on another.
+        let recorder = Arc::new(Recorder::default());
+        let executor = LocalExecutor::new(Box::new(NoEscalation))
+            .observed_by(Arc::clone(&recorder) as Arc<dyn OutputObserver>);
+
+        let payload = "x".repeat(128 * 1024);
+
+        let out = executor
+            .run(&Command::new("wc").arg("-c").stdin(payload.clone()))
+            .expect("wc must run");
+
+        assert!(out.success());
+        assert_eq!(out.stdout.trim(), payload.len().to_string());
+        assert!(!recorder.seen().is_empty(), "the count must be observed");
     }
 
     #[test]
