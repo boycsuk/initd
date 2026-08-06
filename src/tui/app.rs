@@ -12,6 +12,7 @@ use ratatui::widgets::{
 };
 
 use super::confirm::Confirm;
+use super::cursor::TreeCursor;
 use super::field::Field;
 use super::form::Form;
 use super::output::OutputPane;
@@ -138,16 +139,13 @@ pub struct App {
     host: HostFacts,
     backend: Box<dyn Backend>,
     executor: Box<dyn Executor>,
-    /// The whole tree, owned so that levels can be borrowed from it.
-    tree: Vec<Node>,
-    /// Indices from the root to the category on screen; empty means the root.
+    /// Where the operator is in the tree, and which row is under the cursor.
     ///
-    /// Positions rather than titles, so nothing breaks if two categories in
-    /// different branches share a name.
-    path: Vec<usize>,
-    /// Cursor position of each level left behind, restored on the way back.
-    cursor_stack: Vec<usize>,
-    list_state: ListState,
+    /// Its own type because it depends on nothing else here — no executor, no
+    /// backend, no terminal — and because the two stacks inside it have to
+    /// move together. Keeping them in one place means the only code that can
+    /// desynchronise them is the code whose job they are.
+    cursor: TreeCursor,
     /// Which pane the movement keys currently address.
     focus: Pane,
     output: OutputPane,
@@ -220,10 +218,7 @@ impl App {
             backend,
             executor: Box::new(executor),
             pending_auth: None,
-            tree: tasks::tree(),
-            path: Vec::new(),
-            cursor_stack: Vec::new(),
-            list_state,
+            cursor: TreeCursor::new(tasks::tree()),
             // The tree is where a session starts: nothing has run yet, so
             // there is no output to read.
             focus: Pane::Tree,
@@ -321,40 +316,22 @@ impl App {
 
     /// The nodes of the level currently on screen.
     fn current_level(&self) -> &[Node] {
-        level_at(&self.tree, &self.path)
+        self.cursor.current_level()
     }
 
     /// The node under the cursor, if any.
     fn selected_node(&self) -> Option<&Node> {
-        self.current_level().get(self.list_state.selected()?)
+        self.cursor.selected_node()
     }
 
     /// Titles from the root to the level on screen, for the breadcrumb.
     fn breadcrumb(&self) -> String {
-        let mut nodes = self.tree.as_slice();
-        let mut titles = Vec::new();
-
-        for &index in &self.path {
-            let Some(Node::Category(category)) = nodes.get(index) else {
-                break;
-            };
-
-            titles.push(category.title);
-            nodes = category.children.as_slice();
-        }
-
-        if titles.is_empty() {
-            "Tasks".to_owned()
-        } else {
-            titles.join(" › ")
-        }
+        self.cursor.breadcrumb()
     }
 
     /// Descends into the category under the cursor.
     fn enter_category(&mut self, index: usize) {
-        self.cursor_stack.push(index);
-        self.path.push(index);
-        self.list_state.select(Some(0));
+        self.cursor.enter_category(index);
         self.status.set(State::Ready, "");
     }
 
@@ -362,18 +339,15 @@ impl App {
     ///
     /// At the root there is nowhere to go, so this reports rather than quits:
     /// `q` is the way out, and an `Esc` that sometimes exits the program would
-    /// make going back one level too far a destructive mistake.
+    /// make going back one level too far a destructive mistake. The cursor
+    /// answers whether it moved; phrasing the refusal is the interface's job.
     fn leave_category(&mut self) {
-        if self.path.pop().is_none() {
+        if !self.cursor.leave_category() {
             // A refusal, not a state: the tool is still ready, the key simply
             // had nowhere to go.
             self.status
                 .flash("already at the top level", Instant::now());
-            return;
         }
-
-        let restored = self.cursor_stack.pop().unwrap_or(0);
-        self.list_state.select(Some(restored));
     }
 
     /// Runs the event loop until the user quits.
@@ -516,7 +490,7 @@ impl App {
             // map of, and drilling down one level at a time answers "what is
             // in here" rather than "where is it".
             KeyCode::Char('/') => {
-                self.search = Some(Search::new(&self.tree));
+                self.search = Some(Search::new(self.cursor.tree()));
                 return true;
             }
             // The only focus key. Overloading a movement key with focus is how
@@ -725,12 +699,12 @@ impl App {
             KeyCode::Up => search.select_previous(),
             // Closing on a backspace that has nothing left to delete: the
             // query is empty, so the operator is undoing having opened it.
-            KeyCode::Backspace if !search.backspace(&self.tree) => {
+            KeyCode::Backspace if !search.backspace(self.cursor.tree()) => {
                 self.search = None;
                 self.status.set(State::Ready, "");
             }
             KeyCode::Backspace => {}
-            KeyCode::Char(character) => search.push(character, &self.tree),
+            KeyCode::Char(character) => search.push(character, self.cursor.tree()),
             _ => {}
         }
     }
@@ -747,13 +721,8 @@ impl App {
             return;
         };
 
-        self.path.clone_from(&found.location.path);
-        // The cursor stack records the row left behind at each level; jumping
-        // did not pass through them, so what it would restore is a guess. The
-        // path's own indices are the honest answer — leaving the category
-        // returns to the row holding it.
-        self.cursor_stack.clone_from(&found.location.path);
-        self.list_state.select(Some(found.location.index));
+        self.cursor
+            .jump_to(&found.location.path, found.location.index);
         self.focus = Pane::Tree;
         self.search = None;
         self.status.set(State::Ready, "");
@@ -911,7 +880,7 @@ impl App {
 
     /// Acts on the selected row: descends into a category, or runs a task.
     fn activate(&mut self) -> Option<ParamValues> {
-        let index = self.list_state.selected()?;
+        let index = self.cursor.selected()?;
 
         if let Some(Node::Category(_)) = self.current_level().get(index) {
             self.enter_category(index);
@@ -1256,10 +1225,7 @@ impl App {
 
     /// The task currently under the cursor, if the cursor is on one.
     fn selected_task(&self) -> Option<&dyn Task> {
-        match self.selected_node()? {
-            Node::Task(task) => Some(task.as_ref()),
-            Node::Category(_) => None,
-        }
+        self.cursor.selected_task()
     }
 
     /// Moves the cursor down one row.
@@ -1267,29 +1233,22 @@ impl App {
     /// Every row of a level is selectable now that categories are entered
     /// rather than skipped over.
     fn select_next(&mut self) {
-        let last = self.current_level().len().saturating_sub(1);
-        let current = self.list_state.selected().unwrap_or(0);
-
-        self.list_state
-            .select(Some(current.saturating_add(1).min(last)));
+        self.cursor.select_next();
     }
 
     /// Moves the cursor up one row.
     fn select_previous(&mut self) {
-        let current = self.list_state.selected().unwrap_or(0);
-
-        self.list_state.select(Some(current.saturating_sub(1)));
+        self.cursor.select_previous();
     }
 
     /// Moves the cursor to the first row of the level.
     fn select_first(&mut self) {
-        self.list_state.select(Some(0));
+        self.cursor.select_first();
     }
 
     /// Moves the cursor to the last row of the level.
     fn select_last(&mut self) {
-        self.list_state
-            .select(Some(self.current_level().len().saturating_sub(1)));
+        self.cursor.select_last();
     }
 
     /// Draws the whole interface.
@@ -1467,7 +1426,7 @@ impl App {
                 style::SELECTION_UNFOCUSED
             });
 
-        frame.render_stateful_widget(list, tree_area, &mut self.list_state);
+        frame.render_stateful_widget(list, tree_area, self.cursor.list_state());
         self.render_tree_scrollbar(frame, tree_area);
     }
 
@@ -1505,7 +1464,7 @@ impl App {
         }
 
         let mut state =
-            ScrollbarState::new(rows.saturating_sub(viewport)).position(self.list_state.offset());
+            ScrollbarState::new(rows.saturating_sub(viewport)).position(self.cursor.offset());
 
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -1652,7 +1611,7 @@ impl App {
         let mut keys = vec![("↑↓", "move"), ("Enter", enter_hint), ("/", "find")];
 
         // Going back is only offered where there is somewhere to go back to.
-        if !self.path.is_empty() {
+        if !self.cursor.at_root() {
             keys.push(("Esc", "back"));
         }
 
@@ -1898,24 +1857,6 @@ fn render_too_small(frame: &mut Frame) {
     );
 }
 
-/// The nodes reached by following `path` from the root of `tree`.
-///
-/// A path only ever grows by descending into a category, so a step that lands
-/// on anything else cannot happen; it returns the level reached so far rather
-/// than panicking, because a logic error must not take the interface down.
-fn level_at<'a>(tree: &'a [Node], path: &[usize]) -> &'a [Node] {
-    let mut nodes = tree;
-
-    for &index in path {
-        match nodes.get(index) {
-            Some(Node::Category(category)) => nodes = category.children.as_slice(),
-            _ => return nodes,
-        }
-    }
-
-    nodes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1962,7 +1903,7 @@ mod tests {
             .position(|node| matches!(node, Node::Category(c) if c.title == title))
             .unwrap_or_else(|| panic!("the level must contain {title}"));
 
-        app.list_state.select(Some(index));
+        app.cursor.list_state().select(Some(index));
         app.enter_category(index);
     }
 
@@ -1974,7 +1915,7 @@ mod tests {
             .position(|node| matches!(node, Node::Category(_)))
             .expect("the level must contain a category");
 
-        app.list_state.select(Some(index));
+        app.cursor.list_state().select(Some(index));
         app.enter_category(index);
     }
 
@@ -1982,8 +1923,8 @@ mod tests {
     fn starts_at_the_root_level_with_a_row_selected() {
         let app = test_app(Family::Debian);
 
-        assert!(app.path.is_empty(), "navigation must start at the root");
-        assert_eq!(app.list_state.selected(), Some(0));
+        assert!(app.cursor.at_root(), "navigation must start at the root");
+        assert_eq!(app.cursor.selected(), Some(0));
     }
 
     #[test]
@@ -2005,7 +1946,7 @@ mod tests {
         enter_first_category(&mut app);
 
         assert_eq!(app.current_level().len(), expected);
-        assert_eq!(app.path, vec![0]);
+        assert_eq!(app.cursor.path(), vec![0]);
     }
 
     #[test]
@@ -2014,15 +1955,15 @@ mod tests {
 
         // Move off the first row so the restored cursor is distinguishable.
         app.select_next();
-        let before = app.list_state.selected().expect("a row must be selected");
+        let before = app.cursor.selected().expect("a row must be selected");
         let index = before;
         app.enter_category(index);
 
         app.leave_category();
 
-        assert!(app.path.is_empty(), "the root must be restored");
+        assert!(app.cursor.at_root(), "the root must be restored");
         assert_eq!(
-            app.list_state.selected(),
+            app.cursor.selected(),
             Some(before),
             "the cursor must return to the row that was entered"
         );
@@ -2034,7 +1975,7 @@ mod tests {
 
         app.leave_category();
 
-        assert!(app.path.is_empty());
+        assert!(app.cursor.at_root());
         assert!(
             !app.should_quit,
             "Esc at the root must not exit the program"
@@ -2047,7 +1988,7 @@ mod tests {
 
         enter_first_category(&mut app);
 
-        let selected = app.list_state.selected().expect("a row must be selected");
+        let selected = app.cursor.selected().expect("a row must be selected");
         assert!(
             selected < app.current_level().len(),
             "the cursor must point inside the new level"
@@ -2062,12 +2003,12 @@ mod tests {
         for _ in 0..100 {
             app.select_next();
         }
-        let last = app.list_state.selected().expect("selection must persist");
+        let last = app.cursor.selected().expect("selection must persist");
 
         for _ in 0..100 {
             app.select_previous();
         }
-        let first = app.list_state.selected().expect("selection must persist");
+        let first = app.cursor.selected().expect("selection must persist");
 
         assert_eq!(first, 0);
         assert_eq!(last, app.current_level().len() - 1);
@@ -2081,7 +2022,7 @@ mod tests {
         enter_first_category(&mut app);
 
         for expected in 0..app.current_level().len() {
-            assert_eq!(app.list_state.selected(), Some(expected));
+            assert_eq!(app.cursor.selected(), Some(expected));
             app.select_next();
         }
     }
@@ -2175,13 +2116,13 @@ mod tests {
             });
         }
 
-        let before = app.list_state.selected();
+        let before = app.cursor.selected();
 
         app.focus = Pane::Output;
         press(&mut app, KeyCode::Char('k'));
 
         assert_eq!(
-            app.list_state.selected(),
+            app.cursor.selected(),
             before,
             "the tree cursor must not move while the output has focus"
         );
@@ -2259,7 +2200,7 @@ mod tests {
             }
 
             for index in 0..app.current_level().len() {
-                app.list_state.select(Some(index));
+                app.cursor.list_state().select(Some(index));
 
                 match app.current_level().get(index) {
                     Some(Node::Task(task)) if task.id() == id => return true,
@@ -2741,7 +2682,7 @@ mod tests {
         // would otherwise redirect the walk somewhere with a different shape.
         enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
-        app.list_state.select(Some(1));
+        app.cursor.list_state().select(Some(1));
         app.enter_category(1);
 
         println!();
@@ -2925,7 +2866,7 @@ mod tests {
         let mut app = test_app(Family::Debian);
         enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
-        app.list_state.select(Some(1));
+        app.cursor.list_state().select(Some(1));
         app.enter_category(1);
 
         let rows = render_to_rows(&mut app, 80, 24);
@@ -3024,7 +2965,7 @@ mod tests {
         enter_first_category(&mut app);
         enter_first_category(&mut app);
         // Remote Access > SSH > Configuration holds the destructive tasks.
-        app.list_state.select(Some(1));
+        app.cursor.list_state().select(Some(1));
         app.enter_category(1);
 
         let rows = render_to_rows(&mut app, 80, 24);
@@ -3462,7 +3403,7 @@ mod tests {
     #[test]
     fn escape_closes_the_search_without_moving_the_cursor() {
         let mut app = test_app(Family::Debian);
-        let before = app.list_state.selected();
+        let before = app.cursor.selected();
 
         press(&mut app, KeyCode::Char('/'));
         type_query(&mut app, "wireguard");
@@ -3470,7 +3411,7 @@ mod tests {
 
         assert!(app.search.is_none());
         assert_eq!(
-            app.list_state.selected(),
+            app.cursor.selected(),
             before,
             "abandoning a search must leave the cursor where it was"
         );

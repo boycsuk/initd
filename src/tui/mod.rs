@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod confirm;
+pub mod cursor;
 pub mod field;
 pub mod form;
 pub mod help;

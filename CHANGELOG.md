@@ -47,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a second `run` method that can fall out of use unnoticed.
 
 ### Changed
+- Tree navigation moves to `tui::cursor::TreeCursor`. It depended on none of
+  what the rest of `app.rs` does — no executor, no backend, no terminal — which
+  made it the one part of the interface that could be tested without building
+  an interface, and was not being. It also holds the two stacks that have to
+  move together (`path` and the row left behind at each level), so the code
+  able to desynchronise them is now confined to the file whose job they are; a
+  test pins that, and was confirmed to fail when a push is dropped. The status
+  row stays out of it: `leave_category` at the root answers that it could not
+  move, and the interface phrases the refusal, because a cursor that knew about
+  the status row would be a cursor that knew about the interface.
 - Which modal state owns the keyboard is decided in one place. The interface
   holds six independent `Option`s, and four separate sites decided precedence
   by testing the same fields in their own order — two of which had already
