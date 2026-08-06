@@ -41,7 +41,7 @@ switch: the terminal already is one.
 
 ## Layout
 
-The screen is four horizontal bands. The body splits into two columns. Every
+The screen is three horizontal bands. The body splits into two columns. Every
 band except the body is exactly one row: bordered chrome would spend six of the
 twenty-four rows a terminal is assumed to have.
 
@@ -52,34 +52,48 @@ twenty-four rows a terminal is assumed to have.
 │ Task tree            │ Output / Detail             │
 │                      │                             │
 │ Body                 │                     flexible│
-├──────────────────────┴─────────────────────────────┤
-│ Status row                                    1 row│
+│                      │                             │
+│ └ census ────────────┴───────────── status ───────┘│
+├────────────────────────────────────────────────────┤
 │ Key bar                                       1 row│
 └────────────────────────────────────────────────────┘
 ```
+
+The status has no band of its own. It rides the bottom border of the pane on
+the right, the way the tree's census rides its own, so it costs no rows — the
+row it used to occupy belongs to the body.
 
 The body's split follows the terminal width:
 
 | Width | Split |
 |-------|-------|
-| ≥ 100 columns | Tree fixed at 34 columns; the right pane absorbs the rest |
+| ≥ 100 columns | Tree fixed at 46 columns; the right pane absorbs the rest |
 | 72–99 columns | Tree 42%, right pane 58% |
 | < 72 columns | One pane at a time |
 
-The tree takes a fixed width above 100 columns because its content has a fixed
-natural width, so extra width belongs to the output, where lines are long and
-wrapping hurts.
+The tree takes a fixed width above 100 columns because its content has a
+natural one, so extra width belongs to the output, where lines are long and
+wrapping hurts. Giving the tree a share of a wide terminal would spend it on
+padding.
+
+**That width is measured, not chosen.** The longest task title is 40 cells and
+a row spends six more — two of border, two of marker, one of flag, and the
+space separating the title from it — so 46 is the width at which no task in
+the tree is truncated. A task added with a longer name shortens the others,
+silently: a truncated title still renders, it just cannot be read. A test
+compares the constant against the tree so that the day it stops being true is
+a failing build rather than a screen nobody can use.
 
 Below 72 columns the two panes become **two views of one area**, switched with
 `Tab`. The header trades the host facts for a `tasks / output` indicator, since
 nothing else would say which of the two is showing and `Tab` would look like it
 did nothing.
 
-The key bar is dropped below 24 rows — it is a convenience, whereas the status
-row is the only authoritative place the operator is told what the tool is
-doing. Below **60 × 15** the interface is not drawn at all: it states the size
-it needs instead, because a garbled layout on a production server is worse than
-a clear refusal.
+The key bar is dropped below 24 rows — it is a convenience, and it is now the
+only band that can be given up at all, since the status costs no row to keep.
+Below **60 × 15** the interface is not drawn at all: it states the size it needs
+instead, because a garbled layout on a production server is worse than a clear
+refusal.
 
 ## Panels
 
@@ -110,8 +124,9 @@ a clear refusal.
   The command is rendered as the task asked for it, without the `sudo`/`doas`
   wrapper this host resolved, and never carries what was fed on stdin (a
   WireGuard private key travels that way precisely to stay out of view).
-  A failed task's error is written here as well as into the status row, since
-  the row is a single line and a package manager's stderr does not fit in it.
+  A failed task's error is written here as well as into the status, since the
+  status is a single line on a border and a package manager's stderr does not
+  fit in it.
   Retains the most recent 5000 lines in a ring buffer, dropping the oldest. The bottom border states whether the view
   is pinned to the newest output (`follow`) or has been scrolled away
   (`detached`), and while following, a `▌` cursor marks where the next line
@@ -120,14 +135,22 @@ a clear refusal.
   showing what the selected task does, titled with the task's own name. With a
   category selected it shows the category name and how many tasks it holds at
   any depth.
-- **Status row** — the state pill plus a message. One borderless row.
+- **Status** — the state word plus a message, on the bottom border of whichever
+  pane is showing on the right. Costs no rows. Right-aligned, opposite the
+  census on the tree and opposite `follow`/`detached` on the output, since two
+  bottom titles at the same end are drawn over each other.
 - **Key bar** — the key hints for the current row and state. One borderless
   row, dropped on terminals shorter than 24 rows.
 - **Parameter form** — overlays the centre of the screen for tasks that collect
   values (a port, a username, a public key). Modal. Each field shows its label,
   a boxed input, and a note beneath stating either what is wrong with the value
   or what it parsed as. Validation runs on every keystroke, so the consequences
-  of a value are visible before `Enter` rather than after.
+  of a value are visible before `Enter` rather than after. Fields whose values
+  the host already records — usernames, login shells — offer them rather than
+  asking the operator to remember; the note says how many there are.
+- **Options list** — overlays the form, below it, listing everything the host
+  offers for the focused field. Modal over the form: while it is open, all keys
+  go to it. Opened with `Ctrl-L`, and only offered where the field has options.
 - **Confirmation dialog** — overlays the centre of the screen, 60% × 40%, for
   destructive operations only. Modal: while it is open, all keys go to it.
 
@@ -162,15 +185,31 @@ A row carries at most one flag, and they rank in that order: a task that is
 both destructive and parameterised shows `!`, since the warning outranks the
 notice.
 
-## Status row
+## Status
 
-One authoritative place for what the tool is doing. It opens with a pill in the
-same cells at the left edge, so the operator's eye never searches for it, and
-the word carries the meaning alone when colour is absent.
+One authoritative place for what the tool is doing: the bottom border of the
+pane on the right, right-aligned. It reads as up to three parts in a fixed
+order — the liveness signals, the state's word, then its message — separated by
+`·` and drawn only where each applies:
 
-| Pill | Meaning |
+```
+└ VERIFY  ·  ssh.harden — applied, not yet kept ┘
+└ ⠿  0:12  ·  RUNNING  ·  installing openssh    ┘
+```
+
+The word carries the meaning alone when colour is absent; the colour is
+redundant reinforcement rather than the signal.
+
+`READY` is the one state that is **not** named. It is the state the tool is in
+whenever it is in no other, so a border reading it for most of a session says
+only that the program is running — which the screen already says — and teaches
+the eye to skip the one place a failure will appear. Its *message* is still
+drawn when it has one (`cancelled` after a stopped task): that is a report, not
+a redundancy.
+
+| State | Meaning |
 |------|---------|
-| `READY` | Waiting for input |
+| — | Waiting for input; nothing is drawn |
 | `RUNNING` | A task is running |
 | `DONE` | The last task succeeded |
 | `FAILED` | The last task failed |
@@ -181,7 +220,7 @@ the word carries the meaning alone when colour is absent.
 | `UNSUPPORTED` | The selected task cannot run on this host |
 
 **Every word in this document's tables is the English rendering.** All
-user-facing text — these pills, the key bar's labels, the help overlay, the
+user-facing text — these state words, the key bar's labels, the help overlay, the
 verification banner — is resolved through the message catalogue against the
 locale in the environment (`LC_ALL` > `LC_MESSAGES` > `LANG`, falling back to
 English). English is the only catalogue that exists today, so what is tabulated
@@ -197,7 +236,7 @@ to be English.
 Three of these describe the cursor rather than the past and therefore override
 whatever the last action left behind: `CONFIRM` while a dialog is open, `INPUT`
 while a form is, and `UNSUPPORTED` when the selected row cannot run here. The
-pill must always state what pressing `Enter` would do now.
+state must always say what pressing `Enter` would do now.
 
 `CONFIRM` outranks `INPUT` where both apply: a destructive task collects its
 parameters first and confirms after, so once the confirmation is up it is the
@@ -206,12 +245,35 @@ live question.
 ### Transient messages
 
 Refusals — "already at the top level", "not supported on arch" — flash beside
-the pill for two seconds and then disappear on their own. They override the
-state's message but **never** the pill: losing sight of what the tool is doing
-because something was refused is exactly what the separation prevents.
+the state's word for two seconds and then disappear on their own. They override
+the state's message but **never** its word: losing sight of what the tool is
+doing because something was refused is exactly what the separation prevents.
 
 There are no toasts and no overlays. A message that occludes content is
 unacceptable when the content is the log of a command running as root.
+
+### When the border runs out of room
+
+A border is narrower than a row was, so two rules decide what goes first, and
+both protect the state's word:
+
+- **The message is truncated, never the word.** It loses its tail to a `…`;
+  below eight cells it is dropped whole instead, since what survives at that
+  width is a smear rather than a shortened sentence.
+- **The pane's own indicator yields the border entirely** where the two would
+  not both fit — the tree's census, the output pane's `following`/`detached`.
+  Neither is the only place its information appears: the census counts rows
+  already on screen, and whether the view is pinned is also visible from the
+  write cursor and from whether the log is moving. The status may be the only
+  report of a task that failed.
+
+  Opposite ends is not enough on its own. Ratatui draws two bottom titles that
+  outgrow the border rather than arbitrating between them, which rendered the
+  census as `6 ca FAILED …` and `following` as `f`.
+
+Below 72 columns only one pane is drawn, and the status follows it: with focus
+on the tree it rides the tree's border, so pressing `Tab` back after a failure
+never hides the report of it.
 
 ## Truncation
 
@@ -275,14 +337,21 @@ Two rules govern the table:
 | `choice_selected` | Reversed + bold | The preselected safe answer |
 | `choice_normal` | White + dim | The other answer |
 | `search_match` | Black on yellow | The matched substring in a filtered row |
-| `status_ready` | Black on green + bold | The `READY` and `DONE` pills |
-| `status_busy` | Black on yellow + bold | The `RUNNING` and `VERIFY` pills |
-| `status_error` | Black on red + bold | The `FAILED`, `CANCELLED` and `CONFIRM` pills |
-| `status_input` | Black on blue + bold | The `INPUT` pill |
-| `status_inert` | Black on white + bold | The `UNSUPPORTED` pill |
+| `badge_busy` | Black on yellow + bold | The `VERIFY` badge in the verification banner |
+| `status_ready` | Green + bold | `READY` and `DONE` on the pane border |
+| `status_busy` | Yellow + bold | `RUNNING` and `VERIFY` on the pane border |
+| `status_error` | Red + bold | `FAILED`, `CANCELLED` and `CONFIRM` on the pane border |
+| `status_input` | Blue + bold | `INPUT` on the pane border |
+| `status_inert` | White + dim | `UNSUPPORTED` on the pane border |
 | `keybar_key` | Reset + bold | The key glyph in the key bar |
 | `keybar_label` | White + dim | Its description |
 | `gauge` | Green | The step-progress gauge |
+
+The `status_*` roles set a foreground only, unlike the badge above them. They
+are drawn on a pane's bottom border, where a background fills the cells the
+border runs through and reads as a gap in the frame rather than as emphasis.
+`badge_busy` keeps its pair because the verification banner is a block of its
+own rather than a border it has to sit inside.
 
 `selection_focused` sets an explicit foreground/background pair rather than
 reversing: reversal swaps per cell, so a red destructive marker on a reversed
@@ -394,12 +463,42 @@ same reason `Enter` is: only one task at a time.
 | `g` | Jump to the oldest retained line |
 | `G` / `f` | Jump to the newest output and follow it again |
 | `w` | Toggle wrapping of long lines |
+| `y` | Send the whole transcript to the terminal's clipboard |
 | `Esc` | Return focus to the tree |
 
 Any upward scroll detaches the view from the tail, so reading back through a
 log is never interrupted by new arrivals. Scrolling back to the bottom
 re-attaches on its own — the operator has caught up, and needing another key to
 resume following would be a step with no purpose.
+
+**Focus is never moved here by the tool.** Running a task used to move it, on
+the grounds that reading what is about to happen is the natural next thing —
+true of the pane, which streams either way, and not of the cursor. What it
+actually did was take the arrow keys off the tree, so moving on to the next
+task meant pressing `Tab` first to undo something nobody asked for. `Tab` is
+the only thing that moves focus.
+
+#### Copying the transcript
+
+`y` sends every retained line to the terminal's clipboard as an OSC 52
+sequence. It exists because **the mouse cannot do this**: the terminal owns the
+selection and copies rectangles of screen, so dragging over the pane takes its
+border and the tree's flags with it, and takes only what the pane was wide
+enough to draw — every line longer than the pane arrives cut. `initd` cannot
+restrict that; capturing the mouse would disable the terminal's own selection
+and replace it with nothing.
+
+- **Whole lines, both streams, in arrival order.** Dropping stderr would lose
+  the error the transcript is usually being copied for.
+- **OSC 52 rather than a clipboard library or `xclip`.** The machine being
+  administered usually has no display server, and its clipboard would be the
+  wrong one anyway — the operator is at the other end of an SSH connection.
+  The sequence asks the *terminal* to set the clipboard, so it travels through
+  SSH and tmux.
+- **The message says what was sent, never that it was copied.** OSC 52 has no
+  reply, and terminals that refuse it are real — some ship with it disabled,
+  since a program that can write the clipboard can also overwrite it. Claiming
+  success the tool cannot observe is how a message stops being believed.
 
 ### The key bar
 
@@ -416,8 +515,9 @@ themselves rather than acting as commands. Only the keys below stay commands.
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `↓` | Next field |
-| `Shift-Tab` / `↑` | Previous field |
+| `Tab` / `Shift-Tab` | Next or previous field, always |
+| `↓` / `↑` | Step through what the host offers, where it offers any; move between fields where it does not |
+| `Ctrl-L` | Open the full list of what the host offers, where it offers any |
 | `Enter` | Next field, or submit on the last one |
 | `←` / `→` | Move the cursor |
 | `Home` / `End` / `Ctrl-A` / `Ctrl-E` | Jump to the start or end of the value |
@@ -425,6 +525,10 @@ themselves rather than acting as commands. Only the keys below stay commands.
 | `Ctrl-U` / `Ctrl-K` | Clear before or after the cursor |
 | `Ctrl-W` | Delete the previous word (readline's convention wins here) |
 | `Esc` | Cancel |
+
+`Tab` keeps moving between fields unconditionally, which is what makes the
+overloading of `↑↓` safe: a field with options is still left with a key that
+does nothing else, and the footer names it.
 
 Submitting with a field that would be rejected moves the cursor to that field
 rather than merely refusing — the operator should not have to hunt for which
@@ -440,6 +544,82 @@ digits — so a value that could never be accepted cannot be typed at all. Long
 values scroll horizontally with a `…` marking text dropped from the left; a
 public key is verified by what it *parses* to (type and comment, echoed beneath
 the field), because a 380-character key cannot be checked by reading it.
+
+#### Values the host already knows
+
+Some fields are filled from the host rather than from memory:
+
+| Field | Source | Order |
+|-------|--------|-------|
+| An account that must already exist | `/etc/passwd` | `root`, then the accounts a person logs in as, then the system ones — each group alphabetical |
+| A login shell | `/etc/shells` | As the file lists them, comments and blank lines dropped |
+
+**Each field declares its own source; none is inferred from the field's type.**
+A field's type describes the shape of a value, and what the host can offer for
+it depends on the value's relation to the system — the two come apart in both
+directions. `users.create` collects a username that must **not** exist, so
+offering the host's accounts there suggests precisely the values it refuses.
+`wireguard.add-peer` collects a peer *label* validated by the username rules
+because they suit it, and the host has nothing to say about it. Both are the
+same type as the account field of `ssh.authorize-key`, which does want them.
+
+`ssh.allow-users` names existing accounts and still offers nothing: it holds a
+space-separated *list*, and taking a suggestion replaces the whole value, so
+each choice would delete the names already typed. Completing within a list is a
+different mechanism from choosing a value.
+
+A field with no source offers nothing and says nothing — no count beside it,
+and no `Ctrl-L` in the footer. A key named in a footer and doing nothing is
+worse than one that was never offered.
+
+An account is **ordered down, never hidden**: `www-data` owns a home a key can
+be installed into, so refusing to offer it would leave the form rejecting what
+the system accepts. But a stock Debian carries forty service accounts and two
+of the other kind, and a chooser that opens on `_apt` is one nobody reads to
+the end.
+
+These are **suggestions, never the permitted set**. Every such field stays
+typeable, because the host's answer can be incomplete — an account can be
+created between one form opening and the next, and a shell absent from
+`/etc/shells` is still a path. Validation is unchanged and remains the only
+thing that decides.
+
+The count rides the validation note (`↑↓ 2/6 on this host`) rather than taking
+a row of its own; on a three-field form a row each is the difference between
+fitting a 24-row terminal and not. It reads `↑↓ 6 on this host` with no
+position while the value is not one of the options — typed by hand, or not yet
+typed.
+
+The values are resolved **once, when the form opens**, and once per kind rather
+than once per field: running `cat /etc/passwd` on every arrow press would put
+the executor in the path of a keystroke. A host whose file cannot be read
+offers nothing and says nothing — the field behaves as it did before there was
+anything to offer, since refusing to open the form would turn a convenience
+into a prerequisite.
+
+#### Options list (modal over the form)
+
+`Ctrl-L` opens everything the focused field offers. Stepping with `↑↓` suits
+the three shells `/etc/shells` usually holds; forty accounts is not a list you
+read one press at a time.
+
+| Key | Action |
+|-----|--------|
+| `↓` / `↑` / `j` / `k` | Move through the list, wrapping at both ends |
+| `Home` / `End` | First or last option |
+| `Enter` | Take the option and close |
+| `Esc` | Close, leaving the field exactly as it was |
+
+Drawn **below the form**, keeping its width and left edge so the two read as
+one stack — centred, it landed on the very field it answers. It goes above
+instead when there is more room there, and is **shrunk to whatever that side
+has** rather than merely moved: at full height where the room is shorter it
+runs through the frame's bottom border and reads as having broken the
+interface. The list scrolls, so fewer rows means fewer visible at once rather
+than options that cannot be reached.
+
+Moving the cursor here is reading the list, not answering it: nothing is
+written to the field until `Enter`.
 
 ### Help overlay
 
@@ -477,12 +657,13 @@ current step ends the status still reads `RUNNING`, with the message
 *stopping after the current step*; only once the task has actually stopped does
 it read `CANCELLED`, and it says where it got to.
 
-The status row carries two liveness signals at its right edge while a task
-runs: a one-character ASCII spinner and a wall-clock timer, both driven by the
-clock rather than by arriving output. Over a slow link a quiet command and a
-frozen screen are otherwise indistinguishable. The spinner is ASCII rather than
-braille, which is missing or double-width in too many of the fonts a server
-console actually has.
+The status opens with two liveness signals while a task runs: a one-character
+ASCII spinner and a wall-clock timer, both driven by the clock rather than by
+arriving output. Over a slow link a quiet command and a frozen screen are
+otherwise indistinguishable. They lead rather than trail so they sit at a fixed
+distance from the pane's corner while the message beside them changes length.
+The spinner is ASCII rather than braille, which is missing or double-width in
+too many of the fonts a server console actually has.
 
 ### Verification window (semi-modal)
 

@@ -122,7 +122,13 @@ TUI or CLI:
     back rather than assumed, because the command reports success either way.
   - Acceptance: it is created without a password, so it can only be reached
     with a key.
+  - Acceptance: I am told so where I am asked for the name, not only in the
+    task's description. The account cannot log in until a key is authorised for
+    it, and that is a surprise worth having before it is created rather than
+    after.
   - Acceptance: an account that already exists is refused rather than adopted.
+  - Acceptance: the accounts this host already has are **not** offered here,
+    since every one of them is a value this task refuses.
 - As an **administrator**, I can change an account's login shell, so that a
   user gets the shell they prefer.
   - Acceptance: a shell absent from `/etc/shells` is refused before anything is
@@ -408,10 +414,45 @@ TUI or CLI:
   - Acceptance: the confirmation defaults to "no".
   - Platform exception: TUI only. On the CLI, running the subcommand *is* the
     confirmation.
+- As an **administrator**, I am offered the values this machine already records
+  — the accounts it has, the shells it admits — so that I am not guessing at
+  something already written down.
+  - Acceptance: the values come from the host rather than from a list built
+    into the tool, so a machine with an unusual account or an extra shell
+    offers it too.
+  - Acceptance: accounts a person logs in as are offered before the service
+    ones, since a stock system carries far more of the latter. None is hidden:
+    a service account is a legitimate answer.
+  - Acceptance: these are suggestions, never the permitted set. Every such
+    field stays typeable, because an account can be created between one attempt
+    and the next and the tool must not refuse what the system accepts.
+  - Acceptance: a machine whose account or shell file cannot be read offers
+    nothing and still lets me type the value. A convenience must not become a
+    prerequisite.
+  - Platform exception: TUI only. On the CLI the value is an argument, where
+    the shell's own completion and `getent` are the same capability by other
+    means.
 - As an **administrator**, I can watch a task's output as it runs so that I can
   see what is happening rather than waiting for a result.
+  - Acceptance: starting a task does not move my cursor. Where I was reading
+    and what the arrow keys address are my decision, and a task that moved them
+    would make running two in a row cost an extra keystroke to undo.
   - Platform exception: the TUI shows it in a scrollable pane; the CLI prints
     it as it arrives.
+- As an **administrator**, I can take a task's output away with me — into a bug
+  report, a ticket, a message to whoever maintains the machine.
+  - Acceptance: I get the lines whole, not the part that fitted on screen. A
+    transcript with every long line cut is worse than none, because it looks
+    complete.
+  - Acceptance: I get the output and nothing else — no borders, no markers from
+    the panel beside it.
+  - Acceptance: it works over SSH, landing on the clipboard of the machine I am
+    sitting at rather than the one being administered.
+  - Acceptance: I am told what was sent, never that it arrived. The terminal
+    may refuse, and it does not say so — a claim the tool cannot check is one
+    I would learn to disbelieve.
+  - Platform exception: TUI only. The CLI writes to stdout, where a pipe or a
+    redirect is the same capability by the shell's own means.
 - As an **administrator**, I am told what a finished task invalidated elsewhere,
   so that I find out from the tool rather than from a service that has stopped
   answering.
