@@ -21,6 +21,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid key, and only the lax criterion admitted it.
 
 ### Changed
+- The SSH tasks each live in a file of their own, and `src/tasks/ssh/mod.rs`
+  drops from 2065 lines to 211. Only ~520 of those were production code; the
+  rest was a single `mod tests` covering five groups — two of which were
+  orphans. `harden.rs` and `keys.rs` had been extracted as modules earlier, and
+  both times the production code moved while its tests stayed behind: neither
+  file had a `mod tests` at all, so 25 of the 56 tests belonged to files that
+  already existed. The three tasks still defined there now get the same
+  treatment: `install.rs`, `port.rs` and `allow_users.rs`.
+  `warn_if_socket_activated` and `DEFAULT_SSH_PORT` travel to `port.rs`, their
+  only caller, and stop being surface of the module. What stays is what more
+  than one task needs, plus the three tests that compare tasks against each
+  other — `destructive_tasks_are_marked_as_such` asserts that harden and port
+  are destructive *and* that install is not, and splitting it would have kept
+  the assertions while losing the comparison. Verified as a pure move by
+  diffing the sorted output of `cargo nextest list`: the same 678 names before
+  and after, rather than the same count, since a test dropped and another
+  renamed would leave the total unchanged.
 - `report` is defined once rather than in each of the seven task modules that
   use it. What the copies duplicated was not the four lines but the decision:
   the shape of an output line could be changed in none of them alone.
