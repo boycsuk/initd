@@ -378,6 +378,84 @@ pub fn run_in_container(image: &Image, script: &str) -> std::process::Output {
         .expect("docker run must execute")
 }
 
+/// Runs a shell command inside a fresh `--privileged` container.
+///
+/// Returns `None` where the host will not grant the capability, so a scenario
+/// can skip rather than fail — the rule `integration_systemd` already follows,
+/// and for the same reason: a rootless Docker has not found a bug.
+///
+/// The capability this buys is a writable `/proc/sys`. Docker mounts it
+/// read-only in an ordinary container, which is why `sysctl.ip-forward` is
+/// pinned there as the refusal it is; with `--privileged` the kernel accepts
+/// the write and the success path becomes observable. Unlike
+/// [`systemd::SystemdContainer`] this needs no `--cgroupns=host`, because
+/// nothing here boots an init — the two flags answer different questions and
+/// only one is needed for a sysctl.
+pub fn run_in_privileged_container(image: &Image, script: &str) -> Option<std::process::Output> {
+    let binary = binary_for(image)?;
+
+    // Asked as its own question, before the scenario runs. Inferring the answer
+    // from the scenario's own output cannot work: that stream carries whatever
+    // the container's shell wrote as well as whatever Docker did, and one of
+    // the tasks under test here is named `sysctl.unprivileged-ports` — so a
+    // scenario that failed while naming the task it was running would be read
+    // as a host refusing the flag, and a real regression would report itself as
+    // a skip. The probe writes nothing and touches nothing.
+    if !grants_privileged(image) {
+        return None;
+    }
+
+    let mount = format!("{binary}:/usr/local/bin/initd:ro");
+    let full_script = format!("{} >/dev/null 2>&1; {script}", image.refresh);
+
+    Some(
+        Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--privileged",
+                "-v",
+                &mount,
+                image.name,
+                "sh",
+                "-c",
+                &full_script,
+            ])
+            .output()
+            .expect("docker run must execute"),
+    )
+}
+
+/// Whether this host will start a `--privileged` container at all.
+///
+/// `true` is claimed only on a container that started *and* proved the
+/// capability the scenarios need, by writing a namespaced sysctl. Docker
+/// refusing the flag and a daemon-level policy silently dropping it are not the
+/// same failure, and only the write distinguishes them — a container can start
+/// with the flag accepted and still present a read-only `/proc/sys`.
+fn grants_privileged(image: &Image) -> bool {
+    let probe = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--privileged",
+            image.name,
+            "sh",
+            "-c",
+            // Namespaced per network namespace, so this writes the container's
+            // own value and never the host's. Restored immediately regardless,
+            // since a probe that leaves state behind would change what the
+            // scenario after it measures.
+            "sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 \
+             && sysctl -w net.ipv4.ip_forward=0 >/dev/null 2>&1 \
+             && echo GRANTED",
+        ])
+        .output()
+        .expect("docker run must execute");
+
+    stdout_of(&probe).contains("GRANTED")
+}
+
 /// Runs a script in a container that has OpenSSH installed, host keys present
 /// and a key authorised for root.
 ///
@@ -628,11 +706,31 @@ pub fn run_with_os_release(image: &Image, fixture: &str, script: &str) -> std::p
 pub fn exit_code_of(image: &Image, args: &str) -> i32 {
     let output = run_in_container(image, &format!("initd {args} >/dev/null 2>&1; echo $?"));
 
-    stdout_of(&output)
+    // A container that never ran produces no code, and the caller compares
+    // whatever comes back against a number from `docs/cli.md`. Returning a
+    // sentinel there reports "the contract is broken" for a container the
+    // daemon refused to start — which is how a saturated Docker reads as a
+    // violated exit-code contract, sending whoever sees it to `main.rs` for a
+    // defect that is not there. It was observed once in a full run and never
+    // in isolation, which is the shape of the problem rather than a coincidence.
+    //
+    // Panicking says which of the two happened. A test that cannot ask its
+    // question has not answered it.
+    let stdout = stdout_of(&output);
+
+    stdout
         .lines()
         .last()
         .and_then(|line| line.trim().parse().ok())
-        .unwrap_or(-1)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: no exit code came back from `initd {args}` — the container \
+                 did not run, so this says nothing about the contract. \
+                 stdout: {stdout:?}, stderr: {:?}",
+                image.name,
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
 }
 
 /// Convenience wrapper returning stdout as a string.

@@ -20,6 +20,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::style;
 use crate::exec::{OutputLine, Stream};
+use crate::i18n::{Lang, Msg};
 
 /// Maximum lines retained.
 ///
@@ -148,8 +149,18 @@ impl OutputPane {
     /// The title states whether the view is pinned, because a pane that has
     /// silently stopped updating and one that is following a quiet command
     /// look the same.
-    pub fn render(&self, frame: &mut Frame, area: Rect, title: &str, focused: bool) {
-        let status = if self.follow { "follow" } else { "detached" };
+    ///
+    /// The title is resolved here rather than passed in. It named the one pane
+    /// this type draws, so a caller supplying it could only ever supply the
+    /// same word — and every caller doing so is a call site the catalogue does
+    /// not reach.
+    pub fn render(&self, frame: &mut Frame, area: Rect, lang: Lang, focused: bool) {
+        let title = lang.render(&Msg::OutputTitle);
+        let status = lang.render(if self.follow {
+            &Msg::OutputFollowing
+        } else {
+            &Msg::OutputDetached
+        });
 
         // The visible height excludes the block's top and bottom borders.
         let viewport = area.height.saturating_sub(2) as usize;

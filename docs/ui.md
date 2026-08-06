@@ -182,6 +182,20 @@ the word carries the meaning alone when colour is absent.
 | `INPUT` | A parameter form is open, collecting input before the task runs |
 | `UNSUPPORTED` | The selected task cannot run on this host |
 
+**Every word in this document's tables is the English rendering.** All
+user-facing text — these pills, the key bar's labels, the help overlay, the
+verification banner — is resolved through the message catalogue against the
+locale in the environment (`LC_ALL` > `LC_MESSAGES` > `LANG`, falling back to
+English). English is the only catalogue that exists today, so what is tabulated
+here is what every host shows; a second language would change the words without
+changing anything else in this document. Two kinds of string stay out of the
+catalogue deliberately, being not words in a language: key glyphs (`Tab`, `↑ k`)
+and drawing symbols (`│`, `✓`), and the tasks' own ids, titles and descriptions.
+
+A test that reads the screen is therefore locale-sensitive by construction and
+must pin `LC_ALL`, rather than relying on the developer's environment happening
+to be English.
+
 Three of these describe the cursor rather than the past and therefore override
 whatever the last action left behind: `CONFIRM` while a dialog is open, `INPUT`
 while a form is, and `UNSUPPORTED` when the selected row cannot run here. The
@@ -276,16 +290,31 @@ Two rules govern the table:
 reversing: reversal swaps per cell, so a red destructive marker on a reversed
 row would render as a red block and the row's meaning would invert with it.
 
-Roles for elements the interface does not draw yet — the gauge, the result
-glyphs, the tree's depth guides, and the styles for a disabled selection and an
-unfocused border — are declared here and in source so the table stays one
+`selection_disabled` is drawn on the selected row when the task under it cannot
+run on this host. The ordinary blue cursor reads as "press Enter", and pressing
+it there does nothing — which looks like the interface dropping the key rather
+than the host refusing the task. Colour is not carrying that alone: the same row
+already shows `·` in its flag column.
+
+Three roles are still declared and never drawn — the gauge, the result glyphs
+(`result_fail`, and `result_ok` outside the form's own summary line), and the
+tree's depth guides. They are declared here and in source so the table stays one
 readable reference, and so a new call site picks a role instead of inventing a
-colour. `search_match` was one of these until search was built; it is drawn now,
-which is what the list is for.
+colour. `search_match` was one of these until search was built, and
+`selection_disabled` until the tree began drawing it; both are drawn now, which
+is what the list is for.
+
+`gauge` is the substantive one left: it implies a progress element with a real
+design question behind it, since a task's command count is not known before it
+runs. `tree_guide` and `result_fail` are small, and waiting on a place to put
+them rather than on a decision.
 
 A role that is declared and never drawn is a promise this document has not yet
 kept, so the list is deliberately explicit rather than left to be discovered by
-grepping for unused constants.
+grepping for unused constants. The reverse also has to be maintained by hand:
+`border_unfocused` sat in this list while being drawn on every unfocused pane,
+because it reaches the screen through the `border(focused)` helper rather than
+by name, and a grep for the constant found nothing.
 
 ## Keys
 

@@ -1,6 +1,6 @@
 //! English message catalogue — the default and fallback language.
 
-use super::Msg;
+use super::{Msg, RevertReason};
 
 pub(super) fn render(message: &Msg) -> String {
     match message {
@@ -242,6 +242,285 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::Terminal { source } => {
             format!("terminal error: {source}")
+        }
+
+        // --- Interface: status pills ---
+        //
+        // Upper case because the pill is a fixed-width badge read at a glance
+        // from the left edge, not a sentence. A translation should keep them
+        // short for the same reason: the pill's cells are budgeted by the
+        // longest word here.
+        Msg::PillReady => "READY".to_owned(),
+        Msg::PillRunning => "RUNNING".to_owned(),
+        Msg::PillDone => "DONE".to_owned(),
+        Msg::PillFailed => "FAILED".to_owned(),
+        Msg::PillCancelled => "CANCELLED".to_owned(),
+        Msg::PillVerify => "VERIFY".to_owned(),
+        Msg::PillConfirm => "CONFIRM".to_owned(),
+        Msg::PillInput => "INPUT".to_owned(),
+        Msg::PillUnsupported => "UNSUPPORTED".to_owned(),
+
+        // --- Interface: help ---
+        Msg::HelpTitle => " Keys ".to_owned(),
+        Msg::HelpSectionAnywhere => "Anywhere".to_owned(),
+        Msg::HelpSectionTree => "Task tree".to_owned(),
+        Msg::HelpSectionSearch => "Search".to_owned(),
+        Msg::HelpSectionRunning => "While a task runs".to_owned(),
+        Msg::HelpSectionOutput => "Output".to_owned(),
+        Msg::HelpSectionForms => "Forms".to_owned(),
+        Msg::HelpSectionConfirmation => "Confirmation".to_owned(),
+        Msg::HelpSectionLockout => "After a change that could lock you out".to_owned(),
+        Msg::HelpMoveFocus => "move focus between the tree and the output".to_owned(),
+        Msg::HelpThisHelp => "this help".to_owned(),
+        Msg::HelpQuit => "quit".to_owned(),
+        Msg::HelpPreviousRow => "previous row".to_owned(),
+        Msg::HelpNextRow => "next row".to_owned(),
+        Msg::HelpFirstLastRow => "first / last row".to_owned(),
+        Msg::HelpOpenOrRun => "open a category, or run a task".to_owned(),
+        Msg::HelpFind => "find a task anywhere in the tree".to_owned(),
+        Msg::HelpBack => "back to the parent level".to_owned(),
+        Msg::HelpFilter => "filter by title or task id".to_owned(),
+        Msg::HelpBetweenResults => "move between results".to_owned(),
+        Msg::HelpGoToTask => "go to the task, without running it".to_owned(),
+        Msg::HelpCloseSearch => "close, leaving the cursor where it was".to_owned(),
+        Msg::HelpStopAfterCommand => "stop after the current command".to_owned(),
+        Msg::HelpScrollOutput => "scroll the output".to_owned(),
+        Msg::HelpFocusOutput => "move focus to the output".to_owned(),
+        Msg::HelpScrollLine => "scroll a line".to_owned(),
+        Msg::HelpScrollPage => "scroll a page".to_owned(),
+        Msg::HelpOldestLine => "oldest retained line".to_owned(),
+        Msg::HelpNewestLine => "newest output, and follow it".to_owned(),
+        Msg::HelpWrap => "wrap long lines".to_owned(),
+        Msg::HelpNextField => "next field".to_owned(),
+        Msg::HelpNextFieldOrSubmit => "next field, or submit on the last".to_owned(),
+        Msg::HelpFieldEnds => "start / end of the value".to_owned(),
+        Msg::HelpClearAround => "clear before / after the cursor".to_owned(),
+        Msg::HelpDeleteWord => "delete the previous word".to_owned(),
+        Msg::HelpCancelForm => "cancel (twice, if anything is typed)".to_owned(),
+        Msg::HelpApply => "apply".to_owned(),
+        Msg::HelpCancel => "cancel".to_owned(),
+        Msg::HelpBetweenAnswers => "move between the answers".to_owned(),
+        Msg::HelpKeep => "keep the change".to_owned(),
+        Msg::HelpRevert => "put the previous configuration back".to_owned(),
+        Msg::HelpAutoRevert => "puts it back on its own after 60s".to_owned(),
+        // These two sit in the key column but are words rather than key names,
+        // which is why they are in the catalogue while `Tab` and `↑ k` are not.
+        Msg::HelpTypeGlyph => "(type)".to_owned(),
+        Msg::HelpWaitGlyph => "(wait)".to_owned(),
+        Msg::HelpMoreBelow { percent } => {
+            format!(" ↑↓ more · any other key closes  ({percent}%) ")
+        }
+        Msg::HelpAnyKeyCloses => " any key closes ".to_owned(),
+
+        // --- Interface: confirm ---
+        //
+        // Padded because each is drawn as a highlighted badge: the spaces are
+        // the badge's inside edge, not separation between words.
+        Msg::ConfirmYes => " Yes ".to_owned(),
+        Msg::ConfirmNo => " No ".to_owned(),
+        // Spelled out beside the answers rather than left to the key bar. This
+        // is the dialog a destructive operation opens, and `Tab` selecting
+        // while `Enter` commits is the one place in the interface where the
+        // two differ — guessing wrong here applies the change.
+        Msg::ConfirmKeyHint => "      (Tab to switch, Enter to confirm, Esc to cancel)".to_owned(),
+
+        // --- Interface: output ---
+        Msg::OutputTitle => "output".to_owned(),
+        // A pane that has silently stopped updating and one that is following a
+        // quiet command look identical, so the title says which it is.
+        Msg::OutputFollowing => "follow".to_owned(),
+        Msg::OutputDetached => "detached".to_owned(),
+
+        // --- Interface: forms ---
+        //
+        // Trailing spaces separate the counter from the label beside it, and
+        // each key hint from the next: they are drawn as adjacent spans on one
+        // line, so the gap has to travel with the words.
+        Msg::FormFieldCounter { index, total } => format!("{index} of {total}  "),
+        Msg::FormKeyField => " field   ".to_owned(),
+        Msg::FormKeyContinue => " continue   ".to_owned(),
+        // Parenthesised because it stands where `continue` stands: it names
+        // what is missing rather than announcing a refusal, which is what an
+        // operator who has just pressed Enter is looking for.
+        Msg::FormKeyIncomplete => " (fill every field)   ".to_owned(),
+        Msg::FormKeyCancel => " cancel".to_owned(),
+
+        // --- Interface: search ---
+        //
+        // The query is interpolated untranslated — it is what the operator
+        // typed. `▌` after it is the write cursor, the same glyph the output
+        // pane uses, so the field reads as one being typed into rather than as
+        // a title that happens to contain text.
+        Msg::SearchTitle { query } => format!(" search: {query}▌ "),
+        Msg::SearchNoMatches => " no matches · Esc closes ".to_owned(),
+        // English does not inflect anything in this line, so `total` is used
+        // only as a number. A language that does inflect resolves it here,
+        // which is the reason the count is carried rather than pre-rendered.
+        Msg::SearchFooter { position, total } => {
+            format!(" {position} of {total} · ↑↓ move · Enter goes there · Esc closes ")
+        }
+
+        // --- Interface: header ---
+        //
+        // The leading space is the header's own inset: this is the first span
+        // on a borderless row, so nothing else provides one.
+        Msg::HeaderTitle => " initd".to_owned(),
+        Msg::HeaderPaneTree => "tasks".to_owned(),
+        Msg::HeaderPaneOutput => "output".to_owned(),
+        Msg::HeaderPrivilege { mechanism } => format!("root via {mechanism}"),
+        // The `?` is the key to press, so it leads: the hint is read as an
+        // instruction rather than as a label for a key named elsewhere.
+        Msg::HeaderHelpHint => "? help".to_owned(),
+
+        // --- Interface: detail pane ---
+        //
+        // Both sit under the task's own description, separated from it by a
+        // blank line the call site writes: the description is the task's
+        // words, and running the two together would read as one sentence.
+        Msg::DetailUnsupported { family, reason } => {
+            format!("Not available on {family}: {reason}.")
+        }
+        // English inflects only the noun here. A language that also inflects
+        // the verb or the number resolves both in this one arm, which is why
+        // the count arrives as a number rather than as a rendered phrase.
+        Msg::DetailCategoryContents { title, count } => {
+            let noun = if *count == 1 { "task" } else { "tasks" };
+            format!("{title} — {count} {noun} inside.\n\nPress Enter to open.")
+        }
+        Msg::DetailTitle => "Detail".to_owned(),
+
+        // --- Interface: tree census ---
+        Msg::CensusCategories { count } => {
+            let noun = if *count == 1 {
+                "category"
+            } else {
+                "categories"
+            };
+            format!("{count} {noun}")
+        }
+        Msg::CensusTasks { count } => {
+            let noun = if *count == 1 { "task" } else { "tasks" };
+            format!("{count} {noun}")
+        }
+
+        // --- Interface: verification banner ---
+        //
+        // Padded like the status pill, whose badge this mirrors: the spaces
+        // are the badge's inside edge rather than separation between words.
+        Msg::VerifyBadge => " VERIFY ".to_owned(),
+        // "applied" and "not yet kept" are two spans so the second can be
+        // emphasised; the trailing space is the join between them.
+        Msg::VerifyApplied => "applied, ".to_owned(),
+        // Not "pending", not "awaiting confirmation": the operative fact is
+        // that this *will* be undone unless answered.
+        Msg::VerifyNotYetKept => "not yet kept".to_owned(),
+        // A statement of what happens, not an offer. The countdown follows it.
+        Msg::VerifyRevertingIn => "reverting in ".to_owned(),
+        // Padded to sit against the `K` and `R` glyphs beside them, and to
+        // separate the first pair from the second on one line.
+        Msg::VerifyKeepKey => " keep   ".to_owned(),
+        Msg::VerifyRevertKey => " revert now".to_owned(),
+        // Wrapped by hand across two lines to the banner's width. Says what to
+        // do, not just that a decision is due: the tool cannot check this
+        // itself, and a countdown alone tells nobody how to spend the time.
+        Msg::VerifyCheckSecondSessionLine1 => "Open a second session and check you".to_owned(),
+        Msg::VerifyCheckSecondSessionLine2 => "can still log in.".to_owned(),
+        // The limit of the promise above. `SIGKILL` and a power cut run no
+        // code, so the change would stay — stating that is what makes the
+        // sentence above believable, and dropping this line in a translation
+        // breaks the banner rather than shortening it.
+        Msg::VerifySessionScopeCaveat => "Reverts while this session lives.".to_owned(),
+
+        // --- Interface: key bar ---
+        //
+        // One verb each, in the imperative: the bar is scanned rather than
+        // read, and a label longer than a word crowds out the next pair.
+        Msg::KeyBarOpen => "open".to_owned(),
+        Msg::KeyBarRun => "run".to_owned(),
+        Msg::KeyBarMove => "move".to_owned(),
+        Msg::KeyBarFind => "find".to_owned(),
+        Msg::KeyBarBack => "back".to_owned(),
+        Msg::KeyBarOutput => "output".to_owned(),
+        Msg::KeyBarStop => "stop".to_owned(),
+        Msg::KeyBarScroll => "scroll".to_owned(),
+        Msg::KeyBarWrap => "wrap".to_owned(),
+        Msg::KeyBarKeys => "keys".to_owned(),
+        Msg::KeyBarKeep => "keep".to_owned(),
+        Msg::KeyBarRevert => "revert".to_owned(),
+        Msg::KeyBarGo => "go".to_owned(),
+        Msg::KeyBarClose => "close".to_owned(),
+        Msg::KeyBarFollow => "follow".to_owned(),
+        Msg::KeyBarTree => "tree".to_owned(),
+        Msg::KeyBarQuit => "quit".to_owned(),
+
+        // --- Interface: status messages ---
+        //
+        // Lower case and unpunctuated: they sit beside the pill as a
+        // continuation of it, not as sentences of their own.
+        Msg::StatusTaskRunningQuitRefused => {
+            "a task is running — Ctrl-C to stop it first".to_owned()
+        }
+        Msg::StatusTaskAlreadyRunning => "a task is already running".to_owned(),
+        Msg::StatusAlreadyStopping => "already stopping — waiting for the current step".to_owned(),
+        // The ellipsis is the point: the task has been asked and has not yet
+        // finished the step it was on.
+        Msg::StatusStoppingAfterCurrentStep => "stopping after the current step...".to_owned(),
+        Msg::StatusAlreadyAtTopLevel => "already at the top level".to_owned(),
+        // Names both keys rather than saying the key was wrong: this is the
+        // one window where doing nothing has consequences.
+        Msg::StatusVerifyKeysOnly => "K keeps this change, R puts it back".to_owned(),
+        Msg::StatusCancelled => "cancelled".to_owned(),
+        Msg::StatusPressEscAgainToDiscard => "press Esc again to discard what you typed".to_owned(),
+        Msg::StatusFillEveryFieldFirst => "fill in every field first".to_owned(),
+        Msg::StatusFinishedBeforeItCouldStop => {
+            "the task finished before it could be stopped".to_owned()
+        }
+        Msg::StatusTaskNotSupported { task, family } => {
+            format!("{task} is not supported on {family}")
+        }
+        Msg::StatusTaskFailed { task } => format!("{task} — failed"),
+        // Backticks around the command, as everywhere a command is named: it
+        // is something to type rather than something to read.
+        Msg::StatusStoppedBefore { task, before } => {
+            format!("{task} — stopped before `{before}`")
+        }
+        Msg::StatusAppliedNotYetKept { task } => format!("{task} — applied, not yet kept"),
+        Msg::StatusKept { task } => format!("{task} — kept"),
+        Msg::StatusReverted { task, reason } => {
+            let why = match reason {
+                RevertReason::Requested => "reverted",
+                RevertReason::SessionEnded => "the session ended",
+                RevertReason::NoConfirmation => "no confirmation",
+            };
+
+            format!("{task} — {why}, previous configuration restored")
+        }
+        Msg::StatusRevertFailed { task, error } => {
+            format!("{task} — could not restore: {error}")
+        }
+        Msg::OutputConsequencesHeading => "Consequences:".to_owned(),
+
+        // --- Interface: confirmation warning ---
+        //
+        // Two sentences: what this can cost, then what to do about it. The
+        // second is the one the operator can act on.
+        Msg::ConfirmLockoutWarning => "This operation can lock you out of a server you reach \
+             over SSH. Make sure you have another way in before continuing."
+            .to_owned(),
+
+        // --- Interface: terminal too small ---
+        //
+        // Both sizes, so the operator can see by how much the window has to
+        // grow rather than resizing until the refusal disappears.
+        Msg::TerminalTooSmall {
+            min_width,
+            min_height,
+            width,
+            height,
+        } => {
+            format!(
+                "initd needs at least {min_width}×{min_height} .\nThis terminal is {width}×{height}."
+            )
         }
     }
 }

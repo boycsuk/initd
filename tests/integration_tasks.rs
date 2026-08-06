@@ -354,4 +354,339 @@ for_each_image! {
             image.name
         );
     }
+
+    /// `wireguard.add-peer` refuses before there is a server to add one to.
+    fn adding_a_peer_before_the_interface_exists_is_refused(image) {
+        // The ordering that reads as arbitrary and is not: a peer written into
+        // a `wg0.conf` that does not exist would be a file naming a server key
+        // nothing generated, and `wg-quick up` would then fail on a
+        // configuration this tool reported as complete.
+        let observed = observe_with(
+            image,
+            image.install_wireguard,
+            "initd run wireguard.add-peer name=laptop address=10.89.0.2 \
+                 endpoint=vpn.example.com:51820 >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o; \
+                 test -e /etc/wireguard/wg0.conf && echo WROTE || echo ABSENT",
+        );
+
+        assert!(
+            common::has_line(&observed, "exit=1"),
+            "{}: a peer needs an interface first: {observed}",
+            image.name
+        );
+        // And left nothing behind. A half-written `wg0.conf` carrying a peer
+        // and no server key is worse than none: `wireguard.install` would then
+        // refuse it as already configured, and the host is stuck needing a file
+        // deleted by hand.
+        assert!(
+            observed.contains("ABSENT"),
+            "{}: and must not have created a configuration: {observed}",
+            image.name
+        );
+    }
+
+    /// `firewall.enable` fails rather than half-applying where it cannot filter.
+    fn enabling_the_firewall_without_the_capability_fails_rather_than_pretending(image) {
+        // Loading a ruleset needs `CAP_NET_ADMIN`, which an ordinary container
+        // does not have: `nft -f -` fails with "cache initialization failed:
+        // Operation not permitted". Measured, not assumed — and it is the same
+        // boundary `sysctl` runs into, so it is pinned the same way. The
+        // success path lives in `integration_privileged`, where the capability
+        // is granted.
+        //
+        // What matters here is that a firewall that could not be enabled is
+        // reported as failed. A task that exited zero over an unloaded ruleset
+        // would tell an administrator their host is filtering when it is not,
+        // which is worse than not offering the task at all.
+        let observed = observe_with(
+            image,
+            &format!("{}; {}", image.install_nftables, image.install_firewalld),
+            "initd run firewall.enable ssh_port=22 >/tmp/o 2>&1; echo exit=$?; \
+                 cat /tmp/o",
+        );
+
+        assert!(
+            common::has_line(&observed, "exit=1"),
+            "{}: a ruleset that could not be loaded must fail the task: {observed}",
+            image.name
+        );
+        assert!(
+            observed.contains("nft") || observed.contains("firewall-cmd"),
+            "{}: and must name the command that failed: {observed}",
+            image.name
+        );
+    }
+
+    /// `firewall.allow-port` refuses where nothing is filtering yet.
+    fn allowing_a_port_before_anything_filters_is_refused(image) {
+        // A rule added to a front-end that is not the one filtering is a rule
+        // nothing enforces, so the task resolves rather than assuming. On a
+        // host with no front-end at all there is nothing to resolve, and
+        // reporting success would describe a port as open that is not.
+        let observed = observe(
+            image,
+            "initd run firewall.allow-port port=8080 protocol=tcp >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o",
+        );
+
+        assert!(
+            common::has_line(&observed, "exit=1"),
+            "{}: opening a port needs a front-end: {observed}",
+            image.name
+        );
+        // Measured rather than assumed: the refusal names the *program* that is
+        // missing rather than the abstraction, because resolving the front-end
+        // is what fails first on a host carrying neither. That is the more
+        // useful message of the two — `nft` names something installable, where
+        // "no front-end" would leave the operator working out what to install.
+        assert!(
+            observed.contains("nft") || observed.contains("firewall-cmd"),
+            "{}: and must name the program it could not find: {observed}",
+            image.name
+        );
+    }
+
+    /// A release this build carries no digest for is refused before any download.
+    fn an_unverifiable_version_is_refused_before_anything_is_fetched(image) {
+        // The refusal path rather than the download, deliberately: what is
+        // worth pinning is that an unknown version stops *before* the network
+        // is touched, which is also what keeps this scenario offline.
+        // `integration_installer` covers a digest that fails after a fetch.
+        //
+        // The version is well-formed and simply unknown — `9.9.9` rather than
+        // something like `0.0.0-nonexistent`, which never reaches the digest
+        // table at all: `ParamKind::Version` rejects the shape first and exits
+        // 2 as a malformed request. Measured rather than assumed, and the two
+        // refusals are genuinely different: one says the argument is not a
+        // version, this one says the version cannot be verified.
+        //
+        // Arch packages zellij, so there the task installs from the repository
+        // and never resolves a version at all — the branch the backend exists
+        // to choose, which is why both answers are admitted.
+        let observed = observe(
+            image,
+            "initd run zellij.install version=9.9.9 >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o",
+        );
+
+        if observed.contains("from the distribution") || observed.contains("already installed") {
+            return;
+        }
+
+        assert!(
+            common::has_line(&observed, "exit=1"),
+            "{}: an unverifiable version must fail the task: {observed}",
+            image.name
+        );
+        assert!(
+            observed.contains("9.9.9"),
+            "{}: and the refusal must name the version asked for: {observed}",
+            image.name
+        );
+    }
+
+    /// And the refusal names the versions it could have verified.
+    fn an_unverifiable_version_is_told_which_ones_are_known(image) {
+        // A refusal that only says "no" leaves the operator guessing at a
+        // version string. The known list is compiled into this build, so naming
+        // it costs nothing and is the difference between a dead end and a next
+        // step. Asserted separately from the refusal above because a message
+        // can be correct about the failure and still useless.
+        let observed = observe(
+            image,
+            "initd run zellij.install version=9.9.9 >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o",
+        );
+
+        if observed.contains("from the distribution") || observed.contains("already installed") {
+            return;
+        }
+
+        // The wording is the tool's own — "it knows: 0.44.3, 0.43.1" — and what
+        // is asserted is that a real version from the compiled-in table appears,
+        // rather than the sentence around it. A refusal listing nothing would
+        // still contain the preamble.
+        assert!(
+            observed.contains("0.44."),
+            "{}: the refusal must name a version it can verify: {observed}",
+            image.name
+        );
+    }
+
+    /// A version that is not one at all is refused as a bad request instead.
+    fn a_malformed_version_is_refused_before_the_task_runs(image) {
+        // Exit 2, not 1, and the distinction is the contract `docs/cli.md`
+        // sells to scripts: 1 is a task that ran and failed, 2 is a request
+        // that was never going to run. Validation happens against the task's
+        // own parameter declaration, so this never reaches the digest table.
+        let observed = observe(
+            image,
+            "initd run zellij.install version=not-a-version >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o",
+        );
+
+        assert!(
+            common::has_line(&observed, "exit=2"),
+            "{}: a malformed value is a bad request, not a failed task: {observed}",
+            image.name
+        );
+        assert!(
+            observed.contains("version"),
+            "{}: and must name the parameter that was wrong: {observed}",
+            image.name
+        );
+    }
+
+    /// `updates.unattended-security` writes the drop-in that carries the policy.
+    fn unattended_updates_leave_the_policy_drop_in_behind(image) {
+        // Debian only, and the task says so itself on the other three — which
+        // is the half asserted there. The drop-in is what a container can
+        // settle: the task goes on to ask whether the timer is scheduled, and
+        // no container runs one, so the exit code is deliberately not asserted
+        // here for the same reason `wireguard.install` does not assert its own.
+        let observed = observe_with(
+            image,
+            image.refresh,
+            "initd run updates.unattended-security >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o; \
+                 cat /etc/apt/apt.conf.d/51initd-unattended 2>/dev/null",
+        );
+
+        if image.name.contains("debian") {
+            assert!(
+                observed.contains("51initd-unattended") || observed.contains("Unattended-Upgrade"),
+                "{}: the policy drop-in must be written: {observed}",
+                image.name
+            );
+        } else {
+            assert!(
+                common::has_line(&observed, "exit=1"),
+                "{}: a family with no mechanism must refuse: {observed}",
+                image.name
+            );
+        }
+    }
+
+    /// `users.lock-root` refuses through the CLI whatever it is given.
+    fn locking_root_is_refused_without_a_verification_window(image) {
+        // Not a validation failure but a structural one: locking root is the
+        // change no keyboard undoes, so it is offered only where a second
+        // session can prove the way back in before it is kept. The CLI exits
+        // immediately and has no window to offer, so it declines rather than
+        // applying something it cannot roll back.
+        // The account is compared before and after rather than matched against
+        // a pattern. Every image ships root already password-less — Debian
+        // writes `root:*` — so a scenario asserting the absence of `*` asserts
+        // something that was never true, and would fail whether or not the task
+        // ran. What matters is that the entry is the one that was there.
+        let observed = observe(
+            image,
+            "cp /etc/shadow /tmp/before; \
+                 initd run users.lock-root admin=deploy >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o; \
+                 before=$(sha256sum </tmp/before); \
+                 after=$(sha256sum </etc/shadow); \
+                 [ \"$before\" = \"$after\" ] && echo UNTOUCHED || echo CHANGED",
+        );
+
+        // Exit 2 rather than 1, and the difference is the contract `docs/cli.md`
+        // sells to scripts: 1 is a task that ran and failed, 2 is a request
+        // that was never going to run. A caller that retries on 1 must not
+        // retry this.
+        assert!(
+            common::has_line(&observed, "exit=2"),
+            "{}: the CLI must refuse this task as a bad request: {observed}",
+            image.name
+        );
+        assert!(
+            observed.contains("interactive interface"),
+            "{}: and must say why rather than looking like a bad argument: {observed}",
+            image.name
+        );
+        assert!(
+            common::has_line(&observed, "UNTOUCHED"),
+            "{}: and must not have touched the account database: {observed}",
+            image.name
+        );
+    }
+
+    /// `ssh.allow-users` is refused for the same reason, and says so.
+    fn restricting_ssh_logins_is_refused_without_a_verification_window(image) {
+        // The other half of the same rule. Asserted separately because a single
+        // shared refusal would pass if one of the two ids were dropped from the
+        // list — and `AllowUsers` naming an account that cannot log in is
+        // exactly the lockout the window exists to catch.
+        let observed = observe_with(
+            image,
+            image.install_ssh,
+            "initd run ssh.allow-users users=deploy >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o; \
+                 echo directives=$(grep -c '^AllowUsers' /etc/ssh/sshd_config)",
+        );
+
+        assert!(
+            common::has_line(&observed, "exit=2"),
+            "{}: the CLI must refuse this task as a bad request: {observed}",
+            image.name
+        );
+        assert!(
+            observed.contains("interactive interface"),
+            "{}: and must say why: {observed}",
+            image.name
+        );
+        // Labelled rather than a bare `0`, which is a line the refusal's own
+        // output could produce for an unrelated reason.
+        assert!(
+            common::has_line(&observed, "directives=0"),
+            "{}: and must not have written the directive: {observed}",
+            image.name
+        );
+    }
+
+    /// `caddy.validate` answers rather than failing where Caddy is absent.
+    fn validating_caddy_where_it_is_not_installed_says_so(image) {
+        // The distinction this pins: "the configuration is wrong" and "there is
+        // no Caddy to ask" are different answers, and collapsing them would
+        // report a broken configuration on a host that simply has none.
+        let observed = observe(
+            image,
+            "initd run caddy.validate >/tmp/o 2>&1; echo exit=$?; cat /tmp/o",
+        );
+
+        assert!(
+            common::has_line(&observed, "exit=1"),
+            "{}: with no Caddy there is nothing to validate: {observed}",
+            image.name
+        );
+        assert!(
+            !observed.contains("panicked"),
+            "{}: and it must be reported rather than panicking: {observed}",
+            image.name
+        );
+    }
+
+    /// `docker-rootless.install` refuses an account with no subordinate ids.
+    fn rootless_docker_refuses_an_account_that_cannot_own_a_user_namespace(image) {
+        // Rootless Docker maps container uids into a range the host delegates
+        // to the account. Without one there is no namespace to enter, and the
+        // daemon fails at first use rather than at install — so the check
+        // happens here, where the failure can still name its cause.
+        let observed = observe(
+            image,
+            "initd run docker-rootless.install user=nobody >/tmp/o 2>&1; \
+                 echo exit=$?; cat /tmp/o",
+        );
+
+        assert!(
+            common::has_line(&observed, "exit=1"),
+            "{}: an account with no subordinate range must be refused: {observed}",
+            image.name
+        );
+        assert!(
+            !observed.contains("panicked"),
+            "{}: and reported rather than panicking: {observed}",
+            image.name
+        );
+    }
 }

@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use ratatui::style::Style;
 
 use super::style;
+use crate::i18n::Msg;
 
 /// How long a refusal stays on screen.
 ///
@@ -54,18 +55,24 @@ pub enum State {
 }
 
 impl State {
-    /// The word shown inside the pill.
-    pub const fn label(self) -> &'static str {
+    /// The message naming this state, for the catalogue to render.
+    ///
+    /// Returns a [`Msg`] rather than the word itself, the same seam
+    /// `Error::to_msg` and `Consequence::message` use: the state is structured
+    /// data and the wording belongs to the locale. That costs the `const` this
+    /// was — a rendered message is an owned `String` — and nothing needed it in
+    /// a const context.
+    pub const fn label(self) -> Msg {
         match self {
-            Self::Ready => "READY",
-            Self::Running => "RUNNING",
-            Self::Done => "DONE",
-            Self::Failed => "FAILED",
-            Self::Cancelled => "CANCELLED",
-            Self::Verify => "VERIFY",
-            Self::Confirm => "CONFIRM",
-            Self::Input => "INPUT",
-            Self::Unsupported => "UNSUPPORTED",
+            Self::Ready => Msg::PillReady,
+            Self::Running => Msg::PillRunning,
+            Self::Done => Msg::PillDone,
+            Self::Failed => Msg::PillFailed,
+            Self::Cancelled => Msg::PillCancelled,
+            Self::Verify => Msg::PillVerify,
+            Self::Confirm => Msg::PillConfirm,
+            Self::Input => Msg::PillInput,
+            Self::Unsupported => Msg::PillUnsupported,
         }
     }
 
@@ -145,6 +152,7 @@ impl Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Lang;
 
     #[test]
     fn starts_ready_with_nothing_to_say() {
@@ -168,13 +176,20 @@ mod tests {
             State::Unsupported,
         ];
 
-        let mut labels: Vec<&str> = states.iter().map(|state| state.label()).collect();
+        let mut labels: Vec<String> = states
+            .iter()
+            .map(|state| Lang::En.render(&state.label()))
+            .collect();
         labels.sort_unstable();
         let count = labels.len();
         labels.dedup();
 
         assert_eq!(labels.len(), count, "two states share a label");
-        assert!(states.iter().all(|state| !state.label().is_empty()));
+        assert!(
+            states
+                .iter()
+                .all(|state| !Lang::En.render(&state.label()).is_empty())
+        );
     }
 
     #[test]
@@ -222,7 +237,7 @@ mod tests {
 
     #[test]
     fn a_failed_state_reads_as_an_error_without_colour() {
-        assert_eq!(State::Failed.label(), "FAILED");
+        assert_eq!(Lang::En.render(&State::Failed.label()), "FAILED");
         assert_eq!(State::Failed.style(), style::STATUS_ERROR);
     }
 }
