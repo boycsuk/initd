@@ -16,6 +16,7 @@ pub mod form;
 pub mod help;
 pub mod layout;
 pub mod output;
+pub mod render;
 pub mod search;
 pub mod signals;
 pub mod status;
