@@ -46,6 +46,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrong but because nothing called it; it is a property of the executor now
   rather than a second `run` method that can fall out of use unnoticed.
 
+### Changed
+- `integration_accounts` and `integration_services` expand through
+  `for_each_image!` instead of looping over `IMAGES`. The macro's own
+  documentation already argued against the loop — it makes four families into
+  one test, so the first to fail hides the rest and the failure names a line
+  rather than a distribution — and these two files were the ones not following
+  it. Fifteen scenarios become sixty tests, named per family and run in
+  parallel. Verified by breaking one scenario for Alpine alone: `::alpine`
+  fails and the other three still run and pass, where the loop would have
+  abandoned every family after the first. The one `continue` became a `return`,
+  which now skips a single image rather than the remainder of the matrix.
+
 ### Added
 - Container scenarios for `firewalld`, `openrc` and `semanage`, the three
   backends a whole family each depends on and that had only ever answered to a
