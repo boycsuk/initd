@@ -42,6 +42,40 @@ pub(crate) fn report(progress: Progress<'_>, text: impl Into<String>) {
     });
 }
 
+/// What the operator is asked before a task runs.
+///
+/// Three answers rather than the boolean this replaced, because that boolean
+/// had drifted from what it was documented to mean. It read "irreversibly
+/// enough to warrant a prompt" and was applied as "could lock you out", which
+/// left nineteen of twenty-eight tasks installing packages, enabling daemons
+/// and writing configuration without asking anything — `ssh.install` put an
+/// SSH server on the machine and started it in silence, which is how this came
+/// to be reported.
+///
+/// The distinction between the last two is what keeps either worth reading. A
+/// dialog that appears for every task is answered without being read, and the
+/// one it teaches people to dismiss is `users.lock-root`'s — the operation
+/// whose recovery is the provider's rescue console. So a change that can end
+/// the session applying it keeps the red frame and its warning, and everything
+/// else asks plainly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmation {
+    /// Nothing is asked: the task only reads.
+    ///
+    /// Stated rather than defaulted to. A task that reads knows it does; a
+    /// task that writes must not be able to stay quiet by omission, which is
+    /// exactly what the old default allowed.
+    None,
+    /// The task changes the system, and says what it will do.
+    Change,
+    /// The change can end the session applying it.
+    ///
+    /// Drawn with the danger frame and the lockout warning. Reserved for the
+    /// tasks that can strand an administrator on a remote machine, so that the
+    /// frame still means something when it appears.
+    Lockout,
+}
+
 /// Whether a task runs on a family, and the reason when it does not.
 ///
 /// The reason is not optional, which is the point: an exception with no stated
@@ -97,10 +131,17 @@ pub trait Task {
     /// What the task does, shown in the TUI before running it.
     fn description(&self) -> &'static str;
 
-    /// Whether the task changes system state irreversibly enough to warrant a
-    /// confirmation prompt.
-    fn is_destructive(&self) -> bool {
-        false
+    /// What the operator is asked before this task runs.
+    ///
+    /// Defaults to [`Confirmation::Change`], which is the answer for every
+    /// task that writes anything: only a task that reads is exempt, and a task
+    /// that reads says so. The default used to be "ask nothing", and what that
+    /// produced was `ssh.install` putting a network daemon on the machine and
+    /// enabling it with no question asked — the operator's report that opened
+    /// this. A default of silence is one every new task inherits by saying
+    /// nothing at all.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Change
     }
 
     /// Values the task needs before it can run.
@@ -402,6 +443,69 @@ mod tests {
             stale.is_empty(),
             "docs/cli.md names tasks that no longer exist: {stale:?}"
         );
+    }
+
+    #[test]
+    fn only_a_task_that_reads_may_stay_silent() {
+        // The reported defect, pinned: `ssh.install` put an SSH server on the
+        // machine and enabled it without asking, because the old default was
+        // "ask nothing" and nineteen tasks had inherited it by saying nothing.
+        //
+        // The default is now `Change`, so this cannot regress by omission —
+        // only by a task declaring `None` outright. That is the list to keep
+        // honest, and it is short enough to write down: a task that names
+        // itself here and then writes something is the failure this catches.
+        const READ_ONLY: [&str; 3] = ["firewall.status", "wireguard.status", "caddy.validate"];
+
+        for task in all_tasks() {
+            let silent = task.confirmation() == Confirmation::None;
+            let listed = READ_ONLY.contains(&task.id());
+
+            assert_eq!(
+                silent,
+                listed,
+                "{} {} — a task that changes the system must ask first",
+                task.id(),
+                if silent {
+                    "asks nothing and is not a read-only task"
+                } else {
+                    "is listed as read-only but asks before running"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_lockout_is_reserved_for_what_can_end_the_session() {
+        // The distinction the two levels exist for. If everything drifted to
+        // `Lockout` the red frame would mark every row and distinguish none,
+        // and the dialog it teaches people to dismiss is the one before
+        // `users.lock-root`, whose recovery is the provider's rescue console.
+        const LOCKOUT: [&str; 6] = [
+            "firewall.enable",
+            "ssh.allow-users",
+            "ssh.harden",
+            "ssh.harden-strict",
+            "ssh.change-port",
+            "users.set-shell",
+        ];
+
+        let declared: Vec<_> = all_tasks()
+            .iter()
+            .filter(|task| task.confirmation() == Confirmation::Lockout)
+            .map(|task| task.id().to_owned())
+            .collect();
+
+        // `users.lock-root` is the seventh and is checked apart, because it is
+        // the one this whole distinction protects.
+        let mut expected: Vec<_> = LOCKOUT.iter().map(|id| (*id).to_owned()).collect();
+        expected.push("users.lock-root".to_owned());
+        expected.sort();
+
+        let mut declared = declared;
+        declared.sort();
+
+        assert_eq!(declared, expected, "the lockout set has drifted");
     }
 
     #[test]

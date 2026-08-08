@@ -230,7 +230,7 @@ pub enum Msg {
         user: String,
         group: String,
     },
-    NoAuthorizedKey {
+    NoWayBackIn {
         user: String,
     },
     AdminCannotBeRoot,
@@ -326,7 +326,6 @@ pub enum Msg {
     HelpScrollPage,
     HelpOldestLine,
     HelpNewestLine,
-    HelpWrap,
     /// What `y` does in the output pane, in the help overlay.
     HelpCopy,
     HelpNextField,
@@ -397,6 +396,21 @@ pub enum Msg {
         position: Option<usize>,
         total: usize,
     },
+    /// A field that is empty and may stay that way.
+    ///
+    /// The only verdict still spelled out for a value that passes. A field
+    /// holding something acceptable is marked `✓` and says nothing, because
+    /// words there were the bulk of the small text scattered across the
+    /// dialog; an empty optional field has no value to mark, and silence over
+    /// one reads as "not reached yet" rather than "nothing needed here".
+    FormFieldOptional,
+    /// Stands in for the value of an empty optional field.
+    ///
+    /// A blank space says the operator has not got there yet. Naming the state
+    /// says the field is answered by leaving it alone — which is what stops an
+    /// untouched field from looking unfinished, without the green that would
+    /// make it look completed.
+    FormFieldUnset,
     /// What the key that opens the full list of options does.
     FormKeyList,
     /// Title of the overlay listing everything the host offers for a field.
@@ -557,7 +571,6 @@ pub enum Msg {
     KeyBarOutput,
     KeyBarStop,
     KeyBarScroll,
-    KeyBarWrap,
     /// What `y` does in the output pane.
     KeyBarCopy,
     KeyBarKeys,
@@ -655,6 +668,17 @@ pub enum Msg {
     /// the time this is on screen the operator has already decided to proceed
     /// and the useful sentence is the one they can act on.
     ConfirmLockoutWarning,
+    /// The lockout warning for `users.lock-root`, naming both accounts.
+    ///
+    /// Separate from the generic one because this is the only task where two
+    /// accounts are in play and the operator has just typed one of them: the
+    /// form collects the account that *survives*, which reads as the account
+    /// being acted on unless something says otherwise. Naming both is also the
+    /// only echo of the typed value before it is used — a mistyped username
+    /// otherwise reaches an irreversible operation unseen.
+    ConfirmRootLockout {
+        admin: String,
+    },
 
     // --- Interface: terminal too small ---
     //

@@ -14,7 +14,7 @@ use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewal
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::sshd_config;
-use crate::tasks::{Progress, Task, report, supported_everywhere};
+use crate::tasks::{Confirmation, Progress, Task, report, supported_everywhere};
 
 use super::{DEFAULT_SSH_PORT, reload_ssh, revertible};
 
@@ -44,8 +44,8 @@ impl Task for ChangePort {
          configuration."
     }
 
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     fn params(&self) -> Vec<Param> {

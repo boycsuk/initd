@@ -29,11 +29,46 @@ use crate::tasks::params::{Param, ParamValues};
 /// terminal, so a narrow one shrinks the dialog rather than overflowing.
 const DIALOG_WIDTH: u16 = 72;
 
-/// Rows one field occupies: its label, the boxed input, and a note beneath.
-const ROWS_PER_FIELD: u16 = 5;
+/// Rows one field occupies: a header carrying its label and verdict, and the
+/// value indented beneath.
+///
+/// Two rather than the five a boxed field cost, three of which were drawing a
+/// frame around one line of text. Everything on either row belongs to the
+/// field the header opens, so nothing needs a blank row to disown it from the
+/// field below.
+const ROWS_PER_FIELD: u16 = 3;
 
-/// Rows spent on the dialog's own frame and its footer.
-const CHROME_ROWS: u16 = 4;
+/// Marks the field the keystrokes reach, in the gutter left of the label.
+///
+/// Inside the dialog's area rather than painted over its border: ratatui draws
+/// a `Block` as one widget, so colouring two cells of its edge would mean
+/// writing into the buffer behind the widget's back.
+///
+/// Two cells wide including the space after it, and the space is not
+/// decoration: without it the bar reads as the first letter of the label.
+const FOCUS_BAR: &str = "▌ ";
+
+/// Cells the gutter occupies, bar or no bar.
+///
+/// Counted rather than taken from `FOCUS_BAR.len()`, which is bytes: `▌` is
+/// three of them and one cell, so the byte length would push every label three
+/// columns right and leave the arithmetic silently wrong.
+const GUTTER_WIDTH: usize = 2;
+
+/// Column the value hangs at, under its header.
+///
+/// Indented so the value reads as a consequence of the label above it rather
+/// than as another label.
+const VALUE_INDENT: &str = "  ";
+
+/// Rows spent on the dialog's own frame, its footer, and the inset around the
+/// fields.
+///
+/// Two borders, the footer, the rule above it, and the blank row at each end of
+/// the block of fields. The inset is the same row that separates one field from
+/// the next, so a field is never crowded against the frame at one end and
+/// spaced at the other.
+const CHROME_ROWS: u16 = 6;
 
 /// Rows the options overlay spends on its border and footer.
 const OPTIONS_CHROME_ROWS: u16 = 2;
@@ -178,7 +213,11 @@ impl Form {
     /// sites computing it separately is how the two would drift apart after a
     /// change to either.
     fn area(&self, terminal: Rect) -> Rect {
-        let height = CHROME_ROWS + ROWS_PER_FIELD * self.fields.len() as u16;
+        // The separator counted in `ROWS_PER_FIELD` is drawn *between* fields,
+        // so the last one does not spend it. Left in, the dialog would reserve
+        // a row nothing is ever drawn on and sit one taller than it looks.
+        let fields = self.fields.len() as u16;
+        let height = CHROME_ROWS + (ROWS_PER_FIELD * fields).saturating_sub(1);
 
         layout::centred(DIALOG_WIDTH, height, terminal)
     }
@@ -283,10 +322,27 @@ impl Form {
         // Clear first, or the interface underneath shows through the dialog.
         frame.render_widget(Clear, area);
 
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .border_style(style::DIALOG_BORDER_INPUT)
             .title(Span::styled(format!(" {} ", self.title), style::EMPHASIS));
+
+        // The counter belongs to the dialog rather than to a field: it says
+        // where the operator is in the form, and drawing it on every row said
+        // that once per field. It rides the top border opposite the title, the
+        // way the tree's census and the output pane's status ride theirs.
+        if self.fields.len() > 1 {
+            block = block.title(
+                Span::styled(
+                    lang.render(&Msg::FormFieldCounter {
+                        index: self.focus + 1,
+                        total: self.fields.len(),
+                    }),
+                    style::BLOCK_SUBTITLE,
+                )
+                .into_right_aligned_line(),
+            );
+        }
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -294,14 +350,27 @@ impl Form {
         self.render_fields(frame, inner, lang);
     }
 
-    /// Draws each field, its validation note, and the footer.
+    /// Draws each field and the footer.
+    ///
+    /// A field is two rows: a header carrying its label on the left and its
+    /// verdict on the right, and the value indented beneath. Everything on a
+    /// row belongs to the field whose header opens it, which is what a boxed
+    /// field could not say — its note sat as close to the field below as to
+    /// the value it judged, and three of the four rows a box spent were
+    /// drawing a frame around a single line of text.
     fn render_fields(&mut self, frame: &mut Frame, area: Rect, lang: Lang) {
-        // Two cells of the box's own border are not available to the text.
-        let field_width = area.width.saturating_sub(4) as usize;
+        // A cell of margin at each edge, plus the focus bar's own column.
+        let width = area.width.saturating_sub(2) as usize;
+        let field_width = width.saturating_sub(GUTTER_WIDTH + VALUE_INDENT.len());
         let focus = self.focus;
         let total = self.fields.len();
 
-        let mut lines: Vec<Line> = Vec::new();
+        // The block of fields is inset from the frame by the same row that
+        // separates one field from the next, so the spacing reads as one
+        // rhythm rather than as fields that happen to be crowded against the
+        // border at both ends. Pushed before the loop, which is what keeps the
+        // cursor's row a count of `lines` rather than an offset to maintain.
+        let mut lines: Vec<Line> = vec![Line::default()];
         // Where the real terminal cursor goes, so screen readers and remote
         // clients follow it rather than a drawn imitation.
         let mut cursor_at = None;
@@ -310,64 +379,67 @@ impl Form {
             let focused = index == focus;
             let (visible, cursor) = field.visible(field_width);
 
-            let counter = if total > 1 {
-                lang.render(&Msg::FormFieldCounter {
-                    index: index + 1,
-                    total,
-                })
+            lines.push(header_line(field, lang, width, focused));
+
+            if focused {
+                cursor_at = Some((
+                    area.x + (GUTTER_WIDTH + VALUE_INDENT.len()) as u16 + cursor as u16,
+                    area.y + lines.len() as u16,
+                ));
+            }
+
+            // An empty optional field names the state rather than showing a
+            // blank: silence there reads as "not reached yet", where the point
+            // is that leaving it alone *is* the answer.
+            let (value, value_style) = if field.is_empty() && field.is_valid() {
+                (lang.render(&Msg::FormFieldUnset), style::BLOCK_SUBTITLE)
+            } else if focused {
+                (visible, style::EMPHASIS)
             } else {
-                String::new()
+                (visible, style::NORMAL)
             };
 
             lines.push(Line::from(vec![
-                Span::styled(counter, style::BLOCK_SUBTITLE),
-                Span::styled(
-                    field.param.label,
-                    if focused {
-                        style::EMPHASIS
-                    } else {
-                        style::NORMAL
-                    },
-                ),
-                Span::styled(
-                    field
-                        .param
-                        .hint
-                        .as_ref()
-                        .map(|hint| format!("   {hint}"))
-                        .unwrap_or_default(),
-                    style::BLOCK_SUBTITLE,
-                ),
+                Span::styled(focus_bar(focused), style::FLAG_INPUT),
+                Span::styled(VALUE_INDENT, style::NORMAL),
+                Span::styled(value, value_style),
             ]));
 
-            lines.push(Line::styled(
-                format!("┌{}┐", "─".repeat(field_width)),
-                style::border(focused),
-            ));
-
-            if focused {
-                // Row within the dialog: the two lines already pushed for this
-                // field, plus the three each previous field occupies.
-                cursor_at = Some((area.x + 2 + cursor as u16, area.y + lines.len() as u16));
+            // Between fields, and only there: without it one field's value and
+            // the next one's label are adjacent rows, so a stanza runs into
+            // its neighbour and the pairing of header to value is lost. The
+            // row after the last field is pushed below, where it separates
+            // them from the footer instead.
+            if index + 1 < total {
+                lines.push(Line::default());
             }
-
-            lines.push(Line::from(vec![
-                Span::styled("│", style::border(focused)),
-                Span::styled(format!("{visible:<field_width$}"), style::NORMAL),
-                Span::styled("│", style::border(focused)),
-            ]));
-
-            lines.push(Line::styled(
-                format!("└{}┘", "─".repeat(field_width)),
-                style::border(focused),
-            ));
-
-            lines.push(note_line(field, lang));
         }
+
+        // The closing half of the same inset: the last field ends against the
+        // rule otherwise, where the first began against the border.
+        lines.push(Line::default());
+
+        // A rule rather than a blank row: the keys below act on the dialog
+        // rather than on any one field, and a gap alone reads as the spacing
+        // between two fields — which is what separates the stanzas above, so
+        // the same mark cannot also mean "the fields end here". Drawn in the
+        // border's own colour, being part of the frame rather than of the
+        // form.
+        //
+        // Drawn to the full inner width rather than to `width`, which reserves
+        // a margin the text keeps off the border: a rule that stopped short of
+        // the frame would read as a line somebody had left unfinished.
+        lines.push(Line::styled(
+            "─".repeat(area.width as usize),
+            style::DIALOG_BORDER_INPUT,
+        ));
 
         // The key glyphs stay literals for the reason `help.rs` states: `Tab`
         // and `Esc` name keys on a keyboard rather than words in a language.
         let mut keys = vec![
+            // The gutter every field reserves, so the footer starts on the
+            // column the labels do rather than against the border.
+            Span::styled(" ".repeat(GUTTER_WIDTH), style::NORMAL),
             Span::styled("Tab", style::KEYBAR_KEY),
             Span::styled(lang.render(&Msg::FormKeyField), style::KEYBAR_LABEL),
         ];
@@ -461,12 +533,31 @@ fn below(anchor: Rect, wanted: u16, terminal: Rect) -> Rect {
     }
 }
 
-/// The note under a field: what is wrong, or what the value parsed as.
+/// The bar marking the focused field, or the blank column standing in for it.
 ///
-/// A warning the tool then ignores is worse than no warning, so this states
-/// the problem rather than merely that there is one.
-fn note_line(field: &Field, lang: Lang) -> Line<'static> {
-    let mut spans = if let Some(error) = field.error() {
+/// The column is always spent, so a field's text sits at the same place
+/// whether or not it holds the focus — reserving it is what keeps `Tab` from
+/// shifting every label one cell sideways.
+fn focus_bar(focused: bool) -> &'static str {
+    if focused { FOCUS_BAR } else { "  " }
+}
+
+/// A field's header: its label on the left, its verdict on the right.
+///
+/// The verdict shares the label's row rather than taking one under the value,
+/// which is what stops it from reading as a note belonging to whichever field
+/// comes next. A warning the tool then ignores is worse than no warning, so an
+/// error states the problem rather than merely that there is one.
+///
+/// A value that passes is marked `✓` and says nothing. Words there were the
+/// bulk of the small text scattered across the dialog, and the glyph carries
+/// the same meaning in one cell. The exceptions earn their words: an empty
+/// optional field has no value to mark, and a public key is echoed by what it
+/// parsed to, since that is how a mistyped one is caught.
+fn header_line(field: &Field, lang: Lang, width: usize, focused: bool) -> Line<'static> {
+    let label = field.param.label;
+
+    let (verdict, verdict_style) = if let Some(error) = field.error() {
         // An empty required field is not yet a mistake — the operator has not
         // finished — so it reads as a prompt rather than a failure.
         let style = if field.is_empty() {
@@ -475,29 +566,53 @@ fn note_line(field: &Field, lang: Lang) -> Line<'static> {
             style::OUTPUT_ERROR
         };
 
-        vec![Span::styled(format!("  {error}"), style)]
+        (error, style)
+    } else if field.is_empty() {
+        (lang.render(&Msg::FormFieldOptional), style::BLOCK_SUBTITLE)
     } else {
         match field.parsed_summary() {
-            Some(summary) => vec![Span::styled(format!("  ✓ {summary}"), style::RESULT_OK)],
-            None => vec![Span::styled("  ✓", style::RESULT_OK)],
+            Some(summary) => (format!("✓ {summary}"), style::RESULT_OK),
+            None => ("✓".to_owned(), style::RESULT_OK),
         }
     };
 
     // What the host offers, on the row the operator is already reading for the
-    // validation note. A row of its own would cost one per field, which on a
+    // verdict. A row of its own would cost one per field, which on a
     // three-field form is the difference between fitting a 24-row terminal and
     // not.
-    if !field.options().is_empty() {
-        spans.push(Span::styled(
-            lang.render(&Msg::FormOptionCount {
-                position: field.option_position().map(|index| index + 1),
-                total: field.options().len(),
-            }),
-            style::BLOCK_SUBTITLE,
-        ));
-    }
+    let options = if field.options().is_empty() {
+        String::new()
+    } else {
+        lang.render(&Msg::FormOptionCount {
+            position: field.option_position().map(|index| index + 1),
+            total: field.options().len(),
+        })
+    };
 
-    Line::from(spans)
+    let right = format!("{options}  {verdict}");
+
+    // Two spaces separate the label from whatever is right-aligned against the
+    // far edge; below that the gap closes and the two would read as one
+    // phrase, so the verdict yields its right-alignment rather than collide.
+    let gap = width
+        .saturating_sub(GUTTER_WIDTH + label.chars().count() + right.chars().count())
+        .max(2);
+
+    Line::from(vec![
+        Span::styled(focus_bar(focused), style::FLAG_INPUT),
+        Span::styled(
+            label,
+            if focused {
+                style::EMPHASIS
+            } else {
+                style::BLOCK_SUBTITLE
+            },
+        ),
+        Span::styled(" ".repeat(gap), style::NORMAL),
+        Span::styled(options, style::BLOCK_SUBTITLE),
+        Span::styled("  ", style::NORMAL),
+        Span::styled(verdict, verdict_style),
+    ])
 }
 
 #[cfg(test)]
@@ -515,6 +630,77 @@ mod tests {
     /// A terminal 24 rows tall, the size the interface is measured against.
     fn terminal() -> Rect {
         Rect::new(0, 0, 80, 24)
+    }
+
+    /// What a field's header says, with the runs of padding collapsed.
+    fn header_of(field: &Field) -> String {
+        header_line(field, Lang::En, 60, false)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_field_holding_a_value_is_marked_rather_than_described() {
+        // Words on every passing field were the bulk of the small text
+        // scattered across the dialog, and the glyph says the same thing in
+        // one cell. The words are kept for the states a mark cannot carry.
+        let mut filled = Field::new(Param::new("port", "Port", ParamKind::Port));
+        filled.insert('2');
+        filled.insert('2');
+
+        assert_eq!(header_of(&filled), "Port ✓");
+    }
+
+    #[test]
+    fn an_empty_optional_field_says_so_rather_than_being_marked() {
+        // The state a `✓` drew identically to a filled one: nobody has typed
+        // here, and nobody needs to. Marking it green reads as "done"; saying
+        // nothing reads as "not reached yet". Neither is true.
+        let empty = Field::new(Param::new("password", "Password", ParamKind::Secret));
+
+        assert!(empty.is_valid(), "the premise: empty passes validation");
+        assert_eq!(header_of(&empty), "Password optional, may be left empty");
+    }
+
+    #[test]
+    fn a_field_that_cannot_be_left_empty_says_what_is_missing() {
+        // Asserted beside the other two because the three verdicts are one
+        // decision: an empty *required* field must not be called optional.
+        let empty = Field::new(Param::new("user", "Username", ParamKind::Username));
+
+        assert_eq!(header_of(&empty), "Username a username is required");
+    }
+
+    #[test]
+    fn only_the_focused_field_carries_the_bar() {
+        // The column is spent either way, so a label sits at the same place
+        // whether or not it holds the focus: reserving it is what keeps `Tab`
+        // from shifting every row one cell sideways.
+        let field = Field::new(Param::new("user", "Username", ParamKind::Username));
+
+        let focused: String = header_line(&field, Lang::En, 60, true)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let idle: String = header_line(&field, Lang::En, 60, false)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(focused.starts_with(FOCUS_BAR), "{focused:?}");
+        assert!(idle.starts_with(' '), "{idle:?}");
+        assert_eq!(
+            focused.chars().count(),
+            idle.chars().count(),
+            "the bar must not shift the row"
+        );
     }
 
     #[test]

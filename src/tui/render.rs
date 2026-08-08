@@ -36,7 +36,7 @@ use super::status::State;
 use super::verify::Verification;
 use super::{help, layout, search, style};
 use crate::i18n::{Lang, Msg};
-use crate::tasks::Node;
+use crate::tasks::{Confirmation, Node};
 
 /// Marks a row that opens onto another level.
 const CATEGORY_MARKER: &str = "› ";
@@ -612,7 +612,6 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Running => vec![
             ("Ctrl-C", Msg::KeyBarStop),
             ("↑↓", Msg::KeyBarScroll),
-            ("w", Msg::KeyBarWrap),
             ("?", Msg::KeyBarKeys),
         ],
         Mode::Verifying => vec![
@@ -637,7 +636,6 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ("↑↓", Msg::KeyBarScroll),
                 ("G", Msg::KeyBarFollow),
                 ("y", Msg::KeyBarCopy),
-                ("w", Msg::KeyBarWrap),
                 ("Tab", Msg::KeyBarTree),
             ],
         },
@@ -752,7 +750,11 @@ pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> L
                     style::MARKER_UNSUPPORTED,
                     style::FLAG_UNSUPPORTED,
                 )
-            } else if task.is_destructive() {
+            // `Lockout` alone, not every task that asks. Almost all of them
+            // ask now, and a danger flag on almost every row marks nothing —
+            // the column exists to say which handful can end the session
+            // reading it.
+            } else if task.confirmation() == Confirmation::Lockout {
                 (style::NORMAL, style::MARKER_DANGER, style::FLAG_DANGER)
             } else if !task.params().is_empty() {
                 (style::NORMAL, style::MARKER_INPUT, style::FLAG_INPUT)

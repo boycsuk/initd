@@ -21,10 +21,20 @@ use super::{layout, style};
 use crate::i18n::{Lang, Msg};
 
 /// Width the overlay is drawn at, before clamping to the terminal.
-const WIDTH: u16 = 70;
+///
+/// The width every modal shares. It was 70 beside the form's 72 and the
+/// search's 64 — three sizes over one interface, each defensible alone and
+/// none chosen against the others.
+const WIDTH: u16 = layout::DIALOG_WIDTH;
 
 /// Height the overlay is drawn at, before clamping.
-const HEIGHT: u16 = 24;
+///
+/// Two rows short of the 24 the interface is measured against, so the frame
+/// itself has somewhere to land: at exactly 24 the overlay filled the terminal
+/// and its top border was drawn off the screen, leaving a list that appeared
+/// to have no dialog around it. The list scrolls, so the rows given up cost
+/// nothing that cannot be reached.
+const HEIGHT: u16 = 22;
 
 /// One group of bindings, as it appears in the overlay.
 ///
@@ -95,7 +105,6 @@ const SECTIONS: &[Section] = &[
             ("PageUp/Down", Msg::HelpScrollPage),
             ("g", Msg::HelpOldestLine),
             ("G f", Msg::HelpNewestLine),
-            ("w", Msg::HelpWrap),
             ("y", Msg::HelpCopy),
         ],
     },
@@ -154,7 +163,7 @@ pub fn render(frame: &mut Frame, lang: Lang, scroll: u16) {
     frame.render_widget(Clear, area);
 
     let all = lines(lang);
-    let visible_height = area.height.saturating_sub(2);
+    let visible_height = area.height.saturating_sub(layout::DIALOG_CHROME_ROWS);
     let max_scroll = (all.len() as u16).saturating_sub(visible_height);
     let scroll = scroll.min(max_scroll);
 
@@ -177,7 +186,10 @@ pub fn render(frame: &mut Frame, lang: Lang, scroll: u16) {
         ))
         .title_bottom(Span::styled(footer, style::BLOCK_SUBTITLE));
 
-    let inner = block.inner(area);
+    // The gutter and inset every modal keeps, so the overlay reads like the
+    // dialogs beside it rather than as a list pushed against its own frame.
+    let inner = layout::inset(block.inner(area), layout::DIALOG_GUTTER as u16, 1);
+
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(all).scroll((scroll, 0)), inner);
 }
@@ -198,7 +210,7 @@ const fn percentage(scroll: u16, max_scroll: u16) -> u16 {
 pub fn max_scroll(area: Rect, lang: Lang) -> u16 {
     let height = layout::centred(WIDTH, HEIGHT, area)
         .height
-        .saturating_sub(2);
+        .saturating_sub(layout::DIALOG_CHROME_ROWS);
 
     (lines(lang).len() as u16).saturating_sub(height)
 }

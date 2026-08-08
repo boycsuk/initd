@@ -200,10 +200,10 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NotAnAdministrator { user, group } => {
             format!("{user} is not in {group}, so it cannot escalate once root is locked")
         }
-        Msg::NoAuthorizedKey { user } => {
+        Msg::NoWayBackIn { user } => {
             format!(
-                "{user} has no authorised key, so it cannot log in — it was created \
-                 without a password"
+                "{user} has neither an authorised key nor a usable password, so it \
+                 cannot log in anywhere — give it one before locking root"
             )
         }
         Msg::AdminCannotBeRoot => "root cannot be the account that stays usable: it is the \
@@ -295,7 +295,6 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpOldestLine => "oldest retained line".to_owned(),
         Msg::HelpNewestLine => "newest output, and follow it".to_owned(),
         Msg::HelpCopy => "send the whole transcript to the terminal's clipboard".to_owned(),
-        Msg::HelpWrap => "wrap long lines".to_owned(),
         Msg::HelpNextField => "next field".to_owned(),
         Msg::HelpNextFieldOrSubmit => "next field, or submit on the last".to_owned(),
         // Both say "where the host offers any", because in a field with none
@@ -348,7 +347,9 @@ pub(super) fn render(message: &Msg) -> String {
         // Trailing spaces separate the counter from the label beside it, and
         // each key hint from the next: they are drawn as adjacent spans on one
         // line, so the gap has to travel with the words.
-        Msg::FormFieldCounter { index, total } => format!("{index} of {total}  "),
+        // Framed by spaces because it rides the dialog's border, where the
+        // rule would otherwise run into the words.
+        Msg::FormFieldCounter { index, total } => format!(" field {index} of {total} "),
         // Leading spaces separate this from the validation note it sits
         // beside. The arrows are drawn rather than named for the reason the
         // key bar states: a glyph on a keyboard is not a word in a language.
@@ -356,6 +357,8 @@ pub(super) fn render(message: &Msg) -> String {
             Some(position) => format!("   ↑↓ {position}/{total} on this host"),
             None => format!("   ↑↓ {total} on this host"),
         },
+        Msg::FormFieldOptional => "optional, may be left empty".to_owned(),
+        Msg::FormFieldUnset => "(unset)".to_owned(),
         Msg::FormKeyList => " list   ".to_owned(),
         Msg::FormOptionsTitle { label } => format!(" {label} on this host "),
         Msg::FormOptionsChoose => " choose   ".to_owned(),
@@ -465,7 +468,6 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarOutput => "output".to_owned(),
         Msg::KeyBarStop => "stop".to_owned(),
         Msg::KeyBarScroll => "scroll".to_owned(),
-        Msg::KeyBarWrap => "wrap".to_owned(),
         Msg::KeyBarCopy => "copy".to_owned(),
         Msg::KeyBarKeys => "keys".to_owned(),
         Msg::KeyBarKeep => "keep".to_owned(),
@@ -539,6 +541,13 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::ConfirmLockoutWarning => "This operation can lock you out of a server you reach \
              over SSH. Make sure you have another way in before continuing."
             .to_owned(),
+        Msg::ConfirmRootLockout { admin } => {
+            format!(
+                "root will no longer log in by any route, including the provider's \
+                 rescue console. From here on this machine is administered as \
+                 {admin} — check that name is right."
+            )
+        }
 
         // --- Interface: terminal too small ---
         //

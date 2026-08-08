@@ -26,8 +26,9 @@ use super::help;
 use super::search::Search;
 use super::status::State;
 use crate::i18n::{Msg, RevertReason};
-use crate::tasks::Node;
 use crate::tasks::params::{ParamValues, Suggestions};
+use crate::tasks::users::LockRoot;
+use crate::tasks::{Confirmation, Node};
 
 impl App {
     /// Handles a key press, routing to whichever dialog is open.
@@ -149,6 +150,12 @@ impl App {
     /// Handles a key press while the output pane holds focus.
     ///
     /// Reading is never blocked, so these stay available while a task runs.
+    ///
+    /// The pane does two things and no others: it moves the view, and it hands
+    /// the transcript over. Nothing here changes what was run or how it is
+    /// laid out — a pane whose only job is to be read has no state worth
+    /// giving the operator a key to disturb, and every key that did was one
+    /// more binding to remember for no decision it helped make.
     fn on_output_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
@@ -159,9 +166,7 @@ impl App {
             // `G` and `f` both re-attach to the tail: one is the counterpart
             // of scrolling away, the other names what it does.
             KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
-            KeyCode::Char('w') => self.output.toggle_wrap(),
             KeyCode::Char('y') => self.copy_output(),
-            KeyCode::Esc => self.focus = Pane::Tree,
             _ => return false,
         }
 
@@ -214,7 +219,6 @@ impl App {
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
             KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
-            KeyCode::Char('w') => self.output.toggle_wrap(),
             // Quitting mid-task is how a server ends up half-configured, so it
             // is refused with the way to actually stop.
             KeyCode::Char('q') => self.status.flash(
@@ -520,11 +524,11 @@ impl App {
         self.form = None;
         self.options_at = None;
 
-        let destructive = self
+        let asks = self
             .selected_task()
-            .is_some_and(crate::tasks::Task::is_destructive);
+            .is_some_and(|task| task.confirmation() != Confirmation::None);
 
-        if destructive {
+        if asks {
             // The values are held for the confirmation to run with once the
             // operator consents.
             self.pending_values = values;
@@ -601,7 +605,7 @@ impl App {
             return None;
         }
 
-        if task.is_destructive() {
+        if task.confirmation() != Confirmation::None {
             self.open_confirmation();
             return None;
         }
@@ -628,6 +632,21 @@ impl App {
         let mut shells: Option<Vec<String>> = None;
 
         for field in form.fields_mut() {
+            // Read before the suggestions and independently of them: a field
+            // whose value must *not* exist is offered nothing and still has to
+            // know the accounts in order to refuse them, which is the case
+            // this whole check exists for.
+            if field.param.existence.is_some() {
+                let known = accounts.get_or_insert_with(|| {
+                    self.backend
+                        .accounts()
+                        .list(self.executor.as_ref())
+                        .unwrap_or_default()
+                });
+
+                field.knows_accounts(known.clone());
+            }
+
             let Some(source) = field.param.suggestions else {
                 continue;
             };
@@ -652,14 +671,37 @@ impl App {
     }
 
     /// Opens the confirmation for the selected task.
+    ///
+    /// `users.lock-root` states its own warning, because it is the only task
+    /// with two accounts in play: the form collected the one that *survives*,
+    /// and the generic warning would leave the operator's last look at an
+    /// irreversible operation without either name on it.
     fn open_confirmation(&mut self) {
         let Some(task) = self.selected_task() else {
             return;
         };
 
-        self.confirm = Some(
-            Confirm::new(task.title(), task.description())
-                .with_warning(self.lang.render(&Msg::ConfirmLockoutWarning)),
-        );
+        let confirm = Confirm::new(task.title(), task.description());
+
+        // A warning only where one is true. Every task that writes asks now,
+        // and attaching the lockout sentence to all of them would put "this
+        // can lock you out of a server you reach over SSH" under installing a
+        // shell — which is how a warning stops being read by the time it
+        // reaches the task that means it.
+        self.confirm = Some(match task.confirmation() {
+            Confirmation::Lockout => {
+                let warning = match self.pending_values.get(LockRoot::ADMIN) {
+                    Ok(admin) if task.id() == LockRoot::ID => {
+                        self.lang.render(&Msg::ConfirmRootLockout {
+                            admin: admin.to_owned(),
+                        })
+                    }
+                    _ => self.lang.render(&Msg::ConfirmLockoutWarning),
+                };
+
+                confirm.with_warning(warning)
+            }
+            Confirmation::Change | Confirmation::None => confirm,
+        });
     }
 }

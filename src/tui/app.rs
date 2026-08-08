@@ -549,7 +549,10 @@ mod tests {
         app.focus = Pane::Output;
         let on_output = render_to_rows(&mut app, 80, 24)[23].clone();
         assert!(on_output.contains("scroll"), "got {on_output}");
-        assert!(on_output.contains("wrap"), "got {on_output}");
+        // A key the tree's bar never offers, so the two are told apart by what
+        // the focused pane can actually do rather than by length.
+        assert!(on_output.contains("copy"), "got {on_output}");
+        assert!(!on_output.contains("move"), "got {on_output}");
     }
 
     #[test]
@@ -1426,10 +1429,16 @@ mod tests {
     }
 
     #[test]
-    fn the_options_list_opens_under_the_form_rather_than_over_it() {
+    fn the_options_list_never_covers_the_field_it_answers() {
         // Centred, it landed on the very field it answers. A chooser that
         // hides the question makes the operator dismiss it to remember what
         // they were filling in.
+        //
+        // The property is that the field stays readable, not which side the
+        // list takes: `below` puts it above when the room underneath has run
+        // out, and a dialog one row taller is enough to change the answer. An
+        // assertion on the side failed the day the form grew a row, over an
+        // interface that was drawing exactly what it should.
         let mut app = app_with_host_answers();
         select_task(&mut app, "users.set-shell");
         press(&mut app, KeyCode::Enter);
@@ -1438,16 +1447,26 @@ mod tests {
         let rows = render_to_rows(&mut app, 80, 24);
         let screen = rows.join("\n");
 
-        let list_at = rows
-            .iter()
-            .position(|row| row.contains("on this host"))
-            .expect("the list must be drawn");
+        // The overlay's own title carries "on this host" too, so the list is
+        // found by its border and the field by its label — anchoring both on
+        // the same phrase would compare the overlay against itself.
+        assert!(
+            screen.contains("Username on this host"),
+            "the list must be drawn: {screen}"
+        );
+
+        // Both rows of the focused field, not merely its label: a list that
+        // covered the value would leave the question half-answerable, which is
+        // the same complaint one cell lower.
         let field_at = rows
             .iter()
-            .position(|row| row.contains("the account whose shell changes"))
+            .position(|row| row.contains("▌ Username"))
             .expect("the field it answers must still be readable");
 
-        assert!(field_at < list_at, "got {screen}");
+        assert!(
+            rows[field_at + 1].contains('▌'),
+            "the value under the label must survive too: {screen}"
+        );
     }
 
     #[test]
@@ -1510,14 +1529,176 @@ mod tests {
     }
 
     #[test]
-    fn creating_an_account_says_it_will_have_no_password() {
-        // The detail pane explains this and the form is drawn over the detail
-        // pane, so an operator who reaches the field sees one box asking for a
-        // name and nothing saying the account it makes cannot yet log in.
+    fn creating_an_account_the_host_already_has_is_refused_while_typing() {
+        // Seen on screen: the form drew `✓` over `cosmin`, an account this
+        // host already carries, and let Enter be pressed on it. The task
+        // refuses the duplicate, so nothing was ever created twice — but the
+        // refusal arrived after the form had closed, which is precisely what
+        // validating on every keystroke exists to avoid.
         //
-        // Asserted whole rather than on a word: a hint too wide for the dialog
-        // is silently cut, and the half that survives ("no password") says the
-        // opposite of the half that does not ("authorise a key next").
+        // End to end rather than on the field alone, because the defect was in
+        // the wiring: `users.create` offers no suggestions, so nothing used to
+        // hand it the host's accounts at all.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.create");
+        press(&mut app, KeyCode::Enter);
+
+        for character in "cosmin".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(screen.contains("cosmin already exists"), "got {screen}");
+        assert!(
+            !screen.contains("Enter continue"),
+            "the form must not offer to submit: {screen}"
+        );
+    }
+
+    #[test]
+    fn installing_a_service_asks_before_it_changes_the_machine() {
+        // Reported from a real run: `ssh.install` installed the package and
+        // enabled the daemon with nothing asked, because confirmation was
+        // reserved for tasks that could end the session rather than for tasks
+        // that change the machine.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "ssh.install");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.confirm.is_some(), "the task must not have started");
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(screen.contains("Yes"), "got {screen}");
+        // Neutral, not the lockout dialog: installing a service cannot strand
+        // the session, and a warning attached to everything is read by nobody
+        // by the time it reaches the task that means it.
+        assert!(
+            !screen.contains("lock you out"),
+            "an ordinary change must not borrow the lockout warning: {screen}"
+        );
+    }
+
+    #[test]
+    fn a_lockout_task_keeps_its_warning() {
+        // The other half of the same decision: the sentence has to survive
+        // where it is true, or splitting the dialog in two would have cost the
+        // warning that mattered.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "ssh.harden");
+        press(&mut app, KeyCode::Enter);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(screen.contains("lock you out"), "got {screen}");
+    }
+
+    #[test]
+    fn a_password_is_never_drawn_on_the_screen() {
+        // The value the rest of this tool goes out of its way not to hold, so
+        // the one place it is held must not put it on a screen somebody is
+        // looking over — or into the frames a bug report screenshots.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.create");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+
+        for character in "hunter2".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(!screen.contains("hunter2"), "got {screen}");
+        assert!(
+            screen.contains("•••••••"),
+            "one bullet per character, so the keystrokes are seen to land: {screen}"
+        );
+    }
+
+    #[test]
+    fn the_cursor_lands_on_the_focused_field_s_value() {
+        // Nothing else in the suite reads the cursor position, and a caret a
+        // row out is invisible to a test that only reads drawn text: the
+        // operator types into one field and watches it blink on another.
+        //
+        // Counting the row from `lines.len()` is what makes rows added around
+        // the block safe — they move the caret and the text together — so this
+        // guards the arithmetic rather than the spacing: verified by adding a
+        // row to the caret alone, which fails here, where a row added to both
+        // does not.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.create");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+
+        for character in "hunter2".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| render::all(frame, &mut app))
+            .expect("drawing must not fail");
+
+        let position = terminal
+            .get_cursor_position()
+            .expect("a form must place the cursor");
+
+        let rows = render_to_rows(&mut app, 80, 24);
+        // The bullets, not the password: this field masks what is typed, and
+        // a test looking for the value itself would pass only on a build that
+        // had stopped masking it.
+        let value_at = rows
+            .iter()
+            .position(|row| row.contains("•••••••"))
+            .expect("the typed value must be drawn");
+
+        assert_eq!(
+            position.y as usize, value_at,
+            "the caret must sit on the row it is typing into"
+        );
+    }
+
+    #[test]
+    fn a_rule_separates_the_fields_from_the_keys_that_act_on_the_dialog() {
+        // A blank row alone could not say it: blank rows are what separate one
+        // field from the next, so the same mark would have meant both "another
+        // field follows" and "the fields end here". The keys below act on the
+        // dialog rather than on any one field.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.create");
+        press(&mut app, KeyCode::Enter);
+
+        let rows = render_to_rows(&mut app, 80, 24);
+
+        let footer_at = rows
+            .iter()
+            .position(|row| row.contains("Tab field"))
+            .expect("the footer must be drawn");
+        let rule = &rows[footer_at - 1];
+
+        assert!(
+            rule.contains("──────"),
+            "a rule must precede the footer: {rule}"
+        );
+        // Corner to corner: one stopping short of the frame reads as a line
+        // somebody left unfinished.
+        assert!(
+            rule.contains("│─") && rule.contains("─│"),
+            "the rule must span the dialog: {rule}"
+        );
+    }
+
+    #[test]
+    fn an_optional_field_is_not_drawn_as_one_that_has_been_answered() {
+        // `Set a password` is valid while empty, because empty means no. A
+        // `✓` there drew it identically to a field somebody had filled in
+        // correctly, which is how an untouched field gets taken for a settled
+        // one — in the form that creates the account an administrator logs in
+        // with.
         let mut app = app_with_host_answers();
         select_task(&mut app, "users.create");
         press(&mut app, KeyCode::Enter);
@@ -1525,8 +1706,12 @@ mod tests {
         let screen = render_to_rows(&mut app, 80, 24).join("\n");
 
         assert!(
-            screen.contains("no password; authorise a key next"),
+            screen.contains("optional, may be left empty"),
             "got {screen}"
+        );
+        assert!(
+            screen.contains("(unset)"),
+            "the value must name the state rather than sit blank: {screen}"
         );
     }
 
@@ -1758,14 +1943,14 @@ mod tests {
     }
 
     #[test]
-    fn a_destructive_task_with_parameters_keeps_the_danger_flag() {
-        // Only one flag fits the column, and the destructive one is the
-        // warning that matters: losing it to the input marker would hide the
-        // very thing the operator must not miss.
+    fn a_lockout_task_with_parameters_keeps_the_danger_flag() {
+        // Only one flag fits the column, and the lockout one is the warning
+        // that matters: losing it to the input marker would hide the very
+        // thing the operator must not miss.
         let task = crate::tasks::find("ssh.change-port").expect("ssh.change-port must exist");
         assert!(
-            !task.params().is_empty() && task.is_destructive(),
-            "this test is only meaningful while the task is both destructive and parameterised"
+            !task.params().is_empty() && task.confirmation() == crate::tasks::Confirmation::Lockout,
+            "this test is only meaningful while the task both risks a lockout and takes values"
         );
 
         let node = Node::Task(task);
@@ -1923,6 +2108,38 @@ mod tests {
         let screen = render_to_rows(&mut app, 80, 24).join("\n");
 
         assert!(screen.contains("y copy"), "got {screen}");
+    }
+
+    #[test]
+    fn the_output_pane_only_scrolls_and_copies() {
+        // The pane is a record of what a task did, and a record is read rather
+        // than operated. `w` toggled wrapping and `Esc` returned focus; both
+        // were bindings to remember in front of no decision they helped make,
+        // and a key reintroduced here is invisible without this.
+        let mut app = test_app(Family::Debian);
+        app.focus = Pane::Output;
+        for i in 0..5 {
+            app.output.push(crate::exec::OutputLine {
+                stream: crate::exec::Stream::Stdout,
+                text: format!("line {i}"),
+            });
+        }
+
+        press(&mut app, KeyCode::Char('w'));
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.focus, Pane::Output, "Esc must not move the focus");
+        assert!(
+            app.output.is_following(),
+            "neither key may disturb the view"
+        );
+
+        // The keys that remain, so this cannot pass by rejecting everything.
+        press(&mut app, KeyCode::Char('k'));
+        assert!(!app.output.is_following(), "k still scrolls");
+
+        press(&mut app, KeyCode::Char('G'));
+        assert!(app.output.is_following(), "G still re-attaches");
     }
 
     #[test]

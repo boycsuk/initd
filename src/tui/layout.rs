@@ -15,6 +15,82 @@
 
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 
+/// Width every modal dialog is drawn at, before clamping to the terminal.
+///
+/// One number rather than the three the dialogs had — 72, 70 and 64 — which
+/// were each defensible alone and, side by side over the same interface, read
+/// as three sizes chosen by nobody. The floor is the parameter form's footer,
+/// the longest fixed string any of them draws: `Tab field   Ctrl-L list
+/// Enter (fill every field)   Esc cancel`, rendered as adjacent spans that
+/// neither wrap nor truncate, so a dialog one cell too narrow silently loses
+/// `cancel` — the key out of a modal.
+///
+/// `centred` clamps it, so a terminal narrower than this shrinks the dialog
+/// rather than overflowing.
+pub const DIALOG_WIDTH: u16 = 72;
+
+/// Cells of margin between a dialog's border and its text, on both sides.
+///
+/// Also the column a focus marker occupies in the parameter form, which is why
+/// it is spent whether or not one is drawn: text that shifted sideways when a
+/// row gained the focus would move under the cursor reading it.
+pub const DIALOG_GUTTER: usize = 2;
+
+/// Rows a dialog spends on itself: two borders and the blank row inset at each
+/// end of its content.
+///
+/// The inset is the same row that separates a form's fields, so the spacing
+/// reads as one rhythm rather than as content crowded against the frame at
+/// both ends.
+pub const DIALOG_CHROME_ROWS: u16 = 4;
+
+/// Rows `text` occupies once wrapped to `width`, counting a blank line as one.
+///
+/// Ratatui wraps at draw time and reports nothing back, so a dialog that wants
+/// to be as tall as its content has to do the arithmetic itself. Words are
+/// broken on whitespace the way `Wrap { trim: true }` does; a word longer than
+/// the width takes a row of its own rather than looping forever, which is what
+/// a naive `while remaining > width` does on an unbreakable token.
+///
+/// Counted in characters rather than bytes: a description holding an accent
+/// would otherwise be measured longer than it is drawn and the dialog would
+/// reserve a row nothing lands on.
+pub fn wrapped_rows(text: &str, width: usize) -> u16 {
+    if width == 0 {
+        return 0;
+    }
+
+    let mut rows: u16 = 0;
+
+    for line in text.lines() {
+        let mut used = 0usize;
+        let mut rows_here: u16 = 1;
+
+        for word in line.split_whitespace() {
+            let word = word.chars().count();
+
+            if used == 0 {
+                // A word wider than the dialog is drawn broken across rows
+                // rather than skipped, so it costs what it actually takes. The
+                // row already counted holds the first `width` of it, hence the
+                // subtraction — without it a word that exactly fills a whole
+                // number of rows was charged one more than it draws.
+                used = word % width;
+                rows_here = rows_here.saturating_add((word.saturating_sub(1) / width) as u16);
+            } else if used + 1 + word <= width {
+                used += 1 + word;
+            } else {
+                rows_here = rows_here.saturating_add(1);
+                used = word;
+            }
+        }
+
+        rows = rows.saturating_add(rows_here);
+    }
+
+    rows.max(1)
+}
+
 /// Width at or above which the tree pane takes a fixed width.
 ///
 /// Its content has a natural width — the longest task title plus a row's
@@ -260,6 +336,23 @@ pub fn centred_percent(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 /// does not wrap or truncate, it simply is not drawn — leaving a destructive
 /// operation asking a question with no answers on screen.
 ///
+/// Shrinks an area by `horizontal` cells on each side and `vertical` on each
+/// end.
+///
+/// The margin every modal keeps between its frame and its content, in one
+/// place so the four of them cannot drift apart. Saturating rather than
+/// panicking: a terminal narrow enough to leave nothing inside yields an empty
+/// rect, and an empty rect draws nothing — which is what should happen on a
+/// screen with no room for the dialog anyway.
+pub fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
+    Rect {
+        x: area.x.saturating_add(horizontal),
+        y: area.y.saturating_add(vertical),
+        width: area.width.saturating_sub(horizontal.saturating_mul(2)),
+        height: area.height.saturating_sub(vertical.saturating_mul(2)),
+    }
+}
+
 /// An area one row tall yields an empty rect for the prose rather than
 /// borrowing the row back: whatever else is missing, the choice is drawn.
 pub fn split_off_last_row(area: Rect) -> (Rect, Rect) {
@@ -289,6 +382,60 @@ mod tests {
 
     fn area(width: u16, height: u16) -> Rect {
         Rect::new(0, 0, width, height)
+    }
+
+    #[test]
+    fn the_dialog_width_fits_the_longest_footer_any_modal_draws() {
+        // The floor the shared width rests on. Footers are drawn as adjacent
+        // spans that neither wrap nor truncate, so a dialog one cell too narrow
+        // silently loses its last word — which in the parameter form is
+        // `cancel`, the key out of a modal.
+        const LONGEST_FOOTER: &str =
+            " Tab field   Ctrl-L list   Enter (fill every field)   Esc cancel";
+
+        assert!(
+            LONGEST_FOOTER.chars().count() + 2 <= DIALOG_WIDTH as usize,
+            "the footer needs {} cells plus two borders, and the width is {DIALOG_WIDTH}",
+            LONGEST_FOOTER.chars().count()
+        );
+    }
+
+    #[test]
+    fn wrapping_counts_the_rows_a_paragraph_will_take() {
+        assert_eq!(
+            wrapped_rows("", 20),
+            1,
+            "an empty body still occupies a row"
+        );
+        assert_eq!(wrapped_rows("short", 20), 1);
+        assert_eq!(
+            wrapped_rows("exactly twenty chars", 20),
+            1,
+            "a full row is one"
+        );
+        assert_eq!(wrapped_rows("this one runs past twenty", 20), 2);
+        assert_eq!(
+            wrapped_rows("first\nsecond", 20),
+            2,
+            "an explicit newline breaks a row"
+        );
+    }
+
+    #[test]
+    fn a_word_wider_than_the_dialog_takes_the_rows_it_needs() {
+        // The case a `while remaining > width` loop never leaves: a token with
+        // no whitespace to break on. A path this size can appear in a
+        // description, and a dialog that hung drawing one would take the
+        // interface with it.
+        assert_eq!(wrapped_rows(&"x".repeat(45), 20), 3);
+        assert_eq!(wrapped_rows(&"x".repeat(40), 20), 2, "an exact multiple");
+    }
+
+    #[test]
+    fn wrapping_measures_characters_rather_than_bytes() {
+        // An accented description would otherwise be measured longer than it
+        // is drawn, and the dialog would reserve a row nothing lands on.
+        assert_eq!(wrapped_rows("ñññññ", 5), 1);
     }
 
     #[test]

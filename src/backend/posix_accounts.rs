@@ -20,6 +20,18 @@ const SHELLS_FILE: &str = "/etc/shells";
 /// Where the account database lives.
 const PASSWD_FILE: &str = "/etc/passwd";
 
+/// Where the password hashes live.
+///
+/// Separate from [`PASSWD_FILE`] and readable only by root, which is why the
+/// question it answers is asked through a privileged command.
+const SHADOW_FILE: &str = "/etc/shadow";
+
+/// Field holding the password hash, counting from zero.
+///
+/// The name follows the login, so the hash is second. Named rather than
+/// written as `1`, next to the expiry index its sibling module already names.
+const SHADOW_HASH_INDEX: usize = 1;
+
 /// Lowest uid a distribution hands to an account a person logs in as.
 ///
 /// The convention on all four families, and a convention rather than a rule —
@@ -165,6 +177,87 @@ pub fn is_in_group(executor: &dyn Executor, user: &str, group: &str) -> Result<b
     }
 
     Ok(output.stdout.split_whitespace().any(|name| name == group))
+}
+
+/// Sets an account's password.
+///
+/// Shared because `chpasswd` is in the shadow suite and in busybox alike, and
+/// the divergence between the two families is in *creating* an account rather
+/// than in this.
+///
+/// The password travels on stdin, never as an argument. `useradd -p` and
+/// `chpasswd` differ exactly there, and the difference is not stylistic: an
+/// argument is published by `/proc/<pid>/cmdline` to every account on the box
+/// for as long as the process lives. `Command`'s `Display` omits stdin, so the
+/// value also stays out of the output pane and out of every error this tool
+/// raises.
+///
+/// `-c` is not passed. Which hashing method to use is the host's decision,
+/// recorded in `login.defs`, and naming one here would quietly downgrade a
+/// system configured for something stronger.
+pub fn set_password(executor: &dyn Executor, user: &str, password: &str) -> Result<()> {
+    let command = Command::new("chpasswd")
+        .stdin(format!("{user}:{password}\n"))
+        .privileged();
+
+    let output = executor.run(&command)?;
+
+    if !output.success() {
+        return Err(Error::CommandFailed {
+            command: command.to_string(),
+            code: output.code,
+            stderr: output.stderr,
+        });
+    }
+
+    Ok(())
+}
+
+/// Whether an account holds a password that can authenticate.
+///
+/// Shared for the same reason the rest of this module is: the hash lives in
+/// the second field of `/etc/shadow` on every family, and neither account
+/// suite reads it differently. `chage` reports expiry, not whether a password
+/// exists, so shadow-utils gains nothing from its own tooling here.
+///
+/// Fetched whole and split in Rust rather than piped through `cut` inside an
+/// `sh -c` string, the rule `busybox_accounts::is_locked` already documents:
+/// an argv element cannot be reinterpreted as syntax, so the answer stops
+/// depending on every caller having validated the username first.
+///
+/// Three states are not a password, and the distinction is what the guard in
+/// `users.lock-root` rests on:
+///
+/// - **Empty.** No password at all. Whether it authenticates is PAM's
+///   `nullok` to decide, and it is absent by default on all four families.
+/// - **`!` prefix.** What `passwd -l` writes, and what `useradd` leaves on an
+///   account created without one.
+/// - **`*`.** What a system account carries.
+///
+/// Neither `!` nor `*` is in the crypt alphabet, so no input can hash to
+/// either — that is what makes them a lock rather than an unguessable
+/// password. A missing entry answers false rather than erroring: the question
+/// is whether this account can authenticate, and one that is not in the file
+/// cannot.
+pub fn has_password(executor: &dyn Executor, user: &str) -> Result<bool> {
+    let command = Command::new("grep")
+        .args([&format!("^{user}:"), SHADOW_FILE])
+        .privileged();
+
+    let output = executor.run(&command)?;
+
+    if !output.success() {
+        return Ok(false);
+    }
+
+    let hash = output
+        .stdout
+        .split(':')
+        .nth(SHADOW_HASH_INDEX)
+        .unwrap_or("")
+        .trim();
+
+    Ok(!hash.is_empty() && !hash.starts_with('!') && !hash.starts_with('*'))
 }
 
 #[cfg(test)]

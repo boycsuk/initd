@@ -53,12 +53,24 @@ impl AccountWriter for ShadowAccounts {
             // which is already "no password will ever match". Passing nothing
             // is what leaves it that way; there is no flag that means it more
             // strongly.
-            PasswordPolicy::Locked => {}
+            PasswordPolicy::Locked | PasswordPolicy::Set(_) => {}
         }
 
         command = command.privileged();
 
-        run_checked(executor, &command)
+        run_checked(executor, &command)?;
+
+        // Set afterwards rather than during creation, because `useradd` has no
+        // flag that takes one: `-p` expects an already-computed hash and would
+        // put it in `argv`, where every account on the box can read it. The
+        // account exists without a password for as long as this takes, which
+        // discloses nothing — `!` matches no input, so the window is one in
+        // which nobody can log in rather than one in which anybody can.
+        if let PasswordPolicy::Set(password) = password {
+            posix_accounts::set_password(executor, user, &password)?;
+        }
+
+        Ok(())
     }
 
     fn add_to_group(&self, executor: &dyn Executor, user: &str, group: &str) -> Result<()> {
@@ -136,6 +148,10 @@ impl AccountWriter for ShadowAccounts {
             .unwrap_or("never");
 
         Ok(expiry != "never")
+    }
+
+    fn has_password(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
+        posix_accounts::has_password(executor, user)
     }
 
     fn valid_shells(&self, executor: &dyn Executor) -> Result<Vec<String>> {

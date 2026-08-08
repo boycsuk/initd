@@ -381,7 +381,8 @@ impl Task for InstallRust {
         vec![
             Param::new(Self::USER, "Username", ParamKind::Username)
                 .with_hint("the account the toolchain belongs to")
-                .suggesting_accounts(),
+                .suggesting_accounts()
+                .naming_an_existing_account(),
         ]
     }
 
@@ -485,6 +486,7 @@ mod tests {
     use super::*;
     use crate::backend::for_family;
     use crate::exec::mock::{MockExecutor, Reply};
+    use crate::tasks::Confirmation;
 
     #[test]
     fn zellij_is_packaged_on_one_family_and_not_the_other() {
@@ -783,9 +785,9 @@ mod tests {
         // Putting a binary on the box changes nothing about how anyone logs in
         // or what the machine serves. Changing a login shell does, and that
         // task is flagged accordingly.
-        assert!(!InstallFish.is_destructive());
-        assert!(!InstallZellij.is_destructive());
-        assert!(!InstallMise.is_destructive());
-        assert!(!InstallRust.is_destructive());
+        assert!(InstallFish.confirmation() == Confirmation::Change);
+        assert!(InstallZellij.confirmation() == Confirmation::Change);
+        assert!(InstallMise.confirmation() == Confirmation::Change);
+        assert!(InstallRust.confirmation() == Confirmation::Change);
     }
 }

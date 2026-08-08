@@ -15,7 +15,9 @@ use crate::exec::{Command, Executor};
 use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Support, Task, report, supported_everywhere};
+use crate::tasks::{
+    Category, Confirmation, Node, Progress, Support, Task, report, supported_everywhere,
+};
 
 /// The user unit a rootless engine installs.
 const DOCKER_USER_SERVICE: &str = "docker.service";
@@ -72,7 +74,8 @@ impl Task for InstallDockerRootless {
         vec![
             Param::new(Self::USER, "Username", ParamKind::Username)
                 .with_hint("the account the engine runs as")
-                .suggesting_accounts(),
+                .suggesting_accounts()
+                .naming_an_existing_account(),
         ]
     }
 
@@ -332,6 +335,12 @@ impl Task for InstallCaddy {
 pub struct ValidateCaddy;
 
 impl Task for ValidateCaddy {
+    /// Asks Caddy to parse a file. Nothing is written and no
+    /// service is touched — the point is to learn this *before* a reload acts.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::None
+    }
+
     fn id(&self) -> &'static str {
         "caddy.validate"
     }
@@ -396,8 +405,8 @@ impl Task for CaddySecurityHeaders {
 
     /// It changes a file the running server reads, and a Caddyfile that no
     /// longer parses takes every site down at the next reload.
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Change
     }
 
     supported_everywhere!();

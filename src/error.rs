@@ -179,11 +179,17 @@ pub enum Error {
     /// The account nominated as the way back in cannot escalate.
     NotAnAdministrator { user: String, group: String },
 
-    /// The account nominated as the way back in has no authorised key.
+    /// The account nominated as the way back in cannot authenticate at all.
     ///
-    /// It is created without a password by design, so a key is the only thing
-    /// that can authenticate it.
-    NoAuthorizedKey { user: String },
+    /// Neither an authorised key nor a usable password, which is what makes it
+    /// no way back in. This once demanded the key alone, on the grounds that
+    /// `users.create` leaves accounts without a password — true of the
+    /// accounts this tool makes, and not of the one a distribution's installer
+    /// made, which is the account most administrators nominate. Since
+    /// `users.lock-root` expires root through PAM, it bars the provider's
+    /// rescue console too, and a password is exactly what gets someone in
+    /// there.
+    NoWayBackIn { user: String },
 
     /// Root was nominated as the account that must remain usable.
     ///
@@ -441,7 +447,7 @@ impl Error {
                 user: user.clone(),
                 group: group.clone(),
             },
-            Self::NoAuthorizedKey { user } => Msg::NoAuthorizedKey { user: user.clone() },
+            Self::NoWayBackIn { user } => Msg::NoWayBackIn { user: user.clone() },
             Self::AdminCannotBeRoot => Msg::AdminCannotBeRoot,
             Self::ShellNotListed { shell } => Msg::ShellNotListed {
                 shell: shell.clone(),

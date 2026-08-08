@@ -20,7 +20,7 @@ use crate::tasks::algorithms;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
 use crate::tasks::sshd_config;
-use crate::tasks::{Progress, Support, Task, supported_everywhere};
+use crate::tasks::{Confirmation, Progress, Support, Task, supported_everywhere};
 
 use super::{has_authorized_key, reload_ssh, report, revertible};
 
@@ -101,8 +101,8 @@ impl Task for HardenSsh {
          still log in."
     }
 
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     supported_everywhere!();
@@ -192,8 +192,8 @@ impl Task for HardenSshStrict {
          change open until you confirm you can still log in."
     }
 
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     fn support(&self, family: Family) -> Support {

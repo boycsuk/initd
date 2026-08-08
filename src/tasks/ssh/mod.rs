@@ -152,6 +152,7 @@ mod tests {
     use crate::backend::for_family;
     use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
+    use crate::tasks::Confirmation;
     use crate::tasks::Task;
     use crate::tasks::params::ParamValues;
 
@@ -188,9 +189,9 @@ mod tests {
     #[test]
     fn destructive_tasks_are_marked_as_such() {
         // The TUI gates these behind a confirmation prompt.
-        assert!(HardenSsh.is_destructive());
-        assert!(ChangePort.is_destructive());
-        assert!(!InstallSsh.is_destructive());
+        assert!(HardenSsh.confirmation() == Confirmation::Lockout);
+        assert!(ChangePort.confirmation() == Confirmation::Lockout);
+        assert!(InstallSsh.confirmation() == Confirmation::Change);
     }
 
     #[test]

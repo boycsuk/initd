@@ -5,23 +5,34 @@
 //! confirmation.
 
 use ratatui::Frame;
-use ratatui::layout::Alignment;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::{layout, style};
 use crate::i18n::{Lang, Msg};
 
-/// The dialog's share of the screen, as `docs/ui.md` specifies it.
-const WIDTH_PERCENT: u16 = 60;
-const HEIGHT_PERCENT: u16 = 40;
-
-/// Rows held back for the lockout warning.
+/// Rows the dialog spends beyond its wrapped body: the chrome every modal
+/// shares, plus the rule above the answers and the row the answers sit on.
 ///
-/// Two, because the warnings are a sentence rather than a phrase and wrap once
-/// at the dialog's width. A band too small truncates the sentence; one too
-/// large steals rows from a description that is merely useful.
-const WARNING_ROWS: u16 = 2;
+/// Sized from its content rather than as a share of the screen, which is what
+/// this was and what put a 40%-tall block around two lines of text. That
+/// mattered little while nine tasks confirmed; it matters now that all but
+/// three do, because the dialog an operator sees most is the one whose empty
+/// half they read past every time.
+const CHROME_ROWS: u16 = layout::DIALOG_CHROME_ROWS + 3;
+
+/// Rows the warning needs, and a blank one separating it from the description.
+///
+/// Measured rather than fixed. It was two — the width at which the sentences
+/// happened to wrap once — and a fixed band is wrong in both directions: too
+/// small it truncates the one line here that must be read, too large it steals
+/// rows from a description that is merely useful. Widening the dialog was
+/// enough to make the old constant draw the second half of the warning over
+/// the rule below it.
+fn warning_rows(warning: &str, width: usize) -> u16 {
+    layout::wrapped_rows(warning, width) + 1
+}
 
 /// A pending confirmation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,21 +77,54 @@ impl Confirm {
     /// own words, chosen before the dialog opened; `lang` renders only the
     /// chrome the dialog itself owns — the two answers and the key hint.
     pub fn render(&self, frame: &mut Frame, lang: Lang) {
-        let area = layout::centred_percent(WIDTH_PERCENT, HEIGHT_PERCENT, frame.area());
+        // Measured at the width the body will actually be drawn at: the two
+        // borders and the gutter each side are gone by the time it wraps.
+        let text_width = layout::DIALOG_WIDTH as usize - 2 - layout::DIALOG_GUTTER * 2;
+        let body_rows = layout::wrapped_rows(&self.body, text_width);
+        let warning_rows = self
+            .warning
+            .as_deref()
+            .map_or(0, |warning| warning_rows(warning, text_width));
+
+        let area = layout::centred(
+            layout::DIALOG_WIDTH,
+            CHROME_ROWS + body_rows + warning_rows,
+            frame.area(),
+        );
 
         // Clear first, or the interface underneath shows through the dialog.
         frame.render_widget(Clear, area);
 
+        // Red only where a warning was attached, which is where the change can
+        // end the session applying it. Almost every task confirms now, and a
+        // red frame around all of them says nothing about any — the colour is
+        // what distinguishes `users.lock-root` from installing a shell.
+        //
+        // Derived from the warning rather than passed separately: two fields
+        // that must agree are two fields that can disagree, and the one that
+        // would go wrong is a danger frame over a dialog with nothing to warn
+        // about.
+        let border = if self.warning.is_some() {
+            style::DIALOG_BORDER_DANGER
+        } else {
+            style::DIALOG_BORDER_INPUT
+        };
+
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(style::DIALOG_BORDER_DANGER)
+            .border_style(border)
             // Styled like the parameter form's title, and for the same reason:
             // it names the task rather than the panel. It was the one title in
             // the interface drawn with no role at all, which left the dialog
             // that asks before a destructive change looking less deliberate
             // than the form that asks for a port.
             .title(Span::styled(format!(" {} ", self.title), style::EMPHASIS));
-        let inner = block.inner(area);
+        // The gutter and the inset the parameter form uses, applied here so a
+        // dialog reads the same whichever one it is: text a cell in from the
+        // frame, a blank row at each end of the content. Without them the body
+        // sat against the top border while the height below it went unused,
+        // which is the shape an operator reported.
+        let inner = layout::inset(block.inner(area), layout::DIALOG_GUTTER as u16, 1);
 
         frame.render_widget(block, area);
 
@@ -94,6 +138,24 @@ impl Confirm {
         // on any family.
         let (above, choice_area) = layout::split_off_last_row(inner);
 
+        // The rule the parameter form draws above its footer, for the reason it
+        // draws one: the row below acts on the dialog rather than on anything
+        // above it, and a blank row cannot say that where blank rows are also
+        // what separate content. It spans the full inner width — the gutter is
+        // a margin for text, and a rule stopping short of the frame reads as a
+        // line somebody left unfinished.
+        let (_, rule_row) = layout::split_off_last_row(above);
+        let rule = Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(2),
+            ..rule_row
+        };
+
+        frame.render_widget(
+            Paragraph::new("─".repeat(rule.width as usize)).style(border),
+            rule,
+        );
+
         // The warning is given a band of its own too, below the description and
         // above the choice, because it is the one line here that must be read.
         // Appended to the description it was the first thing a long body pushed
@@ -104,7 +166,7 @@ impl Confirm {
         // losing the machine is stated only here.
         let (body_area, warning_area) = match self.warning {
             Some(_) => {
-                let (body, warning) = layout::split_off_last_rows(above, WARNING_ROWS);
+                let (body, warning) = layout::split_off_last_rows(above, warning_rows);
                 (body, Some(warning))
             }
             None => (above, None),
@@ -283,11 +345,16 @@ mod tests {
     /// has to hold is that the drawn dialog is the size `docs/ui.md` states,
     /// which is a property of `render` rather than of the numbers it reads.
     fn drawn_bounds(width: u16, height: u16) -> (u16, u16) {
+        bounds_of(&Confirm::new("Change port", "Continue?"), width, height)
+    }
+
+    /// The rectangle `confirm` actually paints, in cells.
+    fn bounds_of(confirm: &Confirm, width: u16, height: u16) -> (u16, u16) {
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
 
         terminal
-            .draw(|frame| Confirm::new("Change port", "Continue?").render(frame, Lang::En))
+            .draw(|frame| confirm.render(frame, Lang::En))
             .expect("drawing must not fail");
 
         let buffer = terminal.backend().buffer().clone();
@@ -308,13 +375,33 @@ mod tests {
     }
 
     #[test]
-    fn the_dialog_takes_the_share_of_the_screen_the_contract_states() {
-        // `docs/ui.md` specifies 60% x 40%. Measured on the buffer, so a render
-        // that stopped threading these constants through would be caught.
+    fn the_dialog_is_as_tall_as_what_it_holds() {
+        // It was a share of the screen — 60% x 40% — which put a block that
+        // size around two lines of text and left the operator reading past an
+        // empty half of it. Sized from the content instead, and pinned on the
+        // buffer so a render that stopped measuring would be caught.
+        //
+        // Asserted on a terminal far larger than the dialog, which is where a
+        // proportional one grew and a measured one does not.
         let (width, height) = drawn_bounds(100, 50);
 
-        assert_eq!(width, 60, "60% of 100 columns");
-        assert_eq!(height, 20, "40% of 50 rows");
+        assert_eq!(width, layout::DIALOG_WIDTH, "one width for every modal");
+        assert!(
+            height < 12,
+            "a two-line question must not reserve half the screen: {height}"
+        );
+
+        // And taller where there is more to say, or "measured" would just be
+        // another fixed size.
+        let long = Confirm::new(
+            "Harden",
+            "A description long enough to wrap several times over the dialog's \
+             width, which is what a task with something to explain actually \
+             carries when it opens one of these.",
+        );
+        let (_, taller) = bounds_of(&long, 100, 50);
+
+        assert!(taller > height, "{taller} must exceed {height}");
     }
 
     #[test]

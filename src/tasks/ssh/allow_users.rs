@@ -11,7 +11,7 @@ use crate::exec::{Executor, OutputLine, Stream};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::sshd_config;
-use crate::tasks::{Progress, Task, report, supported_everywhere};
+use crate::tasks::{Confirmation, Progress, Task, report, supported_everywhere};
 
 use super::{has_authorized_key, reload_ssh, revertible};
 
@@ -44,8 +44,8 @@ impl Task for RestrictUsers {
          and the change is held open until you confirm you can still log in."
     }
 
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     fn params(&self) -> Vec<Param> {

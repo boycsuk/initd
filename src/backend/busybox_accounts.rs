@@ -132,6 +132,11 @@ impl AccountWriter for BusyboxAccountWriter {
 
         match password {
             PasswordPolicy::Locked => args.push("-D".to_owned()),
+            // `-D` is omitted rather than replaced: without it `adduser`
+            // prompts for a password itself, and that prompt would be raised
+            // inside a captured pipe where nobody could answer it. The account
+            // is created without one and the password set immediately after.
+            PasswordPolicy::Set(_) => args.push("-D".to_owned()),
         }
 
         args.push(user.to_owned());
@@ -140,7 +145,13 @@ impl AccountWriter for BusyboxAccountWriter {
             .args(args.iter().map(String::as_str))
             .privileged();
 
-        super::systemd::run_checked(executor, &command)
+        super::systemd::run_checked(executor, &command)?;
+
+        if let PasswordPolicy::Set(password) = password {
+            posix_accounts::set_password(executor, user, &password)?;
+        }
+
+        Ok(())
     }
 
     fn add_to_group(&self, executor: &dyn Executor, user: &str, group: &str) -> Result<()> {
@@ -224,6 +235,10 @@ impl AccountWriter for BusyboxAccountWriter {
             .trim();
 
         Ok(!expiry.is_empty())
+    }
+
+    fn has_password(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
+        posix_accounts::has_password(executor, user)
     }
 
     fn valid_shells(&self, executor: &dyn Executor) -> Result<Vec<String>> {

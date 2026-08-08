@@ -14,7 +14,7 @@ use crate::exec::Executor;
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
+use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
 
 /// The port SSH listens on unless it has been moved.
 ///
@@ -69,6 +69,11 @@ pub fn category() -> Category {
 pub struct FirewallStatus;
 
 impl Task for FirewallStatus {
+    /// Reads the ruleset and reports it; nothing is written.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::None
+    }
+
     fn id(&self) -> &'static str {
         "firewall.status"
     }
@@ -159,8 +164,8 @@ impl Task for EnableFirewall {
     /// A default-deny policy applied without admitting the current session is
     /// the last thing that session does, so this is confirmed like any other
     /// lockout risk.
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     fn params(&self) -> Vec<Param> {
@@ -447,6 +452,7 @@ mod tests {
     use crate::backend::for_family;
     use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
+    use crate::tasks::Confirmation;
 
     /// Runs a task against a mock, returning its outcome and the commands run.
     fn run(
@@ -527,7 +533,7 @@ mod tests {
             .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
             .expect("the status must succeed");
 
-        assert!(!FirewallStatus.is_destructive());
+        assert!(FirewallStatus.confirmation() == Confirmation::None);
         assert!(
             mock.recorded_lines()
                 .iter()

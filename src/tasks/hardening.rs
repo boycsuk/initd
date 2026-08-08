@@ -18,7 +18,7 @@ use crate::exec::{Command, Executor};
 use crate::tasks::consequence::{Check, Conflict, Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Support, Task, report};
+use crate::tasks::{Category, Confirmation, Node, Progress, Support, Task, report};
 
 /// The port SSH listens on unless it has been moved.
 const DEFAULT_SSH_PORT: u32 = 22;
@@ -160,8 +160,8 @@ impl Task for InstallCrowdsec {
 
     /// It sends data off the machine, which is a decision rather than a
     /// setting — an administrator should be asked before it starts.
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Change
     }
 
     fn support(&self, family: Family) -> Support {
@@ -335,6 +335,7 @@ mod tests {
     use super::*;
     use crate::backend::for_family;
     use crate::exec::mock::{MockExecutor, Reply};
+    use crate::tasks::Confirmation;
 
     fn port_values(port: u32) -> ParamValues {
         let mut values = ParamValues::new();
@@ -426,8 +427,8 @@ mod tests {
     #[test]
     fn sending_data_off_the_machine_is_confirmed_first() {
         // A reputation network is a decision, not a setting.
-        assert!(InstallCrowdsec.is_destructive());
-        assert!(!InstallFail2ban.is_destructive());
+        assert!(InstallCrowdsec.confirmation() == Confirmation::Change);
+        assert!(InstallFail2ban.confirmation() == Confirmation::Change);
     }
 
     #[test]

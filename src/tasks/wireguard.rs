@@ -23,7 +23,7 @@ use crate::tasks::consequence::{
 };
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
+use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
 
 /// The interface this tool manages.
 ///
@@ -67,6 +67,11 @@ pub fn category() -> Category {
 pub struct WireguardStatus;
 
 impl Task for WireguardStatus {
+    /// Reads the interface's state; nothing is written.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::None
+    }
+
     fn id(&self) -> &'static str {
         "wireguard.status"
     }

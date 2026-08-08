@@ -29,7 +29,11 @@ use crate::i18n::{Lang, Msg};
 use crate::tasks::{Node, TaskLocation, located_tasks};
 
 /// Width of the overlay, in columns.
-const WIDTH: u16 = 64;
+///
+/// The width every modal shares, rather than one of its own: two dialogs the
+/// operator opens in the same session at two widths read as an interface that
+/// has not decided.
+const WIDTH: u16 = layout::DIALOG_WIDTH;
 
 /// Height of the overlay, in rows.
 ///
@@ -220,11 +224,16 @@ pub fn render(frame: &mut Frame, search: &Search, lang: Lang) {
     let mut state = ListState::default();
     state.select(Some(search.selected()));
 
+    // The inset every modal keeps, applied vertically only. The horizontal
+    // gutter is deliberately not: a selected row is drawn as a filled band,
+    // and one stopping two cells short of each border would read as a
+    // highlight that failed to paint rather than as a margin. `List` carries
+    // the block itself so the rows can reach the frame.
+    frame.render_widget(block.clone(), area);
+
     frame.render_stateful_widget(
-        List::new(items)
-            .block(block)
-            .highlight_style(style::SELECTION_FOCUSED),
-        area,
+        List::new(items).highlight_style(style::SELECTION_FOCUSED),
+        layout::inset(block.inner(area), 0, 1),
         &mut state,
     );
 }

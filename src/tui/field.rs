@@ -12,10 +12,17 @@
 //! 3. **Validation runs on every keystroke.** The consequences of a value are
 //!    visible before Enter, not after.
 
-use crate::tasks::params::{Param, ParamKind};
+use crate::tasks::params::{Existence, Param, ParamKind};
 
 /// Marks that text has scrolled off the left edge.
 const SCROLLED_MARKER: char = '…';
+
+/// Stands in for each character of a secret.
+///
+/// One per character rather than a fixed run: the length is not what a
+/// shoulder-surfer needs and is what tells the operator their keystrokes are
+/// landing. A field that drew nothing could not be told from a dead keyboard.
+const MASK: char = '•';
 
 /// One editable value.
 #[derive(Debug, Clone)]
@@ -44,6 +51,14 @@ pub struct Field {
     /// the option that was chosen, counting from it would step somewhere the
     /// operator cannot predict.
     at_option: Option<usize>,
+    /// The accounts this host already has, where the interface has read them.
+    ///
+    /// Separate from `options`, which the two share only by coincidence:
+    /// `users.create` must know them in order to refuse them, and offering
+    /// them there would suggest exactly the values it rejects. Empty means the
+    /// host was never asked — the CLI, or a `/etc/passwd` that could not be
+    /// read — and never that the host has no accounts.
+    known_accounts: Vec<String>,
 }
 
 impl Field {
@@ -62,6 +77,7 @@ impl Field {
             scroll: 0,
             options: Vec::new(),
             at_option: None,
+            known_accounts: Vec::new(),
         }
     }
 
@@ -156,8 +172,58 @@ impl Field {
     /// Recomputed rather than cached: it is a comparison of a short string
     /// against a rule, and a cache is one more thing that can disagree with
     /// the buffer.
+    ///
+    /// Shape first, then the host. A name holding a `/` is malformed whether
+    /// or not an account by that name exists, and reporting the character it
+    /// cannot contain is more use than reporting that the host has never heard
+    /// of it.
     pub fn error(&self) -> Option<String> {
-        self.param.kind.validate(&self.value()).err()
+        if let Some(error) = self.param.kind.validate(&self.value()).err() {
+            return Some(error);
+        }
+
+        self.host_error()
+    }
+
+    /// What the host says about this value, where it has anything to say.
+    ///
+    /// The check `ParamKind` cannot make: whether a name is well formed is a
+    /// property of the text, and whether this machine already carries an
+    /// account by it is a property of the machine. Without this the form drew
+    /// `✓` over a name `users.create` was about to refuse, so the one thing
+    /// live validation exists for — seeing the consequences of a value before
+    /// `Enter` — did not happen for the mistake most easily made.
+    ///
+    /// Silent where the host was never asked. `known_accounts` is empty in the
+    /// CLI, in tests, and on a host whose `/etc/passwd` could not be read, and
+    /// an empty list means "unknown" rather than "no accounts exist" — calling
+    /// every name absent there would refuse every valid one. The task's own
+    /// check stays the barrier; this is the earlier warning.
+    fn host_error(&self) -> Option<String> {
+        let existence = self.param.existence?;
+
+        if self.known_accounts.is_empty() || self.is_empty() {
+            return None;
+        }
+
+        let value = self.value();
+        let known = self.known_accounts.contains(&value);
+
+        match existence {
+            Existence::Absent if known => Some(format!("{value} already exists")),
+            Existence::Present if !known => Some(format!("{value} is not an account here")),
+            _ => None,
+        }
+    }
+
+    /// Tells the field which accounts the host already has.
+    ///
+    /// Separate from [`Field::offer`] because the two answer different
+    /// questions with the same list: `users.create` must know the accounts in
+    /// order to *refuse* them, and offering them there would suggest exactly
+    /// the values it rejects.
+    pub fn knows_accounts(&mut self, accounts: Vec<String>) {
+        self.known_accounts = accounts;
     }
 
     /// Whether the value would be accepted.
@@ -281,12 +347,19 @@ impl Field {
             self.scroll = self.cursor - width + 1;
         }
 
+        // A secret is masked here rather than at the call site, so that every
+        // path drawing a field gets it: the form, and anything added later
+        // that reaches for `visible`. One bullet per character, so the count
+        // is still visible — a field that showed nothing could not tell a
+        // password from a stuck keyboard.
+        let masked = self.param.kind == ParamKind::Secret;
+
         let mut visible: Vec<char> = self
             .buffer
             .iter()
             .skip(self.scroll)
             .take(width)
-            .copied()
+            .map(|character| if masked { MASK } else { *character })
             .collect();
 
         // A marker replaces the first visible character to say text was
@@ -335,6 +408,94 @@ mod tests {
 
     fn key_field() -> Field {
         Field::new(Param::new("key", "Public key", ParamKind::PublicKey))
+    }
+
+    /// A field with a rule about the host, and a host that has been read.
+    fn account_field(existence: Existence, typed: &str) -> Field {
+        let param = Param::new("user", "Username", ParamKind::Username);
+        let param = match existence {
+            Existence::Absent => param.naming_a_new_account(),
+            Existence::Present => param.naming_an_existing_account(),
+        };
+
+        let mut field = Field::new(param);
+        field.knows_accounts(vec!["root".to_owned(), "cosmin".to_owned()]);
+
+        for character in typed.chars() {
+            field.insert(character);
+        }
+
+        field
+    }
+
+    #[test]
+    fn a_name_the_host_already_carries_is_refused_where_one_is_being_created() {
+        // The form drew `✓` over a name `users.create` was about to refuse
+        // with "account exists", so the mistake most easily made was the one
+        // live validation did not catch — and the operator learned about it
+        // only after pressing Enter.
+        let taken = account_field(Existence::Absent, "root");
+
+        assert_eq!(taken.error().as_deref(), Some("root already exists"));
+
+        let free = account_field(Existence::Absent, "deploy");
+
+        assert!(free.is_valid(), "a name the host lacks is what this wants");
+    }
+
+    #[test]
+    fn a_name_the_host_lacks_is_refused_where_one_must_already_exist() {
+        // The mirror of the case above, and the same failure one step later: a
+        // task that acts on an account cannot act on one that is not there.
+        let missing = account_field(Existence::Present, "deploy");
+
+        assert_eq!(
+            missing.error().as_deref(),
+            Some("deploy is not an account here")
+        );
+
+        let real = account_field(Existence::Present, "cosmin");
+
+        assert!(real.is_valid());
+    }
+
+    #[test]
+    fn a_malformed_name_is_reported_as_malformed_rather_than_as_unknown() {
+        // Shape before the host: `-o` is an argument `useradd` would
+        // reinterpret, and saying it is "not an account here" would send the
+        // operator looking for the account instead of for the character.
+        let bad = account_field(Existence::Present, "-o");
+
+        assert_eq!(
+            bad.error().as_deref(),
+            Some("a username cannot begin with '-'")
+        );
+    }
+
+    #[test]
+    fn a_host_that_was_never_read_refuses_nothing() {
+        // Empty means "not asked" — the CLI, or a `/etc/passwd` that could not
+        // be read — never "this host has no accounts". Treating it as the
+        // latter would refuse every name on a machine the tool could not
+        // inspect, and the task's own check is the barrier regardless.
+        let mut field = Field::new(
+            Param::new("user", "Username", ParamKind::Username).naming_an_existing_account(),
+        );
+        for character in "cosmin".chars() {
+            field.insert(character);
+        }
+
+        assert!(field.is_valid(), "an unread host has no opinion");
+    }
+
+    #[test]
+    fn an_empty_field_is_not_reported_as_a_missing_account() {
+        // It is empty because nobody has typed yet, which the kind's own rule
+        // already states. Answering "is not an account here" would name a
+        // second problem the operator cannot act on differently.
+        let empty = account_field(Existence::Present, "");
+
+        assert_eq!(empty.error().as_deref(), Some("a username is required"));
     }
 
     fn shell_field() -> Field {

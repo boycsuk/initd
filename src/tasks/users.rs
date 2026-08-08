@@ -14,10 +14,28 @@ use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::ssh::has_authorized_key;
-use crate::tasks::{Category, Node, Progress, Task, report, supported_everywhere};
+use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
 
 /// The account whose lock is dangerous enough to warrant its own guard.
 const ROOT: &str = "root";
+
+/// Whether an account can still get into the machine by some means.
+///
+/// The question `users.lock-root` rests on, in one place because it is asked
+/// twice — once as the guard and once immediately before the irreversible
+/// step — and the two must not drift apart. A recheck stricter than the guard
+/// would refuse the operator it had just accepted.
+///
+/// Either credential counts. `Expire` is applied through PAM, so it bars every
+/// channel including the provider's rescue console, and the console never
+/// consults `authorized_keys` — a password is what gets someone in there.
+fn can_authenticate(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
+    if has_authorized_key(executor, backend, user)? {
+        return Ok(true);
+    }
+
+    backend.account_writer().has_password(executor, user)
+}
 
 /// Default login shell for a newly created account.
 ///
@@ -44,6 +62,9 @@ pub struct CreateUser;
 impl CreateUser {
     /// Name of the parameter holding the account to create.
     pub const USER: &'static str = "user";
+
+    /// Name of the parameter holding the password, where one is wanted.
+    pub const PASSWORD: &'static str = "password";
 }
 
 impl Task for CreateUser {
@@ -56,23 +77,33 @@ impl Task for CreateUser {
     }
 
     fn description(&self) -> &'static str {
-        "Creates an account with a home directory, no password, and membership \
-         of the group that grants sudo on this distribution. Authorise a key \
-         for it before locking root."
+        "Creates an account with a home directory and membership of the group \
+         that grants sudo on this distribution. The password is optional — \
+         without one, authorise a key for it before locking root."
     }
 
     fn params(&self) -> Vec<Param> {
         vec![
-            // The hint says there will be no password because the form is
-            // where that becomes surprising: the detail pane explains it, and
-            // the form is drawn over the detail pane. An operator who reaches
-            // this field is looking at one box asking for a name, and nothing
-            // else on screen says the account it makes cannot yet log in.
-            //
-            // No suggestions here, deliberately: every account this host has
-            // is a value this task refuses.
+            // No suggestions and a rule about them: every account this host
+            // has is a value this task refuses, so offering them would propose
+            // exactly the mistakes — but the field still has to know them, or
+            // it draws `✓` over a name the task is about to reject.
             Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_hint("the account to create — no password; authorise a key next"),
+                .with_hint("the account to create")
+                .naming_a_new_account(),
+            // Offered rather than assumed, because "no password" is right for
+            // an account reached over SSH with a key and wrong for the one
+            // that has to get in through the provider's rescue console — that
+            // console is a local TTY, where a key is not offered and a
+            // password is the only credential there is.
+            //
+            // Empty means no password, which is what the field being optional
+            // *is*: a second field asking whether to use the first would be a
+            // question the first already answers. This asked exactly that for
+            // a while — a text field taking the word `yes` — and the operator
+            // it was written for typed one letter and got "answer yes or no".
+            Param::new(Self::PASSWORD, "Password", ParamKind::Secret)
+                .with_hint("leave empty for none"),
         ]
     }
 
@@ -82,6 +113,15 @@ impl Task for CreateUser {
         let Ok(user) = values.get(Self::USER) else {
             return Vec::new();
         };
+
+        // Only when the account was created without one. With a password it
+        // can already log in — at the console certainly, and over SSH if this
+        // server still admits passwords — so declaring that it cannot would be
+        // a warning contradicted by the account itself, and a warning that is
+        // wrong once is one that gets skipped every time after.
+        if matches!(values.get(Self::PASSWORD), Ok(secret) if !secret.is_empty()) {
+            return Vec::new();
+        }
 
         // The account exists and can escalate, but cannot log in until a key
         // is authorised for it — it was created without a password precisely
@@ -110,12 +150,32 @@ impl Task for CreateUser {
             return Err(Error::AccountExists { user });
         }
 
+        // Empty means no password, which is the field being optional rather
+        // than a second question about it: a form submitted without reaching
+        // the field creates the account the way this task always did.
+        let password = match values.get(Self::PASSWORD) {
+            Ok(secret) if !secret.is_empty() => PasswordPolicy::Set(secret.to_owned()),
+            _ => PasswordPolicy::Locked,
+        };
+
+        // Read before `create` consumes it, so the report does not need a copy
+        // of the secret to decide what to say afterwards.
+        let has_password = matches!(password, PasswordPolicy::Set(_));
+
         report(progress, format!("creating {user}"));
 
-        // No password, deliberately: an account reachable by password is one
-        // more thing to guess. It escalates through the admin group and logs
-        // in with a key.
-        accounts.create(executor, &user, DEFAULT_SHELL, PasswordPolicy::Locked)?;
+        // No password unless one was given: an account reachable by password
+        // is one more thing to guess, and one reached over SSH with a key does
+        // not need one. Offered rather than fixed because that reasoning holds
+        // for SSH and not for the provider's rescue console, which is a local
+        // TTY where a key is not offered at all.
+        accounts.create(executor, &user, DEFAULT_SHELL, password)?;
+
+        // The fact, never the value. What is reported here reaches the output
+        // pane, which `y` copies wholesale into a bug report.
+        if has_password {
+            report(progress, format!("{user} has a password"));
+        }
 
         report(progress, format!("adding {user} to {group}"));
 
@@ -165,15 +225,16 @@ impl Task for SetShell {
 
     /// Changing a login shell to something unusable locks that account out of
     /// interactive sessions, so it is confirmed like any other lockout risk.
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     fn params(&self) -> Vec<Param> {
         vec![
             Param::new(Self::USER, "Username", ParamKind::Username)
                 .with_hint("the account whose shell changes")
-                .suggesting_accounts(),
+                .suggesting_accounts()
+                .naming_an_existing_account(),
             Param::new(Self::SHELL, "Shell", ParamKind::Path)
                 .with_initial(DEFAULT_SHELL.to_owned())
                 .with_hint("must appear in /etc/shells")
@@ -222,7 +283,7 @@ pub struct LockRoot;
 
 impl Task for LockRoot {
     fn id(&self) -> &'static str {
-        "users.lock-root"
+        Self::ID
     }
 
     fn title(&self) -> &'static str {
@@ -230,20 +291,31 @@ impl Task for LockRoot {
     }
 
     fn description(&self) -> &'static str {
-        "Expires the root account so no authentication method admits it. \
-         Refuses to run unless another account can already log in with a key \
-         and escalate, because this is the one change a keyboard cannot undo."
+        "Expires the root account so no authentication method admits it — \
+         including the provider's rescue console, which is reached as the \
+         administrative account instead. Refuses to run unless that account \
+         can already log in, by key or by password, and escalate."
     }
 
-    fn is_destructive(&self) -> bool {
-        true
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     fn params(&self) -> Vec<Param> {
         vec![
-            Param::new(Self::ADMIN, "Administrative account", ParamKind::Username)
-                .with_hint("the account that must still be able to get in")
-                .suggesting_accounts(),
+            // The label names the role rather than the kind of account. It
+            // read as "Administrative account", which alongside a title
+            // saying "Lock the root account" and a chooser offering every
+            // account on the host is indistinguishable from "the account to
+            // lock" — root is a constant and is never chosen here.
+            Param::new(
+                Self::ADMIN,
+                "Account that keeps access",
+                ParamKind::Username,
+            )
+            .with_hint("root is locked; this one is only checked")
+            .suggesting_accounts()
+            .naming_an_existing_account(),
         ]
     }
 
@@ -275,13 +347,17 @@ impl Task for LockRoot {
 
         // Read once more, immediately before the irreversible step. The checks
         // above ran several privileged commands ago, and each of those is a
-        // moment in which the key could have been removed — by a second
+        // moment in which the credential could have been removed — by a second
         // administrator, by another session of this tool, or by an edit made
         // by hand. Every other task in this tree can afford that window;
         // this one cannot, because the recovery from getting it wrong is the
         // hosting provider's rescue console.
-        if !has_authorized_key(executor, backend, &admin)? {
-            return Err(Error::NoAuthorizedKey { user: admin });
+        //
+        // The same question as the guard above, deliberately: a narrower one
+        // here would refuse the operator it had just accepted, which reads as
+        // the tool contradicting itself at the least reassuring moment.
+        if !can_authenticate(executor, backend, &admin)? {
+            return Err(Error::NoWayBackIn { user: admin });
         }
 
         report(progress, "locking root".to_owned());
@@ -301,6 +377,14 @@ impl Task for LockRoot {
 impl LockRoot {
     /// Name of the parameter holding the account that must remain usable.
     pub const ADMIN: &'static str = "admin";
+
+    /// This task's id, named so the interface can recognise it.
+    ///
+    /// The confirmation states a warning specific to this task, and matching
+    /// on a literal there would put the id in two places with nothing tying
+    /// them together — a rename would leave the interface silently falling
+    /// back to the generic warning.
+    pub const ID: &'static str = "users.lock-root";
 
     /// Refuses to continue unless another account can still administer the box.
     ///
@@ -341,15 +425,43 @@ impl LockRoot {
 
         report(progress, format!("{admin} is in {group}"));
 
-        // An account that cannot authenticate is not a way back in, and this
-        // one has no password by design.
-        if !has_authorized_key(executor, backend, admin)? {
-            return Err(Error::NoAuthorizedKey {
+        // Either credential is a way back in, and demanding the key was this
+        // guard measuring a narrower question than the one it asks. Expiry is
+        // applied through PAM, so it bars every channel — including the
+        // provider's rescue console, which never consults `authorized_keys`
+        // at all. What has to hold beforehand is that *some* account can still
+        // authenticate by *some* means, and a password is one of them.
+        //
+        // Refusing without a key assumed every administrator arrived through
+        // `users.create`, which deliberately creates accounts without a
+        // password. An account the distribution's installer made has one, and
+        // it was refused with a message asserting it did not — the common case
+        // on a provider image, and precisely the case where the console is the
+        // way back in.
+        //
+        // Both are read rather than one short-circuiting the other: the report
+        // names which credential will let the operator back in, and "holds an
+        // authorised key" and "can authenticate with a password" send them to
+        // different places if this turns out to have been the wrong call.
+        let key = has_authorized_key(executor, backend, admin)?;
+        let password = backend.account_writer().has_password(executor, admin)?;
+
+        if !key && !password {
+            return Err(Error::NoWayBackIn {
                 user: admin.to_owned(),
             });
         }
 
-        report(progress, format!("{admin} holds an authorised key"));
+        if key {
+            report(progress, format!("{admin} holds an authorised key"));
+        }
+
+        if password {
+            report(
+                progress,
+                format!("{admin} can authenticate with a password"),
+            );
+        }
 
         Ok(())
     }
@@ -390,6 +502,139 @@ mod tests {
         let outcome = task.run(&mock, backend.as_ref(), values, &mut |_| {});
 
         (outcome, mock.recorded_lines())
+    }
+
+    #[test]
+    fn a_password_travels_on_stdin_and_never_in_the_arguments() {
+        // The whole of what the design still guarantees now that the value
+        // lives in this process: `useradd -p` would put it in `argv`, where
+        // `/proc/<pid>/cmdline` publishes it to every account on the box for
+        // as long as the process runs. `chpasswd` reads it from stdin, and
+        // `Command`'s `Display` omits stdin so it reaches neither the output
+        // pane nor an error message.
+        let mock = MockExecutor::with_replies(vec![
+            Reply::failure(2, ""),   // account does not exist
+            Reply::ok(""),           // useradd
+            Reply::ok(""),           // chpasswd, inside create
+            Reply::ok("sudo:x:27:"), // group exists
+            Reply::ok(""),           // usermod -aG
+            Reply::ok("alice sudo"), // id -nG
+        ]);
+        let backend = for_family(Family::Debian);
+        let mut values = values(CreateUser::USER, "alice");
+        values.set(CreateUser::PASSWORD, "hunter2".to_owned());
+
+        CreateUser
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect("creation must succeed");
+
+        let recorded = mock.recorded();
+
+        let chpasswd = recorded
+            .iter()
+            .find(|command| command.program == "chpasswd")
+            .expect("the password must be applied");
+
+        assert_eq!(
+            chpasswd.stdin.as_deref(),
+            Some("alice:hunter2\n"),
+            "the secret travels on stdin: {chpasswd:?}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .all(|command| !command.args.iter().any(|arg| arg.contains("hunter2"))),
+            "no argument may carry it: {recorded:?}"
+        );
+        assert!(
+            !mock.recorded_lines().join(" ").contains("hunter2"),
+            "nor may any line the pane would draw: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn an_unanswered_password_field_creates_the_account_without_one() {
+        // The default this task has always had, kept: an untouched field means
+        // no password, and a field the operator cleared means the same. The
+        // two are one answer, which is the point of an empty value meaning it
+        // rather than a second field saying so.
+        for answer in [None, Some("")] {
+            let mut values = values(CreateUser::USER, "alice");
+            if let Some(answer) = answer {
+                values.set(CreateUser::PASSWORD, answer.to_owned());
+            }
+
+            let mock = MockExecutor::with_replies(vec![
+                Reply::failure(2, ""),
+                Reply::ok(""),
+                Reply::ok("sudo:x:27:"),
+                Reply::ok(""),
+                Reply::ok("alice sudo"),
+            ]);
+            let backend = for_family(Family::Debian);
+
+            CreateUser
+                .run(&mock, backend.as_ref(), &values, &mut |_| {})
+                .expect("creation must succeed");
+
+            assert!(
+                mock.recorded()
+                    .iter()
+                    .all(|command| command.program != "chpasswd"),
+                "{answer:?} must set no password: {:?}",
+                mock.recorded_lines()
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_password_prompt_fails_the_task() {
+        // `passwd` exits non-zero when the operator abandons the prompt or the
+        // two entries differ. Reporting success there would leave the
+        // interface claiming a password was set on an account holding `!` —
+        // discovered at the login prompt, which may be the rescue console.
+        let (outcome, _) = run(
+            &CreateUser,
+            Family::Debian,
+            vec![
+                Reply::failure(2, ""),
+                Reply::ok(""),
+                Reply::failure(1, "passwd: Authentication token manipulation error"),
+            ],
+            &{
+                let mut values = values(CreateUser::USER, "alice");
+                values.set(CreateUser::PASSWORD, "yes".to_owned());
+                values
+            },
+        );
+
+        outcome.expect_err("an abandoned prompt must not report success");
+    }
+
+    #[test]
+    fn a_password_removes_the_authorise_a_key_consequence() {
+        // The consequence says the account cannot log in until a key is
+        // authorised, which is true of an account created without a password
+        // and false of one created with it. A warning that is wrong once is
+        // one that gets skipped every time after.
+        let backend = for_family(Family::Debian);
+
+        let mut with_password = values(CreateUser::USER, "alice");
+        with_password.set(CreateUser::PASSWORD, "yes".to_owned());
+
+        assert!(
+            CreateUser
+                .consequences(backend.as_ref(), &with_password)
+                .is_empty(),
+            "an account that can log in invalidates nothing"
+        );
+        assert!(
+            !CreateUser
+                .consequences(backend.as_ref(), &values(CreateUser::USER, "alice"))
+                .is_empty(),
+            "without a password, the key is still the only way in"
+        );
     }
 
     #[test]
@@ -501,9 +746,9 @@ mod tests {
 
     #[test]
     fn locking_root_needs_an_administrator_that_can_authenticate() {
-        // The account is created without a password by design, so a key is the
-        // only thing that can let it in. In the admin group and unable to log
-        // in is still locked out.
+        // In the admin group and unable to log in by any means is still locked
+        // out: no key, and a `!` hash, which is what `useradd` leaves on an
+        // account created without a password.
         let (outcome, _) = run(
             &LockRoot,
             Family::Debian,
@@ -511,13 +756,74 @@ mod tests {
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // exists
                 Reply::ok("alice sudo"),                               // can escalate
                 Reply::failure(1, ""),                                 // no authorized_keys
+                Reply::ok("alice:!:19000:0:99999:7:::"),               // and no password
             ],
             &values(LockRoot::ADMIN, "alice"),
         );
 
-        let err = outcome.expect_err("an account with no key must not vouch");
+        let err = outcome.expect_err("an account with no credential must not vouch");
 
-        assert!(matches!(err, Error::NoAuthorizedKey { .. }), "{err:?}");
+        assert!(matches!(err, Error::NoWayBackIn { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_password_is_a_way_back_in_even_without_a_key() {
+        // The case this guard used to refuse, and the common one: an account
+        // the distribution's installer made carries a password, and no key
+        // until somebody installs one. Expiry goes through PAM, so it bars the
+        // provider's rescue console too — and a password is exactly what gets
+        // an administrator in there, which is why refusing here was measuring
+        // SSH when the question was about every channel.
+        let (outcome, commands) = run(
+            &LockRoot,
+            Family::Debian,
+            vec![
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // exists
+                Reply::ok("alice sudo"),                               // can escalate
+                Reply::failure(1, ""),                                 // no authorized_keys
+                Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),      // but a usable hash
+                Reply::ok("Account expires : never"),                  // root is not locked
+                Reply::failure(1, ""),                                 // recheck: still no key
+                Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),      // recheck: still a hash
+                Reply::ok(""),                                         // the lock itself
+            ],
+            &values(LockRoot::ADMIN, "alice"),
+        );
+
+        outcome.expect("a password is a way back in");
+
+        assert!(
+            commands.iter().any(|command| command.contains("chage")),
+            "root must actually be locked: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_locked_hash_is_not_a_password() {
+        // `!` and `*` cannot be produced by any input, so neither is a
+        // credential. Asserted because the guard now admits passwords, and a
+        // check that merely found the field non-empty would accept exactly the
+        // accounts that cannot log in.
+        for hash in ["!", "*", "!$6$abc$def", ""] {
+            let (outcome, _) = run(
+                &LockRoot,
+                Family::Debian,
+                vec![
+                    Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
+                    Reply::ok("alice sudo"),
+                    Reply::failure(1, ""),
+                    Reply::ok(format!("alice:{hash}:19000:0:99999:7:::")),
+                ],
+                &values(LockRoot::ADMIN, "alice"),
+            );
+
+            let err = outcome.expect_err("a locked hash must not vouch");
+
+            assert!(
+                matches!(err, Error::NoWayBackIn { .. }),
+                "{hash:?} must not count as a password: {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -530,15 +836,16 @@ mod tests {
             vec![
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
                 Reply::ok("alice sudo"),
-                Reply::ok(""),                    // the file exists
-                Reply::ok("# added by hand\n\n"), // and holds no key
+                Reply::ok(""),                           // the file exists
+                Reply::ok("# added by hand\n\n"),        // and holds no key
+                Reply::ok("alice:!:19000:0:99999:7:::"), // nor a password
             ],
             &values(LockRoot::ADMIN, "alice"),
         );
 
         let err = outcome.expect_err("a file of comments must not count as a key");
 
-        assert!(matches!(err, Error::NoAuthorizedKey { .. }), "{err:?}");
+        assert!(matches!(err, Error::NoWayBackIn { .. }), "{err:?}");
     }
 
     #[test]
@@ -557,11 +864,15 @@ mod tests {
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
                 Reply::ok(""),                                         // file exists
                 Reply::ok(TEST_KEY),                                   // holds a key
-                Reply::ok("Account expires\t: never"),                 // not yet locked
+                // Read even though the key already satisfies the guard: the
+                // report names every credential that will let the operator
+                // back in, not merely the first one found.
+                Reply::ok("alice:!:19000:0:99999:7:::"), // and no password
+                Reply::ok("Account expires\t: never"),   // not yet locked
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
-                Reply::ok(""),                                         // re-check: exists
-                Reply::ok(TEST_KEY),                                   // re-check: still there
-                Reply::ok(""),                                         // usermod
+                Reply::ok(""),                           // re-check: exists
+                Reply::ok(TEST_KEY),                     // re-check: still there
+                Reply::ok(""),                           // usermod
             ],
             &values(LockRoot::ADMIN, "alice"),
         );
@@ -597,13 +908,14 @@ mod tests {
                 Reply::ok("Account expires\t: never"),                 // not yet locked
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
                 Reply::failure(1, ""),                                 // re-check: key file gone
+                Reply::ok("alice:!:19000:0:99999:7:::"), // re-check: and no password behind it
             ],
             &values(LockRoot::ADMIN, "alice"),
         );
 
         let err = outcome.expect_err("a key that vanished must stop the lock");
 
-        assert!(matches!(err, Error::NoAuthorizedKey { .. }), "{err:?}");
+        assert!(matches!(err, Error::NoWayBackIn { .. }), "{err:?}");
         assert!(
             !commands.iter().any(|c| c.contains("--expiredate")),
             "root must not be locked: {commands:?}"
@@ -623,6 +935,7 @@ mod tests {
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
                 Reply::ok(""),
                 Reply::ok(TEST_KEY),
+                Reply::ok("alice:!:19000:0:99999:7:::"), // no password behind the key
                 Reply::ok("Account expires\t: Jan 02, 1970"), // already locked
             ],
             &values(LockRoot::ADMIN, "alice"),
