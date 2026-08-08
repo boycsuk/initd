@@ -141,6 +141,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a pid read from `/proc` rather than through `pkill`, which `debian:13`
   does not ship — the same shape as the `pgrep` finding already recorded.
 
+### Security
+- A password does not outlive the task that used it. The interface keeps the
+  values a task ran with so it can report what that task invalidated, and
+  nothing reads them again until another task replaces them — so on a host
+  where an account is created and nothing else, the password stayed in a
+  root-owned process for the rest of the session, on a machine whose core dumps
+  this tool does not disable. The secrets are overwritten and dropped when the
+  task finishes, on the failure path too, since a task that failed held the
+  same value and reported nothing that needed it. This is not a claim that the
+  value is gone from memory: four other copies are made on the way to
+  `chpasswd` and a growing `Vec<char>` leaves fragments behind — measured, three
+  reallocations for twenty-eight characters. Those are short-lived; the one
+  removed here was not.
+
 ### Fixed
 - Text is fitted to the screen by the cells it occupies rather than by the
   characters it contains. A CJK ideograph and most emoji take two cells, so

@@ -455,6 +455,7 @@ mod tests {
     use super::super::render::{self, row, truncate_head};
     use super::super::{layout, style};
     use crate::distro::Family;
+    use crate::tasks::users::CreateUser;
     use crate::tui::fixtures::{enter_first_category, enter_named_category, test_app, test_distro};
     // Named here rather than at the top of the file: the production code that
     // used these moved to the sibling modules, and only the tests still reach
@@ -1614,6 +1615,46 @@ mod tests {
         assert!(
             screen.contains("•••••••"),
             "one bullet per character, so the keystrokes are seen to land: {screen}"
+        );
+    }
+
+    #[test]
+    fn a_password_does_not_outlive_the_task_that_used_it() {
+        // The interface keeps what a task ran with so it can report what that
+        // task invalidated. Nothing reads it again until another task replaces
+        // it — so on a host where an account is created and nothing else, the
+        // password stayed in this process for the rest of the session, under
+        // root, on a machine whose core dumps this tool does not disable.
+        //
+        // Not a claim that the value is gone from memory: four other copies are
+        // made on the way to `chpasswd`, and a growing `Vec<char>` leaves
+        // fragments behind. Those are short-lived. This one was not.
+        let mut app = app_with_host_answers();
+        let mut values = ParamValues::new();
+        values.set(CreateUser::USER, "deploy");
+        values.set(CreateUser::PASSWORD, "hunter2");
+
+        app.ran_with = values;
+
+        // The outcome the guard must not depend on: a task that failed held
+        // the same password and reported nothing that needed it.
+        app.finish_run(
+            "users.create",
+            Err(Error::AccountExists {
+                user: "deploy".to_owned(),
+            }),
+            false,
+        );
+
+        assert!(
+            app.ran_with.get(CreateUser::PASSWORD).is_err(),
+            "the secret must not survive the task"
+        );
+
+        assert_eq!(
+            app.ran_with.get(CreateUser::USER).ok(),
+            Some("deploy"),
+            "and everything the consequences are reported from must"
         );
     }
 

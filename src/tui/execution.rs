@@ -180,6 +180,16 @@ impl App {
                 );
             }
         }
+
+        // After the match rather than inside its successful arm, because a
+        // task that failed held the same password and reported nothing that
+        // needed it. `ran_with` is kept so the consequences above can name what
+        // the task invalidated; nothing reads it again until the next task
+        // replaces it, so on a host where one account is created and nothing
+        // else that is the rest of the session.
+        if let Some(task) = tasks::find(id) {
+            self.ran_with.forget_secrets(&task.params());
+        }
     }
     /// Writes what the finished task invalidated into the output pane.
     ///

@@ -553,6 +553,48 @@ impl ParamValues {
         self.values.insert(name, value.into());
     }
 
+    /// Overwrites and drops every secret this holds, keeping the rest.
+    ///
+    /// The interface keeps the values a task ran with so it can report what
+    /// that task invalidated, which means a password outlives the task by as
+    /// long as it takes to run another one — the whole session, on a host where
+    /// one account is created and nothing else. Held in a process running as
+    /// root, on a machine whose core dumps this tool does not disable.
+    ///
+    /// Not a claim that the secret is gone from memory. Four other copies are
+    /// made on the way to `chpasswd` and a growing `Vec<char>` leaves fragments
+    /// of what was typed behind it — measured: twenty-eight characters
+    /// reallocate three times, the largest abandoned block holding sixteen of
+    /// them. Those are all short-lived, and this one was not; removing the one
+    /// that lasts is what is actually worth doing, and pretending otherwise
+    /// would be the more dangerous half of the change.
+    ///
+    /// The bytes are overwritten before the string is dropped rather than
+    /// merely dropped, so the value does not sit in freed memory waiting to be
+    /// handed to whatever allocates next.
+    pub fn forget_secrets(&mut self, params: &[Param]) {
+        for param in params {
+            if param.kind != ParamKind::Secret {
+                continue;
+            }
+
+            if let Some(value) = self.values.get_mut(param.name) {
+                // In place, through the string's own buffer: assigning a new
+                // `String` would drop the old one with its contents intact.
+                //
+                // SAFETY: every byte written is ASCII `0`, so the buffer is
+                // still valid UTF-8 when the borrow ends.
+                unsafe {
+                    value.as_bytes_mut().fill(0);
+                }
+
+                value.clear();
+            }
+
+            self.values.remove(param.name);
+        }
+    }
+
     /// Reads a value back, failing if the interface never collected it.
     ///
     /// A missing parameter is a programming error rather than user input, but
@@ -583,6 +625,40 @@ impl ParamValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_secrets_leaves_everything_else() {
+        // Only the secrets: the values a task ran with are kept so the
+        // interface can report what that task invalidated, and a wholesale
+        // clear would take the account name that report is written from.
+        let params = [
+            Param::new("user", "Username", ParamKind::Username),
+            Param::new("password", "Password", ParamKind::Secret).optional(),
+        ];
+
+        let mut values = ParamValues::new();
+        values.set("user", "deploy");
+        values.set("password", "a-value-typed-by-the-operator");
+
+        values.forget_secrets(&params);
+
+        assert!(values.get("password").is_err(), "the secret is gone");
+        assert_eq!(values.get("user").ok(), Some("deploy"), "the rest is not");
+    }
+
+    #[test]
+    fn forgetting_a_secret_that_was_never_given_is_not_an_error() {
+        // The ordinary path: the password field is optional, so most runs of
+        // `users.create` never set it.
+        let params = [Param::new("password", "Password", ParamKind::Secret).optional()];
+
+        let mut values = ParamValues::new();
+        values.set("user", "deploy");
+
+        values.forget_secrets(&params);
+
+        assert_eq!(values.get("user").ok(), Some("deploy"));
+    }
 
     #[test]
     fn a_parameter_is_required_unless_it_says_otherwise() {
