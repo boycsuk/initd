@@ -128,6 +128,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being data rather than language: translating `[Interface]` would produce a
   file `wg-quick` cannot read.
 
+### Added
+- A scenario that loses the session for real. `SIGHUP` is what a dropped
+  connection delivers and the case the verification window exists for, and it
+  was covered only by unit tests asserting that a raised flag is seen — which
+  says nothing about whether a live process holding a live window puts the file
+  back before it exits. `tests/integration_tui.rs` now hardens SSH under
+  systemd, confirms the change landed, signals the process from outside tmux,
+  and compares the restored `sshd_config` byte for byte. Verified able to fail
+  by breaking the handler first: with the revert removed, Debian and Arch both
+  reported `PermitRootLogin no` still in place. The signal goes through `kill`
+  with a pid read from `/proc` rather than through `pkill`, which `debian:13`
+  does not ship — the same shape as the `pgrep` finding already recorded.
+
 ### Fixed
 - Every task that edits `sshd_config` says so when the daemon will not honour
   what was written. `sshd -t` reports that a file parses, not that it wins:

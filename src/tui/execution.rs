@@ -251,6 +251,21 @@ impl App {
     ///
     /// A revert that itself fails is reported rather than swallowed: the
     /// administrator has to know the machine is in neither state.
+    ///
+    /// **Run on the event loop's own thread, unlike every other command this
+    /// interface issues.** Tasks go to a worker precisely so a package
+    /// installation cannot freeze the screen, and the exception here is not an
+    /// oversight: `resolve_on_hangup` calls this immediately before the loop
+    /// exits, so a revert handed to a thread would race the process ending —
+    /// and losing the session is the case the verification window exists for
+    /// rather than an edge of it. A revert that does not finish there leaves
+    /// the configuration that locked the administrator out, having promised on
+    /// screen that silence would put it back.
+    ///
+    /// The cost is bounded by what a revert is: a file copy and a `reload`,
+    /// which is milliseconds against the seconds a task takes. Moving it to the
+    /// worker would trade a pause nobody can perceive for a failure mode that
+    /// costs someone their server.
     pub(super) fn revert_change(&mut self, reason: RevertReason) {
         let Some(window) = self.verification.take() else {
             return;

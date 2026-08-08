@@ -280,6 +280,86 @@ for_each_image! {
         );
     }
 
+    /// Losing the session reverts, which is the case the window exists for.
+    ///
+    /// `ssh.harden` can sever the very connection that would confirm it, and
+    /// the daemon answers a dropped connection with `SIGHUP`. That is the
+    /// scenario `signals.rs` was written for and the one nothing exercised: its
+    /// unit tests assert that a raised flag is seen, which says nothing about
+    /// whether a real process, holding a real verification window, puts a real
+    /// file back before it exits.
+    ///
+    /// The signal is sent from outside tmux to the `initd` process itself, so
+    /// what is measured is the handler rather than a keypress. `R` and `K` are
+    /// covered above; this is the third path, and the only one an operator
+    /// never chooses.
+    fn losing_the_session_puts_the_configuration_back(image) {
+        let tui = tui!(image, "hangup", PREPARE_FOR_HARDENING);
+
+        run_hardening(&tui);
+        confirm_dialog(&tui);
+        assert!(
+            tui.wait_for(VERIFY, WINDOW_OPENS_WITHIN),
+            "the verification window must open before the session can be lost: {}",
+            tui.status()
+        );
+
+        // Confirms the change really landed first: a test that reverts nothing
+        // would pass this scenario by comparing two identical files.
+        assert!(
+            !tui.files_match("/tmp/before", "/etc/ssh/sshd_config"),
+            "the hardening must be applied before the session is lost"
+        );
+
+        // A signal rather than closing the tmux client: what a dropped
+        // connection delivers is `SIGHUP`, and going through tmux would be
+        // testing tmux's teardown instead.
+        //
+        // The pid comes out of /proc and the signal goes through `kill`, not
+        // `pkill`: procps is not installed in `debian:13`, so `pkill` is
+        // missing there and would exit non-zero without signalling anything —
+        // the process would go on running, the file would stay hardened, and
+        // this scenario would fail while looking like a defect in the handler.
+        // The same shape as the `pgrep` finding already recorded in CLAUDE.md.
+        let pid = tui.exec(
+            "for p in /proc/[0-9]*; do \
+               [ \"$(cat $p/comm 2>/dev/null)\" = initd ] && basename $p && break; \
+             done",
+        );
+        let pid = pid.trim();
+
+        assert!(
+            !pid.is_empty(),
+            "the interface must be running to be signalled: {}",
+            tui.screen()
+        );
+
+        tui.exec(&format!("kill -HUP {pid}"));
+
+        // The handler only raises a flag; the event loop notices it on its next
+        // hundred-millisecond poll, reverts, and exits. Waiting for the process
+        // to go is what says the whole sequence ran.
+        let mut waited = 0;
+
+        while tui.is_running() && waited < WINDOW_OPENS_WITHIN {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            waited += 1;
+        }
+
+        assert!(
+            !tui.is_running(),
+            "the interface must exit after the hangup: {}",
+            tui.screen()
+        );
+
+        assert!(
+            tui.files_match("/tmp/before", "/etc/ssh/sshd_config"),
+            "silence is not confirmation: the configuration must be back to \
+             byte-for-byte what it was; still set: {}",
+            tui.exec("grep -E '^PermitRootLogin|^PasswordAuthentication' /etc/ssh/sshd_config")
+        );
+    }
+
     /// K keeps the change.
     ///
     /// The other half, and the one that proves the window is a real choice
