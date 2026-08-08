@@ -46,6 +46,27 @@ impl Command {
         }
     }
 
+    /// Builds the command that asks the host where a program is.
+    ///
+    /// `command -v` rather than `which`, which is not installed everywhere and
+    /// whose exit codes differ between implementations. Stated once because
+    /// four call sites had written it out, each carrying the same decision and
+    /// only one of them carrying the reason — so the three that did not read
+    /// like a shell invocation somebody could simplify.
+    ///
+    /// The exit code answers "is it there" and stdout answers "where", which is
+    /// why this returns the command rather than either: callers want different
+    /// halves of the same answer.
+    ///
+    /// `program` reaches a shell here, unlike every other command in this
+    /// codebase. It is a literal at each call site today — never a form field
+    /// or a CLI argument — and must stay one, because `sh -c` would read a
+    /// value carrying `;` or a backtick as more of the script.
+    #[must_use]
+    pub fn locating(program: &str) -> Self {
+        Self::new("sh").args(["-c", &format!("command -v {program}")])
+    }
+
     /// Feeds the given data to the process on stdin.
     #[must_use]
     pub fn stdin(mut self, data: impl Into<String>) -> Self {
@@ -214,6 +235,21 @@ mod tests {
         assert_eq!(cmd.program, "apt-get");
         assert_eq!(cmd.args, ["install", "-y"]);
         assert!(!cmd.needs_root);
+    }
+
+    #[test]
+    fn locating_asks_the_shell_where_a_program_is() {
+        // Pinned because four call sites now share this one line, and the
+        // choice inside it is load-bearing: `which` is absent on some of the
+        // families this runs on and disagrees about exit codes on others.
+        let cmd = Command::locating("fish");
+
+        assert_eq!(cmd.program, "sh");
+        assert_eq!(cmd.args, ["-c", "command -v fish"]);
+        assert!(
+            !cmd.needs_root,
+            "asking where a program is needs no privilege"
+        );
     }
 
     #[test]

@@ -414,7 +414,7 @@ impl Task for InstallRust {
                 setting: "a C linker — rustup does not install one",
             },
             check: Some(crate::tasks::consequence::Check {
-                command: Command::new("sh").args(["-c", "command -v cc"]),
+                command: Command::locating("cc"),
                 resolved_when_stdout_contains: "cc".to_owned(),
             }),
         }]
@@ -450,8 +450,7 @@ impl Task for InstallRust {
 /// the release, and a path that does not match what is installed produces a
 /// login shell nobody can use.
 fn resolve_program(executor: &dyn Executor, program: &str) -> Result<String> {
-    let command = Command::new("sh").args(["-c", &format!("command -v {program}")]);
-    let output = executor.run(&command)?;
+    let output = executor.run(&Command::locating(program))?;
 
     if !output.success() {
         return Err(Error::ProgramNotFound {

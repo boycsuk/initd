@@ -34,11 +34,7 @@ impl ReleaseInstaller {
 
 impl BinaryInstaller for ReleaseInstaller {
     fn is_installed(&self, executor: &dyn Executor, program: &str) -> Result<bool> {
-        // `command -v` rather than `which`, which is not installed everywhere
-        // and whose exit codes differ between implementations.
-        let command = Command::new("sh").args(["-c", &format!("command -v {program}")]);
-
-        Ok(executor.run(&command)?.success())
+        Ok(executor.run(&Command::locating(program))?.success())
     }
 
     fn install(&self, executor: &dyn Executor, program: &str, release: &Release) -> Result<()> {

@@ -106,6 +106,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid key, and only the lax criterion admitted it.
 
 ### Changed
+- The parameter form takes the shared dialog width rather than declaring its
+  own. The four modals were unified on one number and this one kept a second
+  `72` beside it, agreeing by coincidence rather than by construction — which
+  is the arrangement the three widths before it also had. Its rendered width
+  is now asserted against the shared constant, as the confirmation's already
+  was.
+- `command -v` is written once. Four call sites had built the same `sh -c`
+  invocation, each carrying the decision to prefer it over `which` — absent on
+  some of these families, disagreeing about exit codes on others — and only
+  one carrying the reason, so the other three read like a line somebody could
+  simplify.
 - The help overlay is built once instead of on every frame. Nothing it reads
   can change while the program runs — its table of sections is a `const` and
   the locale is resolved once at startup — yet each redraw rebuilt forty-odd
