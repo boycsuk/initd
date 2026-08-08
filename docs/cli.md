@@ -273,7 +273,7 @@ command line, running the subcommand *is* the confirmation.
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
 | `fish.install` | `run fish.install` | no | Installs fish and registers it in `/etc/shells`. |
-| `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. |
+| `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. `version=` defaults to the newest release this build carries a digest for, and only those may be named: a version published upstream after this binary was built has no compiled-in digest and is refused, naming the ones it knows. |
 | `mise.install` | `run mise.install` | no | Installs mise. From the distribution where one packages it, otherwise from a checksum-verified release. |
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
 

@@ -106,11 +106,33 @@ impl InstallZellij {
     /// Name of the parameter holding the version to install.
     pub const VERSION: &'static str = "version";
 
+    /// The newest release this build can verify.
+    ///
+    /// The first entry, because [`RELEASES`](Self::RELEASES) is declared newest
+    /// first — a claim its own test enforces rather than one this relies on
+    /// quietly. Sorting here instead would mean comparing version numbers, and
+    /// `0.10.0` sorts before `0.9.0` as text: the ordering is cheaper to state
+    /// and to check than to compute.
+    fn latest() -> &'static Release {
+        // Unreachable while the table has entries, which a test requires. An
+        // empty-table fallback rather than an index, because this runs as root
+        // and a panic here would be one more way to leave a machine half done.
+        Self::RELEASES.first().unwrap_or(&Release {
+            version: "",
+            archive_member: "zellij",
+            artefacts: &[],
+        })
+    }
+
     /// Releases this build carries a digest for.
     ///
     /// Deliberately short: each entry is a promise that this project verified
     /// that artefact, so the table grows by someone downloading a release and
     /// computing its digest rather than by copying a number from a page.
+    ///
+    /// **Declared newest first**, which is what [`latest`](Self::latest) reads
+    /// and what the form offers: the field opens on the first entry, so the
+    /// order here decides what an operator installs by pressing Enter.
     ///
     /// Both digests below were computed from the archives at these URLs on
     /// 2026-08-04. Two versions rather than one so that this project's release
@@ -170,8 +192,19 @@ impl Task for InstallZellij {
 
     fn params(&self) -> Vec<Param> {
         vec![
+            // Filled with the newest release this build can verify, and
+            // offering the rest. The field used to open empty under a hint
+            // that said "a version this build can verify" without saying
+            // which — so the operator either knew the table by heart or
+            // guessed, and a guess is refused after the form is submitted.
+            //
+            // What it cannot offer is whatever upstream released this morning:
+            // a version with no compiled-in digest is one the task refuses, and
+            // a field that suggested it would be proposing the failure.
             Param::new(Self::VERSION, "Version", ParamKind::Version)
-                .with_hint("a version this build can verify"),
+                .with_initial(Self::latest().version)
+                .with_hint("a version this build can verify")
+                .suggesting_releases(Self::RELEASES),
         ]
     }
 
@@ -490,6 +523,7 @@ mod tests {
     use crate::backend::for_family;
     use crate::exec::mock::{MockExecutor, Reply};
     use crate::tasks::Confirmation;
+    use crate::tasks::params::Suggestions;
 
     #[test]
     fn zellij_is_packaged_on_one_family_and_not_the_other() {
@@ -498,6 +532,91 @@ mod tests {
         // package databases — no Debian or Ubuntu suite carries zellij.
         assert!(for_family(Family::Arch).has_package_for(Capability::Zellij));
         assert!(!for_family(Family::Debian).has_package_for(Capability::Zellij));
+    }
+
+    #[test]
+    fn the_release_table_is_ordered_newest_first() {
+        // `latest` reads the first entry and the form opens on it, so this
+        // ordering decides what an operator installs by pressing Enter. Stated
+        // rather than computed — `0.10.0` sorts before `0.9.0` as text — which
+        // makes it a claim something has to check.
+        //
+        // Compared field by field rather than as strings, since `10` is both
+        // greater than `9` and earlier alphabetically.
+        let parsed: Vec<Vec<u32>> = InstallZellij::RELEASES
+            .iter()
+            .map(|release| {
+                release
+                    .version
+                    .split('.')
+                    .map(|part| part.parse().unwrap_or_default())
+                    .collect()
+            })
+            .collect();
+
+        assert!(
+            parsed.windows(2).all(|pair| pair[0] > pair[1]),
+            "newest first, and strictly: {:?}",
+            InstallZellij::RELEASES
+                .iter()
+                .map(|release| release.version)
+                .collect::<Vec<_>>()
+        );
+
+        assert!(
+            !InstallZellij::RELEASES.is_empty(),
+            "an empty table would leave `latest` with nothing to return"
+        );
+    }
+
+    #[test]
+    fn the_version_field_opens_on_the_newest_verifiable_release() {
+        // The field used to open empty under a hint that named no versions, so
+        // the operator either knew the table by heart or guessed — and a guess
+        // is refused only after the form is submitted.
+        let params = InstallZellij.params();
+        let version = params
+            .iter()
+            .find(|param| param.name == InstallZellij::VERSION)
+            .expect("the task collects a version");
+
+        assert_eq!(version.initial, InstallZellij::latest().version);
+        assert_eq!(version.initial, "0.44.3", "the newest entry in the table");
+    }
+
+    #[test]
+    fn the_version_field_offers_every_release_this_build_can_verify() {
+        // Offering the table is the whole point: what it must not offer is
+        // whatever upstream released this morning, since a version with no
+        // compiled-in digest is one the task refuses. A field suggesting it
+        // would be proposing the failure.
+        let params = InstallZellij.params();
+        let version = params
+            .iter()
+            .find(|param| param.name == InstallZellij::VERSION)
+            .expect("the task collects a version");
+
+        let Some(Suggestions::Releases(offered)) = version.suggestions else {
+            panic!("the version field must offer the releases: {version:?}");
+        };
+
+        assert_eq!(
+            offered.len(),
+            InstallZellij::RELEASES.len(),
+            "every entry, so nothing verifiable is hidden from the operator"
+        );
+
+        // Each offered version has to be one `release_for` will accept, or the
+        // form would suggest a value the task rejects.
+        for release in offered {
+            assert!(
+                InstallZellij::RELEASES
+                    .iter()
+                    .any(|known| known.version == release.version),
+                "{} is offered and not in the table",
+                release.version
+            );
+        }
     }
 
     #[test]

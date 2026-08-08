@@ -628,6 +628,13 @@ Some fields are filled from the host rather than from memory:
 |-------|--------|-------|
 | An account that must already exist | `/etc/passwd` | `root`, then the accounts a person logs in as, then the system ones — each group alphabetical |
 | A login shell | `/etc/shells` | As the file lists them, comments and blank lines dropped |
+| A release version | This build's own table of verified releases | Newest first, so the field opens on the most recent one |
+
+The last of those asks the host nothing, and cannot: the digest that makes a
+download trustworthy is compiled into the binary, so the releases it can verify
+are known before the machine is. That is also why the field does not offer
+whatever upstream published this morning — a version with no compiled-in digest
+is one the task refuses, and suggesting it would be proposing the refusal.
 
 **Each field declares its own source; none is inferred from the field's type.**
 A field's type describes the shape of a value, and what the host can offer for

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::str::FromStr as _;
 
+use crate::domain::binaries::Release;
 use crate::error::{Error, Result};
 
 /// The kind of value a parameter holds.
@@ -107,6 +108,17 @@ pub enum Suggestions {
     Accounts,
     /// The login shells `/etc/shells` admits.
     Shells,
+    /// The releases this build carries a digest for, newest first.
+    ///
+    /// The one source here that asks the host nothing: the answer is compiled
+    /// into the binary, because a digest is what makes a download trustworthy
+    /// and one fetched at the same time as the archive proves nothing. That is
+    /// also why the field cannot simply offer whatever upstream released this
+    /// morning — a version with no digest in this build is one the task refuses
+    /// — and why offering the table is worth doing at all: the operator was
+    /// otherwise typing a version number into an empty field, from a hint that
+    /// said "a version this build can verify" without saying which.
+    Releases(&'static [Release]),
 }
 
 /// What the host must already say about a value for the task to accept it.
@@ -509,6 +521,18 @@ impl Param {
     #[must_use]
     pub const fn suggesting_accounts(mut self) -> Self {
         self.suggestions = Some(Suggestions::Accounts);
+        self
+    }
+
+    /// Offers the releases this build carries a digest for.
+    ///
+    /// Named like its siblings rather than taking a `Suggestions` directly: the
+    /// point of the opt-in constructors is that a field says what it wants in
+    /// its own words, and a generic setter would let a future field ask for
+    /// accounts by passing the wrong variant.
+    #[must_use]
+    pub const fn suggesting_releases(mut self, releases: &'static [Release]) -> Self {
+        self.suggestions = Some(Suggestions::Releases(releases));
         self
     }
 

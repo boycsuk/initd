@@ -218,6 +218,14 @@ TUI or CLI:
     finished.
   - Acceptance: a version this build carries no digest for is refused, and the
     versions it does know are named.
+  - Acceptance: they are named *before* the choice as well as after it. The
+    field opens on the newest release this build can verify and offers the
+    rest, rather than opening empty under a hint that says "a version this
+    build can verify" without saying which — the refusal above was the only
+    way to find out, and it arrives after the form is submitted.
+  - Acceptance: what is offered is what the tool will accept. A version
+    published upstream after this binary was built has no compiled-in digest,
+    so suggesting it would be proposing the refusal.
   - Acceptance: the archive is verified before it is extracted.
   - Acceptance: a host that already has the binary downloads nothing.
 

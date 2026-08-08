@@ -664,6 +664,16 @@ impl App {
                         .valid_shells(self.executor.as_ref())
                         .unwrap_or_default()
                 }),
+                // The one source that asks the host nothing: the releases are
+                // compiled in, because the digest that makes a download
+                // trustworthy has to be. Offered in declaration order, which is
+                // newest first, so the field opens on the most recent version
+                // this build can actually verify.
+                Suggestions::Releases(releases) => {
+                    field.offer(releases.iter().map(|r| r.version.to_owned()).collect());
+
+                    continue;
+                }
             };
 
             field.offer(options.clone());

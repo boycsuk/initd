@@ -115,6 +115,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry is *applied* differently by each and stored identically.
 
 ### Changed
+- `zellij.install` opens on a version instead of on an empty field. The form
+  arrives filled with the newest release this build carries a digest for and
+  offers the rest through `↑↓` or `Ctrl-L`, and `initd run zellij.install`
+  needs no `version=` at all. The field used to be blank under a hint reading
+  "a version this build can verify", which named none of them — so the value
+  had to be known in advance or guessed, and a guess is refused only after the
+  form is submitted. What it deliberately does not offer is whatever upstream
+  released this morning: the digest that makes a download trustworthy is
+  compiled in, so a newer version has none and the task refuses it. Suggesting
+  it would be proposing the refusal.
 - The tasks' progress narration goes through the i18n catalogue. Ninety lines
   of it were English literals in `src/tasks/`, so the claim that user-facing
   text lives in the catalogue held for errors and for the interface's chrome

@@ -1619,6 +1619,24 @@ mod tests {
     }
 
     #[test]
+    fn the_zellij_form_opens_on_a_version_rather_than_on_an_empty_field() {
+        // What the operator actually sees. The field used to open blank under
+        // a hint reading "a version this build can verify" — which named none
+        // of them, so the value had to be known in advance or guessed, and a
+        // guess is refused only after the form is submitted.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "zellij.install");
+        press(&mut app, KeyCode::Enter);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(
+            screen.contains("0.44.3"),
+            "the newest verifiable release must be on screen: {screen}"
+        );
+    }
+
+    #[test]
     fn a_password_does_not_outlive_the_task_that_used_it() {
         // The interface keeps what a task ran with so it can report what that
         // task invalidated. Nothing reads it again until another task replaces
