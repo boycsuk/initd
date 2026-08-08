@@ -16,6 +16,7 @@ use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
+use crate::i18n::Msg;
 use crate::tasks::algorithms;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
@@ -127,7 +128,9 @@ impl Task for HardenSsh {
 
         report(
             progress,
-            format!("Applying {} hardening directives...", SAFE_DIRECTIVES.len()),
+            &Msg::TaskSshApplyingDirectives {
+                count: SAFE_DIRECTIVES.len(),
+            },
         );
 
         let hardened = SAFE_DIRECTIVES
@@ -143,7 +146,9 @@ impl Task for HardenSsh {
         if let Some(ref backup) = backup {
             report(
                 progress,
-                format!("Previous configuration saved to {}", backup.copy),
+                &Msg::TaskSshBackupSaved {
+                    path: backup.copy.clone(),
+                },
             );
         }
 
@@ -232,14 +237,20 @@ impl Task for HardenSshStrict {
             });
         }
 
-        report(progress, "Narrowing the accepted algorithms...");
+        report(progress, &Msg::TaskSshNarrowingAlgorithms);
 
         let mut hardened = contents;
 
         for class in algorithms::ALL_CLASSES {
             match algorithms::hardened_for(executor, class) {
                 Some(value) => {
-                    report(progress, format!("{}: {value}", class.directive()));
+                    report(
+                        progress,
+                        &Msg::TaskSshAlgorithmClass {
+                            directive: class.directive().to_owned(),
+                            value: value.clone(),
+                        },
+                    );
                     hardened = sshd_config::set_directive(&hardened, class.directive(), &value);
                 }
                 // Skipping is the safe outcome, not a compromise: the
@@ -269,7 +280,9 @@ impl Task for HardenSshStrict {
         if let Some(ref backup) = backup {
             report(
                 progress,
-                format!("Previous configuration saved to {}", backup.copy),
+                &Msg::TaskSshBackupSaved {
+                    path: backup.copy.clone(),
+                },
             );
         }
 

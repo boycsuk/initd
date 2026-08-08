@@ -114,6 +114,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shared by both account suites, which is where the divergence came from —
   expiry is *applied* differently by each and stored identically.
 
+### Changed
+- The tasks' progress narration goes through the i18n catalogue. Ninety lines
+  of it were English literals in `src/tasks/`, so the claim that user-facing
+  text lives in the catalogue held for errors and for the interface's chrome
+  and stopped one layer short — a second language would have produced an output
+  pane with translated headings above `installing wireguard-tools`. `report`
+  now takes a `Msg`, which puts the rendering at the one point every such line
+  already passed through: threading a `Lang` into `Task::run` would be a
+  parameter twenty-eight implementations carry and one forgets. What the lines
+  say is unchanged, and the tests that read them needed no edit. The WireGuard
+  client configuration a peer copies goes through `report_verbatim` instead,
+  being data rather than language: translating `[Interface]` would produce a
+  file `wg-quick` cannot read.
+
 ### Fixed
 - A command that stops producing output no longer strands the task waiting on
   it. Cancellation is checked between commands, so it cannot reach one already

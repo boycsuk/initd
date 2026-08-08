@@ -13,6 +13,7 @@ use crate::distro::Family;
 use crate::domain::binaries::{Artefact, Release};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
+use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -91,13 +92,8 @@ impl Task for InstallFish {
 
         register_shell(executor, backend, &path)?;
 
-        report(progress, format!("fish is installed at {path}"));
-        report(
-            progress,
-            "never make it root's shell: a shell that is not POSIX breaks \
-             recovery scripts that assume one"
-                .to_owned(),
-        );
+        report(progress, &Msg::TaskFishInstalledAt { path: path.clone() });
+        report(progress, &Msg::TaskFishNotForRoot);
 
         Ok(Outcome::Done)
     }
@@ -196,10 +192,7 @@ impl Task for InstallZellij {
                 .packages()
                 .install(executor, backend.package_for(Capability::Zellij))?;
 
-            report(
-                progress,
-                "zellij installed from the distribution".to_owned(),
-            );
+            report(progress, &Msg::TaskZellijFromDistribution);
 
             return Ok(Outcome::Done);
         }
@@ -208,7 +201,12 @@ impl Task for InstallZellij {
         // binary needs no download, and re-installing over it would replace a
         // build the administrator may have chosen deliberately.
         if backend.binaries().is_installed(executor, "zellij")? {
-            report(progress, "zellij is already installed".to_owned());
+            report(
+                progress,
+                &Msg::TaskAlreadyInstalled {
+                    what: "zellij".to_owned(),
+                },
+            );
 
             return Ok(Outcome::Done);
         }
@@ -216,14 +214,16 @@ impl Task for InstallZellij {
         let version = values.get(Self::VERSION)?;
         let release = crate::backend::release_installer::release_for(Self::RELEASES, version)?;
 
-        report(progress, format!("downloading zellij {version}"));
+        report(
+            progress,
+            &Msg::TaskZellijDownloading {
+                version: version.to_owned(),
+            },
+        );
 
         backend.binaries().install(executor, "zellij", release)?;
 
-        report(
-            progress,
-            "zellij installed and its checksum verified".to_owned(),
-        );
+        report(progress, &Msg::TaskZellijVerified);
 
         Ok(Outcome::Done)
     }
@@ -320,7 +320,12 @@ impl Task for InstallMise {
                 .packages()
                 .install(executor, backend.package_for(Capability::Mise))?;
         } else if backend.binaries().is_installed(executor, "mise")? {
-            report(progress, "mise is already installed".to_owned());
+            report(
+                progress,
+                &Msg::TaskAlreadyInstalled {
+                    what: "mise".to_owned(),
+                },
+            );
 
             return Ok(Outcome::Done);
         } else {
@@ -334,22 +339,21 @@ impl Task for InstallMise {
 
             report(
                 progress,
-                format!(
-                    "Installing mise {} from a verified release...",
-                    release.version
-                ),
+                &Msg::TaskInstalling {
+                    what: format!("mise {}", release.version),
+                },
             );
 
             backend.binaries().install(executor, "mise", release)?;
         }
 
-        report(progress, "mise is installed".to_owned());
         report(
             progress,
-            "on a server, reach it through shims or `mise exec --` rather than \
-             shell activation"
-                .to_owned(),
+            &Msg::TaskInstalling {
+                what: "mise".to_owned(),
+            },
         );
+        report(progress, &Msg::TaskMiseUseShims);
 
         Ok(Outcome::Done)
     }
@@ -437,7 +441,7 @@ impl Task for InstallRust {
             .packages()
             .install(executor, backend.package_for(Capability::Rust))?;
 
-        report(progress, format!("rust is available to {user}"));
+        report(progress, &Msg::TaskRustAvailableTo { user: user.clone() });
 
         Ok(Outcome::Done)
     }

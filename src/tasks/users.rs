@@ -10,6 +10,7 @@ use crate::backend::Backend;
 use crate::domain::account_writer::{LockMethod, PasswordPolicy};
 use crate::error::{Error, Result};
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -162,7 +163,7 @@ impl Task for CreateUser {
         // of the secret to decide what to say afterwards.
         let has_password = matches!(password, PasswordPolicy::Set(_));
 
-        report(progress, format!("creating {user}"));
+        report(progress, &Msg::TaskCreatingUser { user: user.clone() });
 
         // No password unless one was given: an account reachable by password
         // is one more thing to guess, and one reached over SSH with a key does
@@ -174,10 +175,16 @@ impl Task for CreateUser {
         // The fact, never the value. What is reported here reaches the output
         // pane, which `y` copies wholesale into a bug report.
         if has_password {
-            report(progress, format!("{user} has a password"));
+            report(progress, &Msg::TaskUserHasPassword { user: user.clone() });
         }
 
-        report(progress, format!("adding {user} to {group}"));
+        report(
+            progress,
+            &Msg::TaskAddingToGroup {
+                user: user.clone(),
+                group: group.to_owned(),
+            },
+        );
 
         // Fails rather than reporting success when the group is absent, which
         // is what asking for `sudo` on Arch would do.
@@ -193,7 +200,13 @@ impl Task for CreateUser {
             });
         }
 
-        report(progress, format!("{user} is in {group}"));
+        report(
+            progress,
+            &Msg::TaskUserInGroup {
+                user: user.clone(),
+                group: group.to_owned(),
+            },
+        );
 
         Ok(Outcome::Done)
     }
@@ -270,7 +283,13 @@ impl Task for SetShell {
             return Err(Error::ShellNotListed { shell });
         }
 
-        report(progress, format!("setting {user} shell to {shell}"));
+        report(
+            progress,
+            &Msg::TaskSettingShell {
+                user: user.clone(),
+                shell: shell.clone(),
+            },
+        );
 
         accounts.set_shell(executor, &user, &shell)?;
 
@@ -340,7 +359,7 @@ impl Task for LockRoot {
         // reach, so reaching it twice is success rather than an error. Saying
         // so is the point — silence would read as having just done it.
         if backend.account_writer().is_locked(executor, ROOT)? {
-            report(progress, "root is already locked".to_owned());
+            report(progress, &Msg::TaskRootAlreadyLocked);
 
             return Ok(Outcome::Done);
         }
@@ -360,7 +379,7 @@ impl Task for LockRoot {
             return Err(Error::NoWayBackIn { user: admin });
         }
 
-        report(progress, "locking root".to_owned());
+        report(progress, &Msg::TaskLockingRoot);
 
         // Expiry, not `passwd -l`. A `!`-prefixed hash is checked by PAM's
         // auth phase, and public-key authentication never reaches it on a PAM
@@ -409,7 +428,12 @@ impl LockRoot {
             });
         }
 
-        report(progress, format!("{admin} exists"));
+        report(
+            progress,
+            &Msg::TaskUserExists {
+                user: admin.to_string(),
+            },
+        );
 
         let group = backend.admin_group();
 
@@ -423,7 +447,13 @@ impl LockRoot {
             });
         }
 
-        report(progress, format!("{admin} is in {group}"));
+        report(
+            progress,
+            &Msg::TaskUserInGroup {
+                user: admin.to_string(),
+                group: group.to_owned(),
+            },
+        );
 
         // Either credential is a way back in, and demanding the key was this
         // guard measuring a narrower question than the one it asks. Expiry is
@@ -453,13 +483,20 @@ impl LockRoot {
         }
 
         if key {
-            report(progress, format!("{admin} holds an authorised key"));
+            report(
+                progress,
+                &Msg::TaskUserHoldsKey {
+                    user: admin.to_string(),
+                },
+            );
         }
 
         if password {
             report(
                 progress,
-                format!("{admin} can authenticate with a password"),
+                &Msg::TaskUserHasPassword {
+                    user: admin.to_string(),
+                },
             );
         }
 

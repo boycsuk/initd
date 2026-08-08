@@ -699,6 +699,263 @@ pub enum Msg {
         width: u16,
         height: u16,
     },
+
+    // What the tasks say as they work. These reach the same output pane as the
+    // errors above and were English literals in the task modules until now, so
+    // a second language would have translated the headings around them and
+    // left the narration itself untouched.
+    //
+    // The generic ones come first: "installing X" is the same sentence
+    // whichever task says it, and a variant per task would be twenty-eight
+    // spellings of one string to keep in step.
+    /// A package or program is being installed.
+    TaskInstalling {
+        what: String,
+    },
+    /// A package or program was already there.
+    TaskAlreadyInstalled {
+        what: String,
+    },
+    /// A unit is being enabled and started.
+    TaskEnabling {
+        unit: String,
+    },
+    /// A unit is enabled.
+    TaskUnitEnabled {
+        unit: String,
+    },
+    /// A unit's state, as the host reports it.
+    TaskUnitState {
+        unit: String,
+        active: bool,
+        enabled: bool,
+    },
+    /// The task found the machine already in the state it exists to reach.
+    TaskNothingToDo {
+        what: String,
+    },
+
+    // Accounts.
+    TaskUserExists {
+        user: String,
+    },
+    TaskCreatingUser {
+        user: String,
+    },
+    TaskUserCreated {
+        user: String,
+    },
+    TaskAddingToGroup {
+        user: String,
+        group: String,
+    },
+    TaskUserInGroup {
+        user: String,
+        group: String,
+    },
+    TaskSettingShell {
+        user: String,
+        shell: String,
+    },
+    TaskShellSet {
+        user: String,
+        shell: String,
+    },
+    TaskRootAlreadyLocked,
+    TaskLockingRoot,
+    TaskRootLocked {
+        admin: String,
+    },
+    TaskUserHasPassword {
+        user: String,
+    },
+    TaskUserHoldsKey {
+        user: String,
+    },
+
+    // SSH.
+    TaskSshKeyAlreadyAuthorised,
+    TaskSshAddingKey {
+        path: String,
+    },
+    TaskSshKeyAuthorised,
+    TaskSshPortUnchanged {
+        port: String,
+    },
+    TaskSshChangingPort {
+        from: String,
+        to: String,
+    },
+    TaskSshBackupSaved {
+        path: String,
+    },
+    TaskSshLabellingPort {
+        port: u32,
+    },
+    TaskSshPortSet {
+        port: u32,
+    },
+    TaskSshReloading {
+        unit: String,
+    },
+    TaskSshApplyingDirectives {
+        count: usize,
+    },
+    TaskSshNarrowingAlgorithms,
+    TaskSshAlgorithmClass {
+        directive: String,
+        value: String,
+    },
+    TaskSshAlgorithmsNarrowed {
+        count: usize,
+    },
+    TaskSshHardening,
+    TaskSshHardened {
+        tier: String,
+    },
+    TaskSshAllowingUsers {
+        users: String,
+    },
+    TaskSshUsersAllowed {
+        users: String,
+    },
+
+    // Firewall and kernel parameters.
+    TaskFirewallNoneInstalled {
+        tried: String,
+    },
+    TaskFirewallInactive,
+    TaskFirewallDefaultDeny,
+    TaskFirewallNoOpenPorts,
+    TaskFirewallPortOpen {
+        port: String,
+    },
+    TaskFirewallPersisted,
+    TaskFirewallNotPersisted,
+    TaskFirewallInstalling {
+        front_end: String,
+    },
+    TaskFirewallUsing {
+        front_end: String,
+    },
+    TaskFirewallEnabled {
+        port: u32,
+    },
+    TaskFirewallPortAllowed {
+        port: u32,
+        protocol: String,
+    },
+    TaskFirewallNotFilteringYet,
+    TaskSysctlAlready {
+        key: String,
+        value: String,
+    },
+    TaskSysctlSet {
+        key: String,
+        value: String,
+    },
+
+    // Services and the web server.
+    TaskCaddyValidating {
+        path: String,
+    },
+    TaskCaddyParses {
+        path: String,
+    },
+    TaskCaddySnippetDefined,
+    TaskCaddySnippetWritten {
+        name: String,
+        path: String,
+    },
+    TaskCaddyNoUnit,
+    TaskCaddyInstalledAt {
+        version: String,
+    },
+    TaskDockerRootlessReady {
+        user: String,
+    },
+    TaskLingerEnabled {
+        user: String,
+    },
+
+    // The developer environment.
+    TaskFishInstalledAt {
+        path: String,
+    },
+    TaskFishNotForRoot,
+    TaskMiseUseShims,
+    TaskRustAvailableTo {
+        user: String,
+    },
+    TaskToolchainInstalled {
+        tool: String,
+        user: String,
+    },
+
+    // Hardening.
+    TaskWatchingForFailures {
+        service: String,
+    },
+    TaskUpgradesNoReboot,
+    TaskServiceRunning {
+        service: String,
+    },
+
+    TaskCrowdsecDetectsOnly,
+    TaskUpgradesAutomatic,
+    TaskZellijFromDistribution,
+    TaskZellijDownloading {
+        version: String,
+    },
+    TaskZellijVerified,
+    TaskCaddyPorts {
+        http: u32,
+        https: u32,
+    },
+    TaskCaddyImportHint {
+        name: String,
+    },
+    TaskDockerInstalling {
+        user: String,
+    },
+    TaskDockerConnectHint {
+        user: String,
+    },
+    TaskRepositoryRegistering {
+        repository: String,
+    },
+    TaskServiceRunningAs {
+        service: String,
+        user: String,
+    },
+
+    // WireGuard.
+    TaskWireguardNotConfigured,
+    TaskWireguardUp {
+        interface: String,
+    },
+    TaskWireguardDown {
+        interface: String,
+    },
+    TaskWireguardInstallingTools,
+    TaskWireguardGeneratingKeys,
+    TaskWireguardWrote {
+        path: String,
+    },
+    TaskWireguardServerKey {
+        key: String,
+    },
+    TaskWireguardPeerAdded {
+        name: String,
+        address: String,
+    },
+    TaskWireguardPeerCount {
+        count: usize,
+    },
+    TaskWireguardInterface {
+        interface: String,
+        address: String,
+    },
 }
 
 /// Why an applied change was put back.

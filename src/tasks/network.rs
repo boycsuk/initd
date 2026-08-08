@@ -11,6 +11,7 @@ use crate::domain::firewall::Protocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -113,7 +114,9 @@ impl Task for FirewallStatus {
 
             report(
                 progress,
-                format!("none of these is installed: {}", tried.join(", ")),
+                &Msg::TaskFirewallNoneInstalled {
+                    tried: tried.join(", "),
+                },
             );
 
             return Ok(Outcome::Done);
@@ -124,18 +127,18 @@ impl Task for FirewallStatus {
         if !state.active {
             // Said plainly, because "no rules" and "not filtering" look alike
             // in a listing and mean opposite things.
-            report(progress, "inbound filtering is not active".to_owned());
+            report(progress, &Msg::TaskFirewallInactive);
 
             return Ok(Outcome::Done);
         }
 
-        report(progress, "inbound denied by default".to_owned());
+        report(progress, &Msg::TaskFirewallDefaultDeny);
 
         if state.allowed.is_empty() {
-            report(progress, "no ports are open".to_owned());
+            report(progress, &Msg::TaskFirewallNoOpenPorts);
         } else {
             for port in &state.allowed {
-                report(progress, format!("  {port} is open"));
+                report(progress, &Msg::TaskFirewallPortOpen { port: port.clone() });
             }
         }
 
@@ -145,12 +148,9 @@ impl Task for FirewallStatus {
         // reboot with everything open. A status that says "denied by default"
         // and stops would be true and misleading in the same sentence.
         if firewall.is_persisted(executor)? {
-            report(progress, "the rules are restored at boot".to_owned());
+            report(progress, &Msg::TaskFirewallPersisted);
         } else {
-            report(
-                progress,
-                "the rules are not restored at boot — they end at the next restart".to_owned(),
-            );
+            report(progress, &Msg::TaskFirewallNotPersisted);
         }
 
         Ok(Outcome::Done)
@@ -233,7 +233,12 @@ impl Task for EnableFirewall {
                     .last()
                     .ok_or(Error::NoFirewallFrontEnd)?;
 
-                report(progress, format!("installing {}", fallback.name()));
+                report(
+                    progress,
+                    &Msg::TaskFirewallInstalling {
+                        front_end: fallback.name().to_owned(),
+                    },
+                );
 
                 backend
                     .packages()
@@ -243,7 +248,12 @@ impl Task for EnableFirewall {
             }
         };
 
-        report(progress, format!("using {}", firewall.name()));
+        report(
+            progress,
+            &Msg::TaskFirewallUsing {
+                front_end: firewall.name().to_owned(),
+            },
+        );
 
         // The SSH port is admitted in the same ruleset that installs the
         // policy, not afterwards: between two commands there is a window in
@@ -260,10 +270,7 @@ impl Task for EnableFirewall {
         // state was real, its persistence was not.
         firewall.persist(executor)?;
 
-        report(
-            progress,
-            format!("inbound denied except {port}/tcp, now and after a reboot"),
-        );
+        report(progress, &Msg::TaskFirewallEnabled { port });
 
         Ok(Outcome::Done)
     }
@@ -352,10 +359,10 @@ impl Task for AllowPort {
 
         report(
             progress,
-            format!(
-                "{port}/{} is open inbound, now and after a reboot",
-                protocol.as_str()
-            ),
+            &Msg::TaskFirewallPortAllowed {
+                port,
+                protocol: protocol.as_str().to_owned(),
+            },
         );
 
         // "Open" means something different depending on whether anything is
@@ -363,11 +370,7 @@ impl Task for AllowPort {
         // reachable, and a message reporting this one as opened would read as
         // "only this is admitted" — the opposite of what the host does.
         if !firewall.state(executor)?.active {
-            report(
-                progress,
-                "nothing is being filtered yet: run firewall.enable for this to mean anything"
-                    .to_owned(),
-            );
+            report(progress, &Msg::TaskFirewallNotFilteringYet);
         }
 
         Ok(Outcome::Done)
@@ -472,7 +475,10 @@ fn set_and_report(
     if sysctl.holds(executor, setting)? && sysctl.is_persisted(executor, setting)? {
         report(
             progress,
-            format!("{} is already {}", setting.key, setting.value),
+            &Msg::TaskSysctlAlready {
+                key: setting.key.to_owned(),
+                value: setting.value.to_owned(),
+            },
         );
 
         return Ok(Outcome::Done);
@@ -482,10 +488,10 @@ fn set_and_report(
 
     report(
         progress,
-        format!(
-            "{} = {}, now and after a reboot",
-            setting.key, setting.value
-        ),
+        &Msg::TaskSysctlSet {
+            key: setting.key.to_owned(),
+            value: setting.value.to_owned(),
+        },
     );
 
     Ok(Outcome::Done)

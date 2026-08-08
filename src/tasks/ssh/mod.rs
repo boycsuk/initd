@@ -22,6 +22,7 @@ use crate::backend::{Backend, Capability};
 use crate::domain::files::Backup;
 use crate::error::Result;
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::revert::{Outcome, Revert};
 use crate::tasks::{Category, Node, Progress, report};
 
@@ -142,7 +143,12 @@ fn reload_ssh(
 ) -> Result<()> {
     let service = backend.service_for(Capability::Ssh);
 
-    report(progress, format!("Reloading {service}..."));
+    report(
+        progress,
+        &Msg::TaskSshReloading {
+            unit: service.to_owned(),
+        },
+    );
     backend.services().reload(executor, service)
 }
 

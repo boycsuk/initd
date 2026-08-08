@@ -12,6 +12,7 @@ use crate::domain::binaries::{Artefact, Release};
 use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
+use crate::i18n::Msg;
 use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -130,7 +131,7 @@ impl Task for InstallDockerRootless {
             return Err(Error::NoSubordinateIds { user });
         }
 
-        report(progress, format!("installing docker for {user}"));
+        report(progress, &Msg::TaskDockerInstalling { user: user.clone() });
 
         // Where the distribution packages no Docker, the engine comes from
         // Docker's own repository — registered only if its signing key matches
@@ -144,7 +145,9 @@ impl Task for InstallDockerRootless {
         {
             report(
                 progress,
-                format!("registering the {} repository", repository.name),
+                &Msg::TaskRepositoryRegistering {
+                    repository: repository.name.to_owned(),
+                },
             );
 
             repositories.register(executor, &repository)?;
@@ -160,7 +163,7 @@ impl Task for InstallDockerRootless {
         // a reboot either.
         if !user_services.is_lingering(executor, &user)? {
             user_services.enable_linger(executor, &user)?;
-            report(progress, format!("{user} may now keep services running"));
+            report(progress, &Msg::TaskLingerEnabled { user: user.clone() });
         }
 
         // The upstream setup script, run as the account rather than as root:
@@ -187,12 +190,12 @@ impl Task for InstallDockerRootless {
 
         report(
             progress,
-            format!("{DOCKER_USER_SERVICE} is running as {user}"),
+            &Msg::TaskServiceRunningAs {
+                service: DOCKER_USER_SERVICE.to_owned(),
+                user: user.clone(),
+            },
         );
-        report(
-            progress,
-            format!("connect with DOCKER_HOST=unix:///run/user/$(id -u {user})/docker.sock"),
-        );
+        report(progress, &Msg::TaskDockerConnectHint { user: user.clone() });
 
         Ok(Outcome::Done)
     }
@@ -283,7 +286,12 @@ impl Task for InstallCaddy {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
-        report(progress, "installing caddy".to_owned());
+        report(
+            progress,
+            &Msg::TaskInstalling {
+                what: "caddy".to_owned(),
+            },
+        );
 
         // A package brings a unit with it; a release archive is a binary and
         // nothing else. Where the family has no package the binary is installed
@@ -299,7 +307,12 @@ impl Task for InstallCaddy {
                 .services()
                 .enable_and_start(executor, backend.service_for(Capability::Caddy))?;
 
-            report(progress, "caddy is enabled".to_owned());
+            report(
+                progress,
+                &Msg::TaskUnitEnabled {
+                    unit: "caddy".to_owned(),
+                },
+            );
         } else {
             let release = crate::backend::release_installer::release_for(
                 Self::RELEASES,
@@ -313,18 +326,18 @@ impl Task for InstallCaddy {
 
             report(
                 progress,
-                format!("caddy {} is installed at /usr/local/bin", release.version),
+                &Msg::TaskCaddyInstalledAt {
+                    version: release.version.to_owned(),
+                },
             );
-            report(
-                progress,
-                "no service was enabled: this family has no Caddy package, so \
-                 there is no unit to enable and nothing here invents one"
-                    .to_owned(),
-            );
+            report(progress, &Msg::TaskCaddyNoUnit);
         }
         report(
             progress,
-            format!("it will answer on {HTTP_PORT} and {HTTPS_PORT} once the firewall admits them"),
+            &Msg::TaskCaddyPorts {
+                http: HTTP_PORT,
+                https: HTTPS_PORT,
+            },
         );
 
         Ok(Outcome::Done)
@@ -380,7 +393,12 @@ impl Task for ValidateCaddy {
             });
         }
 
-        report(progress, format!("{path} parses"));
+        report(
+            progress,
+            &Msg::TaskCaddyParses {
+                path: path.to_owned(),
+            },
+        );
 
         Ok(Outcome::Done)
     }
@@ -428,7 +446,7 @@ impl Task for CaddySecurityHeaders {
         };
 
         if existing.contains(SNIPPET_NAME) {
-            report(progress, "the snippet is already defined".to_owned());
+            report(progress, &Msg::TaskCaddySnippetDefined);
 
             return Ok(Outcome::Done);
         }
@@ -452,10 +470,18 @@ impl Task for CaddySecurityHeaders {
             });
         }
 
-        report(progress, format!("{SNIPPET_NAME} is defined in {path}"));
         report(
             progress,
-            format!("add `import {SNIPPET_NAME}` to a site block to apply it"),
+            &Msg::TaskCaddySnippetWritten {
+                name: SNIPPET_NAME.to_owned(),
+                path: path.to_owned(),
+            },
+        );
+        report(
+            progress,
+            &Msg::TaskCaddyImportHint {
+                name: SNIPPET_NAME.to_owned(),
+            },
         );
 
         Ok(Outcome::Done)

@@ -583,5 +583,171 @@ pub(super) fn render(message: &Msg) -> String {
                 "initd needs at least {min_width}×{min_height} .\nThis terminal is {width}×{height}."
             )
         }
+
+        // What the tasks say as they work. The wording is what these lines
+        // already said as literals in the task modules; moving them here
+        // changed where they live rather than what they read.
+        Msg::TaskInstalling { what } => format!("Installing {what}..."),
+        Msg::TaskAlreadyInstalled { what } => format!("{what} is already installed"),
+        Msg::TaskEnabling { unit } => format!("Enabling {unit}..."),
+        Msg::TaskUnitEnabled { unit } => format!("{unit} is enabled"),
+        Msg::TaskUnitState {
+            unit,
+            active,
+            enabled,
+        } => {
+            format!(
+                "{unit}: {}, {}",
+                if *active { "active" } else { "inactive" },
+                if *enabled { "enabled" } else { "disabled" }
+            )
+        }
+        Msg::TaskNothingToDo { what } => format!("{what}; nothing to do"),
+
+        Msg::TaskUserExists { user } => format!("{user} exists"),
+        Msg::TaskCreatingUser { user } => format!("Creating {user}..."),
+        Msg::TaskUserCreated { user } => format!("{user} created"),
+        Msg::TaskAddingToGroup { user, group } => format!("Adding {user} to {group}..."),
+        Msg::TaskUserInGroup { user, group } => format!("{user} is in {group}"),
+        Msg::TaskSettingShell { user, shell } => format!("setting {user} shell to {shell}"),
+        Msg::TaskShellSet { user, shell } => format!("{user} now uses {shell}"),
+        Msg::TaskRootAlreadyLocked => "root is already locked".to_owned(),
+        Msg::TaskLockingRoot => "locking root".to_owned(),
+        Msg::TaskRootLocked { admin } => {
+            format!("root is locked; {admin} is the way in from now on")
+        }
+        Msg::TaskUserHasPassword { user } => format!("{user} has a password"),
+        Msg::TaskUserHoldsKey { user } => format!("{user} holds an authorised key"),
+
+        Msg::TaskSshKeyAlreadyAuthorised => {
+            "The key is already authorised; nothing to do".to_owned()
+        }
+        Msg::TaskSshAddingKey { path } => format!("Adding the key to {path}..."),
+        Msg::TaskSshKeyAuthorised => "Key authorised".to_owned(),
+        Msg::TaskSshPortUnchanged { port } => {
+            format!("The port is already {port}; nothing to do")
+        }
+        Msg::TaskSshChangingPort { from, to } => {
+            format!("Changing the port from {from} to {to}...")
+        }
+        Msg::TaskSshBackupSaved { path } => format!("Previous configuration saved to {path}"),
+        Msg::TaskSshLabellingPort { port } => format!("Labelling port {port} for SELinux..."),
+        Msg::TaskSshPortSet { port } => {
+            format!(
+                "Port set to {port}. If a firewall is active, the new port may \
+                 need to be opened before it can be reached."
+            )
+        }
+        Msg::TaskSshReloading { unit } => format!("Reloading {unit}..."),
+        Msg::TaskSshApplyingDirectives { count } => {
+            format!("Applying {count} hardening directives...")
+        }
+        Msg::TaskSshNarrowingAlgorithms => "Narrowing the accepted algorithms...".to_owned(),
+        Msg::TaskSshAlgorithmClass { directive, value } => format!("{directive}: {value}"),
+        Msg::TaskSshAlgorithmsNarrowed { count } => {
+            format!("{count} algorithm lists narrowed to what this daemon supports")
+        }
+        Msg::TaskSshHardening => "Applying the hardening...".to_owned(),
+        Msg::TaskSshHardened { tier } => format!("{tier} applied"),
+        Msg::TaskSshAllowingUsers { users } => format!("Restricting SSH to {users}..."),
+        Msg::TaskSshUsersAllowed { users } => format!("SSH now admits only {users}"),
+
+        Msg::TaskFirewallNoneInstalled { tried } => {
+            format!("none of these is installed: {tried}")
+        }
+        Msg::TaskFirewallInactive => "inbound filtering is not active".to_owned(),
+        Msg::TaskFirewallDefaultDeny => "inbound denied by default".to_owned(),
+        Msg::TaskFirewallNoOpenPorts => "no ports are open".to_owned(),
+        Msg::TaskFirewallPortOpen { port } => format!("  {port} is open"),
+        Msg::TaskFirewallPersisted => "the rules are restored at boot".to_owned(),
+        Msg::TaskFirewallNotPersisted => {
+            "the rules are not restored at boot — they end at the next restart".to_owned()
+        }
+        Msg::TaskFirewallInstalling { front_end } => format!("installing {front_end}"),
+        Msg::TaskFirewallUsing { front_end } => format!("using {front_end}"),
+        Msg::TaskFirewallEnabled { port } => {
+            format!("inbound denied except {port}/tcp, now and after a reboot")
+        }
+        Msg::TaskFirewallPortAllowed { port, protocol } => {
+            format!("{port}/{protocol} is open inbound, now and after a reboot")
+        }
+        Msg::TaskFirewallNotFilteringYet => {
+            "nothing is being filtered yet: run firewall.enable for this to mean anything"
+                .to_owned()
+        }
+        Msg::TaskSysctlAlready { key, value } => format!("{key} is already {value}"),
+        Msg::TaskSysctlSet { key, value } => format!("{key} = {value}, now and after a reboot"),
+
+        Msg::TaskCaddyValidating { path } => format!("Validating {path}..."),
+        Msg::TaskCaddyParses { path } => format!("{path} parses"),
+        Msg::TaskCaddySnippetDefined => "the snippet is already defined".to_owned(),
+        Msg::TaskCaddySnippetWritten { name, path } => format!("{name} is defined in {path}"),
+        Msg::TaskCaddyNoUnit => {
+            "no service was enabled: this family has no Caddy package, so there \
+             is no unit to enable and nothing here invents one"
+                .to_owned()
+        }
+        Msg::TaskCaddyInstalledAt { version } => {
+            format!("caddy {version} is installed at /usr/local/bin")
+        }
+        Msg::TaskDockerRootlessReady { user } => {
+            format!("rootless docker is running for {user}")
+        }
+        Msg::TaskLingerEnabled { user } => {
+            format!("{user} may now keep services running between logins")
+        }
+
+        Msg::TaskFishInstalledAt { path } => format!("fish is installed at {path}"),
+        Msg::TaskFishNotForRoot => "never make it root's shell: a shell that is not POSIX breaks \
+             recovery scripts that assume one"
+            .to_owned(),
+        Msg::TaskMiseUseShims => {
+            "on a server, reach it through shims or `mise exec --` rather than \
+             shell activation"
+                .to_owned()
+        }
+        Msg::TaskRustAvailableTo { user } => format!("rust is available to {user}"),
+        Msg::TaskToolchainInstalled { tool, user } => format!("{tool} is installed for {user}"),
+
+        Msg::TaskWatchingForFailures { service } => {
+            format!("watching {service} for repeated failures")
+        }
+        Msg::TaskUpgradesNoReboot => "reboots stay yours to schedule".to_owned(),
+        Msg::TaskServiceRunning { service } => format!("{service} is running"),
+
+        Msg::TaskCrowdsecDetectsOnly => {
+            "it detects and decides; install a bouncer to make it block".to_owned()
+        }
+        Msg::TaskUpgradesAutomatic => "security updates will be applied automatically".to_owned(),
+        Msg::TaskZellijFromDistribution => "zellij installed from the distribution".to_owned(),
+        Msg::TaskZellijDownloading { version } => format!("downloading zellij {version}"),
+        Msg::TaskZellijVerified => "zellij installed and its checksum verified".to_owned(),
+        Msg::TaskCaddyPorts { http, https } => {
+            format!("it will answer on {http} and {https} once the firewall admits them")
+        }
+        Msg::TaskCaddyImportHint { name } => {
+            format!("add `import {name}` to a site block to apply it")
+        }
+        Msg::TaskDockerInstalling { user } => format!("installing docker for {user}"),
+        Msg::TaskDockerConnectHint { user } => {
+            format!("connect with DOCKER_HOST=unix:///run/user/$(id -u {user})/docker.sock")
+        }
+        Msg::TaskRepositoryRegistering { repository } => {
+            format!("registering the {repository} repository")
+        }
+        Msg::TaskServiceRunningAs { service, user } => format!("{service} is running as {user}"),
+
+        Msg::TaskWireguardNotConfigured => "WireGuard is not configured".to_owned(),
+        Msg::TaskWireguardUp { interface } => format!("{interface} is up"),
+        Msg::TaskWireguardDown { interface } => format!("{interface} is configured but down"),
+        Msg::TaskWireguardInstallingTools => "installing wireguard-tools".to_owned(),
+        Msg::TaskWireguardGeneratingKeys => "generating the server keys".to_owned(),
+        Msg::TaskWireguardWrote { path } => format!("wrote {path}"),
+        Msg::TaskWireguardServerKey { key } => format!("server public key: {key}"),
+        Msg::TaskWireguardPeerAdded { name, address } => format!("{name} added at {address}"),
+        Msg::TaskWireguardPeerCount { count } => format!("{count} peer(s) configured"),
+        Msg::TaskWireguardInterface { interface, address } => {
+            format!("{interface} is at {address}")
+        }
     }
 }

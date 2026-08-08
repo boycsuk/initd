@@ -21,6 +21,7 @@ use crate::backend::Backend;
 use crate::distro::Family;
 use crate::error::Result;
 use crate::exec::{Executor, OutputLine, Stream};
+use crate::i18n::{Lang, Msg};
 use crate::tasks::consequence::Consequence;
 use crate::tasks::params::{Param, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -35,7 +36,36 @@ pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
 /// Here rather than in each task module: the seven that report progress had
 /// written this identically, so the shape of an output line was a decision
 /// recorded in seven places and changeable in none of them alone.
-pub(crate) fn report(progress: Progress<'_>, text: impl Into<String>) {
+///
+/// Takes a [`Msg`] rather than a string, which is what puts the tasks' own
+/// narration inside the catalogue. The claim that user-facing text lives there
+/// held for errors and for the interface's chrome while these ninety lines sat
+/// as English literals in the task modules — enough that a second language
+/// would have produced an output pane with translated headings above untouched
+/// progress.
+///
+/// The rendering happens here rather than in each task because this is the one
+/// place every line already passes through: a `Lang` threaded into `Task::run`
+/// would be a parameter twenty-eight implementations carry and one forgets.
+pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
+    progress(OutputLine {
+        stream: Stream::Stdout,
+        // Resolved per line, which is affordable here in a way it is not in the
+        // interface: a task reports a handful of steps over seconds, where a
+        // key bar is a dozen labels every frame.
+        text: Lang::from_env().render(message),
+    });
+}
+
+/// Reports a line that is data rather than language.
+///
+/// The WireGuard client configuration a peer is meant to copy, and the blank
+/// line separating it from what came before. Neither is a sentence: translating
+/// `[Interface]` would produce a file `wg-quick` cannot read, and a blank line
+/// has nothing to translate. Kept apart from [`report`] so the distinction is
+/// visible at the call site rather than resting on which constructor somebody
+/// reached for.
+pub(crate) fn report_verbatim(progress: Progress<'_>, text: impl Into<String>) {
     progress(OutputLine {
         stream: Stream::Stdout,
         text: text.into(),

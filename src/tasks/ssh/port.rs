@@ -10,6 +10,7 @@ use crate::backend::{Backend, Capability};
 use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
+use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewall_check};
 use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -121,7 +122,9 @@ impl Task for ChangePort {
         if current == port.to_string() {
             report(
                 progress,
-                format!("The port is already {current}; nothing to do"),
+                &Msg::TaskSshPortUnchanged {
+                    port: current.clone(),
+                },
             );
             return Ok(Outcome::Done);
         }
@@ -130,7 +133,10 @@ impl Task for ChangePort {
 
         report(
             progress,
-            format!("Changing the port from {current} to {}...", port),
+            &Msg::TaskSshChangingPort {
+                from: current.clone(),
+                to: port.to_string(),
+            },
         );
         let backup = sshd_config::write_validated(executor, backend, &updated)?;
 
@@ -146,7 +152,9 @@ impl Task for ChangePort {
         if let Some(ref backup) = backup {
             report(
                 progress,
-                format!("Previous configuration saved to {}", backup.copy),
+                &Msg::TaskSshBackupSaved {
+                    path: backup.copy.clone(),
+                },
             );
         }
 
@@ -165,7 +173,7 @@ impl Task for ChangePort {
         // enabled and administrators disable it, and where nothing enforces
         // this costs one command that answers by exit code.
         if backend.selinux().is_enforcing(executor)? {
-            report(progress, format!("Labelling port {port} for SELinux..."));
+            report(progress, &Msg::TaskSshLabellingPort { port });
 
             backend.selinux().allow_ssh_port(
                 executor,
@@ -174,13 +182,7 @@ impl Task for ChangePort {
             )?;
         }
 
-        report(
-            progress,
-            format!(
-                "Port set to {port}. If a firewall is active, the new port may \
-                 need to be opened before it can be reached."
-            ),
-        );
+        report(progress, &Msg::TaskSshPortSet { port });
 
         reload_ssh(executor, backend, progress)?;
 

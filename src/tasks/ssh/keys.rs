@@ -14,6 +14,7 @@
 use crate::backend::Backend;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Progress, Task, supported_everywhere};
@@ -119,11 +120,11 @@ impl Task for AuthorizeKey {
         };
 
         if key_is_present(&existing, key) {
-            report(progress, "The key is already authorised; nothing to do");
+            report(progress, &Msg::TaskSshKeyAlreadyAuthorised);
             return Ok(Outcome::Done);
         }
 
-        report(progress, format!("Adding the key to {path}..."));
+        report(progress, &Msg::TaskSshAddingKey { path: path.clone() });
 
         // Append rather than replace: other keys in the file are other
         // people's access.
@@ -158,7 +159,7 @@ impl Task for AuthorizeKey {
             files.set_owner(executor, &path, &user)?;
         }
 
-        report(progress, "Key authorised");
+        report(progress, &Msg::TaskSshKeyAuthorised);
 
         // Authorising a key only ever grants access; undoing it is the
         // dangerous direction, so it is not offered here.
