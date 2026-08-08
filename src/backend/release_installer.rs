@@ -30,6 +30,35 @@ impl ReleaseInstaller {
     pub const fn new() -> Self {
         Self
     }
+
+    /// The line that checks a downloaded archive against its compiled-in
+    /// digest.
+    ///
+    /// The two halves need opposite quoting, which is the whole of its
+    /// correctness. The digest is a constant that must reach `sha256sum`
+    /// verbatim, so it is single-quoted; the path is a shell variable that must
+    /// be expanded first, so it must not be.
+    ///
+    /// Writing both inside one pair of single quotes — `'<digest>
+    /// $dir/archive'` — is what this used to do. The shell left `$dir`
+    /// unexpanded, `sha256sum` looked for a file of that literal name and
+    /// answered `FAILED open or read`, and [`install`](Self::install)
+    /// classifies a failure mentioning `sha256sum` as a mismatch. So every
+    /// download of every tool this installs failed as tampering, whatever the
+    /// archive contained, and the message sent the operator looking for an
+    /// attack instead of a quoting mistake.
+    ///
+    /// Extracted rather than inlined so a test can run the real line against a
+    /// real shell. Every test around it reads the script's *text*, and this
+    /// bug was invisible to reading: the difference is not in what the script
+    /// says but in what a shell does with it.
+    ///
+    /// `sha256sum -c` wants exactly two spaces between the digest and the
+    /// path. `echo 'a' " b"` supplies one from `echo`'s own separator and one
+    /// from the string, which is measured by the tests rather than assumed.
+    fn verification_line(sha256: &str, path: &str) -> String {
+        format!("echo '{sha256}' \" {path}\" | sha256sum -c -")
+    }
 }
 
 impl BinaryInstaller for ReleaseInstaller {
@@ -65,12 +94,11 @@ impl BinaryInstaller for ReleaseInstaller {
              dir=$(mktemp -d)\n\
              trap 'rm -rf \"$dir\"' EXIT\n\
              curl -fsSL --proto '=https' --tlsv1.2 -o \"$dir/archive\" '{url}'\n\
-             echo '{sha256}  {archive}' | sha256sum -c -\n\
+             {verify}\n\
              tar -xf \"$dir/archive\" -C \"$dir\" '{member}'\n\
              install -m {mode} \"$dir/{member}\" '{install_dir}/{program}'\n",
             url = artefact.url,
-            sha256 = artefact.sha256,
-            archive = "$dir/archive",
+            verify = Self::verification_line(artefact.sha256, "$dir/archive"),
             member = release.archive_member,
             mode = BINARY_MODE,
             install_dir = INSTALL_DIR,
@@ -193,6 +221,93 @@ mod tests {
             .expect("the archive must be extracted");
 
         assert!(checked < extracted, "verify before extracting: {script}");
+    }
+
+    #[test]
+    fn the_verification_line_expands_the_path_and_not_the_digest() {
+        // The bug every mock here missed: `echo '<digest>  $dir/archive'` put
+        // the variable inside single quotes, so the shell never expanded it and
+        // `sha256sum` looked for a file named `$dir/archive`. It answered
+        // `FAILED open or read`, which the caller classified as a mismatch — so
+        // every download of every tool failed as tampering, whatever the
+        // archive held. Reproduced on debian:13 before this existed.
+        //
+        // Run rather than read. The tests around this one inspect the script's
+        // text and would pass against either quoting, because the difference is
+        // not in what the script *says* but in what a shell does with it.
+        // Sixty-four hex characters, because `sha256sum -c` rejects anything
+        // else as "no properly formatted checksum lines" before it opens a
+        // file — which would pass the assertion below for the wrong reason.
+        let script = ReleaseInstaller::verification_line(&"a".repeat(64), "$dir/archive");
+
+        let staged = format!(
+            "set -eu\n\
+             dir=$(mktemp -d)\n\
+             trap 'rm -rf \"$dir\"' EXIT\n\
+             printf '' > \"$dir/archive\"\n\
+             {script}\n"
+        );
+
+        let output = std::process::Command::new("sh")
+            .args(["-c", &staged])
+            .output()
+            .expect("sh must run");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            !stderr.contains("No such file"),
+            "the path must reach sha256sum expanded: {stderr}"
+        );
+
+        // The digest above is a real prefix of the empty file's, so the check
+        // gets far enough to disagree about the *contents* rather than failing
+        // to find them. Either outcome proves the expansion; only this one
+        // proves the digest survived unexpanded too.
+        assert!(
+            stderr.contains("did NOT match") || output.status.success(),
+            "sha256sum must have compared something: {stderr}"
+        );
+    }
+
+    #[test]
+    fn a_verified_archive_is_accepted_by_the_real_shell() {
+        // The other half, and the one that would have caught the bug outright:
+        // a digest that matches must be accepted. Built from a local file so
+        // nothing here touches the network.
+        let dir = std::env::temp_dir().join(format!("initd-verify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let archive = dir.join("archive");
+        std::fs::write(&archive, b"the archive contents").expect("write");
+
+        let digest = std::process::Command::new("sha256sum")
+            .arg(&archive)
+            .output()
+            .expect("sha256sum must run");
+        let digest = String::from_utf8_lossy(&digest.stdout);
+        let digest = digest.split_whitespace().next().expect("a digest");
+
+        // Through a variable, the way the real script does. A literal path
+        // would verify under either quoting, so this would pass against the
+        // bug it exists to catch.
+        let line = ReleaseInstaller::verification_line(digest, "$dir/archive");
+
+        let staged = format!("set -eu\ndir='{}'\n{line}\n", dir.to_string_lossy());
+
+        let output = std::process::Command::new("sh")
+            .args(["-c", &staged])
+            .output()
+            .expect("sh must run");
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            output.status.success(),
+            "a matching digest must verify: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

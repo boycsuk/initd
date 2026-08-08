@@ -166,6 +166,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed here was not.
 
 ### Fixed
+- Installing a tool from a release archive works at all. The line checking the
+  download against its digest wrote both inside one pair of single quotes —
+  `echo '<digest>  $dir/archive'` — so the shell never expanded `$dir`,
+  `sha256sum` looked for a file of that literal name, and it answered `FAILED
+  open or read`. The caller classifies a failure mentioning `sha256sum` as a
+  mismatch, so every download failed as tampering whatever the archive
+  contained, and the message sent the operator looking for an attack rather
+  than for a quoting mistake. It affected `zellij.install`, `mise.install` and
+  `caddy.install` on every family. The digest stays quoted and the path does
+  not, which is the whole of the line's correctness. Verified by installing
+  zellij on `debian:13` and caddy on `rockylinux:9` and running both binaries.
 - Text is fitted to the screen by the cells it occupies rather than by the
   characters it contains. A CJK ideograph and most emoji take two cells, so
   `admin@東京サーバー本番` is fourteen characters and twenty-two: a pane twenty
