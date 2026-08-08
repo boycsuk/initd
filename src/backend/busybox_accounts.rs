@@ -98,9 +98,7 @@ impl BusyboxAccountWriter {
     /// the backend: a host that only ever creates accounts should not carry a
     /// package it never calls.
     fn ensure_usermod(&self, executor: &dyn Executor) -> Result<()> {
-        let present = executor
-            .run(&Command::new("sh").args(["-c", "command -v usermod"]))?
-            .success();
+        let present = executor.run(&Command::locating("usermod"))?.success();
 
         if present {
             return Ok(());

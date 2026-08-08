@@ -22,7 +22,7 @@
 //! Callers that render on every frame resolve the locale once and hold it —
 //! `App` keeps a `Lang` field — rather than calling [`Lang::from_env`] per
 //! message. An error reaches the catalogue rarely; a key bar is a dozen labels
-//! sixty times a second.
+//! ten times a second, which is what `POLL_INTERVAL` makes the redraw ceiling.
 
 mod en;
 
@@ -556,9 +556,9 @@ pub enum Msg {
     // --- Interface: key bar ---
     //
     // The labels beside each key glyph along the bottom row. The glyphs
-    // themselves — `↑↓`, `Enter`, `Esc`, `Tab`, `Ctrl-C`, `K`, `R`, `w`, `G`,
-    // `q`, `/` — stay literals for the same reason the help overlay's do: they
-    // name keys on a keyboard rather than words in a language.
+    // themselves — `↑↓`, `Enter`, `Esc`, `Tab`, `Ctrl-C`, `?`, `K`, `R`, `G`,
+    // `y`, `q`, `/` — stay literals for the same reason the help overlay's do:
+    // they name keys on a keyboard rather than words in a language.
     //
     // Each label is a verb naming what the key does *here*, so `KeyBarOpen`
     // and `KeyBarRun` are separate messages even though one key produces both:

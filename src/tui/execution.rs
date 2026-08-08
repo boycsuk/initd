@@ -5,7 +5,7 @@
 //! out — opening the window in which it can still be undone.
 //!
 //! Separated from `app.rs` for navigation rather than for independence. These
-//! methods reach twelve of `App`'s twenty fields and share seven of them with
+//! methods reach nine of `App`'s twenty-one fields and share seven of them with
 //! the key handlers, so the coupling is unchanged; what changes is that the
 //! run's own logic is now readable in one place.
 

@@ -134,6 +134,22 @@ impl Task for ChangePort {
         );
         let backup = sshd_config::write_validated(executor, backend, &updated)?;
 
+        // Said before the steps below rather than after them: the file is
+        // already written by this point, and each of the three that follow can
+        // fail — the socket check, the SELinux probe and the labelling. A task
+        // that ends there returns an error rather than an `Outcome`, so the
+        // backup never reaches the operator through `revertible`, and the one
+        // change documented as able to cost the session its own way back in
+        // would report a failed command over a modified `sshd_config` without
+        // naming what to restore. The two sibling tasks say it here for the
+        // same reason.
+        if let Some(ref backup) = backup {
+            report(
+                progress,
+                format!("Previous configuration saved to {}", backup.copy),
+            );
+        }
+
         // Debian ships ssh.socket alongside ssh.service. When it is active the
         // socket owns the listening port, so editing sshd_config alone changes
         // nothing. Detect and warn rather than silently reconfiguring units.

@@ -21,13 +21,13 @@ use crate::tasks::params::{Param, ParamValues};
 
 /// Width the dialog is drawn at, before clamping to the terminal.
 ///
-/// Sized by its footer rather than by its fields, which is what sets the
-/// floor: the longest one is `Tab field   Ctrl-L list   Enter (fill every
-/// field)   Esc cancel`, and it is drawn as adjacent spans that neither wrap
-/// nor truncate — a footer one cell too wide simply loses `cancel`, leaving
-/// the key that abandons the form unnamed. `centred` clamps this to the
-/// terminal, so a narrow one shrinks the dialog rather than overflowing.
-const DIALOG_WIDTH: u16 = 72;
+/// The width every modal shares, and this is the dialog that sets it: the
+/// floor is *this* form's footer, the longest fixed string any modal draws.
+/// [`layout::DIALOG_WIDTH`] states that in full and is the one number, which
+/// is the point — a second `72` here agreed with it by coincidence rather than
+/// by construction, and the three sizes the dialogs used to have were each
+/// defensible alone too.
+const DIALOG_WIDTH: u16 = layout::DIALOG_WIDTH;
 
 /// Rows one field occupies: a header carrying its label and verdict, and the
 /// value indented beneath.
@@ -642,6 +642,36 @@ mod tests {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    #[test]
+    fn the_form_is_drawn_at_the_width_every_modal_shares() {
+        // Pinned on the buffer rather than on the constant: this dialog held a
+        // second `72` of its own, which agreed with `layout`'s by coincidence
+        // and would have gone on agreeing until somebody changed one of them.
+        // The other three modals already point at the shared number, and
+        // `confirm.rs` already asserts this about itself.
+        //
+        // Measured on a terminal far wider than the dialog, which is where a
+        // width that stopped being shared would show.
+        let mut form = port_form();
+        let backend = ratatui::backend::TestBackend::new(100, 50);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| form.render(frame, Lang::En))
+            .expect("drawing must not fail");
+
+        let buffer = terminal.backend().buffer().clone();
+        let painted: Vec<u16> = (0..100)
+            .filter(|&x| (0..50).any(|y| buffer[(x, y)].symbol() != " "))
+            .collect();
+
+        let first = painted.first().expect("the form must paint something");
+        let last = painted.last().expect("the form must paint something");
+        let width = last - first + 1;
+
+        assert_eq!(width, layout::DIALOG_WIDTH, "one width for every modal");
     }
 
     #[test]

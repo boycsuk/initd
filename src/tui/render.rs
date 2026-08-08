@@ -135,7 +135,7 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
         vec![
             Span::styled(app.lang.render(&Msg::HeaderTitle), style::HEADING),
             separator(),
-            Span::styled(app.host.hostname.clone(), style::EMPHASIS),
+            Span::styled(app.host.hostname.as_str(), style::EMPHASIS),
             Span::raw("  "),
             Span::styled(app.lang.render(&Msg::HeaderPaneTree), tree),
             Span::styled(" / ", style::BLOCK_SUBTITLE),
@@ -146,7 +146,7 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(app.lang.render(&Msg::HeaderTitle), style::HEADING),
             Span::styled(format!(" {VERSION}"), style::BLOCK_SUBTITLE),
             separator(),
-            Span::styled(app.host.hostname.clone(), style::EMPHASIS),
+            Span::styled(app.host.hostname.as_str(), style::EMPHASIS),
             separator(),
             Span::styled(app.distro.display_name().to_owned(), style::NORMAL),
             separator(),

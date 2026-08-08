@@ -12,6 +12,8 @@
 //! worth reading most — the keys that cannot be guessed from anywhere else —
 //! is the one at the end.
 
+use std::sync::OnceLock;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -191,7 +193,7 @@ pub fn render(frame: &mut Frame, lang: Lang, scroll: u16) {
     let inner = layout::inset(block.inner(area), layout::DIALOG_GUTTER as u16, 1);
 
     frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(all).scroll((scroll, 0)), inner);
+    frame.render_widget(Paragraph::new(all.to_vec()).scroll((scroll, 0)), inner);
 }
 
 /// How far through the list the view has reached.
@@ -215,12 +217,30 @@ pub fn max_scroll(area: Rect, lang: Lang) -> u16 {
     (lines(lang).len() as u16).saturating_sub(height)
 }
 
+/// The overlay's full contents, built once.
+///
+/// Built on first use and kept, because nothing it reads changes while the
+/// program runs: [`SECTIONS`] is a `const`, and the locale is resolved once at
+/// startup and held. Rebuilding it per frame meant forty-odd catalogue renders
+/// and twice as many allocations ten times a second for a list that could not
+/// have differed — the same waste the interface already avoids by holding a
+/// resolved [`Lang`] rather than calling `from_env` per message.
+///
+/// `lang` is taken rather than resolved here so the caller stays the one place
+/// the locale comes from. It is only read on the first call; a second locale in
+/// one session is not a thing the interface can produce.
+fn lines(lang: Lang) -> &'static [Line<'static>] {
+    static LINES: OnceLock<Vec<Line<'static>>> = OnceLock::new();
+
+    LINES.get_or_init(|| build_lines(lang))
+}
+
 /// The overlay's full contents.
 ///
 /// Every section is built whether or not it fits: the list scrolls rather than
 /// dropping what will not fit, because the sections most worth reading — the
 /// keys that cannot be guessed from anywhere else — are the ones at the end.
-fn lines(lang: Lang) -> Vec<Line<'static>> {
+fn build_lines(lang: Lang) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     for section in SECTIONS {
@@ -265,6 +285,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_contents_are_built_once_and_handed_back() {
+        // The overlay is redrawn on every tick while it is open, and nothing
+        // it reads can change between two of them. Same slice, not merely
+        // equal contents: equality would still pass if each frame rebuilt an
+        // identical list, which is the cost this exists to avoid.
+        let first = lines(Lang::En);
+        let second = lines(Lang::En);
+
+        assert!(
+            std::ptr::eq(first, second),
+            "the list must be built once, not per frame"
+        );
+        assert!(!first.is_empty(), "the overlay must have contents");
     }
 
     #[test]

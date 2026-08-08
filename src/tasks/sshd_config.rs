@@ -187,8 +187,27 @@ pub fn write_validated(
         Validation::Invalid { details } => {
             // Never leave a broken config in place: put the original back
             // before returning, and do not reload.
-            if let Some(ref backup) = backup {
-                backend.files().restore(executor, backup)?;
+            //
+            // The restore's own failure is carried alongside the rejection
+            // rather than through `?`, which would return it *instead*. Both
+            // halves are needed and neither implies the other: the rejection
+            // says what is wrong with the file, and only the restore's failure
+            // says that the rejected file is still the one on disk — the case
+            // where the daemon will not come back after a reload nobody
+            // performed. Reported as one message because a task raises one
+            // error, and the half that got dropped was the half naming the
+            // syntax to fix.
+            if let Some(ref backup) = backup
+                && let Err(restore) = backend.files().restore(executor, backup)
+            {
+                return Err(Error::InvalidSshdConfig {
+                    details: format!(
+                        "{details}; the original could not be put back either \
+                         ({restore}), so the rejected file is still at {} and \
+                         {} holds the copy",
+                        path, backup.copy
+                    ),
+                });
             }
 
             Err(Error::InvalidSshdConfig { details })
@@ -426,6 +445,47 @@ mod tests {
         assert!(
             commands.contains(&restore),
             "the backup must be restored: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_restore_reports_the_rejection_that_caused_it() {
+        // Both halves or neither: the rejection names the syntax to fix, and
+        // only the restore's failure says the rejected file is still the one
+        // on disk. Returning the restore's error on its own — which is what
+        // `?` did here — left an operator reading "command failed" over a
+        // config that `sshd -t` had refused, with nothing saying why.
+        let mock = MockExecutor::with_exact_replies([
+            Reply::ok(""),                                        // test -e
+            Reply::ok(""),                                        // cp -p: backup
+            Reply::ok(""),                                        // tee: write
+            Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
+            Reply::failure(1, "cp: cannot create regular file"),  // cp -p: restore
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        let err = write_validated(&mock, backend.as_ref(), "Prt 22\n")
+            .expect_err("a rejected config must fail");
+
+        let Error::InvalidSshdConfig { details } = &err else {
+            panic!("the rejection must survive the failed restore: {err:?}");
+        };
+
+        assert!(
+            details.contains("Prt"),
+            "the syntax error must still be named: {details}"
+        );
+        assert!(
+            details.contains("could not be put back"),
+            "the failed restore must be reported too: {details}"
+        );
+
+        // The path to the copy is what an operator needs to put the file back
+        // by hand, which is the only route left once the restore has failed.
+        let path = backend.path_for(Capability::Ssh);
+        assert!(
+            details.contains(&format!("{path}.initd.bak")),
+            "the backup's path must be named: {details}"
         );
     }
 
