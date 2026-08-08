@@ -106,6 +106,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid key, and only the lax criterion admitted it.
 
 ### Changed
+- The help overlay is built once instead of on every frame. Nothing it reads
+  can change while the program runs — its table of sections is a `const` and
+  the locale is resolved once at startup — yet each redraw rebuilt forty-odd
+  catalogue renders and twice as many allocations, ten times a second, for a
+  list that could not have differed. It is the same waste the interface
+  already avoids by holding a resolved `Lang` rather than calling `from_env`
+  per message; the overlay was the one place still paying it.
 - The four modal dialogs share one set of rules — width, gutter, inset, and a
   rule above the footer. They had three widths between them (72, 70 and 64),
   each defensible alone and none chosen against the others, and the
