@@ -204,7 +204,7 @@ impl FirewallManager for Firewalld {
         Ok(output.success())
     }
 
-    fn persist(&self, _executor: &dyn Executor) -> Result<()> {
+    fn persist(&self, executor: &dyn Executor) -> Result<bool> {
         // Nothing to do, and that is a property of this front-end rather than
         // an omission. Every port goes in twice — runtime and `--permanent` —
         // in `add_port`, and `enable` turns the unit on with `enable --now`, so
@@ -216,7 +216,11 @@ impl FirewallManager for Firewalld {
         // the wrong answer for anything that is not firewalld. The nftables
         // implementation is what shows why — there, forgetting this leaves a
         // server that comes back from a reboot with every port open.
-        Ok(())
+        //
+        // Whether the unit is enabled is still read rather than assumed:
+        // `enable` turns it on, and a host where that did not take is one where
+        // the rules do not come back.
+        self.is_persisted(executor)
     }
 
     fn is_persisted(&self, executor: &dyn Executor) -> Result<bool> {

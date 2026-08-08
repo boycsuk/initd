@@ -845,6 +845,13 @@ pub enum Msg {
         port: u32,
         protocol: String,
     },
+    TaskFirewallEnabledNotPersisted {
+        port: u32,
+    },
+    TaskFirewallPortAllowedNotPersisted {
+        port: u32,
+        protocol: String,
+    },
     TaskFirewallNotFilteringYet,
     TaskSysctlAlready {
         key: String,

@@ -268,9 +268,21 @@ impl Task for EnableFirewall {
         // reports nothing about it. Exactly the lesson the sysctl tasks
         // learned from a container that already held the right value: the
         // state was real, its persistence was not.
-        firewall.persist(executor)?;
+        // The answer decides which claim is made. A host with no service
+        // manager — a container, a chroot — has the rules applied and written
+        // where a boot would read them, with nothing to do the reading; saying
+        // "after a reboot" there would be the same false promise this whole
+        // change exists to remove.
+        let replayed = firewall.persist(executor)?;
 
-        report(progress, &Msg::TaskFirewallEnabled { port });
+        report(
+            progress,
+            &if replayed {
+                Msg::TaskFirewallEnabled { port }
+            } else {
+                Msg::TaskFirewallEnabledNotPersisted { port }
+            },
+        );
 
         Ok(Outcome::Done)
     }
@@ -355,13 +367,20 @@ impl Task for AllowPort {
 
         // Kept, for the same reason enabling is: a rule that only exists in the
         // kernel is a rule that ends at the next restart.
-        firewall.persist(executor)?;
+        let replayed = firewall.persist(executor)?;
 
         report(
             progress,
-            &Msg::TaskFirewallPortAllowed {
-                port,
-                protocol: protocol.as_str().to_owned(),
+            &if replayed {
+                Msg::TaskFirewallPortAllowed {
+                    port,
+                    protocol: protocol.as_str().to_owned(),
+                }
+            } else {
+                Msg::TaskFirewallPortAllowedNotPersisted {
+                    port,
+                    protocol: protocol.as_str().to_owned(),
+                }
             },
         );
 

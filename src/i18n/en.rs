@@ -671,6 +671,22 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskFirewallPortAllowed { port, protocol } => {
             format!("{port}/{protocol} is open inbound, now and after a reboot")
         }
+        // Says what is missing rather than only that something is: the rules
+        // are applied and saved, and what this host has nowhere to register is
+        // the replay. Claiming "after a reboot" here would be the false promise
+        // the persistence work exists to remove.
+        Msg::TaskFirewallEnabledNotPersisted { port } => {
+            format!(
+                "inbound denied except {port}/tcp — saved, but this host has no \
+                 service manager to replay it at boot"
+            )
+        }
+        Msg::TaskFirewallPortAllowedNotPersisted { port, protocol } => {
+            format!(
+                "{port}/{protocol} is open inbound — saved, but this host has no \
+                 service manager to replay it at boot"
+            )
+        }
         Msg::TaskFirewallNotFilteringYet => {
             "nothing is being filtered yet: run firewall.enable for this to mean anything"
                 .to_owned()

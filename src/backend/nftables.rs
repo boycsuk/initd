@@ -73,18 +73,38 @@ impl Nftables {
     /// case that a `match` on the family would get wrong. `systemctl` being
     /// present is the same question `SystemdServices` already answers by being
     /// the implementation a family resolved to.
+    /// A missing `systemctl` is an answer here rather than a failure, which is
+    /// why the error is matched instead of propagated: the executor reports an
+    /// absent binary as [`Error::ProgramNotFound`], and on Alpine that is
+    /// precisely how "this host does not run systemd" presents itself.
+    /// Propagating it failed `firewall.enable` outright on the one family the
+    /// branch exists for — measured on `alpine:3.23`, where the task reported
+    /// `executable systemctl was not found in PATH` over a firewall it had
+    /// already applied.
     fn persistence_target(executor: &dyn Executor) -> Result<(&'static str, BootService)> {
         let systemd = Command::new("systemctl").arg("--version");
 
-        if executor.run(&systemd)?.success() {
-            return Ok((SYSTEMD_RULES, BootService::Systemd));
+        match executor.run(&systemd) {
+            Ok(output) if output.success() => Ok((SYSTEMD_RULES, BootService::Systemd)),
+            Ok(_) | Err(Error::ProgramNotFound { .. }) => Ok((OPENRC_RULES, BootService::OpenRc)),
+            Err(other) => Err(other),
         }
-
-        Ok((OPENRC_RULES, BootService::OpenRc))
     }
 
     /// Turns on whatever replays the ruleset at boot.
-    fn enable_at_boot(executor: &dyn Executor, service: BootService) -> Result<()> {
+    ///
+    /// Reports whether it could, rather than failing: a host may have no
+    /// service manager to ask. `alpine:3.23` is the measured case — OpenRC
+    /// ships in its own package, so a container has neither `rc-update` nor
+    /// `/etc/init.d/nftables`, and a chroot or a minimal image is the same
+    /// situation on any family.
+    ///
+    /// Failing the task there would be the wrong trade. The ruleset is applied
+    /// and has been written to the file a boot would replay; what is missing is
+    /// the thing that replays it, on a host that may not boot at all. Refusing
+    /// would turn "the firewall is on and will need one more step" into "the
+    /// firewall did not go on", which is worse and false.
+    fn enable_at_boot(executor: &dyn Executor, service: BootService) -> Result<bool> {
         let command = match service {
             BootService::Systemd => Command::new("systemctl")
                 .args(["enable", SYSTEMD_UNIT])
@@ -96,7 +116,13 @@ impl Nftables {
                 .privileged(),
         };
 
-        run_checked(executor, &command)
+        // A missing service manager answers the question the same way a
+        // refusing one does: nothing will replay this.
+        match executor.run(&command) {
+            Ok(output) => Ok(output.success()),
+            Err(Error::ProgramNotFound { .. }) => Ok(false),
+            Err(other) => Err(other),
+        }
     }
 }
 
@@ -190,7 +216,7 @@ impl FirewallManager for Nftables {
         run_checked(executor, &command)
     }
 
-    fn persist(&self, executor: &dyn Executor) -> Result<()> {
+    fn persist(&self, executor: &dyn Executor) -> Result<bool> {
         // `nft` speaks only to the kernel, so nothing said so far survives a
         // reboot. What restores a ruleset at boot is a service replaying a
         // file, and which file that is depends on the init system rather than
@@ -484,6 +510,38 @@ mod tests {
                 .iter()
                 .any(|line| line == "rc-update add nftables default"),
             "and replays it through its own service: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_with_nothing_to_replay_the_ruleset_saves_it_and_says_so() {
+        // Measured on alpine:3.23: OpenRC ships in its own package, so a
+        // container has neither `rc-update` nor /etc/init.d/nftables. Failing
+        // the task there would report the firewall as not enabled, when it is
+        // enabled and saved — what is missing is the boot that would replay it,
+        // on a host that may never boot.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("table inet initd {\n}"),          // list ruleset
+            Reply::failure(127, "systemctl: not found"), // which init
+            Reply::ok(""),                               // tee: saved anyway
+            Reply::failure(127, "rc-update: not found"), // nothing to enable
+        ]);
+
+        let replayed = Nftables::new()
+            .persist(&mock)
+            .expect("saving must not fail for want of a service manager");
+
+        assert!(
+            !replayed,
+            "and the caller must be told it will not come back"
+        );
+
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line.starts_with("tee ")),
+            "the ruleset is still written: {:?}",
+            mock.recorded_lines()
         );
     }
 
