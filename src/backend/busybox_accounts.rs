@@ -23,17 +23,6 @@ use crate::exec::{Command, Executor};
 /// Where the account database lives.
 const PASSWD: &str = "/etc/passwd";
 
-/// Where password ageing is recorded.
-const SHADOW: &str = "/etc/shadow";
-
-/// Index of the expiry field in a shadow entry, counting from zero.
-///
-/// `shadow(5)` numbers the fields from one and names the expiry as the eighth,
-/// so this is that minus one. Stated as an index rather than as a field number
-/// because it addresses a slice here, and the off-by-one between the two
-/// conventions is exactly the mistake worth naming.
-const SHADOW_EXPIRY_INDEX: usize = 7;
-
 /// Expiry written to lock an account, in days since the epoch.
 ///
 /// `1` rather than `0` for the same reason as the shadow implementation:
@@ -207,32 +196,11 @@ impl AccountWriter for BusyboxAccountWriter {
     }
 
     fn is_locked(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
-        // No `chage`, so the shadow entry is read directly. Fetched whole and
-        // split here rather than piped through `cut` inside an `sh -c` string:
-        // interpolating a username into a shell command works only for as long
-        // as every caller validates it first, and this backend cannot see who
-        // its callers will be. An argv element cannot be reinterpreted as
-        // syntax, so the question stops depending on that.
-        let command = Command::new("grep")
-            .args([&format!("^{user}:"), SHADOW])
-            .privileged();
-
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Ok(false);
-        }
-
-        // The expiry is empty when the account never expires, which is what
-        // distinguishes it from one expired at the epoch.
-        let expiry = output
-            .stdout
-            .split(':')
-            .nth(SHADOW_EXPIRY_INDEX)
-            .unwrap_or("")
-            .trim();
-
-        Ok(!expiry.is_empty())
+        // Reading the shadow field is what this suite always did, for want of
+        // `chage`. It now lives beside `has_password` because the shadow suite
+        // reads it the same way: expiry is *applied* differently by each
+        // (`chage` against `usermod`) and stored identically.
+        posix_accounts::is_locked(executor, user)
     }
 
     fn has_password(&self, executor: &dyn Executor, user: &str) -> Result<bool> {

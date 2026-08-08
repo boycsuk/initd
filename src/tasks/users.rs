@@ -782,7 +782,7 @@ mod tests {
                 Reply::ok("alice sudo"),                               // can escalate
                 Reply::failure(1, ""),                                 // no authorized_keys
                 Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),      // but a usable hash
-                Reply::ok("Account expires : never"),                  // root is not locked
+                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"),         // root is not locked
                 Reply::failure(1, ""),                                 // recheck: still no key
                 Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),      // recheck: still a hash
                 Reply::ok(""),                                         // the lock itself
@@ -793,7 +793,9 @@ mod tests {
         outcome.expect("a password is a way back in");
 
         assert!(
-            commands.iter().any(|command| command.contains("chage")),
+            commands
+                .iter()
+                .any(|command| command.contains("--expiredate") && command.ends_with("root")),
             "root must actually be locked: {commands:?}"
         );
     }
@@ -936,7 +938,7 @@ mod tests {
                 Reply::ok(""),
                 Reply::ok(TEST_KEY),
                 Reply::ok("alice:!:19000:0:99999:7:::"), // no password behind the key
-                Reply::ok("Account expires\t: Jan 02, 1970"), // already locked
+                Reply::ok("root:$6$salt$hash:19000:0:99999:7::1:"), // already expired
             ],
             &values(LockRoot::ADMIN, "alice"),
         );

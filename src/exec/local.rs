@@ -15,6 +15,24 @@ use super::{
 use crate::error::{Error, Result};
 use crate::exec::privilege::{AuthNeed, PrivilegeEscalator};
 
+/// The locale every child is given, overriding whatever the operator's own
+/// environment carries.
+///
+/// Backends read what these programs print. Most of what they read is already
+/// language-invariant — an exit code, a field of `/etc/passwd`, a token from
+/// `systemctl show` — but not all of it: `chage -l` is rendered through
+/// gettext, so `Account expires` becomes `La cuenta expira` under a Spanish
+/// locale and the line a parser looks for is not there. The failure is silent
+/// in the worst direction, since a missing line reads as "no expiry" and so as
+/// "this account is not locked".
+///
+/// Set here rather than in each parser: the choke point is one line, and the
+/// next backend to parse human output inherits the fix instead of having to
+/// remember it. `LC_ALL` alone is enough, being the one that overrides every
+/// other category, but `LANG` is cleared alongside it so nothing is left to
+/// the precedence rules of a libc this tool does not choose.
+const INVARIANT_LOCALE: [(&str, &str); 2] = [("LC_ALL", "C"), ("LANG", "C")];
+
 /// Runs commands on the machine `initd` is running on.
 pub struct LocalExecutor {
     escalator: Box<dyn PrivilegeEscalator>,
@@ -217,6 +235,7 @@ impl LocalExecutor {
     fn probe_succeeds(&self, program: &str, args: &[String]) -> bool {
         StdCommand::new(program)
             .args(args)
+            .envs(INVARIANT_LOCALE)
             .stdin(Stdio::inherit())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -283,6 +302,7 @@ impl Executor for LocalExecutor {
 
         let mut child = StdCommand::new(&program)
             .args(&args)
+            .envs(INVARIANT_LOCALE)
             .stdin(stdin_for(command))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -442,6 +462,57 @@ mod tests {
 
         assert!(out.success());
         assert_eq!(out.stdout.trim(), "hello");
+    }
+
+    #[test]
+    fn a_child_runs_under_an_invariant_locale() {
+        // Read out of the child's own environment rather than asserted against
+        // the builder: what matters is what the program being parsed sees.
+        let out = executor()
+            .run(&Command::new("sh").args(["-c", "printf '%s|%s' \"$LC_ALL\" \"$LANG\""]))
+            .expect("sh must run");
+
+        assert_eq!(out.stdout, "C|C");
+    }
+
+    #[test]
+    fn the_override_wins_over_a_locale_already_in_the_environment() {
+        // The real shape of the bug: `chage -l` renders through gettext, so a
+        // Spanish locale turns `Account expires` into a line no parser finds —
+        // and a missing line reads as "never", which reads as "not locked".
+        //
+        // The foreign locale is put on *this* process's child by spawning the
+        // comparison directly, rather than by mutating this process's own
+        // environment: `std::env::set_var` is process global, and a test that
+        // touches it races every other test sharing the process.
+        //
+        // Both halves run the same program, and the only difference between
+        // them is whether it went through the executor.
+        const READ_LOCALE: [&str; 2] = ["-c", r#"printf "%s|%s" "$LC_ALL" "$LANG""#];
+
+        let inherited = std::process::Command::new("sh")
+            .args(READ_LOCALE)
+            .env("LC_ALL", "es_ES.UTF-8")
+            .env("LANG", "es_ES.UTF-8")
+            .output()
+            .expect("staging shell must run");
+
+        assert_eq!(
+            String::from_utf8_lossy(&inherited.stdout),
+            "es_ES.UTF-8|es_ES.UTF-8",
+            "a child does inherit a foreign locale when nothing overrides it — \
+             without this the assertion below would hold vacuously"
+        );
+
+        let out = executor()
+            .run(&Command::new("sh").args(READ_LOCALE))
+            .expect("sh must run");
+
+        assert_eq!(
+            out.stdout, "C|C",
+            "the locale handed to a child must be the invariant one, whatever \
+             the operator's environment carries"
+        );
     }
 
     #[test]

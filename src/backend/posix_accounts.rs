@@ -29,8 +29,21 @@ const SHADOW_FILE: &str = "/etc/shadow";
 /// Field holding the password hash, counting from zero.
 ///
 /// The name follows the login, so the hash is second. Named rather than
-/// written as `1`, next to the expiry index its sibling module already names.
+/// written as `1`, next to the expiry index below.
 const SHADOW_HASH_INDEX: usize = 1;
+
+/// Index of the expiry field in a shadow entry, counting from zero.
+///
+/// `shadow(5)` numbers the fields from one and names the expiry as the eighth,
+/// so this is that minus one. Stated as an index rather than as a field number
+/// because it addresses a slice here, and the off-by-one between the two
+/// conventions is exactly the mistake worth naming.
+///
+/// Empty when the account never expires, which is what distinguishes it from
+/// one expired at the epoch. Both account suites read it from here: expiry is
+/// *applied* differently by each (`chage` against `usermod`) and stored
+/// identically.
+const SHADOW_EXPIRY_INDEX: usize = 7;
 
 /// Lowest uid a distribution hands to an account a person logs in as.
 ///
@@ -258,6 +271,50 @@ pub fn has_password(executor: &dyn Executor, user: &str) -> Result<bool> {
         .trim();
 
     Ok(!hash.is_empty() && !hash.starts_with('!') && !hash.starts_with('*'))
+}
+
+/// Whether the account is locked by expiry.
+///
+/// Read out of `/etc/shadow` rather than out of `chage -l`, and so shared by
+/// both account suites. Two reasons, and the second is the one that moved it
+/// here:
+///
+/// - busybox has no `chage`, so Alpine had to read the file anyway.
+/// - `chage` renders its output through gettext. Under a Spanish locale the
+///   line reads `La cuenta expira`, so a parser looking for `Account expires`
+///   finds nothing — and "no line" is indistinguishable from "never expires",
+///   which reports an account that *is* locked as one that is not. The
+///   executor now pins `LC_ALL=C` for every child, which closes that on its
+///   own; reading the field closes it a second time, and without depending on
+///   an invariant enforced two layers away.
+///
+/// The field is empty when the account never expires, which is what
+/// distinguishes it from one expired at the epoch. A missing entry answers
+/// false for the same reason [`has_password`] does: an account that is not in
+/// the file is not one this can report as locked.
+pub fn is_locked(executor: &dyn Executor, user: &str) -> Result<bool> {
+    // Fetched whole and split here rather than piped through `cut` inside an
+    // `sh -c` string: interpolating a username into a shell command works only
+    // for as long as every caller validates it first, and an argv element
+    // cannot be reinterpreted as syntax.
+    let command = Command::new("grep")
+        .args([&format!("^{user}:"), SHADOW_FILE])
+        .privileged();
+
+    let output = executor.run(&command)?;
+
+    if !output.success() {
+        return Ok(false);
+    }
+
+    let expiry = output
+        .stdout
+        .split(':')
+        .nth(SHADOW_EXPIRY_INDEX)
+        .unwrap_or("")
+        .trim();
+
+    Ok(!expiry.is_empty())
 }
 
 #[cfg(test)]

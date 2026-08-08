@@ -50,6 +50,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rules and has nothing to suggest either; `ssh.allow-users` holds a list, and
   taking a suggestion would delete the names already typed.
 
+### Security
+- The escalation helper is looked for in the system's own binary directories
+  rather than in `PATH`, and the path it was found at is what gets spawned.
+  This process is unprivileged and escalates command by command, so it inherits
+  the operator's environment: a `sudo` planted in a directory earlier in their
+  `PATH` — `~/.local/bin`, a version manager installed with loose permissions —
+  was found first and then wrapped every privileged command of the session.
+  `secure_path` never applied, because the real `sudo` was never reached.
+  Resolving the name and then spawning that same name also resolved twice, and
+  the second resolution was `execvp`'s against the same `PATH`, so the binary
+  that was checked need not have been the binary that ran.
+- Every child runs under `LC_ALL=C`. Backends read what these programs print,
+  and most of what they read is language-invariant — an exit code, a field of
+  `/etc/passwd` — but `chage -l` renders through gettext: under a Spanish
+  locale its line reads `La cuenta expira`, so a parser looking for `Account
+  expires` found nothing, and nothing read as `never`, which read as "this
+  account is not locked". Silent, and in the guard deciding whether root may be
+  locked out. Set at the choke point so the next backend to parse human output
+  inherits it rather than having to remember.
+- `users.lock-root` reads the expiry out of `/etc/shadow` instead of out of
+  `chage -l`, so the answer no longer depends on a locale being pinned two
+  layers away. Alpine already did this for want of `chage`; the reading is now
+  shared by both account suites, which is where the divergence came from —
+  expiry is *applied* differently by each and stored identically.
+
 ### Fixed
 - `ssh.change-port` names the backup before the three steps that can fail
   after the file is already written — the socket check, the SELinux probe and
