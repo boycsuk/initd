@@ -222,6 +222,9 @@ pub enum Msg {
     NoSuchAccount {
         user: String,
     },
+    UnsafeSymlink {
+        path: String,
+    },
     GroupMembershipFailed {
         user: String,
         group: String,

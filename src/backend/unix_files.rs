@@ -84,6 +84,14 @@ impl FileEditor for UnixFiles {
         Ok(executor.run(&command)?.success())
     }
 
+    fn is_symlink(&self, executor: &dyn Executor, path: &str) -> Result<bool> {
+        // `test -L` is POSIX and answers by exit code, like `test -e` above: a
+        // path that is not a link is an answer rather than a failure.
+        let command = Command::new("test").args(["-L", path]).privileged();
+
+        Ok(executor.run(&command)?.success())
+    }
+
     fn backup(&self, executor: &dyn Executor, path: &str) -> Result<Backup> {
         let copy = Self::backup_path(path);
 

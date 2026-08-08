@@ -192,6 +192,16 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NoSuchAccount { user } => {
             format!("there is no account named {user}")
         }
+        // Names the path rather than the account: a link here is something an
+        // administrator may have set up on purpose, and the one thing they need
+        // in order to judge that is which path was refused.
+        Msg::UnsafeSymlink { path } => {
+            format!(
+                "{path} is a symbolic link, and writing through it would apply \
+                 this change somewhere else; remove it or point the task at the \
+                 real directory"
+            )
+        }
         Msg::GroupMembershipFailed { user, group } => {
             format!("{user} was not added to {group}, though the command reported success")
         }

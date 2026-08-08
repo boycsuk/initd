@@ -51,6 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taking a suggestion would delete the names already typed.
 
 ### Security
+- `ssh.authorize-key` refuses a `~/.ssh` or an `authorized_keys` that is a
+  symbolic link. `install -d`, `chown` and `tee` all act on a link's target, and
+  the directory sits inside a home its own account controls — so replacing
+  `~/.ssh` with a link elsewhere had root apply the mode, the ownership and the
+  key over there instead. Reproduced on `debian:13` before it was fixed: a
+  directory owned by `root` came back owned by the unprivileged account that
+  planted the link, with a file written inside it. The refusal names the path,
+  because a link into shared storage is something an administrator may have set
+  up deliberately.
 - A configuration file is written beside itself and moved into place, rather
   than written into. `tee` truncates and then writes, so a process that died
   between the two — a full disk, an OOM kill, the power going — left
