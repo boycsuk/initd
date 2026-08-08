@@ -95,6 +95,30 @@ Below **60 × 15** the interface is not drawn at all: it states the size it need
 instead, because a garbled layout on a production server is worse than a clear
 refusal.
 
+## Modals
+
+The four dialogs — confirmation, parameter form, help overlay, search — are
+drawn to one set of rules, so a frame does not move for reasons the operator
+cannot name:
+
+| Rule | Value |
+|------|-------|
+| Width | 72 columns, clamped to the terminal |
+| Height | measured from the content; never a share of the screen |
+| Gutter | 2 cells between the frame and any text |
+| Inset | one blank row at each end of the content |
+| Footer | separated from the content by a rule spanning the frame |
+
+They had three widths between them — 72, 70 and 64 — each defensible alone and
+none chosen against the others. The width's floor is the parameter form's
+footer, the longest fixed string any of them draws: footers are adjacent spans
+that neither wrap nor truncate, so a dialog one cell too narrow silently loses
+`cancel`, the key out of a modal.
+
+The search overlay keeps the gutter vertically only. Its selected row is drawn
+as a filled band, and one stopping two cells short of each border would read as
+a highlight that failed to paint rather than as a margin.
+
 ## Panels
 
 - **Header** — the product name and version, the machine's hostname, the
@@ -142,17 +166,60 @@ refusal.
 - **Key bar** — the key hints for the current row and state. One borderless
   row, dropped on terminals shorter than 24 rows.
 - **Parameter form** — overlays the centre of the screen for tasks that collect
-  values (a port, a username, a public key). Modal. Each field shows its label,
-  a boxed input, and a note beneath stating either what is wrong with the value
-  or what it parsed as. Validation runs on every keystroke, so the consequences
-  of a value are visible before `Enter` rather than after. Fields whose values
-  the host already records — usernames, login shells — offer them rather than
-  asking the operator to remember; the note says how many there are.
+  values (a port, a username, a public key). Modal. **A field is two rows and a
+  blank one:** a header carrying its label on the left and its verdict on the
+  right, the value indented beneath, and a separator before the next field.
+  Everything on either row belongs to the field its header opens, which is what
+  a boxed field could not say — its note sat as close to the field below as to
+  the value it judged, and three of the four rows a box spent were drawing a
+  frame around a single line of text. The separator is drawn *between* fields,
+  and the block of them is inset from the frame by that same row at each end,
+  so the spacing reads as one rhythm rather than as fields crowded against the
+  border at both ends. After the last one a **rule** spans the dialog, corner
+  to corner, before the footer. A blank row could not say it — blank rows are what separate one field
+  from the next, so the same mark would have meant both "another field follows"
+  and "the fields end here", and the keys below act on the dialog rather than
+  on any one field. The
+  focused field is marked by a bar in the gutter left of its label, a column
+  reserved whether or not it holds the focus so `Tab` shifts nothing sideways.
+  The counter (`field 2 of 3`) rides the top border opposite the title, being
+  state of the dialog rather than of a field. The verdict is a `✓` for a field
+  holding an acceptable value and says nothing more; words are kept for the two
+  states a mark cannot carry — an error, and `optional, may be left empty` for
+  a field that is empty and may stay so, whose value reads `(unset)`. A green
+  mark over an untouched field said "done" about something nobody had typed
+  into. Validation runs on every keystroke, so the consequences of a value are
+  visible before `Enter` rather than after — **including what the host already
+  says about it**. A field naming an account to create refuses one that exists
+  (`root already exists`); a field naming one to act on refuses one that does
+  not (`deploy is not an account here`). That is a rule no value's *kind* can
+  carry: whether a name is well formed is a property of the text, and whether
+  this machine has it is a property of the machine. Shape is reported first,
+  since a name holding a `/` is malformed whether or not the account exists.
+  The check is silent where the host was never asked — the CLI, or a
+  `/etc/passwd` that could not be read — because an empty account list means
+  "unknown", not "no accounts"; the task's own check remains the barrier.
+  Fields whose values the host already records — usernames, login shells —
+  offer them rather than asking the operator to remember; the count shares the
+  header's row. **A password field is drawn as bullets**, one per character so
+  the operator sees keystrokes landing without the value being readable over a
+  shoulder or in a screenshot. Empty is a valid answer there and means "no
+  password": a second field asking whether to use the first would be a question
+  the first already answers — this tool asked exactly that for a while, in a
+  text field taking the word `yes`.
 - **Options list** — overlays the form, below it, listing everything the host
   offers for the focused field. Modal over the form: while it is open, all keys
   go to it. Opened with `Ctrl-L`, and only offered where the field has options.
-- **Confirmation dialog** — overlays the centre of the screen, 60% × 40%, for
-  destructive operations only. Modal: while it is open, all keys go to it.
+- **Confirmation dialog** — overlays the centre of the screen before **any task
+  that changes the machine**. Modal: while it is open, all keys go to it. Sized
+  by what it holds, like every other modal: it was a share of the screen
+  (60% × 40%), which put a block that size around two lines of text and left
+  half of it empty — tolerable while nine tasks confirmed, and not once all but
+  three do. It has two forms, and the difference is what keeps either
+  worth reading: a change that can end the session applying it is framed in
+  red and carries the lockout warning, everything else asks in the ordinary
+  frame with no warning at all. Only a task that purely reads opens no dialog
+  — `firewall.status`, `wireguard.status`, `caddy.validate`.
 
 - **Help overlay** — every binding the interface has, grouped by where it
   applies. Opened with `?` from anywhere, including on top of a dialog, since
@@ -177,13 +244,14 @@ Meaning is carried by a glyph, never by colour alone, so a monochrome or
 | Marker | Meaning |
 |--------|---------|
 | `›` | The row opens onto another level |
-| `!` | The task is destructive and asks for confirmation |
+| `!` | The task can lock me out of the machine |
 | `…` | The task collects parameters before it runs |
 | `·` | The task is not supported on this host |
 
-A row carries at most one flag, and they rank in that order: a task that is
-both destructive and parameterised shows `!`, since the warning outranks the
-notice.
+A row carries at most one flag, and they rank in that order: a task that both
+risks a lockout and takes parameters shows `!`, since the warning outranks the
+notice. `!` marks the lockout tier alone, not every task that confirms —
+almost all of them do, and a marker on nearly every row names none of them.
 
 ## Status
 
@@ -238,7 +306,7 @@ whatever the last action left behind: `CONFIRM` while a dialog is open, `INPUT`
 while a form is, and `UNSUPPORTED` when the selected row cannot run here. The
 state must always say what pressing `Enter` would do now.
 
-`CONFIRM` outranks `INPUT` where both apply: a destructive task collects its
+`CONFIRM` outranks `INPUT` where both apply: a task that confirms collects its
 parameters first and confirms after, so once the confirmation is up it is the
 live question.
 
@@ -317,7 +385,7 @@ Two rules govern the table:
 | `flag_danger` | Red + bold | The `!` marker |
 | `flag_input` | Yellow | The `…` marker |
 | `flag_unsupported` | White + dim | The `·` marker |
-| `result_ok` | Green | The `✓` glyph and `ok` lines |
+| `result_ok` | Green | The `✓` glyph, `ok` lines, and a form field's verdict |
 | `result_fail` | Red + bold | The `✗` glyph |
 | `consequence` | Yellow | The `!` marker on a consequence the tool can check |
 | `consequence_external` | Yellow + bold | The `⚠` marker on one it cannot |
@@ -354,7 +422,7 @@ border runs through and reads as a gap in the frame rather than as emphasis.
 own rather than a border it has to sit inside.
 
 `selection_focused` sets an explicit foreground/background pair rather than
-reversing: reversal swaps per cell, so a red destructive marker on a reversed
+reversing: reversal swaps per cell, so a red lockout marker on a reversed
 row would render as a red block and the row's meaning would invert with it.
 
 `selection_disabled` is drawn on the selected row when the task under it cannot
@@ -409,7 +477,7 @@ way back.
 | `↑` / `k` | Move to the previous row (categories included) |
 | `↓` / `j` | Move to the next row |
 | `g` / `G` | Jump to the first / last row of the level |
-| `Enter` | Open the selected category, or run the selected task; destructive tasks open the dialog first |
+| `Enter` | Open the selected category, or run the selected task; anything that changes the machine opens the dialog first |
 | `/` | Open search over the whole tree |
 | `Esc` / `Backspace` / `←` / `h` | Go back to the parent level; at the top level it reports rather than quitting |
 
@@ -462,14 +530,21 @@ same reason `Enter` is: only one task at a time.
 | `PageUp` / `PageDown` | Scroll by ten lines |
 | `g` | Jump to the oldest retained line |
 | `G` / `f` | Jump to the newest output and follow it again |
-| `w` | Toggle wrapping of long lines |
 | `y` | Send the whole transcript to the terminal's clipboard |
-| `Esc` | Return focus to the tree |
 
 Any upward scroll detaches the view from the tail, so reading back through a
 log is never interrupted by new arrivals. Scrolling back to the bottom
 re-attaches on its own — the operator has caught up, and needing another key to
 resume following would be a step with no purpose.
+
+**The pane moves the view and hands over the transcript; it does nothing else.**
+It is a record of what a task did, and a record is read rather than operated.
+`w` toggled wrapping and `Esc` returned focus, and both were bindings to
+remember in front of no decision they helped make — the wrap now stays on, so
+no line is ever cut at the right edge, and `Tab` is the one key that moves
+focus anywhere in this interface. Long lines are the case wrapping exists for:
+a package manager's error is exactly the line that outruns the pane, and it is
+the line the operator is there to read.
 
 **Focus is never moved here by the tool.** Running a task used to move it, on
 the grounds that reading what is about to happen is the natural next thing —
@@ -584,9 +659,9 @@ created between one form opening and the next, and a shell absent from
 `/etc/shells` is still a path. Validation is unchanged and remains the only
 thing that decides.
 
-The count rides the validation note (`↑↓ 2/6 on this host`) rather than taking
-a row of its own; on a three-field form a row each is the difference between
-fitting a 24-row terminal and not. It reads `↑↓ 6 on this host` with no
+The count rides the field's header (`↑↓ 2/6 on this host`), left of the
+verdict, rather than taking a row of its own; on a three-field form a row each
+is the difference between fitting a 24-row terminal and not. It reads `↑↓ 6 on this host` with no
 position while the value is not one of the options — typed by hand, or not yet
 typed.
 
@@ -644,7 +719,6 @@ but nothing new may be started, and nothing already applied may be answered.
 |-----|--------|
 | `Ctrl-C` | Ask the task to stop at its next step boundary |
 | `↑` / `↓` / `PageUp` / `PageDown` | Scroll the output |
-| `w` | Toggle wrapping |
 | `Tab` | Switch panes |
 | `?` | Help |
 | `q` | Refused, naming `Ctrl-C` as the way to stop |
@@ -713,8 +787,7 @@ disbelieve all of it.
 | `n` / `Esc` | Cancel |
 | `Enter` | Confirm the current answer |
 
-The dialog opens on **No**, so a stray `Enter` cannot trigger a destructive
-operation. `n` and `Esc` both mean the safe answer, so the reflex to back out
+The dialog opens on **No**, so a stray `Enter` cannot start a change. `n` and `Esc` both mean the safe answer, so the reflex to back out
 lands on it whichever key it reaches for.
 
 ## Running a privileged task

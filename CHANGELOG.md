@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Every task that changes the machine asks before it runs. It was nine of
+  twenty-eight, because the rule read "irreversible enough to warrant a prompt"
+  and was applied as "could lock you out" — so `ssh.install` put an SSH server
+  on the machine and enabled it in silence. Twenty-five ask now; the three that
+  do not are the ones that only read, and each says so about itself. Asking is
+  what a task gets for saying nothing, so none can go quiet by omission the way
+  those nineteen had.
+- The confirmation has two levels, and the difference is what keeps either
+  worth reading. A change that can end the session applying it keeps the red
+  frame and the lockout warning; everything else asks plainly. A red border
+  around every task marks none of them, and the dialog it would teach people to
+  dismiss is `users.lock-root`'s.
+- `users.create` takes an optional password, masked as it is typed and applied
+  through `chpasswd` on stdin — never `useradd -p`, whose argument
+  `/proc/<pid>/cmdline` publishes to every account on the box. Empty means no
+  password: the field being optional *is* the answer, rather than a second
+  field asking whether to use the first. That second field existed for a while
+  and asked for the word `yes`.
+- A form field states what the host already says about its value: one naming an
+  account to create refuses a name that exists (`root already exists`), one
+  naming an account to act on refuses a name that does not. The form drew `✓`
+  over a name `users.create` was about to reject, so the mistake the field
+  invites was the one live validation did not catch.
 - `y` sends the output pane's whole transcript to the terminal's clipboard.
   The mouse cannot do this: the terminal owns the selection and copies
   rectangles of screen, so dragging over the pane takes its border and the
@@ -28,6 +51,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taking a suggestion would delete the names already typed.
 
 ### Fixed
+- `users.lock-root` accepts a usable password as a way back in, not only an
+  authorised key. Expiry is applied through PAM, so it bars every channel
+  including the provider's rescue console — which never consults
+  `authorized_keys`, and where a password is exactly what gets an administrator
+  in. The guard measured SSH when the question was about every route, and
+  refused the account a distribution's installer had made while telling the
+  operator it had been "created without a password".
+- The lockout warning is measured rather than given a fixed two rows, so its
+  second line is no longer drawn over the rule beneath it once the dialog is
+  wide enough to fit the sentence differently.
+- The help overlay leaves room for its own frame. At exactly the height of the
+  terminal it is measured against, its top border was drawn off screen and the
+  list appeared to have no dialog around it.
 - The tree pane fits the longest title it has to draw. It was 34 cells and
   nine of the twenty-eight titles did not fit, so rows read `Create an
   administrative us…`. The width is now measured rather than chosen — 40 cells
@@ -55,6 +91,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid key, and only the lax criterion admitted it.
 
 ### Changed
+- The four modal dialogs share one set of rules — width, gutter, inset, and a
+  rule above the footer. They had three widths between them (72, 70 and 64),
+  each defensible alone and none chosen against the others, and the
+  confirmation sized itself as a share of the screen: a 40%-tall block around
+  two lines of text, which mattered little while nine tasks confirmed and
+  matters now that all but three do.
+- A form field is two rows and a separator rather than five: a header carrying
+  its label on the left and its verdict on the right, and the value indented
+  beneath. Three of the four rows a boxed field spent were drawing a frame
+  around a single line of text, and the note under it sat as close to the field
+  below as to the value it judged.
+- A field holding an acceptable value is marked `✓` rather than described.
+  Words are kept for the two states a mark cannot carry — an error, and
+  `optional, may be left empty` for a field that is empty and may stay so,
+  whose value reads `(unset)`. A green mark over an untouched field said "done"
+  about something nobody had typed into.
+- The output pane moves the view and hands over the transcript, and does
+  nothing else. `w` toggled wrapping and `Esc` returned focus; both were
+  bindings to remember in front of no decision they helped make, and the wrap
+  now stays on so no line is ever cut at the right edge.
 - The status gives up its own row and rides the bottom border of the pane on
   the right, the way the tree's census rides its own — so the row it cost goes
   to the body, which on the 24-row terminal this interface is measured against

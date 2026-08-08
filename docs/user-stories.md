@@ -120,25 +120,54 @@ TUI or CLI:
   - Acceptance: it joins whichever group grants sudo on this distribution —
     `sudo` on Debian, `wheel` on Arch and Alpine — and the membership is read
     back rather than assumed, because the command reports success either way.
-  - Acceptance: it is created without a password, so it can only be reached
-    with a key.
-  - Acceptance: I am told so where I am asked for the name, not only in the
-    task's description. The account cannot log in until a key is authorised for
-    it, and that is a surprise worth having before it is created rather than
-    after.
-  - Acceptance: an account that already exists is refused rather than adopted.
+  - Acceptance: it is created without a password by default, so it can only be
+    reached with a key — but I can give it one, in the same form. That default
+    is right for an account reached over SSH and wrong for the one that has to
+    get in through the provider's rescue console, which is a local TTY where no
+    key is offered at all.
+  - Acceptance: the password field is masked as I type, one bullet per
+    character, and leaving it empty means no password. There is no second field
+    asking whether to use the first: an empty value already answers that, and
+    asking twice is what this did for a while — a text field taking the word
+    `yes`, which answered "answer yes or no" to somebody typing a password.
+  - Acceptance: the password never reaches the arguments of any command the
+    tool runs, never reaches the output pane, and is never drawn. It is applied
+    through `chpasswd`, which reads it from stdin; `useradd -p` would put it in
+    `argv`, where `/proc/<pid>/cmdline` publishes it to every account on the
+    machine. **This is the one value the tool holds in memory**, and it is a
+    deliberate exception to the rule that keeps `sudo` prompting on the TTY
+    rather than through a field here — see `docs/conventions.md`.
+  - Acceptance: an account that already exists is refused rather than adopted,
+    and refused **while I type it** rather than once the form has closed. The
+    form used to mark a name the host already carries as acceptable and let me
+    submit it, so the one mistake this field invites was the one its live
+    validation did not catch. The task's own check still runs — it is the
+    barrier; this is the earlier warning, and the only one on a host whose
+    account list could not be read.
   - Acceptance: the accounts this host already has are **not** offered here,
     since every one of them is a value this task refuses.
 - As an **administrator**, I can change an account's login shell, so that a
   user gets the shell they prefer.
   - Acceptance: a shell absent from `/etc/shells` is refused before anything is
     written, since the system would refuse it afterwards.
+  - Acceptance: an account this host does not have is refused as I type it,
+    the mirror of the rule that stops me creating one it already has. Every
+    field naming an account states which it expects, so neither mistake waits
+    for the task to run.
 - As an **administrator**, I can lock the root account, so that it cannot be
   logged into at all.
   - Acceptance: refused unless another account already exists, is in the
-    administrative group, and holds an authorised key. This is the one change
-    the tool will not make on warning alone: it can require the hosting
-    provider's rescue console to undo.
+    administrative group, and can authenticate — by an authorised key or by a
+    usable password. Either counts, because expiry is applied through PAM and
+    so bars every channel including the provider's rescue console, which never
+    consults `authorized_keys`; demanding a key measured SSH when the question
+    was about every way in, and refused the account a distribution's installer
+    made. A `!` or `*` hash is not a password: neither can be produced by any
+    input.
+  - Acceptance: I am told that root will no longer log in by any route,
+    including the rescue console, and the account that keeps access is named
+    back to me before I confirm — it is the only echo of what I typed before an
+    irreversible operation.
   - Acceptance: the account is expired, not merely password-locked. Whether a
     locked password also blocks a key depends on how the distribution built
     OpenSSH — it does on Alpine, which builds without PAM, and does not on
@@ -175,8 +204,10 @@ TUI or CLI:
 
 - As an **administrator**, I can install a shell, a multiplexer, a version
   manager or a language toolchain, so that the box has the tools I work with.
-  - Acceptance: installing a tool is not treated as destructive — it changes
-    nothing about how anyone logs in or what the machine serves.
+  - Acceptance: installing a tool asks first, like everything else that
+    changes the machine, but without the lockout warning — it changes nothing
+    about how anyone logs in or what the machine serves, and a warning that
+    appears everywhere is read nowhere.
   - Acceptance: installing a shell registers it in `/etc/shells` at the path
     the system actually resolves, and says plainly that no account has adopted
     it yet.
@@ -409,9 +440,23 @@ TUI or CLI:
 
 ### Running tasks safely
 
-- As an **administrator**, I am asked to confirm before any operation that
-  could lock me out of the server, so that a stray keystroke cannot strand me.
+- As an **administrator**, I am asked to confirm before **anything that changes
+  the machine**, so that no task installs software, enables a daemon or writes
+  a configuration file on a keystroke alone.
+  - Acceptance: only a task that purely reads runs without asking — today
+    `firewall.status`, `wireguard.status` and `caddy.validate`, and each says
+    so about itself. A task that writes cannot stay silent by omission: asking
+    is what it gets for saying nothing, which is the opposite of how this
+    behaved when `ssh.install` put an SSH server on a machine and enabled it
+    without a word.
   - Acceptance: the confirmation defaults to "no".
+  - Acceptance: the dialog has two levels, and the difference is what keeps
+    either worth reading. A change that could end the session applying it — the
+    firewall, the SSH ones, a login shell, locking root — is framed in red and
+    states the lockout risk. Everything else asks plainly, in the ordinary
+    frame. A red border on every task would mark none of them.
+  - Acceptance: the tree's `!` marker follows the same line, so the column
+    still names the handful that can strand me rather than nearly every row.
   - Platform exception: TUI only. On the CLI, running the subcommand *is* the
     confirmation.
 - As an **administrator**, I am offered the values this machine already records

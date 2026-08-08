@@ -136,6 +136,15 @@ Values are checked against the same rules the interactive form applies. A CLI
 argument never passes through the keystroke filter, so this is the only barrier
 between an argument and a system file.
 
+**A secret given here is an argument of `initd` itself.** `users.create`
+accepts `password=…`, and the tool keeps it out of the `argv` of every command
+it *spawns* — `chpasswd` reads it from stdin for exactly that reason. It cannot
+do anything about its own: `/proc/<pid>/cmdline` publishes this process's
+arguments to every account on the box while it runs, and the shell records the
+line in its history. The interactive form is where a password can be typed
+without either happening; on the command line, prefer creating the account
+without one and setting it with `passwd` afterwards.
+
 **Errors:** an unknown identifier exits `2`, as does a name the task does not
 declare, a value that fails validation, and a missing value with no default —
 each naming what was wrong rather than restating the whole usage. A task
@@ -193,18 +202,24 @@ as `name=value` pairs.
 Two are marked *interactive only* below, and that is a decision rather than a
 gap in the CLI: see the note under the table.
 
+The **Lockout** column marks the tasks whose change can end the session
+applying it — the ones the interactive interface frames in red and warns about
+before running. It is not a list of what modifies the machine: nearly every
+task does, and the interactive interface confirms before all of them. On the
+command line, running the subcommand *is* the confirmation.
+
 ### Identity & Access
 
-| Task id | Invocation | Destructive | Summary |
-|---------|-----------|-------------|---------|
-| `users.create` | `run <id> name=value` | no | Creates an account with a home directory, no password, and membership of the group granting sudo on this distribution. |
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
+| `users.create` | `run <id> name=value` | no | Creates an account with a home directory and membership of the group granting sudo on this distribution. `password=` is optional: empty or absent leaves the account without one, and a value is applied through `chpasswd` on stdin. |
 | `users.set-shell` | `run <id> name=value` | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
-| `users.lock-root` | interactive only | yes | Expires the root account so no method admits it. Refuses unless another account exists, can escalate, and holds an authorised key. |
+| `users.lock-root` | interactive only | yes | Expires the root account so no method admits it, including the provider's rescue console. Refuses unless another account exists, can escalate, and can authenticate — by an authorised key or by a usable password. |
 
 ### Remote Access — SSH
 
-| Task id | Invocation | Destructive | Summary |
-|---------|-----------|-------------|---------|
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `ssh.install` | `run ssh.install` | no | Installs the OpenSSH server and enables it at boot. |
 | `ssh.harden` | `run ssh.harden` | yes | Disables root login, password authentication, agent and X11 forwarding, tunnelling and user environments; limits authentication attempts and the login grace period; enables verbose logging. Refuses when no authorised key exists. |
 | `ssh.harden-strict` | `run ssh.harden-strict` | yes | Restricts key exchange, cipher, MAC and host key algorithms to a modern set, requires 3072-bit RSA keys, and disables TCP forwarding. Refuses when no authorised key exists. |
@@ -214,16 +229,16 @@ gap in the CLI: see the note under the table.
 
 ### Remote Access — WireGuard
 
-| Task id | Invocation | Destructive | Summary |
-|---------|-----------|-------------|---------|
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `wireguard.status` | `run wireguard.status` | no | Reports whether the tunnel is up and how many peers are configured. |
 | `wireguard.install` | `run <id> name=value` | no | Installs WireGuard, generates the server keys and writes `wg0.conf`. Refuses to overwrite an existing configuration. |
 | `wireguard.add-peer` | `run <id> name=value` | no | Generates a peer keypair, records it on the server, and prints the client configuration once. |
 
 ### Network
 
-| Task id | Invocation | Destructive | Summary |
-|---------|-----------|-------------|---------|
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `firewall.status` | `run firewall.status` | no | Reports whether inbound filtering is active and which ports it admits. |
 | `firewall.enable` | `run <id> name=value` | yes | Denies inbound traffic by default, admitting established connections, loopback and the SSH port. |
 | `firewall.allow-port` | `run <id> name=value` | no | Admits inbound traffic on one port, for one protocol. |
@@ -232,8 +247,8 @@ gap in the CLI: see the note under the table.
 
 ### Services
 
-| Task id | Invocation | Destructive | Summary |
-|---------|-----------|-------------|---------|
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `docker-rootless.install` | `run <id> name=value` | no | Installs the Docker engine under one account, with lingering enabled. Refuses an account with no subordinate id range. Where the distribution packages no Docker, registers Docker's own repository first, refusing if its signing key does not match the fingerprint this build carries. |
 | `caddy.install` | `run caddy.install` | no | Installs Caddy. From the distribution where one packages it, and it is enabled; otherwise from a checksum-verified release, and no service is enabled because there is no unit to enable. Writes no site configuration either way. |
 | `caddy.validate` | `run caddy.validate` | no | Asks Caddy whether its configuration parses. |
@@ -241,8 +256,8 @@ gap in the CLI: see the note under the table.
 
 ### Developer environment
 
-| Task id | Invocation | Destructive | Summary |
-|---------|-----------|-------------|---------|
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `fish.install` | `run fish.install` | no | Installs fish and registers it in `/etc/shells`. |
 | `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. |
 | `mise.install` | `run mise.install` | no | Installs mise. From the distribution where one packages it, otherwise from a checksum-verified release. |
@@ -250,8 +265,8 @@ gap in the CLI: see the note under the table.
 
 ### Hardening
 
-| Task id | Invocation | Destructive | Summary |
-|---------|-----------|-------------|---------|
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `fail2ban.install` | `run <id> name=value` | no | Watches the authentication log and bans addresses that fail repeatedly. Conflicts with `crowdsec.install`. |
 | `crowdsec.install` | `run crowdsec.install` | yes | Bans addresses a reputation network has seen attacking others. Reports what this host sees in exchange. Conflicts with `fail2ban.install`. |
 | `updates.unattended-security` | `run updates.unattended-security` | no | Applies security updates automatically, never rebooting. Debian only. |
@@ -263,8 +278,10 @@ Deliberate, not an oversight, and for the same reason in both cases.
 `users.lock-root` expires the root account. Every other change this tool makes
 is recoverable from a console; this one can require the hosting provider's
 rescue media. It refuses to run at all unless another account exists, can
-escalate and holds an authorised key — but those checks establish that a way
-back in *should* work, not that it does. Only a second session can prove that,
+escalate and can authenticate — by an authorised key *or* by a usable
+password, since expiry goes through PAM and therefore bars the rescue console
+too, which never consults `authorized_keys`. But those checks establish that a
+way back in *should* work, not that it does. Only a second session can prove that,
 and only the interactive interface can wait for one.
 
 `ssh.allow-users` is the other. `AllowUsers` naming an account that does not
