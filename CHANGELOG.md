@@ -142,6 +142,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not ship — the same shape as the `pgrep` finding already recorded.
 
 ### Fixed
+- Text is fitted to the screen by the cells it occupies rather than by the
+  characters it contains. A CJK ideograph and most emoji take two cells, so
+  `admin@東京サーバー本番` is fourteen characters and twenty-two: a pane twenty
+  wide was told it fitted, wrote no ellipsis, and let ratatui cut the tail off
+  when it drew — losing content and the mark that says content was lost. It is
+  reachable rather than hypothetical, since a public key's comment is never
+  validated beyond being non-control. Measured through `Span::width`, the same
+  number ratatui uses to draw, so no dependency was added: `unicode-width` was
+  already in the tree beneath it, and asking the drawing layer is what keeps
+  the two from disagreeing.
 - `initd run users.create user=deploy` runs. The command line treated "has no
   initial value" as "is required", so the optional password made it exit 2 with
   `needs: password` — refusing a value the field beside it in the interface

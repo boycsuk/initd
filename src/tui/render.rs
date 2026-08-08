@@ -164,8 +164,8 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
     // from a constant: a translation is a different width, and a hint
     // budgeted by English would wrap in any language whose word is longer.
     let hint = app.lang.render(&Msg::HeaderHelpHint);
-    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
-    let hint_width = hint.chars().count() + 1;
+    let used: usize = spans.iter().map(|span| cells(&span.content)).sum();
+    let hint_width = cells(&hint) + 1;
 
     if used + hint_width <= area.width as usize {
         let gap = area.width as usize - used - hint_width;
@@ -426,7 +426,7 @@ fn census_fits_beside(app: &App, border_width: u16, status_width: usize) -> bool
     // The border's own two corners are not available to either title.
     let available = (border_width as usize).saturating_sub(2);
 
-    census(app).chars().count() + GAP + status_width <= available
+    cells(&census(app)) + GAP + status_width <= available
 }
 
 /// Counts what the level on screen holds, for the tree's bottom border.
@@ -510,7 +510,7 @@ fn status_line(app: &App, now: Instant, width: u16) -> Option<Line<'static>> {
 
         // Two borders, the two spaces framing the line, and the separator this
         // message would add are all spoken for before it gets a cell.
-        let spent: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+        let spent: usize = spans.iter().map(|span| cells(&span.content)).sum();
         let reserved = spent + if spans.is_empty() { 4 } else { 9 };
         let available = (width as usize).saturating_sub(reserved);
 
@@ -779,12 +779,12 @@ pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> L
     //
     // Titles lose their tail, unlike breadcrumbs, which lose their head: a task
     // is identified by how its name starts, a path by where it ends.
-    let fixed = marker.chars().count() + trailing.chars().count();
+    let fixed = cells(marker) + cells(&trailing);
     // One space always separates the title from the trailing flag.
     let room_for_title = width.saturating_sub(fixed + 1);
     let title = truncate_tail(title, room_for_title);
 
-    let used = fixed + title.chars().count();
+    let used = fixed + cells(&title);
     let padding = width.saturating_sub(used).max(1);
 
     Line::from(vec![
@@ -795,11 +795,33 @@ pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> L
     ])
 }
 
+/// How many terminal cells a string occupies.
+///
+/// Not its character count, which is what every measurement here used to be. A
+/// CJK ideograph and most emoji take two cells, so `admin@東京サーバー本番` is
+/// fourteen characters and twenty-two cells: a pane twenty wide was told it
+/// fitted, wrote no ellipsis, and let ratatui cut two cells off the end. What
+/// is lost is the mark that says something was lost.
+///
+/// Reachable rather than hypothetical: `ParamKind::PublicKey` admits any
+/// non-control character and `is_valid_public_key` checks the type and the
+/// base64 body, never the comment — so `ssh-ed25519 AAAA… admin@東京` is a
+/// valid key that reaches the screen.
+///
+/// Measured through ratatui rather than by depending on `unicode-width`
+/// directly. The crate is already in the tree beneath ratatui, so this adds no
+/// name to audit either way, but `Span::width` is the number ratatui itself
+/// will use when it draws the same text — asking the drawing layer is what
+/// keeps the two from disagreeing.
+pub(super) fn cells(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
 /// Fits `text` into `width` cells, dropping characters from the end.
 ///
 /// The companion of [`truncate_head`], for text identified by how it starts.
-fn truncate_tail(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+pub(super) fn truncate_tail(text: &str, width: usize) -> String {
+    if cells(text) <= width {
         return text.to_owned();
     }
 
@@ -808,7 +830,25 @@ fn truncate_tail(text: &str, width: usize) -> String {
         return "…".repeat(width);
     }
 
-    text.chars().take(width - 1).chain(['…']).collect()
+    // Accumulated by cell rather than taken by count: a wide character straddles
+    // the boundary, so the last one that fits is found by adding them up.
+    let mut kept = String::new();
+    let mut used = 0;
+
+    for character in text.chars() {
+        let next = used + cells(character.encode_utf8(&mut [0; 4]));
+
+        // One cell is reserved for the ellipsis.
+        if next > width - 1 {
+            break;
+        }
+
+        kept.push(character);
+        used = next;
+    }
+
+    kept.push('…');
+    kept
 }
 
 /// Fits `text` into `width` cells, dropping characters from the front.
@@ -819,17 +859,27 @@ fn truncate_tail(text: &str, width: usize) -> String {
 /// framed against its border.
 pub(super) fn truncate_head(text: &str, width: u16) -> String {
     let available = width as usize;
-    let length = text.chars().count();
 
-    if length <= available {
+    if cells(text) <= available {
         return format!(" {text} ");
     }
 
-    // One cell goes to the ellipsis that marks the dropped head.
-    let kept: String = text
-        .chars()
-        .skip(length.saturating_sub(available.saturating_sub(1)))
-        .collect();
+    // Kept from the back, one cell at a time, since a wide character cannot be
+    // half included. One cell goes to the ellipsis marking the dropped head.
+    let budget = available.saturating_sub(1);
+    let mut kept = String::new();
+    let mut used = 0;
+
+    for character in text.chars().rev() {
+        let next = used + cells(character.encode_utf8(&mut [0; 4]));
+
+        if next > budget {
+            break;
+        }
+
+        kept.insert(0, character);
+        used = next;
+    }
 
     format!(" …{kept} ")
 }

@@ -241,7 +241,7 @@ impl OutputPane {
                 let width = area.width.saturating_sub(2) as usize;
 
                 // The two spaces framing each, and two more between them.
-                if follow.chars().count() + line.width() + 6 <= width {
+                if super::render::cells(&follow) + line.width() + 6 <= width {
                     block = block
                         .title_bottom(Span::styled(format!(" {follow} "), style::BLOCK_SUBTITLE));
                 }

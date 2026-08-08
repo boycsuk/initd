@@ -1791,12 +1791,69 @@ mod tests {
             fitted.trim_end().ends_with("Configuration"),
             "got {fitted:?}"
         );
-        assert!(fitted.chars().count() <= 22, "got {fitted:?}");
+        // Cells rather than characters, which is what the truncation itself
+        // now counts: measuring the result the old way would let a wide
+        // character through the assertion as well as through the code.
+        assert!(render::cells(&fitted) <= 22, "got {fitted:?}");
     }
 
     #[test]
     fn a_breadcrumb_that_fits_is_left_alone() {
         assert_eq!(truncate_head("Tasks", 20), " Tasks ");
+    }
+
+    #[test]
+    fn text_is_fitted_by_cells_rather_than_by_characters() {
+        // A CJK ideograph and most emoji take two cells. `admin@東京サーバー本番`
+        // is fourteen characters and twenty-two cells, so a pane twenty wide
+        // used to be told it fitted: no ellipsis was written and ratatui cut
+        // the tail off when it drew — losing content *and* the mark that says
+        // content was lost.
+        //
+        // Reachable rather than hypothetical: a public key's comment is never
+        // validated beyond being non-control, so `ssh-ed25519 AAAA…
+        // admin@東京` is a key this tool accepts and displays.
+        const WIDE: &str = "admin@東京サーバー本番";
+
+        assert_eq!(WIDE.chars().count(), 14, "fits by the old measure");
+        assert_eq!(render::cells(WIDE), 22, "does not fit by the real one");
+
+        let fitted = render::truncate_tail(WIDE, 20);
+
+        assert!(
+            render::cells(&fitted) <= 20,
+            "the result must fit the pane it was measured against: {fitted:?} \
+             takes {} cells",
+            render::cells(&fitted)
+        );
+
+        assert!(
+            fitted.ends_with('…'),
+            "and must say that something was dropped: {fitted:?}"
+        );
+    }
+
+    #[test]
+    fn a_breadcrumb_of_wide_characters_keeps_its_tail_within_the_border() {
+        // The same fault at the other end, and the case has to be one that the
+        // old measure would have let through: fourteen characters and
+        // twenty-two cells, so counting characters says it fits a pane of
+        // twenty and counting cells says it does not. A breadcrumb long by
+        // both measures is truncated either way and proves nothing.
+        const WIDE: &str = "設定 › リモート › 構成";
+
+        assert_eq!(WIDE.chars().count(), 14, "fits by the old measure");
+        assert_eq!(render::cells(WIDE), 22, "does not fit by the real one");
+
+        let fitted = truncate_head(WIDE, 20);
+
+        assert!(
+            render::cells(&fitted) <= 22,
+            "two cells of framing around twenty: {fitted:?} takes {}",
+            render::cells(&fitted)
+        );
+
+        assert!(fitted.starts_with(" …"), "got {fitted:?}");
     }
 
     #[test]
