@@ -204,6 +204,30 @@ impl FirewallManager for Firewalld {
         Ok(output.success())
     }
 
+    fn persist(&self, _executor: &dyn Executor) -> Result<()> {
+        // Nothing to do, and that is a property of this front-end rather than
+        // an omission. Every port goes in twice — runtime and `--permanent` —
+        // in `add_port`, and `enable` turns the unit on with `enable --now`, so
+        // both halves of "survives a reboot" are already done by the time
+        // anything could call this.
+        //
+        // Implemented explicitly rather than defaulted on the trait: a default
+        // would be inherited by the next front-end added, and "does nothing" is
+        // the wrong answer for anything that is not firewalld. The nftables
+        // implementation is what shows why — there, forgetting this leaves a
+        // server that comes back from a reboot with every port open.
+        Ok(())
+    }
+
+    fn is_persisted(&self, executor: &dyn Executor) -> Result<bool> {
+        // The unit being enabled is the whole question here: the rules are in
+        // the permanent configuration already, and what decides whether they
+        // come back is whether firewalld starts to read them.
+        let command = Command::new("systemctl").args(["is-enabled", "firewalld"]);
+
+        Ok(executor.run(&command)?.success())
+    }
+
     fn enable(&self, executor: &dyn Executor, keep_open: &[(u32, Protocol)]) -> Result<()> {
         // The ports go in before the daemon starts, which is the opposite of
         // the nftables implementation's problem and for the same reason. There

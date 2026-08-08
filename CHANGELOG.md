@@ -51,6 +51,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taking a suggestion would delete the names already typed.
 
 ### Security
+- The firewall survives a reboot. `nft` speaks only to the kernel, so every
+  rule `firewall.enable` and `firewall.allow-port` wrote was gone at the next
+  restart — on Debian, Arch and Alpine, and on a RHEL host whose administrator
+  removed firewalld. The task reported `inbound denied except 22/tcp` in the
+  present tense and the server came back with every port open, reporting
+  nothing. The `FirewallManager` trait grew `persist`/`is_persisted`: nftables
+  writes the whole ruleset where the boot replays it and turns that replay on,
+  firewalld answers that it already does both through `--permanent` and
+  `enable --now`. This is the mistake the sysctl tasks had already made and
+  fixed — a value that is right for reasons that do not outlive a restart —
+  applied to the state where it costs more. Which file the boot reads was
+  measured rather than assumed: `/etc/nftables.conf` under systemd on
+  `debian:13` and `archlinux:latest`, `/etc/nftables.nft` under OpenRC on
+  `alpine:3.23`, resolved by asking the host which init it runs rather than by
+  naming a family.
 - The escalation helper is looked for in the system's own binary directories
   rather than in `PATH`, and the path it was found at is what gets spawned.
   This process is unprivileged and escalates command by command, so it inherits
