@@ -7,9 +7,9 @@
 //! every handler has to remember.
 //!
 //! Separated from `app.rs` for navigation rather than for independence. This is
-//! the group that reaches furthest into `App` — fourteen of its twenty fields —
-//! so the file boundary does not buy any decoupling. It buys a reader who wants
-//! to know what `Esc` does somewhere to look in one place.
+//! the group that reaches furthest into `App` — sixteen of its twenty-one
+//! fields — so the file boundary does not buy any decoupling. It buys a reader
+//! who wants to know what `Esc` does somewhere to look in one place.
 
 use std::time::Instant;
 

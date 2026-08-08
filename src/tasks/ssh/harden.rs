@@ -33,7 +33,7 @@ use super::{has_authorized_key, reload_ssh, report, revertible};
 ///
 /// Keyboard-interactive authentication is absent deliberately: its keyword
 /// differs by version and is probed rather than assumed. See
-/// [`keyboard_interactive_keywords`].
+/// [`KEYBOARD_INTERACTIVE_KEYWORDS`] and [`disable_keyboard_interactive`].
 const SAFE_DIRECTIVES: [(&str, &str); 17] = [
     ("PermitRootLogin", "no"),
     ("PasswordAuthentication", "no"),
@@ -286,7 +286,7 @@ impl Task for HardenSshStrict {
 /// rejects the file, `write_validated` restores the backup, and every other
 /// directive set alongside it is lost. So each candidate is probed first and
 /// only the accepted ones are written. When none is accepted the setting is
-/// left alone and said so — the sixteen directives that did apply are worth
+/// left alone and said so — the seventeen directives that did apply are worth
 /// more than the one that could not.
 fn disable_keyboard_interactive(
     executor: &dyn Executor,
@@ -489,9 +489,24 @@ mod tests {
     }
 
     #[test]
+    fn the_safe_tier_writes_the_number_of_directives_it_claims() {
+        // The prose around this array said sixteen while the array held
+        // seventeen, in two places, and `integration_shared.rs` said
+        // seventeen — a number stated in three files and checked in none.
+        // Tied to the array here so the next directive added is a failing
+        // build rather than a comment that quietly stops being true.
+        assert_eq!(
+            SAFE_DIRECTIVES.len(),
+            17,
+            "update the seventeen named in this module's comments and in \
+             tests/integration_shared.rs"
+        );
+    }
+
+    #[test]
     fn hardening_skips_keyboard_interactive_when_neither_keyword_is_known() {
         // The property that makes probing worth its cost: one unusable keyword
-        // must not take the other sixteen directives down with it.
+        // must not take the other seventeen directives down with it.
         let bad_option = |keyword: &str| {
             Reply::failure(
                 1,

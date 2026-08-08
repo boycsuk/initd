@@ -106,17 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid key, and only the lax criterion admitted it.
 
 ### Changed
-- The parameter form takes the shared dialog width rather than declaring its
-  own. The four modals were unified on one number and this one kept a second
-  `72` beside it, agreeing by coincidence rather than by construction — which
-  is the arrangement the three widths before it also had. Its rendered width
-  is now asserted against the shared constant, as the confirmation's already
-  was.
-- `command -v` is written once. Four call sites had built the same `sh -c`
-  invocation, each carrying the decision to prefer it over `which` — absent on
-  some of these families, disagreeing about exit codes on others — and only
-  one carrying the reason, so the other three read like a line somebody could
-  simplify.
 - The help overlay is built once instead of on every frame. Nothing it reads
   can change while the program runs — its table of sections is a `const` and
   the locale is resolved once at startup — yet each redraw rebuilt forty-odd
@@ -124,6 +113,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list that could not have differed. It is the same waste the interface
   already avoids by holding a resolved `Lang` rather than calling `from_env`
   per message; the overlay was the one place still paying it.
+- The parameter form takes the shared dialog width rather than declaring its
+  own. The four modals were unified on one number and this one kept a second
+  `72` beside it, agreeing by coincidence rather than by construction — which
+  is the arrangement the three widths before it also had. Its rendered width
+  is now asserted against the shared constant, as the confirmation's already
+  was.
+- Five comments that stated a number the code contradicts now state the right
+  one, and the two that could be tied to their subject are. The safe hardening
+  tier was described as sixteen directives in two places while the array held
+  seventeen — a figure stated in three files and checked in none, so a test now
+  pins it. `App`'s field count was given as twenty in three module headers
+  after a field took it to twenty-one, and the counts of how many each module
+  reaches had drifted too. The key-bar comment listed `w`, removed with the
+  wrap toggle, and omitted `y`, added for the clipboard a dozen lines below it.
+  The catalogue's note on why a resolved `Lang` is held said sixty frames a
+  second where `POLL_INTERVAL` makes it ten. A doc link pointed at a function
+  name that never existed, which `cargo doc` had been warning about.
+- `command -v` is written once. Four call sites had built the same `sh -c`
+  invocation, each carrying the decision to prefer it over `which` — absent on
+  some of these families, disagreeing about exit codes on others — and only
+  one carrying the reason, so the other three read like a line somebody could
+  simplify.
 - The four modal dialogs share one set of rules — width, gutter, inset, and a
   rule above the footer. They had three widths between them (72, 70 and 64),
   each defensible alone and none chosen against the others, and the
