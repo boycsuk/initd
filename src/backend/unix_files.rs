@@ -11,9 +11,19 @@ use crate::exec::{Command, Executor};
 
 /// Suffix appended to backup copies.
 ///
-/// Fixed rather than timestamped so a repeated operation overwrites its own
-/// backup instead of littering `/etc` with copies. The value that matters is
-/// the state before the current change.
+/// Fixed rather than timestamped, so a file accumulates one backup instead of a
+/// directory full of them. The copy that matters is the state before the
+/// current change, and what bounds the cost of keeping only that one is the
+/// verification window: the interface is modal while it is open — every key
+/// goes to keeping or reverting — so a second task cannot touch the file until
+/// the first one's copy has done its job.
+///
+/// The command line has no such window, so two invocations in a row do replace
+/// the first copy with the state the first invocation produced. What that
+/// costs is bounded in turn by each task validating and rolling back on its
+/// own before it ever returns; what it leaves is an operator who ran two
+/// commands having a way back to the second, not the first. The path is
+/// printed for exactly that reason.
 const BACKUP_SUFFIX: &str = ".initd.bak";
 
 /// Suffix of the file a new version is written to before replacing the target.

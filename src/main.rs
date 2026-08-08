@@ -118,9 +118,14 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
     // finds themselves locked out needs the path, not a prompt they cannot
     // answer.
     if let Some(revert) = outcome.revert() {
+        // Both paths, because either alone leaves the operator working it out:
+        // the first names what changed, the second is what they would copy back
+        // over it. Naming only the file that changed sent them to the one they
+        // are locked out by.
         println!(
-            "the previous {} was kept; restore it if you lose access",
-            revert.describes()
+            "the previous {} was kept at {}; restore it if you lose access",
+            revert.describes(),
+            revert.restores_from()
         );
     }
 
