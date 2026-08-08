@@ -138,7 +138,7 @@ impl Task for ChangePort {
                 to: port.to_string(),
             },
         );
-        let backup = sshd_config::write_validated(executor, backend, &updated)?;
+        let backup = sshd_config::write_validated(executor, backend, &updated, progress)?;
 
         // Said before the steps below rather than after them: the file is
         // already written by this point, and each of the three that follow can
@@ -234,17 +234,18 @@ mod tests {
     #[test]
     fn changing_the_port_writes_and_validates() {
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"), // read
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok("600"),       // stat -c %a
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // mv
-            Reply::ok(""),          // sshd -t
-            Reply::failure(3, ""),  // ssh.socket is-active
-            Reply::failure(1, ""),  // ssh.socket is-enabled
-            Reply::ok(""),          // reload
+            Reply::ok("Port 22\n"),   // read
+            Reply::ok(""),            // test -e
+            Reply::ok(""),            // cp
+            Reply::ok(""),            // tee
+            Reply::ok("600"),         // stat -c %a
+            Reply::ok(""),            // chmod
+            Reply::ok(""),            // mv
+            Reply::ok(""),            // sshd -t
+            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::failure(3, ""),    // ssh.socket is-active
+            Reply::failure(1, ""),    // ssh.socket is-enabled
+            Reply::ok(""),            // reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -268,19 +269,20 @@ mod tests {
         // daemon may bind, so a reload onto an unlabelled port leaves a daemon
         // that will not start — from a file `sshd -t` approved.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"), // read
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok("600"),       // stat -c %a
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // mv
-            Reply::ok(""),          // sshd -t
-            Reply::failure(3, ""),  // ssh.socket is-active
-            Reply::failure(1, ""),  // ssh.socket is-enabled
-            Reply::ok(""),          // selinuxenabled
-            Reply::ok(""),          // semanage port -a
-            Reply::ok(""),          // reload
+            Reply::ok("Port 22\n"),   // read
+            Reply::ok(""),            // test -e
+            Reply::ok(""),            // cp
+            Reply::ok(""),            // tee
+            Reply::ok("600"),         // stat -c %a
+            Reply::ok(""),            // chmod
+            Reply::ok(""),            // mv
+            Reply::ok(""),            // sshd -t
+            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::failure(3, ""),    // ssh.socket is-active
+            Reply::failure(1, ""),    // ssh.socket is-enabled
+            Reply::ok(""),            // selinuxenabled
+            Reply::ok(""),            // semanage port -a
+            Reply::ok(""),            // reload
         ]);
         let backend = for_family(Family::Rhel);
 
@@ -315,18 +317,19 @@ mod tests {
         // policy that is not managed — reported as an error the administrator
         // would have to interpret, over a port that needed no label.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"), // read
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok("600"),       // stat -c %a
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // mv
-            Reply::ok(""),          // sshd -t
-            Reply::failure(3, ""),  // ssh.socket is-active
-            Reply::failure(1, ""),  // ssh.socket is-enabled
-            Reply::failure(1, ""),  // selinuxenabled: disabled
-            Reply::ok(""),          // reload
+            Reply::ok("Port 22\n"),   // read
+            Reply::ok(""),            // test -e
+            Reply::ok(""),            // cp
+            Reply::ok(""),            // tee
+            Reply::ok("600"),         // stat -c %a
+            Reply::ok(""),            // chmod
+            Reply::ok(""),            // mv
+            Reply::ok(""),            // sshd -t
+            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::failure(3, ""),    // ssh.socket is-active
+            Reply::failure(1, ""),    // ssh.socket is-enabled
+            Reply::failure(1, ""),    // selinuxenabled: disabled
+            Reply::ok(""),            // reload
         ]);
         let backend = for_family(Family::Rhel);
 
@@ -349,17 +352,18 @@ mod tests {
         // The three families that have no policy answer from a constant, so
         // the task's question costs them nothing — no command, no process.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"), // read
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok("600"),       // stat -c %a
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // mv
-            Reply::ok(""),          // sshd -t
-            Reply::failure(3, ""),  // ssh.socket is-active
-            Reply::failure(1, ""),  // ssh.socket is-enabled
-            Reply::ok(""),          // reload
+            Reply::ok("Port 22\n"),   // read
+            Reply::ok(""),            // test -e
+            Reply::ok(""),            // cp
+            Reply::ok(""),            // tee
+            Reply::ok("600"),         // stat -c %a
+            Reply::ok(""),            // chmod
+            Reply::ok(""),            // mv
+            Reply::ok(""),            // sshd -t
+            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::failure(3, ""),    // ssh.socket is-active
+            Reply::failure(1, ""),    // ssh.socket is-enabled
+            Reply::ok(""),            // reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -395,15 +399,16 @@ mod tests {
         // Debian's ssh.socket owns the port; editing sshd_config alone would
         // silently do nothing.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"), // read
-            Reply::ok(""),          // test -e
-            Reply::ok(""),          // cp
-            Reply::ok(""),          // tee
-            Reply::ok("600"),       // stat -c %a
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // mv
-            Reply::ok(""),          // sshd -t
-            Reply::ok("active\n"),  // ssh.socket is active
+            Reply::ok("Port 22\n"),   // read
+            Reply::ok(""),            // test -e
+            Reply::ok(""),            // cp
+            Reply::ok(""),            // tee
+            Reply::ok("600"),         // stat -c %a
+            Reply::ok(""),            // chmod
+            Reply::ok(""),            // mv
+            Reply::ok(""),            // sshd -t
+            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::ok("active\n"),    // ssh.socket is active
             Reply::ok("enabled\n"),
             Reply::ok(""),
         ]);

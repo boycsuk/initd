@@ -141,7 +141,7 @@ impl Task for HardenSsh {
 
         let hardened = disable_keyboard_interactive(executor, &hardened, progress)?;
 
-        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
+        let backup = sshd_config::write_validated(executor, backend, &hardened, progress)?;
 
         if let Some(ref backup) = backup {
             report(
@@ -275,7 +275,7 @@ impl Task for HardenSshStrict {
                 sshd_config::set_directive(&acc, directive, value)
             });
 
-        let backup = sshd_config::write_validated(executor, backend, &hardened)?;
+        let backup = sshd_config::write_validated(executor, backend, &hardened, progress)?;
 
         if let Some(ref backup) = backup {
             report(

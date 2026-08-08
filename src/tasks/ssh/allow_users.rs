@@ -153,7 +153,7 @@ impl Task for RestrictUsers {
         );
 
         let updated = sshd_config::set_directive(&contents, "AllowUsers", &users);
-        let backup = sshd_config::write_validated(executor, backend, &updated)?;
+        let backup = sshd_config::write_validated(executor, backend, &updated, progress)?;
 
         if let Some(ref backup) = backup {
             report(

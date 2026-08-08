@@ -129,6 +129,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file `wg-quick` cannot read.
 
 ### Fixed
+- Every task that edits `sshd_config` says so when the daemon will not honour
+  what was written. `sshd -t` reports that a file parses, not that it wins:
+  Debian 12, Ubuntu 22.04 and RHEL 9 all ship `Include
+  /etc/ssh/sshd_config.d/*.conf` as the first line, and sshd takes the first
+  occurrence of a directive, so a drop-in left by a provider image beats
+  everything below it. Reproduced on `debian:13`: with `PasswordAuthentication
+  yes` in `50-cloud-init.conf`, `ssh.harden` wrote `PasswordAuthentication no`,
+  `sshd -t` approved, the task reported success, and `sshd -T` answered
+  `passwordauthentication yes`. The effective configuration is now read back
+  and any directive the daemon disagrees with is named. Warned rather than
+  refused, and nothing is rolled back — what was written is correct, and an
+  administrator who put the drop-in there meant to. Only the global section is
+  compared: what follows a `Match` belongs to that block, so comparing it would
+  report the block working as designed. Until now this was mitigated for one
+  task on one family, by excluding `ssh.harden-strict` on RHEL.
 - A command that stops producing output no longer strands the task waiting on
   it. Cancellation is checked between commands, so it cannot reach one already
   running: a child that neither exits nor speaks — blocked on a prompt
