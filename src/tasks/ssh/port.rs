@@ -236,6 +236,9 @@ mod tests {
             Reply::ok(""),          // test -e
             Reply::ok(""),          // cp
             Reply::ok(""),          // tee
+            Reply::ok("600"),       // stat -c %a
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // mv
             Reply::ok(""),          // sshd -t
             Reply::failure(3, ""),  // ssh.socket is-active
             Reply::failure(1, ""),  // ssh.socket is-enabled
@@ -267,6 +270,9 @@ mod tests {
             Reply::ok(""),          // test -e
             Reply::ok(""),          // cp
             Reply::ok(""),          // tee
+            Reply::ok("600"),       // stat -c %a
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // mv
             Reply::ok(""),          // sshd -t
             Reply::failure(3, ""),  // ssh.socket is-active
             Reply::failure(1, ""),  // ssh.socket is-enabled
@@ -311,6 +317,9 @@ mod tests {
             Reply::ok(""),          // test -e
             Reply::ok(""),          // cp
             Reply::ok(""),          // tee
+            Reply::ok("600"),       // stat -c %a
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // mv
             Reply::ok(""),          // sshd -t
             Reply::failure(3, ""),  // ssh.socket is-active
             Reply::failure(1, ""),  // ssh.socket is-enabled
@@ -342,6 +351,9 @@ mod tests {
             Reply::ok(""),          // test -e
             Reply::ok(""),          // cp
             Reply::ok(""),          // tee
+            Reply::ok("600"),       // stat -c %a
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // mv
             Reply::ok(""),          // sshd -t
             Reply::failure(3, ""),  // ssh.socket is-active
             Reply::failure(1, ""),  // ssh.socket is-enabled
@@ -381,12 +393,15 @@ mod tests {
         // Debian's ssh.socket owns the port; editing sshd_config alone would
         // silently do nothing.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok("active\n"), // ssh.socket is active
+            Reply::ok("Port 22\n"), // read
+            Reply::ok(""),          // test -e
+            Reply::ok(""),          // cp
+            Reply::ok(""),          // tee
+            Reply::ok("600"),       // stat -c %a
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // mv
+            Reply::ok(""),          // sshd -t
+            Reply::ok("active\n"),  // ssh.socket is active
             Reply::ok("enabled\n"),
             Reply::ok(""),
         ]);

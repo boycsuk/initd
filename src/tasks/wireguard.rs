@@ -611,13 +611,16 @@ mod tests {
             Reply::ok(KEY),        // wg genkey
             Reply::ok(KEY),        // wg genpsk
             Reply::ok(KEY),        // wg pubkey
-            Reply::ok(""),         // test -e, opening the empty write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: create the file empty
+            Reply::failure(1, ""), // test -e, opening the empty write
+            Reply::ok(""),         // tee: stage the empty file
+            Reply::ok(""),         // mv: publish it
             Reply::ok(""),         // chmod 600, before any secret exists
             Reply::ok(""),         // test -e, opening the real write
             Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: the configuration, with the key
+            Reply::ok(""),         // tee: stage the configuration, with the key
+            Reply::ok("600"),      // stat -c %a: the mode set a moment ago
+            Reply::ok(""),         // chmod: carry it onto the staging file
+            Reply::ok(""),         // mv: publish it, already restricted
             Reply::ok(""),         // systemctl enable
         ]);
         let backend = for_family(Family::Debian);

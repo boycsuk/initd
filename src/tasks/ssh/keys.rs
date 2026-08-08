@@ -333,14 +333,17 @@ mod tests {
             Reply::ok(""),          // install -d
             Reply::ok(""),          // chown dir
             Reply::failure(1, ""),  // test -e: authorized_keys absent
-            Reply::ok(""),          // test -e, opening the empty write
-            Reply::ok(""),          // cp -p: backup
-            Reply::ok(""),          // tee: create it empty
+            Reply::failure(1, ""),  // test -e, opening the empty write
+            Reply::ok(""),          // tee: stage the empty file
+            Reply::ok(""),          // mv: publish it
             Reply::ok(""),          // chmod 600, before any key exists
             Reply::ok(""),          // chown file
             Reply::ok(""),          // test -e, opening the real write
             Reply::ok(""),          // cp -p: backup
-            Reply::ok(""),          // tee: the key
+            Reply::ok(""),          // tee: stage the key
+            Reply::ok("600"),       // stat -c %a: the mode just set
+            Reply::ok(""),          // chmod: carry it onto the staging file
+            Reply::ok(""),          // mv: publish it
         ]);
         let backend = for_family(Family::Debian);
 
@@ -426,14 +429,17 @@ mod tests {
             Reply::ok(""),         // install -d
             Reply::ok(""),         // chown dir
             Reply::failure(1, ""), // test -e: authorized_keys absent
-            Reply::ok(""),         // test -e, opening the empty write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: create it empty
+            Reply::failure(1, ""), // test -e, opening the empty write
+            Reply::ok(""),         // tee: stage the empty file
+            Reply::ok(""),         // mv: publish it
             Reply::ok(""),         // chmod
             Reply::ok(""),         // chown file
             Reply::ok(""),         // test -e, opening the real write
             Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: the key
+            Reply::ok(""),         // tee: stage the key
+            Reply::ok("600"),      // stat -c %a
+            Reply::ok(""),         // chmod: carry the mode over
+            Reply::ok(""),         // mv: publish it
         ]);
         let backend = for_family(Family::Debian);
 

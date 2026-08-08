@@ -16,6 +16,12 @@ use crate::exec::{Command, Executor};
 /// the state before the current change.
 const BACKUP_SUFFIX: &str = ".initd.bak";
 
+/// Suffix of the file a new version is written to before replacing the target.
+///
+/// Distinct from [`BACKUP_SUFFIX`] so a staging file left behind by an
+/// interrupted write is never mistaken for the backup a revert would restore.
+const STAGING_SUFFIX: &str = ".initd.new";
+
 /// Edits files using standard POSIX utilities.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UnixFiles;
@@ -28,6 +34,18 @@ impl UnixFiles {
     /// Path where the backup of a file is kept.
     fn backup_path(path: &str) -> String {
         format!("{path}{BACKUP_SUFFIX}")
+    }
+
+    /// Path a new version is written to before being moved into place.
+    ///
+    /// Beside the target rather than in `/tmp`, because a rename is only atomic
+    /// within a filesystem: across two, `mv` copies, and the guarantee is lost
+    /// precisely where `/etc` and `/tmp` are separate mounts. Sitting in the
+    /// same directory also means the file is created under the same policy —
+    /// SELinux labels a new file from its parent, so a staging file made in
+    /// `/tmp` would arrive mislabelled.
+    fn staging_path(path: &str) -> String {
+        format!("{path}{STAGING_SUFFIX}")
     }
 }
 
@@ -78,12 +96,65 @@ impl FileEditor for UnixFiles {
             None
         };
 
+        // Written beside the target and moved over it, rather than into it.
+        // `tee` truncates and then writes, so a process that dies between the
+        // two — a full disk, an OOM kill, the power going — leaves
+        // `sshd_config` empty or half a file, which is a third state neither
+        // the change nor the backup describes. A rename within one directory
+        // is atomic: every reader sees the old file or the new one.
+        //
+        // The temporary sits in the target's own directory because a rename
+        // across filesystems is not a rename — `mv` falls back to copying, and
+        // the guarantee is lost exactly where /etc and /tmp are separate
+        // mounts.
+        let staged = Self::staging_path(path);
+
         // Contents travel on stdin, never as an argument: an argument would
         // need shell escaping, and a flaw in that escaping is a root-level
         // command injection.
-        let command = Command::new("tee").arg(path).privileged().stdin(contents);
+        let write = Command::new("tee")
+            .arg(&staged)
+            .privileged()
+            .stdin(contents);
 
-        run_checked(executor, &command)?;
+        run_checked(executor, &write)?;
+
+        // The mode goes on before the move, not after: a file created with the
+        // process umask is world-readable for as long as a later chmod takes,
+        // and `wg0.conf` is where that was found. An existing file keeps its
+        // own mode rather than being given a default — the tool is editing it,
+        // not deciding what it should be.
+        //
+        // Read with `stat -c` and applied with `chmod`, rather than in one step
+        // with `chmod --reference` or `cp --preserve=mode`: neither exists on
+        // busybox. Measured on `alpine:3.23`, where both fail and `stat -c %a`
+        // answers `644` — the same lesson `diff`, `cmp` and `pgrep` each taught
+        // once, which is that a tool present on Debian is not thereby present
+        // everywhere.
+        if backup.is_some() {
+            let mode = Command::new("stat").args(["-c", "%a", path]).privileged();
+            let output = executor.run(&mode)?;
+
+            if !output.success() {
+                return Err(Error::CommandFailed {
+                    command: mode.to_string(),
+                    code: output.code,
+                    stderr: output.stderr,
+                });
+            }
+
+            let apply = Command::new("chmod")
+                .args([output.stdout.trim(), &staged])
+                .privileged();
+
+            run_checked(executor, &apply)?;
+        }
+
+        let install = Command::new("mv")
+            .args([&staged, &path.to_owned()])
+            .privileged();
+
+        run_checked(executor, &install)?;
 
         Ok(backup)
     }
@@ -168,7 +239,14 @@ mod tests {
     #[test]
     fn write_backs_up_an_existing_file_first() {
         // First reply answers `test -e` with success, so a backup is taken.
-        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok(""), Reply::ok("")]);
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),    // test -e
+            Reply::ok(""),    // cp -p
+            Reply::ok(""),    // tee (staging)
+            Reply::ok("600"), // stat -c %a
+            Reply::ok(""),    // chmod
+            Reply::ok(""),    // mv
+        ]);
 
         let backup = UnixFiles::new()
             .write(&mock, CONFIG, "Port 2222\n")
@@ -181,8 +259,92 @@ mod tests {
             [
                 format!("test -e {CONFIG}"),
                 format!("cp -p {CONFIG} {CONFIG}{BACKUP_SUFFIX}"),
-                format!("tee {CONFIG}"),
+                format!("tee {CONFIG}{STAGING_SUFFIX}"),
+                format!("stat -c %a {CONFIG}"),
+                format!("chmod 600 {CONFIG}{STAGING_SUFFIX}"),
+                format!("mv {CONFIG}{STAGING_SUFFIX} {CONFIG}"),
             ]
+        );
+    }
+
+    #[test]
+    fn the_target_is_never_the_file_being_written_to() {
+        // `tee` truncates and then writes, so a process that dies between the
+        // two leaves the target empty or half a file — a third state neither
+        // the change nor the backup describes, on a file that decides whether
+        // anyone can log in. A rename within a directory is atomic: a reader
+        // sees the old file or the new one.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok("644"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        UnixFiles::new()
+            .write(&mock, CONFIG, "Port 2222\n")
+            .expect("write must work");
+
+        let written_to = mock
+            .recorded()
+            .into_iter()
+            .find(|command| command.program == "tee")
+            .map(|command| command.args.join(" "))
+            .expect("tee must have run");
+
+        assert_ne!(
+            written_to, CONFIG,
+            "the live file must never be the one truncated"
+        );
+
+        assert!(
+            written_to.starts_with(CONFIG),
+            "and the staging file must sit beside it, or the rename crosses a \
+             filesystem and stops being atomic: {written_to}"
+        );
+    }
+
+    #[test]
+    fn an_existing_files_mode_survives_being_rewritten() {
+        // A staging file is created with the process umask, so moving it over a
+        // 0600 file would publish it at 0644. Read with `stat -c` and applied
+        // with `chmod` rather than in one step: `chmod --reference` and
+        // `cp --preserve=mode` are GNU extensions, and both fail on busybox —
+        // measured on alpine:3.23.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok("600\n"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        UnixFiles::new()
+            .write(&mock, CONFIG, "secret\n")
+            .expect("write must work");
+
+        let lines = mock.recorded_lines();
+        let chmod = lines
+            .iter()
+            .position(|line| line.starts_with("chmod"))
+            .expect("the mode must be applied");
+        let moved = lines
+            .iter()
+            .position(|line| line.starts_with("mv"))
+            .expect("the file must be moved into place");
+
+        assert_eq!(
+            lines[chmod],
+            format!("chmod 600 {CONFIG}{STAGING_SUFFIX}"),
+            "the original's own mode, not a default"
+        );
+
+        assert!(
+            chmod < moved,
+            "the mode goes on before the file is visible, never after: {lines:?}"
         );
     }
 
@@ -202,7 +364,11 @@ mod tests {
         // The security property: file contents must not be interpolated into
         // a command line where they would need escaping.
         let contents = "Port 22\n# a \"quoted\" $(injection) attempt\n";
-        let mock = MockExecutor::with_replies([Reply::failure(1, ""), Reply::ok("")]);
+        let mock = MockExecutor::with_replies([
+            Reply::failure(1, ""), // test -e: a new file
+            Reply::ok(""),         // tee (staging)
+            Reply::ok(""),         // mv
+        ]);
 
         UnixFiles::new()
             .write(&mock, CONFIG, contents)
@@ -215,7 +381,11 @@ mod tests {
             .expect("tee must have run");
 
         assert_eq!(tee.stdin.as_deref(), Some(contents));
-        assert_eq!(tee.args, [CONFIG], "contents must not appear in arguments");
+        assert_eq!(
+            tee.args,
+            [format!("{CONFIG}{STAGING_SUFFIX}")],
+            "contents must not appear in arguments"
+        );
     }
 
     #[test]

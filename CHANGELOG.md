@@ -51,6 +51,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taking a suggestion would delete the names already typed.
 
 ### Security
+- A configuration file is written beside itself and moved into place, rather
+  than written into. `tee` truncates and then writes, so a process that died
+  between the two — a full disk, an OOM kill, the power going — left
+  `sshd_config` empty or half a file: a third state neither the change nor the
+  backup describes, on the file that decides whether anybody can log in. A
+  rename within a directory is atomic, so a reader sees the old file or the new
+  one. The staging file sits beside the target rather than in `/tmp`, because a
+  rename across filesystems is not a rename and SELinux labels a new file from
+  its parent.
+- A rewritten file keeps its own mode. The staging file is created with the
+  process umask, so moving it over a `0600` file would have published it at
+  `0644`. The mode is read with `stat -c` and applied with `chmod` before the
+  move — not with `chmod --reference` or `cp --preserve=mode`, which are GNU
+  extensions that both fail on busybox. Measured on `alpine:3.23` rather than
+  assumed, which is the same lesson `diff`, `cmp` and `pgrep` each taught once.
 - The firewall survives a reboot. `nft` speaks only to the kernel, so every
   rule `firewall.enable` and `firewall.allow-port` wrote was gone at the next
   restart — on Debian, Arch and Alpine, and on a RHEL host whose administrator

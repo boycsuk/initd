@@ -476,7 +476,10 @@ mod tests {
             Reply::ok(""),        // install
             Reply::ok(""),        // the policy file exists?
             Reply::ok(""),        // back it up
-            Reply::ok(""),        // write it
+            Reply::ok(""),        // stage it
+            Reply::ok("644"),     // stat -c %a
+            Reply::ok(""),        // chmod
+            Reply::ok(""),        // mv: publish it
             Reply::ok("enabled"), // the timer is on
         ]);
         let backend = for_family(Family::Debian);

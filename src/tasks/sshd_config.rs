@@ -426,7 +426,10 @@ mod tests {
         let mock = MockExecutor::with_exact_replies([
             Reply::ok(""),                                        // test -e
             Reply::ok(""),                                        // cp -p: backup
-            Reply::ok(""),                                        // tee: write
+            Reply::ok(""),                                        // tee: stage
+            Reply::ok("600"),                                     // stat -c %a
+            Reply::ok(""),                                        // chmod
+            Reply::ok(""),                                        // mv: publish
             Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
             Reply::ok(""),                                        // cp -p: restore
         ]);
@@ -458,7 +461,10 @@ mod tests {
         let mock = MockExecutor::with_exact_replies([
             Reply::ok(""),                                        // test -e
             Reply::ok(""),                                        // cp -p: backup
-            Reply::ok(""),                                        // tee: write
+            Reply::ok(""),                                        // tee: stage
+            Reply::ok("600"),                                     // stat -c %a
+            Reply::ok(""),                                        // chmod
+            Reply::ok(""),                                        // mv: publish
             Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
             Reply::failure(1, "cp: cannot create regular file"),  // cp -p: restore
         ]);
@@ -515,9 +521,12 @@ mod tests {
     fn missing_host_keys_do_not_roll_back_a_valid_file() {
         // The Arch case: the write must survive an inconclusive validation.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
+            Reply::ok(""),    // test -e
+            Reply::ok(""),    // cp -p: backup
+            Reply::ok(""),    // tee: stage
+            Reply::ok("600"), // stat -c %a
+            Reply::ok(""),    // chmod
+            Reply::ok(""),    // mv: publish
             Reply::failure(1, "no hostkeys available -- exiting."),
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Arch);
