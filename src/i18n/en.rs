@@ -54,6 +54,16 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::CommandTerminatedBySignal { command } => {
             format!("`{command}` was terminated by a signal, with no exit code")
         }
+        // Says the process is still running, because it is: waiting stopped,
+        // the child did not. An operator told only that something "timed out"
+        // would reasonably assume the machine is back to where it started.
+        Msg::CommandSilent { command, seconds } => {
+            format!(
+                "`{command}` produced no output for {seconds} seconds and is still \
+                 running; it was left alone rather than killed, since stopping it \
+                 part-way through would leave half of its work applied"
+            )
+        }
         Msg::CommandIo { command, source } => {
             format!("I/O error while running `{command}`: {source}")
         }

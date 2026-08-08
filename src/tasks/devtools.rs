@@ -449,7 +449,7 @@ impl Task for InstallRust {
 /// Arch and at either `/usr/bin/fish` or `/bin/fish` on Debian depending on
 /// the release, and a path that does not match what is installed produces a
 /// login shell nobody can use.
-fn resolve_program(executor: &dyn Executor, program: &str) -> Result<String> {
+fn resolve_program(executor: &dyn Executor, program: &'static str) -> Result<String> {
     let output = executor.run(&Command::locating(program))?;
 
     if !output.success() {

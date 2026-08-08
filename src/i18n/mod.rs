@@ -118,6 +118,10 @@ pub enum Msg {
     CommandTerminatedBySignal {
         command: String,
     },
+    CommandSilent {
+        command: String,
+        seconds: u64,
+    },
     CommandIo {
         command: String,
         source: String,

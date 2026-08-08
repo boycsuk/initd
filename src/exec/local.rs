@@ -15,6 +15,26 @@ use super::{
 use crate::error::{Error, Result};
 use crate::exec::privilege::{AuthNeed, PrivilegeEscalator};
 
+/// How long a running command may say nothing before the interface says so.
+///
+/// Silence rather than total runtime is what is measured: installing a kernel
+/// is allowed to take an hour and does not stop talking for an hour while it
+/// does. Five minutes is longer than any quiet stretch observed from the
+/// package managers this drives, and short enough that an operator watching a
+/// stalled task learns something before deciding to abandon it.
+const SILENCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How many silent stretches pass before the executor stops waiting.
+///
+/// The child is left running rather than killed — tasks are not idempotent, so
+/// stopping one mid-step leaves half of it applied with no way to know which
+/// half, which is the same reason cancellation refuses the next command rather
+/// than interrupting this one. What ends is *waiting*: the task finishes with
+/// an error naming the command, the interface comes back, and the operator
+/// decides what to do about a process that has said nothing for a quarter of
+/// an hour.
+const SILENT_STRETCHES_ALLOWED: u32 = 3;
+
 /// The locale every child is given, overriding whatever the operator's own
 /// environment carries.
 ///
@@ -53,6 +73,11 @@ pub struct LocalExecutor {
     /// terminal the operator is looking at. The interface takes the screen
     /// away, so it has to be handed the lines instead.
     observer: Option<Arc<dyn OutputObserver>>,
+    /// How long a running command may say nothing before waiting stops.
+    ///
+    /// A field rather than the constant read directly, so a test can reach the
+    /// path without waiting five minutes for it.
+    silence: std::time::Duration,
 }
 
 impl LocalExecutor {
@@ -63,6 +88,7 @@ impl LocalExecutor {
             broker: None,
             cancel: None,
             observer: None,
+            silence: SILENCE_DEADLINE,
         }
     }
 
@@ -76,6 +102,7 @@ impl LocalExecutor {
             broker: Some(broker),
             cancel: None,
             observer: None,
+            silence: SILENCE_DEADLINE,
         }
     }
 
@@ -96,6 +123,20 @@ impl LocalExecutor {
         self
     }
 
+    /// Shortens the silence a command is allowed, for tests.
+    ///
+    /// The deadline is five minutes, which is the right length for a package
+    /// manager and the wrong length for a test suite. Injectable rather than
+    /// merely documented, because a path nothing exercises is a path nothing
+    /// checks — and this one exists precisely for the case that is hard to
+    /// reach on purpose.
+    #[cfg(test)]
+    #[must_use]
+    fn silent_for_at_most(mut self, silence: std::time::Duration) -> Self {
+        self.silence = silence;
+        self
+    }
+
     /// Runs a child, draining both pipes concurrently and reporting each line.
     ///
     /// Both pipes are read on their own threads, and neither may be read to
@@ -110,8 +151,9 @@ impl LocalExecutor {
     fn stream_child(
         &self,
         child: &mut std::process::Child,
+        command: &Command,
         observer: &Arc<dyn OutputObserver>,
-    ) -> (String, String) {
+    ) -> Result<(String, String)> {
         let (sender, lines) = mpsc::channel();
 
         let readers: Vec<_> = [
@@ -140,7 +182,54 @@ impl LocalExecutor {
         let mut stdout = String::new();
         let mut stderr = String::new();
 
-        for line in lines {
+        // Drained with a deadline rather than by iterating the channel to its
+        // end. Cancellation is checked between commands, so it cannot reach a
+        // command already running: a child that neither exits nor speaks —
+        // waiting on a prompt inherited from a terminal nobody is looking at,
+        // or blocked on a network mount — leaves the task thread here forever,
+        // with the interface reporting it as running and the stop key unable
+        // to help.
+        //
+        // Silence is the signal, not total runtime: a package installation is
+        // allowed to take an hour, and does not go quiet for an hour while
+        // doing it.
+        let mut silent_stretches = 0;
+
+        loop {
+            let line = match lines.recv_timeout(self.silence) {
+                Ok(line) => {
+                    silent_stretches = 0;
+                    line
+                }
+                // Both readers have finished and dropped their senders, which
+                // is the ordinary end of a command's output.
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    silent_stretches += 1;
+
+                    // Said before giving up, and said again each stretch: a
+                    // slow package manager and a stalled one look identical
+                    // from here, and the operator is the one who can tell them
+                    // apart.
+                    observer.line(OutputLine {
+                        stream: Stream::Stderr,
+                        text: format!(
+                            "no output for {} seconds",
+                            self.silence.as_secs() * u64::from(silent_stretches)
+                        ),
+                    });
+
+                    if silent_stretches >= SILENT_STRETCHES_ALLOWED {
+                        return Err(Error::CommandSilent {
+                            command: command.to_string(),
+                            seconds: self.silence.as_secs() * u64::from(SILENT_STRETCHES_ALLOWED),
+                        });
+                    }
+
+                    continue;
+                }
+            };
+
             // `Command` is announced by `run`, never read off a pipe, so the
             // readers below can only produce the two real streams.
             if let Stream::Stdout | Stream::Stderr = line.stream {
@@ -163,7 +252,7 @@ impl LocalExecutor {
             let _ = reader.join();
         }
 
-        (stdout, stderr)
+        Ok((stdout, stderr))
     }
 
     /// Refuses to start a command once the operator has asked the task to stop.
@@ -318,7 +407,7 @@ impl Executor for LocalExecutor {
         // reaches the terminal the operator is reading.
         let (code, stdout, stderr) = match self.observer.as_ref() {
             Some(observer) => {
-                let (stdout, stderr) = self.stream_child(&mut child, observer);
+                let (stdout, stderr) = self.stream_child(&mut child, command, observer)?;
 
                 let status = child.wait().map_err(|source| Error::CommandIo {
                     command: command.to_string(),
@@ -462,6 +551,59 @@ mod tests {
 
         assert!(out.success());
         assert_eq!(out.stdout.trim(), "hello");
+    }
+
+    #[test]
+    fn a_command_that_goes_quiet_forever_stops_being_waited_for() {
+        // Cancellation is checked between commands, so it cannot reach one
+        // already running: a child that neither exits nor speaks left the task
+        // thread here forever, with the interface reporting it as running and
+        // the stop key unable to help. `sleep` with no output is that child.
+        let observer = Arc::new(Recorder::default());
+        let executor = LocalExecutor::new(Box::new(NoEscalation))
+            .observed_by(observer.clone())
+            .silent_for_at_most(std::time::Duration::from_millis(50));
+
+        let err = executor
+            .run(&Command::new("sleep").arg("30"))
+            .expect_err("a silent child must not be waited on forever");
+
+        let Error::CommandSilent { command, .. } = &err else {
+            panic!("the error must name the silence: {err:?}");
+        };
+
+        assert!(command.contains("sleep"), "{command}");
+
+        // Said on the way, not only at the end: a slow package manager and a
+        // stalled one look identical from here, and the operator is the one who
+        // can tell them apart.
+        let warnings = observer.seen();
+
+        assert!(
+            warnings.iter().any(|line| line.contains("no output")),
+            "the wait must be reported while it happens: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_talkative_command_is_never_treated_as_silent() {
+        // The deadline measures silence, not runtime. A command that keeps
+        // speaking must be allowed to run past it — otherwise installing a
+        // kernel becomes an error.
+        let observer = Arc::new(Recorder::default());
+        let executor = LocalExecutor::new(Box::new(NoEscalation))
+            .observed_by(observer)
+            .silent_for_at_most(std::time::Duration::from_millis(80));
+
+        let out = executor
+            .run(&Command::new("sh").args([
+                "-c",
+                "i=0; while [ $i -lt 6 ]; do echo working; sleep 0.05; i=$((i+1)); done",
+            ]))
+            .expect("a command that keeps talking must be allowed to finish");
+
+        assert!(out.success());
+        assert_eq!(out.stdout.lines().count(), 6);
     }
 
     #[test]

@@ -93,6 +93,20 @@ pub enum Error {
     /// The process died from a signal, leaving no exit code.
     CommandTerminatedBySignal { command: String },
 
+    /// A command produced no output for long enough that waiting stopped.
+    ///
+    /// The child is left running rather than killed: tasks are not idempotent,
+    /// so stopping one mid-step leaves half of it applied with no way to know
+    /// which half — the same reasoning that has cancellation refuse the next
+    /// command instead of interrupting the running one. What ends is the wait.
+    ///
+    /// It exists because cancellation cannot reach a command already running,
+    /// so a child that neither exits nor speaks — blocked on a prompt inherited
+    /// from a terminal nobody is looking at, or on an unreachable mount — left
+    /// the task thread waiting forever while the interface reported it as
+    /// running and the stop key did nothing.
+    CommandSilent { command: String, seconds: u64 },
+
     /// I/O failure while spawning or reading the process.
     CommandIo {
         command: String,
@@ -370,6 +384,10 @@ impl Error {
             },
             Self::CommandTerminatedBySignal { command } => Msg::CommandTerminatedBySignal {
                 command: command.clone(),
+            },
+            Self::CommandSilent { command, seconds } => Msg::CommandSilent {
+                command: command.clone(),
+                seconds: *seconds,
             },
             Self::CommandIo { command, source } => Msg::CommandIo {
                 command: command.clone(),

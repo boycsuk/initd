@@ -33,7 +33,7 @@ impl ReleaseInstaller {
 }
 
 impl BinaryInstaller for ReleaseInstaller {
-    fn is_installed(&self, executor: &dyn Executor, program: &str) -> Result<bool> {
+    fn is_installed(&self, executor: &dyn Executor, program: &'static str) -> Result<bool> {
         Ok(executor.run(&Command::locating(program))?.success())
     }
 

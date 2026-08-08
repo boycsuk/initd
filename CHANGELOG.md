@@ -115,6 +115,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry is *applied* differently by each and stored identically.
 
 ### Fixed
+- A command that stops producing output no longer strands the task waiting on
+  it. Cancellation is checked between commands, so it cannot reach one already
+  running: a child that neither exits nor speaks — blocked on a prompt
+  inherited from a terminal nobody is looking at, or on an unreachable mount —
+  left the task thread waiting forever while the interface reported it as
+  running and the stop key did nothing. Silence is measured rather than total
+  runtime, since installing a kernel is allowed to take an hour and does not go
+  quiet for an hour while doing it. The child is left running rather than
+  killed, and the message says so: stopping a task part-way leaves half its
+  work applied, which is the same reason cancellation refuses the next command
+  instead of interrupting this one.
 - `ssh.change-port` names the backup before the three steps that can fail
   after the file is already written — the socket check, the SELinux probe and
   the labelling. A task that fails there returns an error rather than an

@@ -59,11 +59,18 @@ impl Command {
     /// halves of the same answer.
     ///
     /// `program` reaches a shell here, unlike every other command in this
-    /// codebase. It is a literal at each call site today — never a form field
-    /// or a CLI argument — and must stay one, because `sh -c` would read a
-    /// value carrying `;` or a backtick as more of the script.
+    /// codebase: `sh -c` would read a value carrying `;` or a backtick as more
+    /// of the script.
+    ///
+    /// `&'static str` is what keeps that from being a rule somebody has to
+    /// remember. Every call site passes a literal today, so the bound costs
+    /// nothing and none of them changed — but a `String` built from a form
+    /// field or a CLI argument now fails to compile rather than reaching the
+    /// shell. The same trade the task tree makes with an exhaustive `match`:
+    /// let the compiler hold the invariant, since a comment saying "must stay a
+    /// literal" is only as good as the next person's attention.
     #[must_use]
-    pub fn locating(program: &str) -> Self {
+    pub fn locating(program: &'static str) -> Self {
         Self::new("sh").args(["-c", &format!("command -v {program}")])
     }
 
@@ -250,6 +257,28 @@ mod tests {
             !cmd.needs_root,
             "asking where a program is needs no privilege"
         );
+    }
+
+    #[test]
+    fn every_shell_bearing_call_names_a_program_the_binary_was_built_knowing() {
+        // The real guarantee is the `&'static str` bound, which no runtime
+        // assertion can observe — a value from a form is a `String` and fails
+        // to compile rather than reaching `sh -c`. A `compile_fail` doctest
+        // would state it, but this crate has no library target, so doctests
+        // never run and it would be a comment pretending to be a test.
+        //
+        // What is checked here is the other half: that the script this builds
+        // is a lookup and nothing else, whatever it is handed.
+        for program in ["fish", "cc", "usermod", "zellij"] {
+            let cmd = Command::locating(program);
+
+            assert_eq!(cmd.args[0], "-c");
+            assert_eq!(
+                cmd.args[1],
+                format!("command -v {program}"),
+                "the script must stay one lookup: anything appended to it runs"
+            );
+        }
     }
 
     #[test]
