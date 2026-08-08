@@ -142,6 +142,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not ship — the same shape as the `pgrep` finding already recorded.
 
 ### Fixed
+- `initd run users.create user=deploy` runs. The command line treated "has no
+  initial value" as "is required", so the optional password made it exit 2 with
+  `needs: password` — refusing a value the field beside it in the interface
+  describes as "leave empty for none", and making the account task unreachable
+  from a script without supplying the one thing `docs/cli.md` warns against
+  putting in an argument. Being optional is now declared on the parameter, so
+  both interfaces read the same claim; a default and a skippable value are
+  separate things and are stated separately.
 - Every task that edits `sshd_config` says so when the daemon will not honour
   what was written. `sshd -t` reports that a file parses, not that it wins:
   Debian 12, Ubuntu 22.04 and RHEL 9 all ship `Include

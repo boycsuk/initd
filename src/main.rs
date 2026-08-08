@@ -295,9 +295,16 @@ fn collect_values(task: &dyn tasks::Task, arguments: &[String]) -> ParamValues {
     // Checked after parsing rather than before, so a command naming three of
     // four values is told which one is missing rather than being handed the
     // whole list again.
+    // An initial value is a default, and being optional is a separate claim: a
+    // password has no default *and* the task runs without one. Reading the
+    // first as though it meant the second made the command line refuse
+    // `users.create user=deploy` for want of a value the interface beside it
+    // describes as "leave empty for none".
     let missing: Vec<&str> = declared
         .iter()
-        .filter(|param| param.initial.is_empty() && values.get(param.name).is_err())
+        .filter(|param| {
+            !param.optional && param.initial.is_empty() && values.get(param.name).is_err()
+        })
         .map(|param| param.name)
         .collect();
 

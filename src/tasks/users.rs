@@ -104,7 +104,8 @@ impl Task for CreateUser {
             // a while — a text field taking the word `yes` — and the operator
             // it was written for typed one letter and got "answer yes or no".
             Param::new(Self::PASSWORD, "Password", ParamKind::Secret)
-                .with_hint("leave empty for none"),
+                .with_hint("leave empty for none")
+                .optional(),
         ]
     }
 

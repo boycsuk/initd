@@ -446,6 +446,19 @@ pub struct Param {
     /// `wireguard.add-peer` validates a label by the username rules and the
     /// host has no opinion about it at all.
     pub existence: Option<Existence>,
+    /// Whether the task runs without a value for this.
+    ///
+    /// Distinct from having an initial value, which is what the command line
+    /// used to read as "not required": `users.create`'s password is optional
+    /// *and* has no default, since the default is no password rather than a
+    /// suggested one. Without this the interface offered a field an operator
+    /// could skip and the command line refused to run at all without it —
+    /// `initd run users.create user=deploy` answered `needs: password`, which
+    /// contradicts the hint on the field beside it.
+    ///
+    /// Opt-in like its neighbours: a parameter is required unless it says
+    /// otherwise, so a new one cannot become skippable by omission.
+    pub optional: bool,
 }
 
 impl Param {
@@ -459,7 +472,19 @@ impl Param {
             hint: None,
             suggestions: None,
             existence: None,
+            optional: false,
         }
+    }
+
+    /// Declares that the task runs without a value for this.
+    ///
+    /// The interface already lets a field be left empty; this is what stops the
+    /// command line demanding one. Both interfaces read the same declaration,
+    /// so a parameter cannot be skippable in one and required in the other.
+    #[must_use]
+    pub const fn optional(mut self) -> Self {
+        self.optional = true;
+        self
     }
 
     /// Sets what the field starts out containing.
@@ -558,6 +583,40 @@ impl ParamValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_parameter_is_required_unless_it_says_otherwise() {
+        // Opt-in like `suggestions` and `existence`: a parameter added without
+        // thinking about this is required, which is the direction that fails
+        // loudly rather than letting a task run without a value it needs.
+        assert!(!Param::new("user", "Username", ParamKind::Username).optional);
+        assert!(
+            Param::new("password", "Password", ParamKind::Secret)
+                .optional()
+                .optional
+        );
+    }
+
+    #[test]
+    fn being_optional_is_not_the_same_as_having_a_default() {
+        // The distinction the command line collapsed: it read "no initial
+        // value" as "required", so `users.create`'s password — which has no
+        // default because the default is *no password* — made
+        // `initd run users.create user=deploy` exit 2 asking for one, while
+        // the field beside it in the interface reads "leave empty for none".
+        let password = Param::new("password", "Password", ParamKind::Secret).optional();
+
+        assert!(
+            password.initial.is_empty(),
+            "there is no password to suggest"
+        );
+        assert!(password.optional, "and the task runs without one");
+
+        let port = Param::new("port", "Port", ParamKind::Port).with_initial("22");
+
+        assert!(!port.initial.is_empty(), "a default is a different claim");
+        assert!(!port.optional, "and does not make the value skippable");
+    }
 
     #[test]
     fn a_port_field_accepts_only_digits() {
