@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The capability traits gained the verbs that undo what they do: packages can
+  be removed or purged, units disabled and stopped, an account deleted, a
+  directory measured. Nothing calls them yet. What each family does differs
+  more than the naming suggests and was written down where it is read rather
+  than assumed: removal never cascades on Debian or Arch — no `--auto-remove`,
+  no `-Rs`, because what those reach cannot be stated before they run — while
+  apk decides for itself and says so; and RHEL cannot purge at all, since rpm
+  leaves an edited file as `.rpmsave` whatever is asked, so `has_purge_for`
+  answers false there and the choice is not offered rather than being offered
+  and ignored.
+- Removing a downloaded binary asks a different question from installing one.
+  `is_installed` reports whether a program is anywhere on `PATH`, which is
+  right before installing and wrong before removing: an operator holding
+  `~/.cargo/bin/zellij` satisfies it, so a row keyed on that answer offered to
+  uninstall a binary `/usr/local/bin` never held — reporting success having
+  done nothing, or deleting a file this tool did not write from a directory it
+  does not own. `is_installed_here` asks about the one path the installer
+  writes, `location_of` names the copy it found so the interface can say where
+  it is, and removal builds its path from the install directory rather than
+  from what the shell resolved.
+- A unit that no longer exists is the state an uninstall wanted, not a failure.
+  Removing a package takes its unit with it, so stopping the service afterwards
+  would otherwise fail at the last step having done everything it was asked.
+  systemd overloads exit code 1 for "no such unit" and for "I will not", so the
+  two are told apart by its own wording — the one place matching another
+  program's text is unavoidable, and marked as such. OpenRC needs no such
+  rescue, and its two commands run in the mirror order of enabling: stopped
+  first, then out of the runlevel, because a service left in its runlevel is
+  back after a reboot having reported itself stopped.
 - The tree can hold a pair of opposed operations in a single row. One row
   rather than two because "Install Caddy" and "Uninstall Caddy" are not a
   choice an operator makes — exactly one of them is meaningful at any moment,

@@ -179,6 +179,19 @@ impl AccountWriter for BusyboxAccountWriter {
         super::systemd::run_checked(executor, &command)
     }
 
+    fn delete(&self, executor: &dyn Executor, user: &str, remove_home: bool) -> Result<()> {
+        // `deluser`, not `userdel`, and the flag is spelled out rather than
+        // being `-r` — the same divergence in naming that makes `adduser` and
+        // `useradd` two implementations rather than one.
+        let args: &[&str] = if remove_home { &["--remove-home"] } else { &[] };
+
+        let command = Command::new("deluser")
+            .args(args.iter().copied().chain([user]))
+            .privileged();
+
+        super::systemd::run_checked(executor, &command)
+    }
+
     fn lock(&self, executor: &dyn Executor, user: &str, method: LockMethod) -> Result<()> {
         match method {
             // Same reasoning as everywhere else: a locked password leaves key
@@ -367,6 +380,26 @@ mod tests {
             !command.args.iter().any(|arg| arg.contains('|')),
             "no shell pipeline: {command:?}"
         );
+    }
+
+    #[test]
+    fn deletion_spells_the_flag_out_where_busybox_does() {
+        // `deluser --remove-home`, not `userdel -r`. The two suites differ in
+        // the name of the program *and* of the flag, which is the divergence
+        // that makes this a trait rather than one implementation.
+        let kept = MockExecutor::with_replies([Reply::ok("")]);
+        BusyboxAccountWriter::new()
+            .delete(&kept, "deploy", false)
+            .expect("deletion must succeed");
+
+        let removed = MockExecutor::with_replies([Reply::ok("")]);
+        BusyboxAccountWriter::new()
+            .delete(&removed, "deploy", true)
+            .expect("deletion must succeed");
+
+        assert_eq!(kept.recorded_lines(), ["deluser deploy"]);
+        assert_eq!(removed.recorded_lines(), ["deluser --remove-home deploy"]);
+        assert!(kept.any_privileged());
     }
 
     #[test]

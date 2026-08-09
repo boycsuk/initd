@@ -38,6 +38,37 @@ impl ServiceManager for SystemdServices {
         run_checked(executor, &command)
     }
 
+    fn disable_and_stop(&self, executor: &dyn Executor, service: &str) -> Result<()> {
+        // `--now` stops and disables in one call, the mirror of how the unit
+        // was enabled: leaving one half undone is a service that reports itself
+        // stopped and is running again after a reboot.
+        let command = Command::new("systemctl")
+            .args(["disable", "--now", service])
+            .privileged();
+
+        let output = executor.run(&command)?;
+
+        if output.success() {
+            return Ok(());
+        }
+
+        // A unit that does not exist is the state being asked for, not a
+        // failure. Removing a package takes its unit with it, so a caller that
+        // stops the service after removing the package would otherwise fail at
+        // the last step having done everything it was asked. Matched on
+        // systemd's own wording because it has no distinct exit code for it —
+        // `disable` answers 1 both for a missing unit and for a refusal.
+        if unit_is_absent(&output.stderr) {
+            return Ok(());
+        }
+
+        Err(Error::CommandFailed {
+            command: command.to_string(),
+            code: output.code,
+            stderr: output.stderr,
+        })
+    }
+
     fn state(&self, executor: &dyn Executor, service: &str) -> Result<ServiceState> {
         // `is-active` and `is-enabled` exit non-zero when the answer is "no",
         // so a failing exit code here is information, not an error.
@@ -52,6 +83,25 @@ impl ServiceManager for SystemdServices {
 }
 
 /// Runs a command and turns a non-zero exit into an error.
+/// Whether systemd is reporting a unit it does not have.
+///
+/// Matching another program's user-facing text, which this codebase avoids
+/// where it can. It cannot here: `systemctl disable` exits 1 both for a unit
+/// that does not exist and for one it refuses to touch, and those two need
+/// opposite answers — the first is the state an uninstall wanted, the second is
+/// a failure worth reporting.
+///
+/// Both spellings are matched because systemd has used both: "not loaded" is
+/// what a running system says of an absent unit, "does not exist" is what
+/// `disable` says when no unit file is found. Lowercased before comparing
+/// rather than matched case-sensitively, since the message begins a sentence
+/// in some versions and a clause in others.
+pub(super) fn unit_is_absent(stderr: &str) -> bool {
+    let stderr = stderr.to_lowercase();
+
+    stderr.contains("does not exist") || stderr.contains("not loaded")
+}
+
 pub fn run_checked(executor: &dyn Executor, command: &Command) -> Result<()> {
     let output = executor.run(command)?;
 
@@ -84,6 +134,55 @@ mod tests {
             ["systemctl enable --now ssh.service"]
         );
         assert!(mock.any_privileged(), "enabling a unit requires root");
+    }
+
+    #[test]
+    fn disabling_also_stops_so_a_reboot_does_not_undo_it() {
+        // Both halves in one call. A unit stopped but left enabled reports
+        // itself stopped and is running again after a reboot — the mistake the
+        // firewall made by writing rules the boot never replayed.
+        let mock = MockExecutor::new();
+
+        SystemdServices::new()
+            .disable_and_stop(&mock, "caddy.service")
+            .expect("disabling must succeed");
+
+        assert_eq!(
+            mock.recorded_lines(),
+            ["systemctl disable --now caddy.service"]
+        );
+        assert!(mock.any_privileged(), "disabling a unit requires root");
+    }
+
+    #[test]
+    fn a_unit_that_does_not_exist_is_the_state_that_was_wanted() {
+        // Removing a package takes its unit with it, so stopping the service
+        // after removing the package must not fail at the last step having done
+        // everything it was asked.
+        for stderr in [
+            "Failed to disable unit: Unit file caddy.service does not exist.",
+            "Failed to stop caddy.service: Unit caddy.service not loaded.",
+        ] {
+            let mock = MockExecutor::with_replies([Reply::failure(1, stderr)]);
+
+            SystemdServices::new()
+                .disable_and_stop(&mock, "caddy.service")
+                .expect("an absent unit is not a failure");
+        }
+    }
+
+    #[test]
+    fn a_refusal_is_still_reported_as_one() {
+        // The other half of the exit code systemd overloads: 1 means both "no
+        // such unit" and "I will not", and only the first is success.
+        let mock = MockExecutor::with_replies([Reply::failure(
+            1,
+            "Failed to disable unit: Unit caddy.service is masked.",
+        )]);
+
+        SystemdServices::new()
+            .disable_and_stop(&mock, "caddy.service")
+            .expect_err("a refusal must not be reported as success");
     }
 
     #[test]

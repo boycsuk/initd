@@ -59,11 +59,78 @@ impl ReleaseInstaller {
     fn verification_line(sha256: &str, path: &str) -> String {
         format!("echo '{sha256}' \" {path}\" | sha256sum -c -")
     }
+
+    /// Where [`install`](BinaryInstaller::install) puts a program.
+    ///
+    /// The one place this path is spelled, so that asking whether the tool's
+    /// copy is present and removing it cannot disagree about where to look. A
+    /// second literal is what would let a removal miss — or worse, delete
+    /// something at a path the installer never wrote.
+    fn installed_path(program: &str) -> String {
+        format!("{INSTALL_DIR}/{program}")
+    }
 }
 
 impl BinaryInstaller for ReleaseInstaller {
     fn is_installed(&self, executor: &dyn Executor, program: &'static str) -> Result<bool> {
         Ok(executor.run(&Command::locating(program))?.success())
+    }
+
+    fn is_installed_here(&self, executor: &dyn Executor, program: &'static str) -> Result<bool> {
+        // `test -f` on the one path `install` writes, rather than asking the
+        // shell where the program is. A host can satisfy both questions, one,
+        // or neither, and only this one answers "is there something here that
+        // this tool put here".
+        let command = Command::new("test").args(["-f", &Self::installed_path(program)]);
+
+        Ok(executor.run(&command)?.success())
+    }
+
+    fn location_of(
+        &self,
+        executor: &dyn Executor,
+        program: &'static str,
+    ) -> Result<Option<String>> {
+        // The same lookup `is_installed` runs, reading its output rather than
+        // only its exit code: the interface names the copy it found so the
+        // operator can tell which zellij the row is talking about.
+        let output = executor.run(&Command::locating(program))?;
+
+        if !output.success() {
+            return Ok(None);
+        }
+
+        let path = output.stdout.trim();
+
+        Ok(if path.is_empty() {
+            None
+        } else {
+            Some(path.to_owned())
+        })
+    }
+
+    fn remove(&self, executor: &dyn Executor, program: &'static str) -> Result<()> {
+        // Built from `INSTALL_DIR`, never from `location_of`. A removal that
+        // deleted whatever the shell resolved would delete a binary somebody
+        // else installed somewhere else, which is the one thing the split
+        // between these two questions exists to prevent.
+        //
+        // `-f` so removing what is already gone succeeds: an uninstall whose
+        // subject vanished between the probe and the keystroke has arrived at
+        // the state it was asked for.
+        let path = Self::installed_path(program);
+        let command = Command::new("rm").args(["-f", &path]).privileged();
+        let output = executor.run(&command)?;
+
+        if !output.success() {
+            return Err(Error::CommandFailed {
+                command: format!("rm -f {path}"),
+                code: output.code,
+                stderr: output.stderr,
+            });
+        }
+
+        Ok(())
     }
 
     fn install(&self, executor: &dyn Executor, program: &str, release: &Release) -> Result<()> {
@@ -368,6 +435,82 @@ mod tests {
 
         assert!(script.contains("/usr/local/bin/zellij"), "{script}");
         assert!(!script.contains("/usr/bin/zellij"), "{script}");
+    }
+
+    #[test]
+    fn a_binary_installed_elsewhere_is_not_this_tools_to_remove() {
+        // The failure this split exists to prevent, reproduced. An operator
+        // with `~/.cargo/bin/zellij` satisfies `is_installed`, so a row keyed
+        // on that answer would offer to uninstall a binary `/usr/local/bin`
+        // does not hold — and removing it would delete somebody else's file
+        // from a directory this tool does not own.
+        let on_path = MockExecutor::with_replies([Reply::ok("/home/op/.cargo/bin/zellij")]);
+        assert!(
+            ReleaseInstaller::new()
+                .is_installed(&on_path, "zellij")
+                .expect("the lookup must succeed"),
+            "a binary anywhere on PATH counts as installed"
+        );
+
+        // `test -f /usr/local/bin/zellij` fails: nothing is there.
+        let here = MockExecutor::with_replies([Reply::failure(1, "")]);
+        assert!(
+            !ReleaseInstaller::new()
+                .is_installed_here(&here, "zellij")
+                .expect("the lookup must succeed"),
+            "a binary this tool did not install is not installed here"
+        );
+    }
+
+    #[test]
+    fn the_copy_this_tool_installed_is_the_only_one_it_removes() {
+        // Built from INSTALL_DIR rather than from wherever the shell resolved
+        // the program, which is what keeps a foreign copy safe even when the
+        // caller got the two questions the wrong way round.
+        let mock = MockExecutor::new();
+
+        ReleaseInstaller::new()
+            .remove(&mock, "zellij")
+            .expect("the removal must succeed");
+
+        assert_eq!(mock.recorded_lines(), ["rm -f /usr/local/bin/zellij"]);
+        assert!(mock.any_privileged());
+    }
+
+    #[test]
+    fn removing_what_is_already_gone_succeeds() {
+        // The probe and the keystroke are not simultaneous. A subject that
+        // vanished in between has arrived at the state the operator asked for,
+        // so `rm -f` reports success rather than failing the task.
+        let mock = MockExecutor::with_replies([Reply::ok("")]);
+
+        ReleaseInstaller::new()
+            .remove(&mock, "mise")
+            .expect("removing an absent binary must succeed");
+
+        assert!(mock.single_command().args.contains(&"-f".to_owned()));
+    }
+
+    #[test]
+    fn the_located_path_is_reported_so_the_interface_can_name_it() {
+        let found = MockExecutor::with_replies([Reply::ok("/home/op/.cargo/bin/zellij\n")]);
+
+        assert_eq!(
+            ReleaseInstaller::new()
+                .location_of(&found, "zellij")
+                .expect("the lookup must succeed"),
+            Some("/home/op/.cargo/bin/zellij".to_owned()),
+            "the trailing newline is the shell's, not part of the path"
+        );
+
+        let missing = MockExecutor::with_replies([Reply::failure(1, "")]);
+
+        assert_eq!(
+            ReleaseInstaller::new()
+                .location_of(&missing, "zellij")
+                .expect("the lookup must succeed"),
+            None
+        );
     }
 
     #[test]

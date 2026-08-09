@@ -97,6 +97,24 @@ pub trait Backend {
         !self.package_for(capability).is_empty()
     }
 
+    /// Whether removing a package here can also discard its configuration.
+    ///
+    /// Three families distinguish the two: apt keeps conffiles until asked to
+    /// purge, pacman writes `.pacsave` unless told `-n`, apk preserves modified
+    /// files unless told `--purge`. RHEL does not — rpm has no purge, and a
+    /// file the administrator edited is left as `.rpmsave` whatever is asked.
+    ///
+    /// Asked so the interface can decline to offer a choice that does not
+    /// exist. A field with two options that behave identically is worse than
+    /// no field: it invites an operator to make a decision, then ignores it.
+    #[allow(
+        dead_code,
+        reason = "asked by the uninstall form, which lands in a later commit"
+    )]
+    fn has_purge_for(&self) -> bool {
+        true
+    }
+
     /// The service unit providing a capability on this distribution.
     fn service_for(&self, capability: Capability) -> &'static str;
 
@@ -299,6 +317,22 @@ pub fn for_distro(distro: &Distro) -> Box<dyn Backend> {
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn a_family_that_cannot_purge_is_the_exception_rather_than_the_rule() {
+        // Iterating `ALL` for the same reason the dispatch test does: a new
+        // family inherits the default `true`, and this is where that shows up
+        // as a decision somebody has to have made rather than as silence. RHEL
+        // is the one that answers false today, and it answers for rpm rather
+        // than for dnf — a fifth family using rpm would answer the same way.
+        let without: Vec<_> = Family::ALL
+            .iter()
+            .filter(|&&family| !for_family(family).has_purge_for())
+            .map(|&family| family.to_string())
+            .collect();
+
+        assert_eq!(without, ["rhel"]);
+    }
 
     #[test]
     fn each_family_resolves_to_its_own_backend() {

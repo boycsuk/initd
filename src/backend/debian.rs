@@ -281,6 +281,43 @@ impl PackageManager for AptPackages {
 
         Ok(output.success() && output.stdout.trim() == "install ok installed")
     }
+
+    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+        // No `--auto-remove`: it pulls out whatever the package left orphaned,
+        // and what that reaches cannot be stated before it runs. On a host
+        // where Caddy arrived alongside its own dependencies, removing it that
+        // way takes them too — including any another package came to rely on
+        // since.
+        let command = Command::new("env")
+            .args([
+                "DEBIAN_FRONTEND=noninteractive",
+                "apt-get",
+                "remove",
+                "-y",
+                package,
+            ])
+            .privileged();
+
+        run_checked(executor, &command)
+    }
+
+    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+        // This is the family where the distinction is sharpest: `remove` leaves
+        // conffiles in place and dpkg keeps the package in its status as
+        // "deinstall ok config-files", which is why `is_installed` demands
+        // exactly "install ok installed" rather than trusting the exit code.
+        let command = Command::new("env")
+            .args([
+                "DEBIAN_FRONTEND=noninteractive",
+                "apt-get",
+                "purge",
+                "-y",
+                package,
+            ])
+            .privileged();
+
+        run_checked(executor, &command)
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +338,47 @@ mod tests {
             ["env DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server"]
         );
         assert!(mock.any_privileged());
+    }
+
+    #[test]
+    fn removing_keeps_the_configuration_and_purging_does_not() {
+        // The whole reason the operator is asked which they meant: `remove`
+        // leaves conffiles for a reinstall to find, `purge` deletes them, and
+        // the difference is not recoverable once made.
+        let removed = MockExecutor::new();
+        AptPackages.remove(&removed, "fail2ban").expect("removes");
+
+        let purged = MockExecutor::new();
+        AptPackages.purge(&purged, "fail2ban").expect("purges");
+
+        assert_eq!(
+            removed.recorded_lines(),
+            ["env DEBIAN_FRONTEND=noninteractive apt-get remove -y fail2ban"]
+        );
+        assert_eq!(
+            purged.recorded_lines(),
+            ["env DEBIAN_FRONTEND=noninteractive apt-get purge -y fail2ban"]
+        );
+        assert!(removed.any_privileged());
+        assert!(purged.any_privileged());
+    }
+
+    #[test]
+    fn removal_never_reaches_beyond_the_package_named() {
+        // `--auto-remove` takes whatever the package left orphaned, and what
+        // that reaches cannot be stated before it runs — including packages
+        // something else came to depend on since.
+        let mock = MockExecutor::new();
+
+        AptPackages.remove(&mock, "caddy").expect("removes");
+        AptPackages.purge(&mock, "caddy").expect("purges");
+
+        for line in mock.recorded_lines() {
+            assert!(
+                !line.contains("--auto-remove"),
+                "removal must not cascade: {line}"
+            );
+        }
     }
 
     #[test]

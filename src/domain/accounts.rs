@@ -10,6 +10,10 @@ use crate::error::Result;
 use crate::exec::Executor;
 
 /// Queries the accounts defined on the administered system.
+#[allow(
+    dead_code,
+    reason = "size_of is called by users.delete's confirmation, which lands in a later commit"
+)]
 pub trait AccountReader {
     /// Whether an account with this name exists.
     fn exists(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
@@ -42,6 +46,41 @@ pub trait AccountReader {
     /// nothing, and `ssh.harden` may then disable passwords for an account
     /// whose key did not land where it was needed.
     fn home_dir(&self, executor: &dyn Executor, user: &str) -> Result<String>;
+
+    /// How much a directory holds, in bytes.
+    ///
+    /// Asked so a confirmation can name what it is about to destroy. "Delete
+    /// /home/deploy" and "delete /home/deploy (2.4 GB)" are different
+    /// questions, and only the second one an operator can answer without going
+    /// to another terminal to look.
+    ///
+    /// Answers `None` when the path does not exist or cannot be measured,
+    /// rather than zero: a directory that is genuinely empty and one nobody
+    /// could read are different facts, and reporting "(0 B)" for the second
+    /// would understate what is at stake by exactly the amount that matters.
+    ///
+    /// A default rather than a per-family method, for the reason `list` gives
+    /// above it: `du` is in coreutils and in busybox, and the two do not
+    /// disagree about it.
+    fn size_of(&self, executor: &dyn Executor, path: &str) -> Result<Option<u64>> {
+        // `-s` for the total rather than a line per subdirectory, `-B1` for
+        // bytes rather than whatever block size the host defaults to — `du -s`
+        // alone answers in kibibytes on some systems and 512-byte blocks on
+        // others, and a number whose unit depends on the host is worse than no
+        // number in a sentence that will be read as gigabytes.
+        let command = crate::exec::Command::new("du").args(["-sB1", path]);
+        let output = executor.run(&command)?;
+
+        if !output.success() {
+            return Ok(None);
+        }
+
+        Ok(output
+            .stdout
+            .split_whitespace()
+            .next()
+            .and_then(|bytes| bytes.parse().ok()))
+    }
 }
 
 /// The home directory field of a passwd entry.

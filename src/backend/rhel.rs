@@ -296,6 +296,16 @@ impl Backend for RhelBackend {
         Family::Rhel
     }
 
+    /// The one family that cannot purge.
+    ///
+    /// rpm does not track configuration as separately removable, so a file the
+    /// administrator edited survives removal as `.rpmsave` whatever is asked of
+    /// it. Answering false is what stops the interface offering a choice with
+    /// one real outcome.
+    fn has_purge_for(&self) -> bool {
+        false
+    }
+
     fn package_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
@@ -465,6 +475,34 @@ impl PackageManager for DnfPackages {
 
         Ok(executor.run(&command)?.success())
     }
+
+    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+        // `dnf remove` takes the dependencies the package pulled in and nothing
+        // else needs. Unlike apt and pacman there is no flag to decline that,
+        // so the note the other two carry — "no cascade" — cannot be made here.
+        let command = Command::new("dnf")
+            .args(["remove", "-y", package])
+            .privileged();
+
+        run_checked(executor, &command)
+    }
+
+    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+        // The same command as `remove`, because rpm has no purge: it does not
+        // track configuration as separately removable the way dpkg's conffiles
+        // are, and a file the administrator edited is left behind as
+        // `.rpmsave` whatever is asked of it.
+        //
+        // Aliasing the two would normally be a family answering a question it
+        // was never asked. It is not one here, because the question is never
+        // put: `has_purge_for` reports false on this family, so the field
+        // offering the choice is not drawn and nothing reaches this method
+        // asking for a purge. It is implemented rather than left to panic
+        // because a trait method that cannot be called is still a method, and
+        // `unreachable!()` in a tool that runs as root is a promise about
+        // callers rather than about code.
+        self.remove(executor, package)
+    }
 }
 
 #[cfg(test)]
@@ -482,6 +520,27 @@ mod tests {
 
         assert_eq!(mock.recorded_lines(), ["dnf install -y openssh-server"]);
         assert!(mock.any_privileged());
+    }
+
+    #[test]
+    fn purging_is_removing_here_and_the_family_says_so() {
+        // The two are the same command because rpm has no purge. That is only
+        // defensible because the choice is never offered: if `has_purge_for`
+        // ever answered true here, an operator would pick "purge", get a
+        // removal, and be told nothing. The two assertions belong together for
+        // that reason — either alone permits the combination that lies.
+        let removed = MockExecutor::new();
+        DnfPackages.remove(&removed, "fail2ban").expect("removes");
+
+        let purged = MockExecutor::new();
+        DnfPackages.purge(&purged, "fail2ban").expect("purges");
+
+        assert_eq!(removed.recorded_lines(), ["dnf remove -y fail2ban"]);
+        assert_eq!(purged.recorded_lines(), removed.recorded_lines());
+        assert!(
+            !RhelBackend::new().has_purge_for(),
+            "a family whose purge is a removal must not offer the choice"
+        );
     }
 
     #[test]

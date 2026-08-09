@@ -62,6 +62,29 @@ impl ServiceManager for OpenRcServices {
         super::systemd::run_checked(executor, &command)
     }
 
+    fn disable_and_stop(&self, executor: &dyn Executor, service: &str) -> Result<()> {
+        // Two commands, as with enabling, and the order is the mirror of it:
+        // stop first, then leave the runlevel. Enabling adds to the runlevel
+        // first so a failure to start still comes up at the next boot; here the
+        // recoverable half is the opposite one, since a service stopped but
+        // still in its runlevel is back after a reboot having reported itself
+        // stopped.
+        let stop = Command::new("rc-service")
+            .args([service, "stop"])
+            .privileged();
+
+        super::systemd::run_checked(executor, &stop)?;
+
+        // `rc-update del` exits zero for a service that is not in the runlevel,
+        // so an absent unit needs no special case here — unlike systemd, which
+        // has to be told apart from a refusal by its message.
+        let disable = Command::new("rc-update")
+            .args(["del", service, RUNLEVEL])
+            .privileged();
+
+        super::systemd::run_checked(executor, &disable)
+    }
+
     fn state(&self, executor: &dyn Executor, service: &str) -> Result<ServiceState> {
         // `rc-service <name> status` exits non-zero when the service is
         // stopped, which is an answer rather than a failure.
@@ -109,6 +132,30 @@ mod tests {
             commands[1].starts_with("rc-service sshd start"),
             "{commands:?}"
         );
+    }
+
+    #[test]
+    fn a_service_is_stopped_before_it_leaves_the_runlevel() {
+        // The mirror of enabling, and the reason is the mirror too: there the
+        // recoverable half is being configured to come up, so the runlevel is
+        // written first. Here it is being stopped, so if the second command
+        // fails the service is at least not running — a service still in its
+        // runlevel comes back at the next boot having reported itself stopped.
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok("")]);
+
+        OpenRcServices::new()
+            .disable_and_stop(&mock, "caddy")
+            .expect("disabling must succeed");
+
+        let commands = mock.recorded_lines();
+
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(
+            commands[0].starts_with("rc-service caddy stop"),
+            "{commands:?}"
+        );
+        assert!(commands[1].starts_with("rc-update del"), "{commands:?}");
+        assert!(mock.any_privileged());
     }
 
     #[test]
