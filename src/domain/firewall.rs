@@ -67,6 +67,44 @@ pub trait FirewallManager {
     /// Allows a port inbound.
     fn allow(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<()>;
 
+    /// Makes the current ruleset survive a reboot.
+    ///
+    /// Separate from [`enable`](Self::enable) and [`allow`](Self::allow)
+    /// because the two questions have different answers per front-end, and
+    /// conflating them is how a firewall ends up applied and not kept:
+    /// `firewall-cmd` writes runtime and permanent configuration through
+    /// distinct flags, while `nft` only ever speaks to the kernel and the
+    /// ruleset it holds is gone at the next boot unless something wrote it to
+    /// disk.
+    ///
+    /// The sysctl capability learned this first, and the lesson transfers
+    /// exactly: a value can be right for reasons that do not outlive a restart,
+    /// so a task that stops at the running state reports success over a host
+    /// where the setting vanishes. A firewall that vanishes is the more
+    /// expensive half of that mistake — the server comes back with every port
+    /// open and nothing says so.
+    ///
+    /// Called after the ruleset is in place, so that what gets saved is what
+    /// was just applied.
+    ///
+    /// Answers whether the ruleset will actually be replayed, which is not the
+    /// same as whether saving it succeeded: a host may have nowhere to register
+    /// the replay. Measured on `alpine:3.23`, where OpenRC ships in its own
+    /// package so a container has neither `rc-update` nor an init script — and
+    /// a chroot or a minimal image is the same situation anywhere. `false`
+    /// there rather than an error, because the rules *are* applied and *are*
+    /// written where a boot would read them; what is missing is the boot. An
+    /// error would report the firewall as not enabled, which is worse and
+    /// false.
+    fn persist(&self, executor: &dyn Executor) -> Result<bool>;
+
+    /// Whether the ruleset currently in the kernel would survive a reboot.
+    ///
+    /// Asked so a task can report "already done" honestly: the running state
+    /// alone cannot answer it, which is precisely the failure this pair exists
+    /// to close.
+    fn is_persisted(&self, executor: &dyn Executor) -> Result<bool>;
+
     /// Whether a port is currently allowed inbound.
     fn is_allowed(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<bool>;
 

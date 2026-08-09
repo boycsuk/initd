@@ -118,9 +118,14 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
     // finds themselves locked out needs the path, not a prompt they cannot
     // answer.
     if let Some(revert) = outcome.revert() {
+        // Both paths, because either alone leaves the operator working it out:
+        // the first names what changed, the second is what they would copy back
+        // over it. Naming only the file that changed sent them to the one they
+        // are locked out by.
         println!(
-            "the previous {} was kept; restore it if you lose access",
-            revert.describes()
+            "the previous {} was kept at {}; restore it if you lose access",
+            revert.describes(),
+            revert.restores_from()
         );
     }
 
@@ -290,9 +295,16 @@ fn collect_values(task: &dyn tasks::Task, arguments: &[String]) -> ParamValues {
     // Checked after parsing rather than before, so a command naming three of
     // four values is told which one is missing rather than being handed the
     // whole list again.
+    // An initial value is a default, and being optional is a separate claim: a
+    // password has no default *and* the task runs without one. Reading the
+    // first as though it meant the second made the command line refuse
+    // `users.create user=deploy` for want of a value the interface beside it
+    // describes as "leave empty for none".
     let missing: Vec<&str> = declared
         .iter()
-        .filter(|param| param.initial.is_empty() && values.get(param.name).is_err())
+        .filter(|param| {
+            !param.optional && param.initial.is_empty() && values.get(param.name).is_err()
+        })
         .map(|param| param.name)
         .collect();
 

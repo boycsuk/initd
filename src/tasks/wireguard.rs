@@ -18,12 +18,15 @@ use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::consequence::{
     Check, Consequence, External, Protocol as WarnProtocol, Reason, firewall_check,
 };
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
+use crate::tasks::{
+    Category, Confirmation, Node, Progress, Task, report, report_verbatim, supported_everywhere,
+};
 
 /// The interface this tool manages.
 ///
@@ -100,7 +103,7 @@ impl Task for WireguardStatus {
         );
 
         if !backend.files().exists(executor, &config)? {
-            report(progress, "WireGuard is not configured".to_owned());
+            report(progress, &Msg::TaskWireguardNotConfigured);
 
             return Ok(Outcome::Done);
         }
@@ -109,9 +112,19 @@ impl Task for WireguardStatus {
         // interface that is down carries nothing, and an interface that is up
         // with no peers admits nobody.
         if backend.wireguard().is_up(executor, INTERFACE)? {
-            report(progress, format!("{INTERFACE} is up"));
+            report(
+                progress,
+                &Msg::TaskWireguardUp {
+                    interface: INTERFACE.to_owned(),
+                },
+            );
         } else {
-            report(progress, format!("{INTERFACE} is configured but down"));
+            report(
+                progress,
+                &Msg::TaskWireguardDown {
+                    interface: INTERFACE.to_owned(),
+                },
+            );
         }
 
         let peers = backend
@@ -121,7 +134,7 @@ impl Task for WireguardStatus {
             .filter(|line| line.trim() == "[Peer]")
             .count();
 
-        report(progress, format!("{peers} peer(s) configured"));
+        report(progress, &Msg::TaskWireguardPeerCount { count: peers });
 
         Ok(Outcome::Done)
     }
@@ -228,7 +241,7 @@ impl Task for InstallWireguard {
             return Err(Error::WireguardAlreadyConfigured { path: config });
         }
 
-        report(progress, "installing wireguard-tools".to_owned());
+        report(progress, &Msg::TaskWireguardInstallingTools);
         backend
             .packages()
             .install(executor, backend.package_for(Capability::Wireguard))?;
@@ -237,7 +250,7 @@ impl Task for InstallWireguard {
         // keys, and creating it world-readable even briefly is a window.
         files.create_dir(executor, dir, CONFIG_DIR_MODE)?;
 
-        report(progress, "generating the server keys".to_owned());
+        report(progress, &Msg::TaskWireguardGeneratingKeys);
         let keys = backend.wireguard().generate_keypair(executor)?;
 
         let server_address = first_address(&subnet)?;
@@ -255,8 +268,18 @@ impl Task for InstallWireguard {
         files.set_mode(executor, &config, CONFIG_MODE)?;
         files.write(executor, &config, &contents)?;
 
-        report(progress, format!("wrote {config}"));
-        report(progress, format!("server public key: {}", keys.public));
+        report(
+            progress,
+            &Msg::TaskWireguardWrote {
+                path: config.clone(),
+            },
+        );
+        report(
+            progress,
+            &Msg::TaskWireguardServerKey {
+                key: keys.public.clone(),
+            },
+        );
 
         // Enabled but not started: starting it before forwarding and the
         // firewall are in place produces a tunnel that comes up and carries
@@ -264,7 +287,7 @@ impl Task for InstallWireguard {
         let unit = format!("{}{INTERFACE}", backend.service_for(Capability::Wireguard));
         backend.services().enable_and_start(executor, &unit)?;
 
-        report(progress, format!("{unit} is enabled"));
+        report(progress, &Msg::TaskUnitEnabled { unit: unit.clone() });
 
         Ok(Outcome::Done)
     }
@@ -344,9 +367,15 @@ impl Task for AddPeer {
         let unit = format!("{}{INTERFACE}", backend.service_for(Capability::Wireguard));
         backend.services().reload(executor, &unit)?;
 
-        report(progress, format!("{name} added at {address}"));
-        report(progress, String::new());
         report(
+            progress,
+            &Msg::TaskWireguardPeerAdded {
+                name: name.clone(),
+                address: address.clone(),
+            },
+        );
+        report_verbatim(progress, String::new());
+        report_verbatim(
             progress,
             client_config(
                 &keys.private,
@@ -611,13 +640,16 @@ mod tests {
             Reply::ok(KEY),        // wg genkey
             Reply::ok(KEY),        // wg genpsk
             Reply::ok(KEY),        // wg pubkey
-            Reply::ok(""),         // test -e, opening the empty write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: create the file empty
+            Reply::failure(1, ""), // test -e, opening the empty write
+            Reply::ok(""),         // tee: stage the empty file
+            Reply::ok(""),         // mv: publish it
             Reply::ok(""),         // chmod 600, before any secret exists
             Reply::ok(""),         // test -e, opening the real write
             Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: the configuration, with the key
+            Reply::ok(""),         // tee: stage the configuration, with the key
+            Reply::ok("600"),      // stat -c %a: the mode set a moment ago
+            Reply::ok(""),         // chmod: carry it onto the staging file
+            Reply::ok(""),         // mv: publish it, already restricted
             Reply::ok(""),         // systemctl enable
         ]);
         let backend = for_family(Family::Debian);

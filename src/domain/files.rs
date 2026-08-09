@@ -26,6 +26,17 @@ pub trait FileEditor {
     /// Whether the path exists.
     fn exists(&self, executor: &dyn Executor, path: &str) -> Result<bool>;
 
+    /// Whether the path is a symbolic link.
+    ///
+    /// Asked before writing anywhere inside a directory an unprivileged account
+    /// owns. Every tool this trait drives follows links — `install -d`, `chown`
+    /// and `tee` all operate on the target, measured on `debian:13` — so a user
+    /// who replaces their own `~/.ssh` with a link to somewhere else has root
+    /// apply the mode, the ownership and the file contents *there* instead.
+    /// Reproduced: a directory owned by root came back owned by the account
+    /// that planted the link.
+    fn is_symlink(&self, executor: &dyn Executor, path: &str) -> Result<bool>;
+
     /// Copies the file aside and returns where the copy landed.
     fn backup(&self, executor: &dyn Executor, path: &str) -> Result<Backup>;
 

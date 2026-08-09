@@ -93,6 +93,20 @@ pub enum Error {
     /// The process died from a signal, leaving no exit code.
     CommandTerminatedBySignal { command: String },
 
+    /// A command produced no output for long enough that waiting stopped.
+    ///
+    /// The child is left running rather than killed: tasks are not idempotent,
+    /// so stopping one mid-step leaves half of it applied with no way to know
+    /// which half — the same reasoning that has cancellation refuse the next
+    /// command instead of interrupting the running one. What ends is the wait.
+    ///
+    /// It exists because cancellation cannot reach a command already running,
+    /// so a child that neither exits nor speaks — blocked on a prompt inherited
+    /// from a terminal nobody is looking at, or on an unreachable mount — left
+    /// the task thread waiting forever while the interface reported it as
+    /// running and the stop key did nothing.
+    CommandSilent { command: String, seconds: u64 },
+
     /// I/O failure while spawning or reading the process.
     CommandIo {
         command: String,
@@ -168,6 +182,20 @@ pub enum Error {
 
     /// An account a task needs does not exist.
     NoSuchAccount { user: String },
+
+    /// A path root was about to write through turned out to be a symbolic link.
+    ///
+    /// Refused rather than followed. The tools this would go on to run —
+    /// `install -d`, `chown`, `tee` — all act on a link's target, so a path
+    /// inside a directory an unprivileged account owns is one that account can
+    /// aim elsewhere. Measured on `debian:13`: replacing `~/.ssh` with a link
+    /// to a directory owned by root had root hand its ownership to the account
+    /// that planted the link, and then write a file inside it.
+    ///
+    /// Named as its own variant because the operator has to be told what to
+    /// look at: the account is not necessarily hostile, and a link into shared
+    /// storage is a thing administrators set up deliberately.
+    UnsafeSymlink { path: String },
 
     /// Adding an account to a group appeared to succeed and did not.
     ///
@@ -357,6 +385,10 @@ impl Error {
             Self::CommandTerminatedBySignal { command } => Msg::CommandTerminatedBySignal {
                 command: command.clone(),
             },
+            Self::CommandSilent { command, seconds } => Msg::CommandSilent {
+                command: command.clone(),
+                seconds: *seconds,
+            },
             Self::CommandIo { command, source } => Msg::CommandIo {
                 command: command.clone(),
                 source: source.to_string(),
@@ -439,6 +471,7 @@ impl Error {
             },
             Self::AccountExists { user } => Msg::AccountExists { user: user.clone() },
             Self::NoSuchAccount { user } => Msg::NoSuchAccount { user: user.clone() },
+            Self::UnsafeSymlink { path } => Msg::UnsafeSymlink { path: path.clone() },
             Self::GroupMembershipFailed { user, group } => Msg::GroupMembershipFailed {
                 user: user.clone(),
                 group: group.clone(),

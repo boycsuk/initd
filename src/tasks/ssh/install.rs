@@ -6,6 +6,7 @@
 use crate::backend::{Backend, Capability};
 use crate::error::Result;
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Progress, Task, report, supported_everywhere};
@@ -41,23 +42,38 @@ impl Task for InstallSsh {
         let service = backend.service_for(Capability::Ssh);
 
         if backend.packages().is_installed(executor, package)? {
-            report(progress, format!("{package} is already installed"));
+            report(
+                progress,
+                &Msg::TaskAlreadyInstalled {
+                    what: package.to_owned(),
+                },
+            );
         } else {
-            report(progress, format!("Installing {package}..."));
+            report(
+                progress,
+                &Msg::TaskInstalling {
+                    what: package.to_owned(),
+                },
+            );
             backend.packages().install(executor, package)?;
         }
 
-        report(progress, format!("Enabling {service}..."));
+        report(
+            progress,
+            &Msg::TaskEnabling {
+                unit: service.to_owned(),
+            },
+        );
         backend.services().enable_and_start(executor, service)?;
 
         let state = backend.services().state(executor, service)?;
         report(
             progress,
-            format!(
-                "{service}: {}, {}",
-                if state.active { "active" } else { "inactive" },
-                if state.enabled { "enabled" } else { "disabled" }
-            ),
+            &Msg::TaskUnitState {
+                unit: service.to_owned(),
+                active: state.active,
+                enabled: state.enabled,
+            },
         );
 
         // Installing and enabling a service cannot cost the administrator

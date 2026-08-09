@@ -180,6 +180,16 @@ impl App {
                 );
             }
         }
+
+        // After the match rather than inside its successful arm, because a
+        // task that failed held the same password and reported nothing that
+        // needed it. `ran_with` is kept so the consequences above can name what
+        // the task invalidated; nothing reads it again until the next task
+        // replaces it, so on a host where one account is created and nothing
+        // else that is the rest of the session.
+        if let Some(task) = tasks::find(id) {
+            self.ran_with.forget_secrets(&task.params());
+        }
     }
     /// Writes what the finished task invalidated into the output pane.
     ///
@@ -251,6 +261,21 @@ impl App {
     ///
     /// A revert that itself fails is reported rather than swallowed: the
     /// administrator has to know the machine is in neither state.
+    ///
+    /// **Run on the event loop's own thread, unlike every other command this
+    /// interface issues.** Tasks go to a worker precisely so a package
+    /// installation cannot freeze the screen, and the exception here is not an
+    /// oversight: `resolve_on_hangup` calls this immediately before the loop
+    /// exits, so a revert handed to a thread would race the process ending —
+    /// and losing the session is the case the verification window exists for
+    /// rather than an edge of it. A revert that does not finish there leaves
+    /// the configuration that locked the administrator out, having promised on
+    /// screen that silence would put it back.
+    ///
+    /// The cost is bounded by what a revert is: a file copy and a `reload`,
+    /// which is milliseconds against the seconds a task takes. Moving it to the
+    /// worker would trade a pause nobody can perceive for a failure mode that
+    /// costs someone their server.
     pub(super) fn revert_change(&mut self, reason: RevertReason) {
         let Some(window) = self.verification.take() else {
             return;

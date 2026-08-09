@@ -7,7 +7,8 @@
 use crate::backend::{Backend, Capability};
 use crate::domain::files::Backup;
 use crate::error::{Error, Result};
-use crate::exec::{Command, Executor};
+use crate::exec::{Command, Executor, OutputLine, Stream};
+use crate::tasks::Progress;
 
 /// Outcome of validating a configuration with `sshd -t`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +168,96 @@ fn is_directive_line(line: &str, directive: &str) -> bool {
         .is_some_and(|(keyword, _)| keyword.eq_ignore_ascii_case(directive))
 }
 
+/// Warns about directives the daemon will not honour as written.
+///
+/// `sshd -t` says the file parses; it does not say the file wins. Debian 12,
+/// Ubuntu 22.04 and RHEL 9 all ship `Include /etc/ssh/sshd_config.d/*.conf` as
+/// the first line, and sshd takes the *first* occurrence of a directive — so a
+/// drop-in put there by a provider image (`50-cloud-init.conf` is the ordinary
+/// one) beats everything written below it.
+///
+/// Reproduced on `debian:13`: with that drop-in holding `PasswordAuthentication
+/// yes`, writing `PasswordAuthentication no` into the main file leaves `sshd -T`
+/// reporting `passwordauthentication yes`, and `sshd -t` approves. The task
+/// reported hardening that had not happened.
+///
+/// `sshd -T` is what settles it, being the daemon's own account of its
+/// effective configuration after every `Include` and `Match` is resolved.
+/// Warned rather than refused, and not rolled back: what was written is
+/// correct, and an administrator who put the drop-in there on purpose is not
+/// making a mistake. The two sibling situations are treated the same way —
+/// `ssh.socket` owning the port, and this.
+fn warn_if_overridden(
+    executor: &dyn Executor,
+    contents: &str,
+    progress: Progress<'_>,
+) -> Result<()> {
+    // Asked once and read for every directive: `sshd -T` is a whole daemon
+    // startup, so one call answers what a call per directive would.
+    let command = Command::new("sshd").arg("-T").privileged();
+    let output = executor.run(&command)?;
+
+    if !output.success() {
+        // The same reasoning as `NON_SYNTAX_FAILURES`: a host with no host keys
+        // cannot answer this, and that is not a finding about the file.
+        return Ok(());
+    }
+
+    let effective: Vec<(String, String)> = output
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_ascii_lowercase()))
+        .collect();
+
+    for (directive, wanted) in written_directives(contents) {
+        let key = directive.to_ascii_lowercase();
+
+        // Only directives sshd reports back. A keyword it does not know about
+        // is already handled by `accepts_directive` before anything is written.
+        let Some((_, actual)) = effective.iter().find(|(name, _)| *name == key) else {
+            continue;
+        };
+
+        if *actual != wanted.to_ascii_lowercase() {
+            progress(OutputLine {
+                stream: Stream::Stderr,
+                text: format!(
+                    "warning: {directive} was written as {wanted}, but this daemon \
+                     reports {actual}. Something read earlier wins — most often a \
+                     file in /etc/ssh/sshd_config.d/, which the Include at the top \
+                     of sshd_config reads before anything below it."
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// The directives a written file sets, outside any `Match` block.
+///
+/// Stops at the first `Match` for the same reason [`set_directive`] writes
+/// before it: what follows belongs to that block, and comparing it against the
+/// daemon's global configuration would report a difference that is the point of
+/// the block rather than a fault.
+fn written_directives(contents: &str) -> Vec<(String, String)> {
+    contents
+        .lines()
+        .take_while(|line| !is_match_line(line))
+        .filter_map(|line| {
+            let line = line.trim();
+
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+
+            line.split_once(char::is_whitespace)
+                .map(|(key, value)| (key.to_owned(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
 /// Writes new configuration contents, validating before committing.
 ///
 /// The order is what makes a rejected configuration recoverable: back up,
@@ -174,16 +265,27 @@ fn is_directive_line(line: &str, directive: &str) -> bool {
 /// Validating before writing would say nothing about the file the daemon will
 /// actually read. The service is only reloaded by the caller once this returns
 /// successfully.
+///
+/// A file that parses is then checked for whether it *wins*, which is a
+/// separate question — see [`warn_if_overridden`].
 pub fn write_validated(
     executor: &dyn Executor,
     backend: &dyn Backend,
     contents: &str,
+    progress: Progress<'_>,
 ) -> Result<Option<Backup>> {
     let path = backend.path_for(Capability::Ssh);
     let backup = backend.files().write(executor, path, contents)?;
 
     match validate(executor)? {
-        Validation::Valid | Validation::Inconclusive { .. } => Ok(backup),
+        Validation::Valid | Validation::Inconclusive { .. } => {
+            // After the file is in place, because what is being asked is what
+            // the daemon would do with it — and only warned about, since the
+            // write itself is correct.
+            warn_if_overridden(executor, contents, progress)?;
+
+            Ok(backup)
+        }
         Validation::Invalid { details } => {
             // Never leave a broken config in place: put the original back
             // before returning, and do not reload.
@@ -426,13 +528,16 @@ mod tests {
         let mock = MockExecutor::with_exact_replies([
             Reply::ok(""),                                        // test -e
             Reply::ok(""),                                        // cp -p: backup
-            Reply::ok(""),                                        // tee: write
+            Reply::ok(""),                                        // tee: stage
+            Reply::ok("600"),                                     // stat -c %a
+            Reply::ok(""),                                        // chmod
+            Reply::ok(""),                                        // mv: publish
             Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
             Reply::ok(""),                                        // cp -p: restore
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
-        let err = write_validated(&mock, backend.as_ref(), "Prt 22\n")
+        let err = write_validated(&mock, backend.as_ref(), "Prt 22\n", &mut |_| {})
             .expect_err("an invalid config must fail");
 
         assert!(matches!(err, Error::InvalidSshdConfig { .. }), "{err:?}");
@@ -458,13 +563,16 @@ mod tests {
         let mock = MockExecutor::with_exact_replies([
             Reply::ok(""),                                        // test -e
             Reply::ok(""),                                        // cp -p: backup
-            Reply::ok(""),                                        // tee: write
+            Reply::ok(""),                                        // tee: stage
+            Reply::ok("600"),                                     // stat -c %a
+            Reply::ok(""),                                        // chmod
+            Reply::ok(""),                                        // mv: publish
             Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
             Reply::failure(1, "cp: cannot create regular file"),  // cp -p: restore
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
-        let err = write_validated(&mock, backend.as_ref(), "Prt 22\n")
+        let err = write_validated(&mock, backend.as_ref(), "Prt 22\n", &mut |_| {})
             .expect_err("a rejected config must fail");
 
         let Error::InvalidSshdConfig { details } = &err else {
@@ -490,6 +598,100 @@ mod tests {
     }
 
     #[test]
+    fn a_directive_the_daemon_overrides_is_reported() {
+        // Reproduced on debian:13 before this existed: with
+        // `PasswordAuthentication yes` in a /etc/ssh/sshd_config.d/ drop-in —
+        // `50-cloud-init.conf` on any provider image — writing
+        // `PasswordAuthentication no` into the main file leaves `sshd -T`
+        // saying `passwordauthentication yes`, and `sshd -t` approves. The
+        // task reported hardening that had not happened.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                             // test -e
+            Reply::ok(""),                             // cp -p
+            Reply::ok(""),                             // tee
+            Reply::ok("600"),                          // stat
+            Reply::ok(""),                             // chmod
+            Reply::ok(""),                             // mv
+            Reply::ok(""),                             // sshd -t
+            Reply::ok("passwordauthentication yes\n"), // sshd -T: the drop-in won
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        let mut warnings = Vec::new();
+
+        write_validated(
+            &mock,
+            backend.as_ref(),
+            "PasswordAuthentication no\n",
+            &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            },
+        )
+        .expect("a file that parses must still commit");
+
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("PasswordAuthentication")
+                    && line.contains("sshd_config.d")),
+            "the operator must be told the write had no effect: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_directive_the_daemon_agrees_with_is_not_reported() {
+        // The warning has to be rare to be read. A daemon reporting what was
+        // written is the ordinary case and must stay silent — including across
+        // the case differences `sshd -T` introduces, since it lowercases every
+        // keyword it prints.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok("600"),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok("passwordauthentication no\n"),
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        let mut warnings = Vec::new();
+
+        write_validated(
+            &mock,
+            backend.as_ref(),
+            "PasswordAuthentication no\n",
+            &mut |line| {
+                if line.stream == Stream::Stderr {
+                    warnings.push(line.text);
+                }
+            },
+        )
+        .expect("a valid config must commit");
+
+        assert!(warnings.is_empty(), "nothing to warn about: {warnings:?}");
+    }
+
+    #[test]
+    fn a_directive_inside_a_match_block_is_not_compared() {
+        // What follows a `Match` applies to whoever it matches, so comparing it
+        // against the daemon's global configuration would report the block
+        // working as designed.
+        let written = written_directives(
+            "PermitRootLogin no\nMatch User deployer\n    PermitRootLogin yes\n",
+        );
+
+        assert_eq!(
+            written,
+            [("PermitRootLogin".to_owned(), "no".to_owned())],
+            "only the global section is the server's own configuration"
+        );
+    }
+
+    #[test]
     fn a_valid_config_is_kept() {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),
@@ -499,7 +701,8 @@ mod tests {
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
-        write_validated(&mock, backend.as_ref(), "Port 22\n").expect("a valid config must commit");
+        write_validated(&mock, backend.as_ref(), "Port 22\n", &mut |_| {})
+            .expect("a valid config must commit");
 
         // Asking the backend rather than a local constant keeps the assertion
         // tied to the path the code under test actually resolves.
@@ -515,14 +718,17 @@ mod tests {
     fn missing_host_keys_do_not_roll_back_a_valid_file() {
         // The Arch case: the write must survive an inconclusive validation.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),
-            Reply::ok(""),
-            Reply::ok(""),
+            Reply::ok(""),    // test -e
+            Reply::ok(""),    // cp -p: backup
+            Reply::ok(""),    // tee: stage
+            Reply::ok("600"), // stat -c %a
+            Reply::ok(""),    // chmod
+            Reply::ok(""),    // mv: publish
             Reply::failure(1, "no hostkeys available -- exiting."),
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Arch);
 
-        write_validated(&mock, backend.as_ref(), "Port 22\n")
+        write_validated(&mock, backend.as_ref(), "Port 22\n", &mut |_| {})
             .expect("an inconclusive validation must not fail the write");
 
         // Asking the backend rather than a local constant keeps the assertion

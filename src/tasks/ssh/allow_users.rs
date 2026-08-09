@@ -8,6 +8,7 @@
 use crate::backend::{Backend, Capability};
 use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
+use crate::i18n::Msg;
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::sshd_config;
@@ -144,15 +145,22 @@ impl Task for RestrictUsers {
             ),
         });
 
-        report(progress, format!("Restricting SSH login to {users}..."));
+        report(
+            progress,
+            &Msg::TaskSshAllowingUsers {
+                users: users.clone(),
+            },
+        );
 
         let updated = sshd_config::set_directive(&contents, "AllowUsers", &users);
-        let backup = sshd_config::write_validated(executor, backend, &updated)?;
+        let backup = sshd_config::write_validated(executor, backend, &updated, progress)?;
 
         if let Some(ref backup) = backup {
             report(
                 progress,
-                format!("Previous configuration saved to {}", backup.copy),
+                &Msg::TaskSshBackupSaved {
+                    path: backup.copy.clone(),
+                },
             );
         }
 

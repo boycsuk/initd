@@ -55,6 +55,19 @@ impl Revert {
             Self::ConfigFile { backup, .. } => &backup.original,
         }
     }
+
+    /// Where the copy it would restore from is kept.
+    ///
+    /// Stated by the command line, which has no verification window to offer
+    /// and so hands over the path instead. [`describes`](Self::describes) names
+    /// the file that changed, which is the wrong one to reach for: an operator
+    /// told to "restore the previous sshd_config" needs the copy, not the live
+    /// file they are locked out by.
+    pub fn restores_from(&self) -> &str {
+        match self {
+            Self::ConfigFile { backup, .. } => &backup.copy,
+        }
+    }
 }
 
 /// What a task leaves behind when it succeeds.
@@ -120,6 +133,30 @@ mod tests {
         assert_eq!(
             outcome.revert().expect("a revert").describes(),
             "/etc/ssh/sshd_config"
+        );
+    }
+
+    #[test]
+    fn the_copy_is_named_apart_from_the_file_it_would_replace() {
+        // The command line prints both, having no verification window to
+        // offer. It printed only `describes()`, which names the file that
+        // changed — so an operator told to "restore the previous sshd_config"
+        // was handed the path of the one locking them out rather than the path
+        // of the copy that would let them back in.
+        let revert = Revert::ConfigFile {
+            backup: test_backup(),
+            service: "ssh.service",
+        };
+
+        assert_eq!(revert.describes(), "/etc/ssh/sshd_config");
+        assert_eq!(
+            revert.restores_from(),
+            "/etc/ssh/sshd_config.initd.20260803"
+        );
+        assert_ne!(
+            revert.describes(),
+            revert.restores_from(),
+            "the two paths are what makes the message actionable"
         );
     }
 

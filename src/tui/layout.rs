@@ -67,7 +67,7 @@ pub fn wrapped_rows(text: &str, width: usize) -> u16 {
         let mut rows_here: u16 = 1;
 
         for word in line.split_whitespace() {
-            let word = word.chars().count();
+            let word = super::render::cells(word);
 
             if used == 0 {
                 // A word wider than the dialog is drawn broken across rows

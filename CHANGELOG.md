@@ -50,7 +50,177 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rules and has nothing to suggest either; `ssh.allow-users` holds a list, and
   taking a suggestion would delete the names already typed.
 
+### Security
+- `ssh.authorize-key` refuses a `~/.ssh` or an `authorized_keys` that is a
+  symbolic link. `install -d`, `chown` and `tee` all act on a link's target, and
+  the directory sits inside a home its own account controls — so replacing
+  `~/.ssh` with a link elsewhere had root apply the mode, the ownership and the
+  key over there instead. Reproduced on `debian:13` before it was fixed: a
+  directory owned by `root` came back owned by the unprivileged account that
+  planted the link, with a file written inside it. The refusal names the path,
+  because a link into shared storage is something an administrator may have set
+  up deliberately.
+- A configuration file is written beside itself and moved into place, rather
+  than written into. `tee` truncates and then writes, so a process that died
+  between the two — a full disk, an OOM kill, the power going — left
+  `sshd_config` empty or half a file: a third state neither the change nor the
+  backup describes, on the file that decides whether anybody can log in. A
+  rename within a directory is atomic, so a reader sees the old file or the new
+  one. The staging file sits beside the target rather than in `/tmp`, because a
+  rename across filesystems is not a rename and SELinux labels a new file from
+  its parent.
+- A rewritten file keeps its own mode. The staging file is created with the
+  process umask, so moving it over a `0600` file would have published it at
+  `0644`. The mode is read with `stat -c` and applied with `chmod` before the
+  move — not with `chmod --reference` or `cp --preserve=mode`, which are GNU
+  extensions that both fail on busybox. Measured on `alpine:3.23` rather than
+  assumed, which is the same lesson `diff`, `cmp` and `pgrep` each taught once.
+- The firewall survives a reboot. `nft` speaks only to the kernel, so every
+  rule `firewall.enable` and `firewall.allow-port` wrote was gone at the next
+  restart — on Debian, Arch and Alpine, and on a RHEL host whose administrator
+  removed firewalld. The task reported `inbound denied except 22/tcp` in the
+  present tense and the server came back with every port open, reporting
+  nothing. The `FirewallManager` trait grew `persist`/`is_persisted`: nftables
+  writes the whole ruleset where the boot replays it and turns that replay on,
+  firewalld answers that it already does both through `--permanent` and
+  `enable --now`. This is the mistake the sysctl tasks had already made and
+  fixed — a value that is right for reasons that do not outlive a restart —
+  applied to the state where it costs more. Which file the boot reads was
+  measured rather than assumed: `/etc/nftables.conf` under systemd on
+  `debian:13` and `archlinux:latest`, `/etc/nftables.nft` under OpenRC on
+  `alpine:3.23`, resolved by asking the host which init it runs rather than by
+  naming a family.
+- The escalation helper is looked for in the system's own binary directories
+  rather than in `PATH`, and the path it was found at is what gets spawned.
+  This process is unprivileged and escalates command by command, so it inherits
+  the operator's environment: a `sudo` planted in a directory earlier in their
+  `PATH` — `~/.local/bin`, a version manager installed with loose permissions —
+  was found first and then wrapped every privileged command of the session.
+  `secure_path` never applied, because the real `sudo` was never reached.
+  Resolving the name and then spawning that same name also resolved twice, and
+  the second resolution was `execvp`'s against the same `PATH`, so the binary
+  that was checked need not have been the binary that ran.
+- Every child runs under `LC_ALL=C`. Backends read what these programs print,
+  and most of what they read is language-invariant — an exit code, a field of
+  `/etc/passwd` — but `chage -l` renders through gettext: under a Spanish
+  locale its line reads `La cuenta expira`, so a parser looking for `Account
+  expires` found nothing, and nothing read as `never`, which read as "this
+  account is not locked". Silent, and in the guard deciding whether root may be
+  locked out. Set at the choke point so the next backend to parse human output
+  inherits it rather than having to remember.
+- `users.lock-root` reads the expiry out of `/etc/shadow` instead of out of
+  `chage -l`, so the answer no longer depends on a locale being pinned two
+  layers away. Alpine already did this for want of `chage`; the reading is now
+  shared by both account suites, which is where the divergence came from —
+  expiry is *applied* differently by each and stored identically.
+
+### Changed
+- `zellij.install` opens on a version instead of on an empty field. The form
+  arrives filled with the newest release this build carries a digest for and
+  offers the rest through `↑↓` or `Ctrl-L`, and `initd run zellij.install`
+  needs no `version=` at all. The field used to be blank under a hint reading
+  "a version this build can verify", which named none of them — so the value
+  had to be known in advance or guessed, and a guess is refused only after the
+  form is submitted. What it deliberately does not offer is whatever upstream
+  released this morning: the digest that makes a download trustworthy is
+  compiled in, so a newer version has none and the task refuses it. Suggesting
+  it would be proposing the refusal.
+- The tasks' progress narration goes through the i18n catalogue. Ninety lines
+  of it were English literals in `src/tasks/`, so the claim that user-facing
+  text lives in the catalogue held for errors and for the interface's chrome
+  and stopped one layer short — a second language would have produced an output
+  pane with translated headings above `installing wireguard-tools`. `report`
+  now takes a `Msg`, which puts the rendering at the one point every such line
+  already passed through: threading a `Lang` into `Task::run` would be a
+  parameter twenty-eight implementations carry and one forgets. What the lines
+  say is unchanged, and the tests that read them needed no edit. The WireGuard
+  client configuration a peer copies goes through `report_verbatim` instead,
+  being data rather than language: translating `[Interface]` would produce a
+  file `wg-quick` cannot read.
+
+### Added
+- A scenario that loses the session for real. `SIGHUP` is what a dropped
+  connection delivers and the case the verification window exists for, and it
+  was covered only by unit tests asserting that a raised flag is seen — which
+  says nothing about whether a live process holding a live window puts the file
+  back before it exits. `tests/integration_tui.rs` now hardens SSH under
+  systemd, confirms the change landed, signals the process from outside tmux,
+  and compares the restored `sshd_config` byte for byte. Verified able to fail
+  by breaking the handler first: with the revert removed, Debian and Arch both
+  reported `PermitRootLogin no` still in place. The signal goes through `kill`
+  with a pid read from `/proc` rather than through `pkill`, which `debian:13`
+  does not ship — the same shape as the `pgrep` finding already recorded.
+
+### Security
+- A password does not outlive the task that used it. The interface keeps the
+  values a task ran with so it can report what that task invalidated, and
+  nothing reads them again until another task replaces them — so on a host
+  where an account is created and nothing else, the password stayed in a
+  root-owned process for the rest of the session, on a machine whose core dumps
+  this tool does not disable. The secrets are overwritten and dropped when the
+  task finishes, on the failure path too, since a task that failed held the
+  same value and reported nothing that needed it. This is not a claim that the
+  value is gone from memory: four other copies are made on the way to
+  `chpasswd` and a growing `Vec<char>` leaves fragments behind — measured, three
+  reallocations for twenty-eight characters. Those are short-lived; the one
+  removed here was not.
+
 ### Fixed
+- Installing a tool from a release archive works at all. The line checking the
+  download against its digest wrote both inside one pair of single quotes —
+  `echo '<digest>  $dir/archive'` — so the shell never expanded `$dir`,
+  `sha256sum` looked for a file of that literal name, and it answered `FAILED
+  open or read`. The caller classifies a failure mentioning `sha256sum` as a
+  mismatch, so every download failed as tampering whatever the archive
+  contained, and the message sent the operator looking for an attack rather
+  than for a quoting mistake. It affected `zellij.install`, `mise.install` and
+  `caddy.install` on every family. The digest stays quoted and the path does
+  not, which is the whole of the line's correctness. Verified by installing
+  zellij on `debian:13` and caddy on `rockylinux:9` and running both binaries.
+- Text is fitted to the screen by the cells it occupies rather than by the
+  characters it contains. A CJK ideograph and most emoji take two cells, so
+  `admin@東京サーバー本番` is fourteen characters and twenty-two: a pane twenty
+  wide was told it fitted, wrote no ellipsis, and let ratatui cut the tail off
+  when it drew — losing content and the mark that says content was lost. It is
+  reachable rather than hypothetical, since a public key's comment is never
+  validated beyond being non-control. Measured through `Span::width`, the same
+  number ratatui uses to draw, so no dependency was added: `unicode-width` was
+  already in the tree beneath it, and asking the drawing layer is what keeps
+  the two from disagreeing.
+- `initd run users.create user=deploy` runs. The command line treated "has no
+  initial value" as "is required", so the optional password made it exit 2 with
+  `needs: password` — refusing a value the field beside it in the interface
+  describes as "leave empty for none", and making the account task unreachable
+  from a script without supplying the one thing `docs/cli.md` warns against
+  putting in an argument. Being optional is now declared on the parameter, so
+  both interfaces read the same claim; a default and a skippable value are
+  separate things and are stated separately.
+- Every task that edits `sshd_config` says so when the daemon will not honour
+  what was written. `sshd -t` reports that a file parses, not that it wins:
+  Debian 12, Ubuntu 22.04 and RHEL 9 all ship `Include
+  /etc/ssh/sshd_config.d/*.conf` as the first line, and sshd takes the first
+  occurrence of a directive, so a drop-in left by a provider image beats
+  everything below it. Reproduced on `debian:13`: with `PasswordAuthentication
+  yes` in `50-cloud-init.conf`, `ssh.harden` wrote `PasswordAuthentication no`,
+  `sshd -t` approved, the task reported success, and `sshd -T` answered
+  `passwordauthentication yes`. The effective configuration is now read back
+  and any directive the daemon disagrees with is named. Warned rather than
+  refused, and nothing is rolled back — what was written is correct, and an
+  administrator who put the drop-in there meant to. Only the global section is
+  compared: what follows a `Match` belongs to that block, so comparing it would
+  report the block working as designed. Until now this was mitigated for one
+  task on one family, by excluding `ssh.harden-strict` on RHEL.
+- A command that stops producing output no longer strands the task waiting on
+  it. Cancellation is checked between commands, so it cannot reach one already
+  running: a child that neither exits nor speaks — blocked on a prompt
+  inherited from a terminal nobody is looking at, or on an unreachable mount —
+  left the task thread waiting forever while the interface reported it as
+  running and the stop key did nothing. Silence is measured rather than total
+  runtime, since installing a kernel is allowed to take an hour and does not go
+  quiet for an hour while doing it. The child is left running rather than
+  killed, and the message says so: stopping a task part-way leaves half its
+  work applied, which is the same reason cancellation refuses the next command
+  instead of interrupting this one.
 - `ssh.change-port` names the backup before the three steps that can fail
   after the file is already written — the socket check, the SELinux probe and
   the labelling. A task that fails there returns an error rather than an

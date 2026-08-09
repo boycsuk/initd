@@ -14,6 +14,7 @@
 use crate::backend::Backend;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Progress, Task, supported_everywhere};
@@ -85,6 +86,25 @@ impl Task for AuthorizeKey {
         let ssh_dir = format!("{home}/.ssh");
         let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
 
+        // Refused before anything is created, because everything below follows
+        // links and this directory sits inside a home the account itself
+        // controls. Replacing `~/.ssh` with a link elsewhere has root apply the
+        // mode, the ownership and the key to wherever it points — reproduced on
+        // `debian:13`, where a directory owned by root came back owned by the
+        // account that planted the link, with a file written inside it.
+        //
+        // Checked rather than defended against with `mkdir` alone: `mkdir` does
+        // fail on a link, but `install -d` is what gives the directory its mode
+        // in one step, and the file write below would still follow a link put
+        // in place of `authorized_keys` itself.
+        for candidate in [&ssh_dir, &path] {
+            if files.is_symlink(executor, candidate)? {
+                return Err(Error::UnsafeSymlink {
+                    path: candidate.clone(),
+                });
+            }
+        }
+
         // sshd silently ignores authorized_keys when the directory or file is
         // group- or world-accessible, so the modes are part of the operation
         // rather than an afterthought.
@@ -100,11 +120,11 @@ impl Task for AuthorizeKey {
         };
 
         if key_is_present(&existing, key) {
-            report(progress, "The key is already authorised; nothing to do");
+            report(progress, &Msg::TaskSshKeyAlreadyAuthorised);
             return Ok(Outcome::Done);
         }
 
-        report(progress, format!("Adding the key to {path}..."));
+        report(progress, &Msg::TaskSshAddingKey { path: path.clone() });
 
         // Append rather than replace: other keys in the file are other
         // people's access.
@@ -139,7 +159,7 @@ impl Task for AuthorizeKey {
             files.set_owner(executor, &path, &user)?;
         }
 
-        report(progress, "Key authorised");
+        report(progress, &Msg::TaskSshKeyAuthorised);
 
         // Authorising a key only ever grants access; undoing it is the
         // dangerous direction, so it is not offered here.
@@ -280,9 +300,70 @@ mod tests {
     }
 
     #[test]
+    fn a_home_whose_ssh_directory_is_a_link_is_refused() {
+        // The escalation this closes, reproduced on debian:13 before it was
+        // fixed: an unprivileged account owns its own home, so replacing
+        // `~/.ssh` with a link to somewhere else has root run `install -d`,
+        // `chown` and `tee` against the target instead. A directory owned by
+        // root came back owned by the account that planted the link.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD), // getent passwd: where the home is
+            Reply::ok(""),          // test -L: it is a link
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect_err("a link in place of ~/.ssh must be refused");
+
+        assert!(matches!(err, Error::UnsafeSymlink { .. }), "{err:?}");
+
+        // Nothing may have been created before the refusal: the point is that
+        // root never touches the target at all.
+        let lines = mock.recorded_lines();
+
+        assert!(
+            !lines.iter().any(|line| line.starts_with("install")
+                || line.starts_with("chown")
+                || line.starts_with("tee")),
+            "the refusal must come before anything is written: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_planted_authorized_keys_link_is_refused_too() {
+        // The directory can be genuine while the file inside it is the link —
+        // the same trick one level down, and the write is what follows it.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD),
+            Reply::failure(1, ""), // test -L on ~/.ssh: not a link
+            Reply::ok(""),         // test -L on authorized_keys: it is
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect_err("a link in place of authorized_keys must be refused");
+
+        assert!(matches!(err, Error::UnsafeSymlink { .. }), "{err:?}");
+    }
+
+    #[test]
     fn authorising_a_key_sets_the_permissions_sshd_requires() {
         let mock = MockExecutor::with_replies([
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
+            Reply::failure(1, ""),  // test -L: nor is authorized_keys
             Reply::ok(""),          // install -d
             Reply::ok(""),          // chown dir
             Reply::failure(1, ""),  // authorized_keys absent
@@ -330,17 +411,22 @@ mod tests {
         // nowhere.
         let mock = MockExecutor::with_exact_replies([
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
+            Reply::failure(1, ""),  // test -L: nor is authorized_keys
             Reply::ok(""),          // install -d
             Reply::ok(""),          // chown dir
             Reply::failure(1, ""),  // test -e: authorized_keys absent
-            Reply::ok(""),          // test -e, opening the empty write
-            Reply::ok(""),          // cp -p: backup
-            Reply::ok(""),          // tee: create it empty
+            Reply::failure(1, ""),  // test -e, opening the empty write
+            Reply::ok(""),          // tee: stage the empty file
+            Reply::ok(""),          // mv: publish it
             Reply::ok(""),          // chmod 600, before any key exists
             Reply::ok(""),          // chown file
             Reply::ok(""),          // test -e, opening the real write
             Reply::ok(""),          // cp -p: backup
-            Reply::ok(""),          // tee: the key
+            Reply::ok(""),          // tee: stage the key
+            Reply::ok("600"),       // stat -c %a: the mode just set
+            Reply::ok(""),          // chmod: carry it onto the staging file
+            Reply::ok(""),          // mv: publish it
         ]);
         let backend = for_family(Family::Debian);
 
@@ -384,6 +470,8 @@ mod tests {
 
         let mock = MockExecutor::with_replies([
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
+            Reply::failure(1, ""),  // test -L: nor is authorized_keys
             Reply::ok(""),          // install -d
             Reply::ok(""),          // chown dir
             Reply::ok(""),          // authorized_keys exists
@@ -423,17 +511,22 @@ mod tests {
         // may then disable passwords for an account whose key did not land.
         let mock = MockExecutor::with_exact_replies([
             Reply::ok("deploy:x:1001:1001::/srv/deploy:/bin/sh"),
+            Reply::failure(1, ""), // test -L: ~/.ssh is not a link
+            Reply::failure(1, ""), // test -L: nor is authorized_keys
             Reply::ok(""),         // install -d
             Reply::ok(""),         // chown dir
             Reply::failure(1, ""), // test -e: authorized_keys absent
-            Reply::ok(""),         // test -e, opening the empty write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: create it empty
+            Reply::failure(1, ""), // test -e, opening the empty write
+            Reply::ok(""),         // tee: stage the empty file
+            Reply::ok(""),         // mv: publish it
             Reply::ok(""),         // chmod
             Reply::ok(""),         // chown file
             Reply::ok(""),         // test -e, opening the real write
             Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: the key
+            Reply::ok(""),         // tee: stage the key
+            Reply::ok("600"),      // stat -c %a
+            Reply::ok(""),         // chmod: carry the mode over
+            Reply::ok(""),         // mv: publish it
         ]);
         let backend = for_family(Family::Debian);
 
@@ -464,6 +557,8 @@ mod tests {
     fn authorising_the_same_key_twice_does_not_duplicate_it() {
         let mock = MockExecutor::with_replies([
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
+            Reply::failure(1, ""),  // test -L: nor is authorized_keys
             Reply::ok(""),          // install -d
             Reply::ok(""),          // chown
             Reply::ok(""),          // authorized_keys exists
@@ -491,6 +586,8 @@ mod tests {
         let existing = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQfakebodyvaluehere someone@else";
         let mock = MockExecutor::with_replies([
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
+            Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
+            Reply::failure(1, ""),  // test -L: nor is authorized_keys
             Reply::ok(""),          // install -d
             Reply::ok(""),          // chown dir
             Reply::ok(""),          // authorized_keys exists

@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use super::field::Field;
-use super::{layout, style};
+use super::{layout, render, style};
 use crate::i18n::{Lang, Msg};
 use crate::tasks::params::{Param, ParamValues};
 
@@ -595,7 +595,7 @@ fn header_line(field: &Field, lang: Lang, width: usize, focused: bool) -> Line<'
     // far edge; below that the gap closes and the two would read as one
     // phrase, so the verdict yields its right-alignment rather than collide.
     let gap = width
-        .saturating_sub(GUTTER_WIDTH + label.chars().count() + right.chars().count())
+        .saturating_sub(GUTTER_WIDTH + render::cells(label) + render::cells(&right))
         .max(2);
 
     Line::from(vec![

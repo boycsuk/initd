@@ -3,14 +3,37 @@
 //! `sudo` is not universal: Alpine ships `doas`, and modern systemd offers
 //! `run0`, which authenticates through polkit but is a symlink to
 //! `systemd-run` and does not exist without systemd. The mechanism is
-//! therefore discovered through `PATH` at runtime behind a trait, never
-//! hardcoded.
+//! therefore discovered at runtime behind a trait, never hardcoded.
+//!
+//! **Discovered in a fixed list of directories rather than in `PATH`.** This
+//! process is unprivileged and escalates command by command, so it inherits
+//! the operator's environment — including a `PATH` that may begin with a
+//! directory somebody else can write to (`~/.local/bin` and a version manager
+//! with loose permissions are the ordinary cases). A `sudo` planted there is
+//! found first, and from then on every privileged command in the session goes
+//! through it: `secure_path` never gets to run, because the real `sudo` is
+//! never reached. The helper is therefore looked up where the system keeps
+//! its own binaries, which is the same reasoning `sudo` applies to the
+//! commands it runs.
+//!
+//! The resolved absolute path is then *kept*. Looking a name up and spawning
+//! it by that name resolves twice, and the second resolution — performed by
+//! `execvp` against the same untrusted `PATH` — need not answer what the
+//! first one checked.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::Command;
 use crate::error::{Error, Result};
+
+/// Directories a helper may be found in, in the order they are searched.
+///
+/// The system's own binary directories, and nothing the operator's profile can
+/// prepend. `/usr/bin` before `/bin` because the split is historical and the
+/// latter is a symlink to the former on every family implemented here; both
+/// are listed so a host that kept them separate still resolves.
+const TRUSTED_DIRECTORIES: [&str; 4] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
 /// Escalation mechanisms, in the order they are preferred.
 ///
@@ -97,17 +120,38 @@ impl PrivilegeEscalator for NoEscalation {
     }
 }
 
-/// Escalation through an external helper found in `PATH`.
+/// Escalation through an external helper.
+///
+/// Carries both the helper's name, which is what the interface displays and
+/// what selects its behaviour, and the absolute path it was found at, which is
+/// what gets spawned. Keeping the two apart is what stops a `sudo` earlier in
+/// the operator's `PATH` from answering for the one that was checked.
 #[derive(Debug, Clone)]
 pub struct HelperEscalation {
     program: String,
+    path: String,
 }
 
 impl HelperEscalation {
-    /// Wraps a specific helper by name.
-    pub fn new(program: impl Into<String>) -> Self {
+    /// Wraps a helper found at a known absolute path.
+    pub fn new(program: impl Into<String>, path: impl Into<String>) -> Self {
         Self {
             program: program.into(),
+            path: path.into(),
+        }
+    }
+
+    /// Wraps a helper by name, spawning it by that name.
+    ///
+    /// For tests and for a caller naming a helper it has already resolved.
+    /// Production detection goes through [`detect`], which keeps the path.
+    #[cfg(test)]
+    pub fn by_name(program: impl Into<String>) -> Self {
+        let program = program.into();
+
+        Self {
+            path: program.clone(),
+            program,
         }
     }
 }
@@ -118,7 +162,7 @@ impl PrivilegeEscalator for HelperEscalation {
         args.push(command.program.clone());
         args.extend(command.args.iter().cloned());
 
-        Ok((self.program.clone(), args))
+        Ok((self.path.clone(), args))
     }
 
     fn name(&self) -> &str {
@@ -128,7 +172,7 @@ impl PrivilegeEscalator for HelperEscalation {
     fn preauth_command(&self) -> Option<(String, Vec<String>)> {
         // Only sudo has a validate flag. doas authenticates per invocation with
         // no client-side refresh, and run0 defers to polkit.
-        (self.program == SUDO).then(|| (self.program.clone(), vec!["-v".to_owned()]))
+        (self.program == SUDO).then(|| (self.path.clone(), vec!["-v".to_owned()]))
     }
 
     fn auth_need(&self) -> AuthNeed {
@@ -137,7 +181,7 @@ impl PrivilegeEscalator for HelperEscalation {
             // prompting, which is the question, since Arch expires it after
             // five minutes and a long task outlives that.
             SUDO => AuthNeed::Probe {
-                program: self.program.clone(),
+                program: self.path.clone(),
                 args: vec!["-n".to_owned(), "-v".to_owned()],
             },
             // Alpine's opendoas takes `-n` — confirmed against its usage line,
@@ -145,7 +189,7 @@ impl PrivilegeEscalator for HelperEscalation {
             // nopass`, 1 when a password is wanted. There is no validate flag,
             // so the probe runs `true` rather than nothing.
             DOAS => AuthNeed::Probe {
-                program: self.program.clone(),
+                program: self.path.clone(),
                 args: vec!["-n".to_owned(), "true".to_owned()],
             },
             // polkit owns run0's prompt, but run0 can still be asked whether
@@ -155,7 +199,7 @@ impl PrivilegeEscalator for HelperEscalation {
             // needed both, since without them run0 fails to reach the bus and
             // every answer looks the same.
             RUN0 => AuthNeed::Probe {
-                program: self.program.clone(),
+                program: self.path.clone(),
                 args: vec!["--no-ask-password".to_owned(), "true".to_owned()],
             },
             // An unrecognised helper cannot be asked, so the terminal is
@@ -186,9 +230,10 @@ impl PrivilegeEscalator for UnavailableEscalation {
 
 /// Picks an escalation mechanism for the current process.
 ///
-/// Running as root needs none. Otherwise the first candidate found in `PATH`
-/// wins; if none is present, escalation fails later with a clear error rather
-/// than at startup.
+/// Running as root needs none. Otherwise the first candidate found in the
+/// trusted directories wins, and the path it was found at is what will be
+/// spawned; if none is present, escalation fails later with a clear error
+/// rather than at startup.
 pub fn detect() -> Box<dyn PrivilegeEscalator> {
     if is_root() {
         return Box::new(NoEscalation);
@@ -196,10 +241,15 @@ pub fn detect() -> Box<dyn PrivilegeEscalator> {
 
     CANDIDATES
         .iter()
-        .find(|program| find_in_path(program).is_some())
+        .find_map(|program| Some((*program, find_trusted(program)?)))
         .map_or_else(
             || Box::new(UnavailableEscalation) as Box<dyn PrivilegeEscalator>,
-            |program| Box::new(HelperEscalation::new(*program)) as Box<dyn PrivilegeEscalator>,
+            |(program, path)| {
+                Box::new(HelperEscalation::new(
+                    program,
+                    path.to_string_lossy().as_ref(),
+                )) as Box<dyn PrivilegeEscalator>
+            },
         )
 }
 
@@ -222,12 +272,16 @@ fn is_root() -> bool {
         .is_some_and(|effective| effective == "0")
 }
 
-/// Looks a program up in `PATH`, returning the first executable match.
-fn find_in_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(program))
+/// Looks a program up in the trusted directories, in their declared order.
+///
+/// `PATH` is deliberately not consulted: see the module documentation. A
+/// helper installed somewhere else is not found, and the operator gets the
+/// "no escalation mechanism" error rather than a silent lookup in a directory
+/// somebody else can write to.
+fn find_trusted(program: &str) -> Option<PathBuf> {
+    TRUSTED_DIRECTORIES
+        .iter()
+        .map(|dir| Path::new(dir).join(program))
         .find(|candidate| is_executable(candidate))
 }
 
@@ -255,7 +309,7 @@ mod tests {
     #[test]
     fn helper_prepends_itself_to_the_command() {
         let cmd = Command::new("apt-get").args(["install", "-y", "openssh-server"]);
-        let (program, args) = HelperEscalation::new("sudo")
+        let (program, args) = HelperEscalation::by_name("sudo")
             .wrap(&cmd)
             .expect("wrapping cannot fail");
 
@@ -269,7 +323,7 @@ mod tests {
         let cmd = Command::new("pacman").args(["-S", "openssh"]);
 
         for helper in ["doas", "run0"] {
-            let (program, args) = HelperEscalation::new(helper)
+            let (program, args) = HelperEscalation::by_name(helper)
                 .wrap(&cmd)
                 .expect("wrapping cannot fail");
 
@@ -288,13 +342,92 @@ mod tests {
     }
 
     #[test]
-    fn finds_a_program_that_exists_in_path() {
-        assert!(find_in_path("sh").is_some(), "sh must exist in PATH");
+    fn finds_a_program_that_exists_in_a_trusted_directory() {
+        assert!(
+            find_trusted("sh").is_some(),
+            "sh must live in /bin or /usr/bin"
+        );
     }
 
     #[test]
     fn does_not_find_a_nonexistent_program() {
-        assert!(find_in_path("initd-nonexistent-binary").is_none());
+        assert!(find_trusted("initd-nonexistent-binary").is_none());
+    }
+
+    #[test]
+    fn a_helper_is_only_looked_for_in_trusted_directories() {
+        // The attack this closes: an unprivileged process inherits the
+        // operator's PATH, so a `sudo` planted in a directory somebody else can
+        // write to would be found first and would then wrap every privileged
+        // command of the session. Every directory searched must be one only
+        // root can write to.
+        for directory in TRUSTED_DIRECTORIES {
+            assert!(
+                std::path::Path::new(directory).is_absolute(),
+                "{directory} must be absolute: a relative entry resolves against \
+                 the working directory, which the operator chooses"
+            );
+        }
+    }
+
+    #[test]
+    fn a_planted_helper_earlier_in_path_is_not_found() {
+        // PATH is not consulted at all, so a directory prepended to it cannot
+        // introduce a candidate. Asserted against a real executable placed in a
+        // temporary directory, rather than against the absence of a lookup.
+        let dir = std::env::temp_dir().join(format!("initd-path-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let planted = dir.join(SUDO);
+        std::fs::write(&planted, "#!/bin/sh\nexit 0\n").expect("write planted helper");
+
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+
+        let found = find_trusted(SUDO);
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_ne!(
+            found.as_deref(),
+            Some(planted.as_path()),
+            "a helper outside the trusted directories must never be chosen"
+        );
+    }
+
+    #[test]
+    fn the_resolved_path_is_what_gets_spawned() {
+        // Resolving a name and then spawning that name resolves twice, and the
+        // second resolution answers to `execvp` against the untrusted PATH. The
+        // path found is therefore what `wrap` returns.
+        let helper = HelperEscalation::new(SUDO, "/usr/bin/sudo");
+        let (program, _) = helper
+            .wrap(&Command::new("apt-get").privileged())
+            .expect("wrapping cannot fail");
+
+        assert_eq!(program, "/usr/bin/sudo");
+        assert_eq!(helper.name(), SUDO, "the display name stays the bare name");
+    }
+
+    #[test]
+    fn the_probe_and_the_preauth_use_the_resolved_path_too() {
+        // Both spawn the helper independently of `wrap`, so both would resolve
+        // by name again if they carried the name.
+        let helper = HelperEscalation::new(SUDO, "/usr/bin/sudo");
+
+        assert_eq!(
+            helper.auth_need(),
+            AuthNeed::Probe {
+                program: "/usr/bin/sudo".to_owned(),
+                args: vec!["-n".to_owned(), "-v".to_owned()],
+            }
+        );
+
+        let (program, args) = helper.preauth_command().expect("sudo pre-authenticates");
+
+        assert_eq!(program, "/usr/bin/sudo");
+        assert_eq!(args, ["-v"]);
     }
 
     #[test]
@@ -306,7 +439,7 @@ mod tests {
 
     #[test]
     fn sudo_is_asked_whether_its_timestamp_is_still_valid() {
-        let need = HelperEscalation::new(SUDO).auth_need();
+        let need = HelperEscalation::by_name(SUDO).auth_need();
 
         assert_eq!(
             need,
@@ -323,7 +456,7 @@ mod tests {
         // so nothing authenticates at startup and the first privileged command
         // is the one that prompts. Its exit codes were measured on alpine:3.23
         // — 0 under `permit nopass`, 1 when a password is wanted.
-        let need = HelperEscalation::new(DOAS).auth_need();
+        let need = HelperEscalation::by_name(DOAS).auth_need();
 
         assert_eq!(
             need,
@@ -339,7 +472,7 @@ mod tests {
         // polkit owns the prompt, but run0 still answers whether one is
         // coming: `--no-ask-password` refuses instead of asking. Measured on
         // Arch with systemd as PID 1 and polkit active.
-        let need = HelperEscalation::new(RUN0).auth_need();
+        let need = HelperEscalation::by_name(RUN0).auth_need();
 
         assert_eq!(
             need,
@@ -355,7 +488,7 @@ mod tests {
         // The dangerous direction is claiming a mechanism will not prompt when
         // it will, so anything unrecognised errs towards a needless handoff.
         assert_eq!(
-            HelperEscalation::new("something-else").auth_need(),
+            HelperEscalation::by_name("something-else").auth_need(),
             AuthNeed::Always
         );
     }
@@ -372,7 +505,7 @@ mod tests {
         // forgotten in `auth_need`, which would silence the handoff for it.
         for candidate in CANDIDATES {
             assert_ne!(
-                HelperEscalation::new(candidate).auth_need(),
+                HelperEscalation::by_name(candidate).auth_need(),
                 AuthNeed::Never,
                 "{candidate} must not claim it will never prompt"
             );

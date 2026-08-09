@@ -56,7 +56,11 @@ impl Release {
 /// Installs binaries from verified release archives.
 pub trait BinaryInstaller {
     /// Whether a binary is already on `PATH`.
-    fn is_installed(&self, executor: &dyn Executor, program: &str) -> Result<bool>;
+    /// `&'static str` because the name reaches `Command::locating`, which
+    /// builds a `sh -c` script around it. Every caller names a program it was
+    /// compiled knowing about, so the bound costs nothing and stops a value
+    /// from a form or an argument list ever getting there.
+    fn is_installed(&self, executor: &dyn Executor, program: &'static str) -> Result<bool>;
 
     /// Downloads, verifies and installs one release.
     ///

@@ -48,6 +48,15 @@ comes from the operating system: commands that need root are escalated through
   `LC_ALL`, `LC_MESSAGES` or `LANG`, falling back to English.
 - **Idempotent where possible.** An operation that finds the system already in
   the desired state reports it and changes nothing.
+- **A directive the daemon will not honour is reported on stderr.** Every task
+  that edits `sshd_config` reads the effective configuration back afterwards and
+  names any directive the daemon disagrees with. Debian 12, Ubuntu 22.04 and
+  RHEL 9 ship `Include /etc/ssh/sshd_config.d/*.conf` as the first line, and
+  sshd takes the first occurrence of a directive — so a drop-in left there by a
+  provider image wins over what was written, while `sshd -t` still approves. The
+  task succeeds and exits `0`: what it wrote is correct, and a drop-in is often
+  deliberate. A script that treats hardening as complete on exit `0` should read
+  stderr too.
 
 ## Exit codes
 
@@ -177,7 +186,12 @@ permissions sshd requires (700 on the directory, 600 on the file).
 **Behaviour:** existing keys are preserved, and adding a key already present is
 a no-op. Keys are compared by type and body, ignoring the trailing comment.
 
-**Errors:** a structurally invalid key exits `1` before anything is written.
+**Errors:** a structurally invalid key exits `1` before anything is written, as
+does a `~/.ssh` or `authorized_keys` that is a symbolic link. The tools this
+uses follow links, and the directory sits inside a home its own account
+controls, so a link there would have root apply the mode, the ownership and the
+key somewhere else. The message names the path: a link into shared storage is
+something an administrator may have set up deliberately.
 
 ### `initd change-port <port>`
 
@@ -239,9 +253,9 @@ command line, running the subcommand *is* the confirmation.
 
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
-| `firewall.status` | `run firewall.status` | no | Reports whether inbound filtering is active and which ports it admits. |
-| `firewall.enable` | `run <id> name=value` | yes | Denies inbound traffic by default, admitting established connections, loopback and the SSH port. |
-| `firewall.allow-port` | `run <id> name=value` | no | Admits inbound traffic on one port, for one protocol. |
+| `firewall.status` | `run firewall.status` | no | Reports whether inbound filtering is active, which ports it admits, and whether the ruleset is restored at boot — the running ruleset cannot be read for the last of those, and the difference is a whole firewall after a restart. |
+| `firewall.enable` | `run <id> name=value` | yes | Denies inbound traffic by default, admitting established connections, loopback and the SSH port. The ruleset is saved where the boot replays it; on a host with no service manager it reports that it was saved and will not be replayed. |
+| `firewall.allow-port` | `run <id> name=value` | no | Admits inbound traffic on one port, for one protocol. Saved across reboots on the same terms as `firewall.enable`. Reports when nothing is being filtered yet, since a port "opened" against no policy admits nothing it did not already. |
 | `sysctl.ip-forward` | `run sysctl.ip-forward` | no | Enables IP forwarding, now and across reboots. |
 | `sysctl.unprivileged-ports` | `run sysctl.unprivileged-ports` | no | Lets an unprivileged process bind 80 and 443. |
 
@@ -259,7 +273,7 @@ command line, running the subcommand *is* the confirmation.
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
 | `fish.install` | `run fish.install` | no | Installs fish and registers it in `/etc/shells`. |
-| `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. |
+| `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. `version=` defaults to the newest release this build carries a digest for, and only those may be named: a version published upstream after this binary was built has no compiled-in digest and is refused, naming the ones it knows. |
 | `mise.install` | `run mise.install` | no | Installs mise. From the distribution where one packages it, otherwise from a checksum-verified release. |
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
 

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::str::FromStr as _;
 
+use crate::domain::binaries::Release;
 use crate::error::{Error, Result};
 
 /// The kind of value a parameter holds.
@@ -107,6 +108,17 @@ pub enum Suggestions {
     Accounts,
     /// The login shells `/etc/shells` admits.
     Shells,
+    /// The releases this build carries a digest for, newest first.
+    ///
+    /// The one source here that asks the host nothing: the answer is compiled
+    /// into the binary, because a digest is what makes a download trustworthy
+    /// and one fetched at the same time as the archive proves nothing. That is
+    /// also why the field cannot simply offer whatever upstream released this
+    /// morning — a version with no digest in this build is one the task refuses
+    /// — and why offering the table is worth doing at all: the operator was
+    /// otherwise typing a version number into an empty field, from a hint that
+    /// said "a version this build can verify" without saying which.
+    Releases(&'static [Release]),
 }
 
 /// What the host must already say about a value for the task to accept it.
@@ -446,6 +458,19 @@ pub struct Param {
     /// `wireguard.add-peer` validates a label by the username rules and the
     /// host has no opinion about it at all.
     pub existence: Option<Existence>,
+    /// Whether the task runs without a value for this.
+    ///
+    /// Distinct from having an initial value, which is what the command line
+    /// used to read as "not required": `users.create`'s password is optional
+    /// *and* has no default, since the default is no password rather than a
+    /// suggested one. Without this the interface offered a field an operator
+    /// could skip and the command line refused to run at all without it —
+    /// `initd run users.create user=deploy` answered `needs: password`, which
+    /// contradicts the hint on the field beside it.
+    ///
+    /// Opt-in like its neighbours: a parameter is required unless it says
+    /// otherwise, so a new one cannot become skippable by omission.
+    pub optional: bool,
 }
 
 impl Param {
@@ -459,7 +484,19 @@ impl Param {
             hint: None,
             suggestions: None,
             existence: None,
+            optional: false,
         }
+    }
+
+    /// Declares that the task runs without a value for this.
+    ///
+    /// The interface already lets a field be left empty; this is what stops the
+    /// command line demanding one. Both interfaces read the same declaration,
+    /// so a parameter cannot be skippable in one and required in the other.
+    #[must_use]
+    pub const fn optional(mut self) -> Self {
+        self.optional = true;
+        self
     }
 
     /// Sets what the field starts out containing.
@@ -484,6 +521,18 @@ impl Param {
     #[must_use]
     pub const fn suggesting_accounts(mut self) -> Self {
         self.suggestions = Some(Suggestions::Accounts);
+        self
+    }
+
+    /// Offers the releases this build carries a digest for.
+    ///
+    /// Named like its siblings rather than taking a `Suggestions` directly: the
+    /// point of the opt-in constructors is that a field says what it wants in
+    /// its own words, and a generic setter would let a future field ask for
+    /// accounts by passing the wrong variant.
+    #[must_use]
+    pub const fn suggesting_releases(mut self, releases: &'static [Release]) -> Self {
+        self.suggestions = Some(Suggestions::Releases(releases));
         self
     }
 
@@ -528,6 +577,48 @@ impl ParamValues {
         self.values.insert(name, value.into());
     }
 
+    /// Overwrites and drops every secret this holds, keeping the rest.
+    ///
+    /// The interface keeps the values a task ran with so it can report what
+    /// that task invalidated, which means a password outlives the task by as
+    /// long as it takes to run another one — the whole session, on a host where
+    /// one account is created and nothing else. Held in a process running as
+    /// root, on a machine whose core dumps this tool does not disable.
+    ///
+    /// Not a claim that the secret is gone from memory. Four other copies are
+    /// made on the way to `chpasswd` and a growing `Vec<char>` leaves fragments
+    /// of what was typed behind it — measured: twenty-eight characters
+    /// reallocate three times, the largest abandoned block holding sixteen of
+    /// them. Those are all short-lived, and this one was not; removing the one
+    /// that lasts is what is actually worth doing, and pretending otherwise
+    /// would be the more dangerous half of the change.
+    ///
+    /// The bytes are overwritten before the string is dropped rather than
+    /// merely dropped, so the value does not sit in freed memory waiting to be
+    /// handed to whatever allocates next.
+    pub fn forget_secrets(&mut self, params: &[Param]) {
+        for param in params {
+            if param.kind != ParamKind::Secret {
+                continue;
+            }
+
+            if let Some(value) = self.values.get_mut(param.name) {
+                // In place, through the string's own buffer: assigning a new
+                // `String` would drop the old one with its contents intact.
+                //
+                // SAFETY: every byte written is ASCII `0`, so the buffer is
+                // still valid UTF-8 when the borrow ends.
+                unsafe {
+                    value.as_bytes_mut().fill(0);
+                }
+
+                value.clear();
+            }
+
+            self.values.remove(param.name);
+        }
+    }
+
     /// Reads a value back, failing if the interface never collected it.
     ///
     /// A missing parameter is a programming error rather than user input, but
@@ -558,6 +649,74 @@ impl ParamValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_secrets_leaves_everything_else() {
+        // Only the secrets: the values a task ran with are kept so the
+        // interface can report what that task invalidated, and a wholesale
+        // clear would take the account name that report is written from.
+        let params = [
+            Param::new("user", "Username", ParamKind::Username),
+            Param::new("password", "Password", ParamKind::Secret).optional(),
+        ];
+
+        let mut values = ParamValues::new();
+        values.set("user", "deploy");
+        values.set("password", "a-value-typed-by-the-operator");
+
+        values.forget_secrets(&params);
+
+        assert!(values.get("password").is_err(), "the secret is gone");
+        assert_eq!(values.get("user").ok(), Some("deploy"), "the rest is not");
+    }
+
+    #[test]
+    fn forgetting_a_secret_that_was_never_given_is_not_an_error() {
+        // The ordinary path: the password field is optional, so most runs of
+        // `users.create` never set it.
+        let params = [Param::new("password", "Password", ParamKind::Secret).optional()];
+
+        let mut values = ParamValues::new();
+        values.set("user", "deploy");
+
+        values.forget_secrets(&params);
+
+        assert_eq!(values.get("user").ok(), Some("deploy"));
+    }
+
+    #[test]
+    fn a_parameter_is_required_unless_it_says_otherwise() {
+        // Opt-in like `suggestions` and `existence`: a parameter added without
+        // thinking about this is required, which is the direction that fails
+        // loudly rather than letting a task run without a value it needs.
+        assert!(!Param::new("user", "Username", ParamKind::Username).optional);
+        assert!(
+            Param::new("password", "Password", ParamKind::Secret)
+                .optional()
+                .optional
+        );
+    }
+
+    #[test]
+    fn being_optional_is_not_the_same_as_having_a_default() {
+        // The distinction the command line collapsed: it read "no initial
+        // value" as "required", so `users.create`'s password — which has no
+        // default because the default is *no password* — made
+        // `initd run users.create user=deploy` exit 2 asking for one, while
+        // the field beside it in the interface reads "leave empty for none".
+        let password = Param::new("password", "Password", ParamKind::Secret).optional();
+
+        assert!(
+            password.initial.is_empty(),
+            "there is no password to suggest"
+        );
+        assert!(password.optional, "and the task runs without one");
+
+        let port = Param::new("port", "Port", ParamKind::Port).with_initial("22");
+
+        assert!(!port.initial.is_empty(), "a default is a different claim");
+        assert!(!port.optional, "and does not make the value skippable");
+    }
 
     #[test]
     fn a_port_field_accepts_only_digits() {

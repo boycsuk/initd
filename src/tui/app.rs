@@ -455,6 +455,7 @@ mod tests {
     use super::super::render::{self, row, truncate_head};
     use super::super::{layout, style};
     use crate::distro::Family;
+    use crate::tasks::users::CreateUser;
     use crate::tui::fixtures::{enter_first_category, enter_named_category, test_app, test_distro};
     // Named here rather than at the top of the file: the production code that
     // used these moved to the sibling modules, and only the tests still reach
@@ -1618,6 +1619,64 @@ mod tests {
     }
 
     #[test]
+    fn the_zellij_form_opens_on_a_version_rather_than_on_an_empty_field() {
+        // What the operator actually sees. The field used to open blank under
+        // a hint reading "a version this build can verify" — which named none
+        // of them, so the value had to be known in advance or guessed, and a
+        // guess is refused only after the form is submitted.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "zellij.install");
+        press(&mut app, KeyCode::Enter);
+
+        let screen = render_to_rows(&mut app, 80, 24).join("\n");
+
+        assert!(
+            screen.contains("0.44.3"),
+            "the newest verifiable release must be on screen: {screen}"
+        );
+    }
+
+    #[test]
+    fn a_password_does_not_outlive_the_task_that_used_it() {
+        // The interface keeps what a task ran with so it can report what that
+        // task invalidated. Nothing reads it again until another task replaces
+        // it — so on a host where an account is created and nothing else, the
+        // password stayed in this process for the rest of the session, under
+        // root, on a machine whose core dumps this tool does not disable.
+        //
+        // Not a claim that the value is gone from memory: four other copies are
+        // made on the way to `chpasswd`, and a growing `Vec<char>` leaves
+        // fragments behind. Those are short-lived. This one was not.
+        let mut app = app_with_host_answers();
+        let mut values = ParamValues::new();
+        values.set(CreateUser::USER, "deploy");
+        values.set(CreateUser::PASSWORD, "hunter2");
+
+        app.ran_with = values;
+
+        // The outcome the guard must not depend on: a task that failed held
+        // the same password and reported nothing that needed it.
+        app.finish_run(
+            "users.create",
+            Err(Error::AccountExists {
+                user: "deploy".to_owned(),
+            }),
+            false,
+        );
+
+        assert!(
+            app.ran_with.get(CreateUser::PASSWORD).is_err(),
+            "the secret must not survive the task"
+        );
+
+        assert_eq!(
+            app.ran_with.get(CreateUser::USER).ok(),
+            Some("deploy"),
+            "and everything the consequences are reported from must"
+        );
+    }
+
+    #[test]
     fn the_cursor_lands_on_the_focused_field_s_value() {
         // Nothing else in the suite reads the cursor position, and a caret a
         // row out is invisible to a test that only reads drawn text: the
@@ -1791,12 +1850,69 @@ mod tests {
             fitted.trim_end().ends_with("Configuration"),
             "got {fitted:?}"
         );
-        assert!(fitted.chars().count() <= 22, "got {fitted:?}");
+        // Cells rather than characters, which is what the truncation itself
+        // now counts: measuring the result the old way would let a wide
+        // character through the assertion as well as through the code.
+        assert!(render::cells(&fitted) <= 22, "got {fitted:?}");
     }
 
     #[test]
     fn a_breadcrumb_that_fits_is_left_alone() {
         assert_eq!(truncate_head("Tasks", 20), " Tasks ");
+    }
+
+    #[test]
+    fn text_is_fitted_by_cells_rather_than_by_characters() {
+        // A CJK ideograph and most emoji take two cells. `admin@東京サーバー本番`
+        // is fourteen characters and twenty-two cells, so a pane twenty wide
+        // used to be told it fitted: no ellipsis was written and ratatui cut
+        // the tail off when it drew — losing content *and* the mark that says
+        // content was lost.
+        //
+        // Reachable rather than hypothetical: a public key's comment is never
+        // validated beyond being non-control, so `ssh-ed25519 AAAA…
+        // admin@東京` is a key this tool accepts and displays.
+        const WIDE: &str = "admin@東京サーバー本番";
+
+        assert_eq!(WIDE.chars().count(), 14, "fits by the old measure");
+        assert_eq!(render::cells(WIDE), 22, "does not fit by the real one");
+
+        let fitted = render::truncate_tail(WIDE, 20);
+
+        assert!(
+            render::cells(&fitted) <= 20,
+            "the result must fit the pane it was measured against: {fitted:?} \
+             takes {} cells",
+            render::cells(&fitted)
+        );
+
+        assert!(
+            fitted.ends_with('…'),
+            "and must say that something was dropped: {fitted:?}"
+        );
+    }
+
+    #[test]
+    fn a_breadcrumb_of_wide_characters_keeps_its_tail_within_the_border() {
+        // The same fault at the other end, and the case has to be one that the
+        // old measure would have let through: fourteen characters and
+        // twenty-two cells, so counting characters says it fits a pane of
+        // twenty and counting cells says it does not. A breadcrumb long by
+        // both measures is truncated either way and proves nothing.
+        const WIDE: &str = "設定 › リモート › 構成";
+
+        assert_eq!(WIDE.chars().count(), 14, "fits by the old measure");
+        assert_eq!(render::cells(WIDE), 22, "does not fit by the real one");
+
+        let fitted = truncate_head(WIDE, 20);
+
+        assert!(
+            render::cells(&fitted) <= 22,
+            "two cells of framing around twenty: {fitted:?} takes {}",
+            render::cells(&fitted)
+        );
+
+        assert!(fitted.starts_with(" …"), "got {fitted:?}");
     }
 
     #[test]

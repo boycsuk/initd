@@ -130,24 +130,14 @@ impl AccountWriter for ShadowAccounts {
     }
 
     fn is_locked(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
-        // `chage -l` prints the expiry in a human-readable form. The account is
-        // locked when the date is in the past; `never` means it is not.
-        let command = Command::new("chage").args(["-l", user]).privileged();
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Ok(false);
-        }
-
-        let expiry = output
-            .stdout
-            .lines()
-            .find(|line| line.starts_with("Account expires"))
-            .and_then(|line| line.split(':').nth(1))
-            .map(str::trim)
-            .unwrap_or("never");
-
-        Ok(expiry != "never")
+        // The shadow field rather than `chage -l`, which renders through
+        // gettext: under a Spanish locale its line reads `La cuenta expira`,
+        // and a parser that cannot find `Account expires` reads the absence as
+        // "never" — reporting a locked account as unlocked, silently, in the
+        // guard that decides whether root may be locked out. Shared with the
+        // busybox suite, which had to read the file anyway for want of
+        // `chage`.
+        posix_accounts::is_locked(executor, user)
     }
 
     fn has_password(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
@@ -283,9 +273,9 @@ mod tests {
 
     #[test]
     fn an_account_that_never_expires_is_not_locked() {
-        let mock = MockExecutor::with_replies([Reply::ok(
-            "Last password change\t: Aug 04, 2026\nAccount expires\t: never\n",
-        )]);
+        // An empty eighth field is what "never expires" looks like in the file.
+        let mock =
+            MockExecutor::with_replies([Reply::ok("root:$6$salt$hash:20000:0:99999:7:::\n")]);
 
         assert!(
             !ShadowAccounts::new()
@@ -296,14 +286,41 @@ mod tests {
 
     #[test]
     fn an_expired_account_is_locked() {
-        let mock = MockExecutor::with_replies([Reply::ok(
-            "Last password change\t: Aug 04, 2026\nAccount expires\t: Jan 02, 1970\n",
-        )]);
+        let mock =
+            MockExecutor::with_replies([Reply::ok("root:$6$salt$hash:20000:0:99999:7::1:\n")]);
 
         assert!(
             ShadowAccounts::new()
                 .is_locked(&mock, "root")
                 .expect("the query must succeed")
+        );
+    }
+
+    #[test]
+    fn the_lock_is_read_from_the_file_rather_than_from_translatable_output() {
+        // `chage -l` renders through gettext, so under a Spanish locale the
+        // line reads `La cuenta expira` and a parser looking for `Account
+        // expires` finds nothing. The absence read as "never", which read as
+        // "not locked" — the wrong answer in the guard that decides whether
+        // root may be locked out, and silent.
+        //
+        // Asserted on the command rather than only on the answer: reading the
+        // field is what makes the question language-invariant, so a return to
+        // `chage` has to fail here even if it happened to parse.
+        let mock =
+            MockExecutor::with_replies([Reply::ok("root:$6$salt$hash:20000:0:99999:7::1:\n")]);
+
+        assert!(
+            ShadowAccounts::new()
+                .is_locked(&mock, "root")
+                .expect("the query must succeed")
+        );
+
+        let commands = mock.recorded_lines();
+
+        assert!(
+            commands.iter().all(|line| !line.starts_with("chage")),
+            "the answer must not come from output a locale can translate: {commands:?}"
         );
     }
 

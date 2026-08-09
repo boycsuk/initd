@@ -15,6 +15,7 @@ use crate::distro::Family;
 use crate::domain::UpdatePolicy;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
+use crate::i18n::Msg;
 use crate::tasks::consequence::{Check, Conflict, Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -134,7 +135,12 @@ impl Task for InstallFail2ban {
             .services()
             .enable_and_start(executor, backend.service_for(Capability::Fail2ban))?;
 
-        report(progress, format!("watching {port} for repeated failures"));
+        report(
+            progress,
+            &Msg::TaskWatchingForFailures {
+                service: port.to_string(),
+            },
+        );
 
         Ok(Outcome::Done)
     }
@@ -216,11 +222,13 @@ impl Task for InstallCrowdsec {
             .services()
             .enable_and_start(executor, backend.service_for(Capability::Crowdsec))?;
 
-        report(progress, "crowdsec is running".to_owned());
         report(
             progress,
-            "it detects and decides; install a bouncer to make it block".to_owned(),
+            &Msg::TaskServiceRunning {
+                service: "crowdsec".to_owned(),
+            },
         );
+        report(progress, &Msg::TaskCrowdsecDetectsOnly);
 
         Ok(Outcome::Done)
     }
@@ -320,11 +328,8 @@ impl Task for UnattendedUpgrades {
             });
         }
 
-        report(
-            progress,
-            "security updates will be applied automatically".to_owned(),
-        );
-        report(progress, "reboots stay yours to schedule".to_owned());
+        report(progress, &Msg::TaskUpgradesAutomatic);
+        report(progress, &Msg::TaskUpgradesNoReboot);
 
         Ok(Outcome::Done)
     }
@@ -476,7 +481,10 @@ mod tests {
             Reply::ok(""),        // install
             Reply::ok(""),        // the policy file exists?
             Reply::ok(""),        // back it up
-            Reply::ok(""),        // write it
+            Reply::ok(""),        // stage it
+            Reply::ok("644"),     // stat -c %a
+            Reply::ok(""),        // chmod
+            Reply::ok(""),        // mv: publish it
             Reply::ok("enabled"), // the timer is on
         ]);
         let backend = for_family(Family::Debian);

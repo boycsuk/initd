@@ -11,6 +11,7 @@ use crate::domain::firewall::Protocol;
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
+use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -113,7 +114,9 @@ impl Task for FirewallStatus {
 
             report(
                 progress,
-                format!("none of these is installed: {}", tried.join(", ")),
+                &Msg::TaskFirewallNoneInstalled {
+                    tried: tried.join(", "),
+                },
             );
 
             return Ok(Outcome::Done);
@@ -124,19 +127,30 @@ impl Task for FirewallStatus {
         if !state.active {
             // Said plainly, because "no rules" and "not filtering" look alike
             // in a listing and mean opposite things.
-            report(progress, "inbound filtering is not active".to_owned());
+            report(progress, &Msg::TaskFirewallInactive);
 
             return Ok(Outcome::Done);
         }
 
-        report(progress, "inbound denied by default".to_owned());
+        report(progress, &Msg::TaskFirewallDefaultDeny);
 
         if state.allowed.is_empty() {
-            report(progress, "no ports are open".to_owned());
+            report(progress, &Msg::TaskFirewallNoOpenPorts);
         } else {
             for port in &state.allowed {
-                report(progress, format!("  {port} is open"));
+                report(progress, &Msg::TaskFirewallPortOpen { port: port.clone() });
             }
+        }
+
+        // Reported because the running ruleset cannot be read for it, and the
+        // difference is a whole firewall: `nft` holds its rules in the kernel
+        // only, so a host filtering perfectly right now can come back from a
+        // reboot with everything open. A status that says "denied by default"
+        // and stops would be true and misleading in the same sentence.
+        if firewall.is_persisted(executor)? {
+            report(progress, &Msg::TaskFirewallPersisted);
+        } else {
+            report(progress, &Msg::TaskFirewallNotPersisted);
         }
 
         Ok(Outcome::Done)
@@ -219,7 +233,12 @@ impl Task for EnableFirewall {
                     .last()
                     .ok_or(Error::NoFirewallFrontEnd)?;
 
-                report(progress, format!("installing {}", fallback.name()));
+                report(
+                    progress,
+                    &Msg::TaskFirewallInstalling {
+                        front_end: fallback.name().to_owned(),
+                    },
+                );
 
                 backend
                     .packages()
@@ -229,7 +248,12 @@ impl Task for EnableFirewall {
             }
         };
 
-        report(progress, format!("using {}", firewall.name()));
+        report(
+            progress,
+            &Msg::TaskFirewallUsing {
+                front_end: firewall.name().to_owned(),
+            },
+        );
 
         // The SSH port is admitted in the same ruleset that installs the
         // policy, not afterwards: between two commands there is a window in
@@ -237,7 +261,28 @@ impl Task for EnableFirewall {
         // does not survive it.
         firewall.enable(executor, &[(port, Protocol::Tcp)])?;
 
-        report(progress, format!("inbound denied except {port}/tcp"));
+        // Applied and kept, because either alone is a host that does not
+        // behave as the task describes. `nft` speaks only to the kernel, so a
+        // ruleset that is not written to the file the boot replays is gone at
+        // the next restart — and a server that comes back with every port open
+        // reports nothing about it. Exactly the lesson the sysctl tasks
+        // learned from a container that already held the right value: the
+        // state was real, its persistence was not.
+        // The answer decides which claim is made. A host with no service
+        // manager — a container, a chroot — has the rules applied and written
+        // where a boot would read them, with nothing to do the reading; saying
+        // "after a reboot" there would be the same false promise this whole
+        // change exists to remove.
+        let replayed = firewall.persist(executor)?;
+
+        report(
+            progress,
+            &if replayed {
+                Msg::TaskFirewallEnabled { port }
+            } else {
+                Msg::TaskFirewallEnabledNotPersisted { port }
+            },
+        );
 
         Ok(Outcome::Done)
     }
@@ -320,10 +365,32 @@ impl Task for AllowPort {
 
         firewall.allow(executor, port, protocol)?;
 
+        // Kept, for the same reason enabling is: a rule that only exists in the
+        // kernel is a rule that ends at the next restart.
+        let replayed = firewall.persist(executor)?;
+
         report(
             progress,
-            format!("{port}/{} is open inbound", protocol.as_str()),
+            &if replayed {
+                Msg::TaskFirewallPortAllowed {
+                    port,
+                    protocol: protocol.as_str().to_owned(),
+                }
+            } else {
+                Msg::TaskFirewallPortAllowedNotPersisted {
+                    port,
+                    protocol: protocol.as_str().to_owned(),
+                }
+            },
         );
+
+        // "Open" means something different depending on whether anything is
+        // closed. With no default-deny policy in place every port is already
+        // reachable, and a message reporting this one as opened would read as
+        // "only this is admitted" — the opposite of what the host does.
+        if !firewall.state(executor)?.active {
+            report(progress, &Msg::TaskFirewallNotFilteringYet);
+        }
 
         Ok(Outcome::Done)
     }
@@ -427,7 +494,10 @@ fn set_and_report(
     if sysctl.holds(executor, setting)? && sysctl.is_persisted(executor, setting)? {
         report(
             progress,
-            format!("{} is already {}", setting.key, setting.value),
+            &Msg::TaskSysctlAlready {
+                key: setting.key.to_owned(),
+                value: setting.value.to_owned(),
+            },
         );
 
         return Ok(Outcome::Done);
@@ -437,10 +507,10 @@ fn set_and_report(
 
     report(
         progress,
-        format!(
-            "{} = {}, now and after a reboot",
-            setting.key, setting.value
-        ),
+        &Msg::TaskSysctlSet {
+            key: setting.key.to_owned(),
+            value: setting.value.to_owned(),
+        },
     );
 
     Ok(Outcome::Done)
@@ -526,6 +596,8 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok("nftables v1.0.9"),
             Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+            Reply::ok("systemd 257"),
+            Reply::ok(""),
         ]);
         let backend = for_family(Family::Debian);
 
@@ -534,13 +606,30 @@ mod tests {
             .expect("the status must succeed");
 
         assert!(FirewallStatus.confirmation() == Confirmation::None);
-        assert!(
-            mock.recorded_lines()
-                .iter()
-                .all(|c| c.contains("list") || c.contains("--version")),
-            "only reads: {:?}",
-            mock.recorded_lines()
-        );
+
+        // Named as the verbs that change something rather than as the ones that
+        // do not: the previous spelling allowed a command through for holding
+        // the word `list`, so a writing command that happened to contain it
+        // would have passed, while a plain read like `grep` failed.
+        const MUTATES: [&str; 8] = [
+            "add",
+            "delete",
+            "flush",
+            "tee",
+            "enable",
+            "rc-update",
+            "chmod",
+            "cp",
+        ];
+
+        for line in mock.recorded_lines() {
+            let verb = line.split_whitespace().nth(1).unwrap_or_default();
+
+            assert!(
+                !MUTATES.contains(&verb),
+                "the status must only read, and `{line}` does not"
+            );
+        }
     }
 
     #[test]
@@ -612,6 +701,78 @@ mod tests {
         assert!(
             mock.recorded_lines().iter().any(|c| c.contains("nftables")),
             "the package must be installed: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn enabling_the_firewall_keeps_it_across_a_reboot() {
+        // The task reported "inbound denied except 22/tcp" over a ruleset that
+        // lived in the kernel and nowhere else, so the next restart brought the
+        // server back with every port open and nothing said so. The sysctl
+        // tasks already refused to report success on the running value alone;
+        // this is the same claim about the more expensive state.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"),       // available
+            Reply::ok(""),                      // the ruleset
+            Reply::ok("table inet initd {\n}"), // list ruleset
+            Reply::ok("systemd 257"),           // which init
+            Reply::ok(""),                      // tee
+            Reply::ok(""),                      // enable
+        ]);
+        let backend = for_family(Family::Debian);
+
+        EnableFirewall
+            .run(
+                &mock,
+                backend.as_ref(),
+                &port_values(EnableFirewall::SSH_PORT, 22),
+                &mut |_| {},
+            )
+            .expect("enabling must succeed");
+
+        let lines = mock.recorded_lines();
+
+        assert!(
+            lines.iter().any(|line| line.starts_with("tee ")),
+            "the ruleset must be written somewhere the boot reads: {lines:?}"
+        );
+
+        assert!(
+            lines.iter().any(|line| line.contains("enable")),
+            "and something must replay it: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn opening_a_port_keeps_it_across_a_reboot() {
+        // Same reasoning as enabling: a rule only in the kernel is a rule that
+        // ends at the next restart.
+        let mut values = ParamValues::new();
+        values.set(AllowPort::PORT, "443".to_owned());
+        values.set(AllowPort::PROTOCOL, "tcp".to_owned());
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"),       // available
+            Reply::failure(1, ""),              // not already allowed
+            Reply::ok(""),                      // add rule
+            Reply::ok("table inet initd {\n}"), // list ruleset
+            Reply::ok("systemd 257"),           // which init
+            Reply::ok(""),                      // tee
+            Reply::ok(""),                      // enable
+            Reply::ok("table inet initd {\n}"), // state: active
+        ]);
+        let backend = for_family(Family::Debian);
+
+        AllowPort
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect("opening must succeed");
+
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line.starts_with("tee ")),
+            "the rule must outlive the kernel that holds it: {:?}",
             mock.recorded_lines()
         );
     }

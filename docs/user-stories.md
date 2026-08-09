@@ -218,6 +218,14 @@ TUI or CLI:
     finished.
   - Acceptance: a version this build carries no digest for is refused, and the
     versions it does know are named.
+  - Acceptance: they are named *before* the choice as well as after it. The
+    field opens on the newest release this build can verify and offers the
+    rest, rather than opening empty under a hint that says "a version this
+    build can verify" without saying which — the refusal above was the only
+    way to find out, and it arrives after the form is submitted.
+  - Acceptance: what is offered is what the tool will accept. A version
+    published upstream after this binary was built has no compiled-in digest,
+    so suggesting it would be proposing the refusal.
   - Acceptance: the archive is verified before it is extracted.
   - Acceptance: a host that already has the binary downloads nothing.
 
@@ -293,15 +301,30 @@ TUI or CLI:
   ports it admits, so that I know what is reachable before I change anything.
   - Acceptance: "not filtering" and "filtering nothing" are reported
     differently. They look alike in a listing and mean opposite things.
+  - Acceptance: the status says whether the rules come back after a restart.
+    The running ruleset cannot be read for it — `nft` holds its rules in the
+    kernel — so a host filtering perfectly now can return from a reboot with
+    every port open, and a status that stopped at "denied by default" would be
+    true and misleading in the same sentence.
 - As an **administrator**, I can turn on default-deny inbound filtering without
   losing the session I am running it from.
   - Acceptance: the SSH port is admitted by the same ruleset that installs the
     policy, not by a second command afterwards.
   - Acceptance: established connections and loopback keep working, so the host
     can still reach its own package mirror and talk to itself.
+  - Acceptance: applied *and* kept, on the same terms the kernel parameters
+    already promise. A ruleset that only exists in the kernel is gone at the
+    next restart, and a server that comes back with every port open reports
+    nothing about it.
+  - Acceptance: where the host has nothing to replay the rules at boot — a
+    container, a chroot — the rules are still applied and saved, and the task
+    says that is what happened rather than claiming they will return.
 - As an **administrator**, I can open a port, naming its protocol.
   - Acceptance: a rule for TCP does not admit UDP. WireGuard is UDP, and a
     TCP rule for its port admits none of its traffic.
+  - Acceptance: the rule survives a restart, and opening a port while nothing
+    is being filtered says so — against no policy, every port is already
+    reachable, so "open" would read as "only this is admitted".
 - As an **administrator**, I can enable IP forwarding and unprivileged port
   binding, so that a VPN can route and a rootless container engine can serve.
   - Acceptance: applied immediately *and* across reboots. Either alone reports
@@ -332,6 +355,11 @@ TUI or CLI:
   - Acceptance: a directive this version of OpenSSH does not recognise is
     skipped and reported, rather than written and taking every other directive
     down with it when the file is rejected.
+  - Acceptance: a directive the daemon will not honour is named. Validation
+    says the file parses, not that it wins: Debian, Ubuntu and RHEL read
+    `/etc/ssh/sshd_config.d/` before the main file, and the first occurrence of
+    a directive is the one that applies — so a drop-in left by a provider image
+    can leave the hardening written, valid, reloaded and without effect.
   - Acceptance: nothing here stops a client that could connect before from
     connecting, as long as it holds a key.
 - As an **administrator**, I can restrict the SSH cryptography to a modern set
