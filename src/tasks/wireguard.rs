@@ -372,20 +372,25 @@ impl Task for AddPeer {
 
         let peer = peer_block(&name, &keys.public, &keys.preshared, &address);
 
-        // Deliberately unrecorded, unlike every other configuration this tool
-        // edits. `wg0.conf` holds the server's private key *and* every peer's
-        // preshared key, so a copy of it under `/var/lib/initd` is a second
-        // copy of all of them — kept for as long as the retention allows, on a
-        // machine where the point of the original's `0600` was that one copy
-        // was enough.
+        // Written through the one path that leaves no copy behind, unlike every
+        // other configuration this tool edits. `wg0.conf` holds the server's
+        // private key *and* every peer's preshared key, so any copy of it is a
+        // second copy of all of them, on a machine where the point of the
+        // original's `0600` was that one copy was enough.
         //
-        // The index carries no secrets by construction and this is the other
-        // half of that promise: a record naming a copy full of keys keeps the
-        // secret out of the record and puts it in the file the record points
-        // at. Removing a peer is `wg0.conf` minus one block, which an
-        // administrator can do with an editor; recovering a leaked private key
-        // is not something anybody can do.
-        files.write(executor, &config, &format!("{existing}{peer}"))?;
+        // Both copies are refused, and they are different files. The index
+        // under `/var/lib/initd` is refused because a record naming a copy full
+        // of keys keeps the secret out of the record and puts it in the file
+        // the record points at. The sidecar `wg0.conf.initd.bak` that an
+        // ordinary `write` leaves is refused because nothing would ever prune
+        // it: `prune` only reaches copies the index names, so a task that skips
+        // the index and keeps the sidecar gets the disclosure the index was
+        // bounded to avoid, and keeps it for the life of the host.
+        //
+        // What is given up is a way back. Removing a peer is `wg0.conf` minus
+        // one block, which an administrator can do with an editor; recovering a
+        // leaked private key is not something anybody can do.
+        files.write_uncopied(executor, &config, &format!("{existing}{peer}"))?;
 
         // `syncconf` rather than restarting: a restart drops every established
         // tunnel, including the one an administrator may be connected through.
@@ -1053,8 +1058,11 @@ mod tests {
             Reply::ok(KEY),      // genpsk
             Reply::ok(KEY),      // pubkey for the peer
             Reply::ok(KEY),      // pubkey for the server
-            Reply::ok(""),       // backup
-            Reply::ok(""),       // write
+            Reply::ok("1"),      // the config exists, so its mode is preserved
+            Reply::ok(""),       // stage the new contents
+            Reply::ok("600"),    // read the mode off the original
+            Reply::ok(""),       // apply it to the staged file
+            Reply::ok(""),       // move it into place
             Reply::ok(""),       // reload
         ]);
 
@@ -1077,6 +1085,25 @@ mod tests {
                 !line.contains("/var/lib/initd"),
                 "the key file must never be copied into the index: {line}"
             );
+
+            // The half this test missed while it passed. Refusing the index is
+            // only one of the two copies: an ordinary `write` also leaves
+            // `wg0.conf.initd.bak` beside the original, which no retention ever
+            // reaches because `prune` only deletes copies the index names. The
+            // assertion above was true of that file too, since it lives in
+            // `/etc/wireguard` rather than under `/var/lib/initd`.
+            assert!(
+                !line.contains(".initd.bak"),
+                "the key file must never be copied beside itself either: {line}"
+            );
+
+            // Pinned by the command rather than by the path, so a future copy
+            // taken under some third name is caught as well. `cp` appears in
+            // this task for no other purpose.
+            assert!(
+                !line.starts_with("cp "),
+                "no copy of the key file may be taken at all: {line}"
+            );
         }
     }
 
@@ -1092,8 +1119,11 @@ mod tests {
             Reply::ok(KEY),      // genpsk
             Reply::ok(KEY),      // pubkey for the peer
             Reply::ok(KEY),      // pubkey for the server
-            Reply::ok(""),       // backup
-            Reply::ok(""),       // write
+            Reply::ok("1"),      // the config exists, so its mode is preserved
+            Reply::ok(""),       // stage the new contents
+            Reply::ok("600"),    // read the mode off the original
+            Reply::ok(""),       // apply it to the staged file
+            Reply::ok(""),       // move it into place
             Reply::ok(""),       // reload
         ]);
         let backend = for_family(Family::Debian);

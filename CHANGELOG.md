@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `wireguard.add-peer` no longer leaves a copy of the server's private key on
+  disk. The task deliberately writes no entry in the index, and its comment
+  said so, but the generic `write` beneath it still copied `wg0.conf` to
+  `wg0.conf.initd.bak` before every change — a second copy of the private key
+  and of every peer's preshared key, sitting beside the original for the life
+  of the host. Nothing ever removed it: retention only reaches copies the index
+  names, so skipping the index and keeping the sidecar got exactly the
+  disclosure the retention bound exists to prevent. The mode was never the
+  problem — `cp -p` preserves `0600` inside a `0700` directory — and neither
+  was volume, since the fixed suffix means one copy rather than one per peer.
+  What was wrong is that key material outlived the write that produced it, on
+  a file whose whole design is that one copy is enough.
+- The test that was supposed to prevent it now can. `no_copy_of_the_key_file_is_ever_kept`
+  asserted only that no command mentioned `/var/lib/initd`, which the sidecar
+  in `/etc/wireguard` passed without difficulty — and the mock reply it needed
+  was already in the list, labelled `// backup`, so the copy was visible to
+  whoever wrote the test. It now refuses `.initd.bak` and any `cp` at all, and
+  was confirmed to fail against the previous code rather than assumed to.
+
 ### Added
 - openSUSE and SLES are a supported family. Tumbleweed and Leap 16.0 were both
   measured rather than one standing in for the other, and every name in the

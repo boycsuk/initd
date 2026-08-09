@@ -114,67 +114,18 @@ impl FileEditor for UnixFiles {
             None
         };
 
-        // Written beside the target and moved over it, rather than into it.
-        // `tee` truncates and then writes, so a process that dies between the
-        // two — a full disk, an OOM kill, the power going — leaves
-        // `sshd_config` empty or half a file, which is a third state neither
-        // the change nor the backup describes. A rename within one directory
-        // is atomic: every reader sees the old file or the new one.
-        //
-        // The temporary sits in the target's own directory because a rename
-        // across filesystems is not a rename — `mv` falls back to copying, and
-        // the guarantee is lost exactly where /etc and /tmp are separate
-        // mounts.
-        let staged = Self::staging_path(path);
-
-        // Contents travel on stdin, never as an argument: an argument would
-        // need shell escaping, and a flaw in that escaping is a root-level
-        // command injection.
-        let write = Command::new("tee")
-            .arg(&staged)
-            .privileged()
-            .stdin(contents);
-
-        run_checked(executor, &write)?;
-
-        // The mode goes on before the move, not after: a file created with the
-        // process umask is world-readable for as long as a later chmod takes,
-        // and `wg0.conf` is where that was found. An existing file keeps its
-        // own mode rather than being given a default — the tool is editing it,
-        // not deciding what it should be.
-        //
-        // Read with `stat -c` and applied with `chmod`, rather than in one step
-        // with `chmod --reference` or `cp --preserve=mode`: neither exists on
-        // busybox. Measured on `alpine:3.23`, where both fail and `stat -c %a`
-        // answers `644` — the same lesson `diff`, `cmp` and `pgrep` each taught
-        // once, which is that a tool present on Debian is not thereby present
-        // everywhere.
-        if backup.is_some() {
-            let mode = Command::new("stat").args(["-c", "%a", path]).privileged();
-            let output = executor.run(&mode)?;
-
-            if !output.success() {
-                return Err(Error::CommandFailed {
-                    command: mode.to_string(),
-                    code: output.code,
-                    stderr: output.stderr,
-                });
-            }
-
-            let apply = Command::new("chmod")
-                .args([output.stdout.trim(), &staged])
-                .privileged();
-
-            run_checked(executor, &apply)?;
-        }
-
-        let install = Command::new("mv")
-            .args([&staged, &path.to_owned()])
-            .privileged();
-
-        run_checked(executor, &install)?;
+        Self::install(executor, path, contents, backup.is_some())?;
 
         Ok(backup)
+    }
+
+    fn write_uncopied(&self, executor: &dyn Executor, path: &str, contents: &str) -> Result<()> {
+        // Whether to preserve the mode is keyed on the file already existing,
+        // where `write` keys it on a backup having been taken. The two are the
+        // same question there and not here: this path never takes one.
+        let keep_mode = self.exists(executor, path)?;
+
+        Self::install(executor, path, contents, keep_mode)
     }
 
     fn restore(&self, executor: &dyn Executor, backup: &Backup) -> Result<()> {
@@ -209,6 +160,81 @@ impl FileEditor for UnixFiles {
             .privileged();
 
         run_checked(executor, &command)
+    }
+}
+
+impl UnixFiles {
+    /// Writes `contents` over `path` atomically, keeping the target's mode.
+    ///
+    /// The half of a write that [`FileEditor::write`] and
+    /// [`FileEditor::write_uncopied`] share: everything after the decision
+    /// about whether a copy is taken first.
+    ///
+    /// `keep_mode` asks whether the target already has a mode worth carrying
+    /// over. `write` answers it with "a backup was taken" and `write_uncopied`
+    /// with "the file existed" — the same question wherever a copy is made,
+    /// and only there.
+    fn install(executor: &dyn Executor, path: &str, contents: &str, keep_mode: bool) -> Result<()> {
+        // `tee` truncates and then writes, so a process that dies between the
+        // two — a full disk, an OOM kill, the power going — leaves
+        // `sshd_config` empty or half a file, which is a third state neither
+        // the change nor the backup describes. A rename within one directory
+        // is atomic: every reader sees the old file or the new one.
+        //
+        // The temporary sits in the target's own directory because a rename
+        // across filesystems is not a rename — `mv` falls back to copying, and
+        // the guarantee is lost exactly where /etc and /tmp are separate
+        // mounts.
+        let staged = Self::staging_path(path);
+
+        // Contents travel on stdin, never as an argument: an argument would
+        // need shell escaping, and a flaw in that escaping is a root-level
+        // command injection.
+        let write = Command::new("tee")
+            .arg(&staged)
+            .privileged()
+            .stdin(contents);
+
+        run_checked(executor, &write)?;
+
+        // The mode goes on before the move, not after: a file created with the
+        // process umask is world-readable for as long as a later chmod takes,
+        // and `wg0.conf` is where that was found. An existing file keeps its
+        // own mode rather than being given a default — the tool is editing it,
+        // not deciding what it should be.
+        //
+        // Read with `stat -c` and applied with `chmod`, rather than in one step
+        // with `chmod --reference` or `cp --preserve=mode`: neither exists on
+        // busybox. Measured on `alpine:3.23`, where both fail and `stat -c %a`
+        // answers `644` — the same lesson `diff`, `cmp` and `pgrep` each taught
+        // once, which is that a tool present on Debian is not thereby present
+        // everywhere.
+        if keep_mode {
+            let mode = Command::new("stat").args(["-c", "%a", path]).privileged();
+            let output = executor.run(&mode)?;
+
+            if !output.success() {
+                return Err(Error::CommandFailed {
+                    command: mode.to_string(),
+                    code: output.code,
+                    stderr: output.stderr,
+                });
+            }
+
+            let apply = Command::new("chmod")
+                .args([output.stdout.trim(), &staged])
+                .privileged();
+
+            run_checked(executor, &apply)?;
+        }
+
+        let install = Command::new("mv")
+            .args([&staged, &path.to_owned()])
+            .privileged();
+
+        run_checked(executor, &install)?;
+
+        Ok(())
     }
 }
 
@@ -282,6 +308,68 @@ mod tests {
                 format!("chmod 600 {CONFIG}{STAGING_SUFFIX}"),
                 format!("mv {CONFIG}{STAGING_SUFFIX} {CONFIG}"),
             ]
+        );
+    }
+
+    #[test]
+    fn an_uncopied_write_leaves_nothing_beside_the_original() {
+        // The whole reason the method exists. `wg0.conf` holds the server's
+        // private key and every peer's preshared key, and the sidecar copy an
+        // ordinary `write` leaves is a second copy of all of them that no
+        // retention ever reaches — `prune` only deletes copies the index names,
+        // and the one task using this path deliberately writes no index entry.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("1"),   // test -e
+            Reply::ok(""),    // tee (staging)
+            Reply::ok("600"), // stat -c %a
+            Reply::ok(""),    // chmod
+            Reply::ok(""),    // mv
+        ]);
+
+        UnixFiles::new()
+            .write_uncopied(&mock, CONFIG, "[Peer]\n")
+            .expect("an uncopied write must work");
+
+        // Asserted as the whole sequence rather than as an absence of `cp`,
+        // because the failure this guards against is a copy taken under some
+        // other name: an exact list catches a command nobody thought to forbid.
+        assert_eq!(
+            mock.recorded_lines(),
+            [
+                format!("test -e {CONFIG}"),
+                format!("tee {CONFIG}{STAGING_SUFFIX}"),
+                format!("stat -c %a {CONFIG}"),
+                format!("chmod 600 {CONFIG}{STAGING_SUFFIX}"),
+                format!("mv {CONFIG}{STAGING_SUFFIX} {CONFIG}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_uncopied_write_to_a_new_file_asks_for_no_mode_to_preserve() {
+        // The edge the `keep_mode` flag exists for. `write` keys the mode
+        // branch on a backup having been taken, which this path never does, so
+        // it keys it on the file existing instead — and a file that does not
+        // exist has no mode to read. `stat` on a missing path fails, so asking
+        // anyway would turn creating a file into an error.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(1, "No such file or directory"), // test -e
+            Reply::ok(""),                                  // tee (staging)
+            Reply::ok(""),                                  // mv
+        ]);
+
+        UnixFiles::new()
+            .write_uncopied(&mock, CONFIG, "[Interface]\n")
+            .expect("creating a file must work");
+
+        assert_eq!(
+            mock.recorded_lines(),
+            [
+                format!("test -e {CONFIG}"),
+                format!("tee {CONFIG}{STAGING_SUFFIX}"),
+                format!("mv {CONFIG}{STAGING_SUFFIX} {CONFIG}"),
+            ],
+            "a file that does not exist yet has no mode to carry over"
         );
     }
 
