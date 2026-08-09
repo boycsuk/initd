@@ -236,6 +236,36 @@ pub enum Error {
     /// not the same operation, and only one is undone by a rescue console.
     CannotDeleteRoot,
 
+    /// The file has changed since this tool wrote it.
+    ///
+    /// The refusal a cross-session revert exists to be able to make. Restoring
+    /// over an edit somebody made by hand would discard their work and say
+    /// nothing, which is the one outcome a revert must never produce — so it
+    /// stops, and carries both digests because the difference *is* the
+    /// evidence: an administrator told only "the file changed" cannot tell
+    /// their own edit from a package upgrade replacing a conffile.
+    FileChangedSinceBackup {
+        path: String,
+        expected: String,
+        found: String,
+    },
+
+    /// The copy that would be restored is not the one that was recorded.
+    ///
+    /// A backup truncated by a full disk is a file that exists and is
+    /// readable, and restoring it puts half a configuration over a working
+    /// one. Distinct from the live file having changed: nothing is wrong with
+    /// the machine here, the record is what cannot be trusted.
+    BackupCorrupt { copy: String },
+
+    /// Nothing could be hashed, so nothing can be proven either way.
+    ///
+    /// Neither a mismatch nor a match. Reported as its own case because "the
+    /// file is different" and "I could not read the file" call for different
+    /// actions, and reporting the second as the first sends an administrator
+    /// looking for an edit nobody made.
+    RevertUnverifiable { path: String },
+
     /// A login shell is not listed in `/etc/shells`.
     ///
     /// `chsh` refuses one that is absent, and some PAM configurations refuse a
@@ -494,6 +524,17 @@ impl Error {
             Self::NoWayBackIn { user } => Msg::NoWayBackIn { user: user.clone() },
             Self::AdminCannotBeRoot => Msg::AdminCannotBeRoot,
             Self::CannotDeleteRoot => Msg::CannotDeleteRoot,
+            Self::FileChangedSinceBackup {
+                path,
+                expected,
+                found,
+            } => Msg::FileChangedSinceBackup {
+                path: path.clone(),
+                expected: expected.clone(),
+                found: found.clone(),
+            },
+            Self::BackupCorrupt { copy } => Msg::BackupCorrupt { copy: copy.clone() },
+            Self::RevertUnverifiable { path } => Msg::RevertUnverifiable { path: path.clone() },
             Self::ShellNotListed { shell } => Msg::ShellNotListed {
                 shell: shell.clone(),
             },

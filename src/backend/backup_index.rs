@@ -1,0 +1,615 @@
+//! A record of what this tool copied aside before changing it.
+//!
+//! **This is not a database, and the distinction is the whole design.** The
+//! state still lives in the host: whether `PermitRootLogin` is `no` is answered
+//! by reading `sshd_config`, never by consulting anything here. This answers
+//! one question and refuses to grow a second — *is there a copy of how this
+//! file looked before initd touched it, and where?*
+//!
+//! Without it, reverting a configuration change was possible only inside the
+//! session that made it. `.initd.bak` sits beside its original and survives a
+//! reboot, but nothing records which task wrote it, when, or over what — so a
+//! second write silently replaced the copy a revert would have restored, and an
+//! operator returning tomorrow had a file of unknown age and no way to tell.
+//!
+//! ## Append-only, and why that is the whole locking story
+//!
+//! One JSONL file, appended to and never rewritten. A partially written final
+//! line is invalid JSON and is discarded on read, so an interrupted append
+//! costs the last record rather than the file. Rewriting in place would need a
+//! lock, and a lock needs a stale-lock story on a tool whose whole point is
+//! running on a machine that may be rebooted underneath it.
+//!
+//! ## What may never go in
+//!
+//! No secrets, enforced by construction rather than by discipline: the writer
+//! takes a typed [`BackupRecord`] with no free-form field, and `ParamValues`
+//! never reaches this module. `users.create`'s password, `wireguard.add-peer`'s
+//! private key and `ssh.authorize-key`'s key body are all values that pass
+//! through tasks that write files, and none of them can arrive here.
+//!
+//! ## Best effort on write, authoritative on read
+//!
+//! A host with a read-only `/var/lib`, or one where this runs unprivileged,
+//! cannot be written to. The task still runs and reports that no record was
+//! kept — the same way form suggestions degrade rather than refusing to open a
+//! form. What this must never do is claim a revert is available when nothing
+//! was recorded.
+
+#![allow(
+    dead_code,
+    reason = "the writers and the History area that reads them land in the commits after this one"
+)]
+
+use crate::domain::files::FileEditor;
+use crate::exec::{Command, Executor};
+
+/// Where records are kept.
+///
+/// Under `/var/lib` rather than `/etc`: this is state the tool maintains, not
+/// configuration an administrator edits, and the Filesystem Hierarchy Standard
+/// is explicit about the difference.
+pub const INDEX_DIR: &str = "/var/lib/initd";
+
+/// The record file itself.
+pub const INDEX_PATH: &str = "/var/lib/initd/backups.jsonl";
+
+/// Where the copies themselves are kept.
+pub const BACKUP_DIR: &str = "/var/lib/initd/backups";
+
+/// Mode for the whole tree.
+///
+/// `0700`, because a backup of `wg0.conf` contains the server's private key.
+/// The original is `0600` and a copy of it under a world-readable directory
+/// would undo that — the same mistake `wireguard.install` made once by
+/// chmodding after writing rather than before.
+pub const TREE_MODE: u32 = 0o700;
+
+/// How many copies of one path are kept.
+///
+/// Bounded because the material is not merely large but sensitive: unbounded
+/// history of `wg0.conf` is unbounded private-key copies. Ten is enough to
+/// reach past a bad afternoon and few enough to stay reviewable by hand.
+pub const RETAINED_PER_PATH: usize = 10;
+
+/// One backup, as it is recorded.
+///
+/// Every field is typed and there is no free-form map, which is what makes
+/// "no secrets in the index" a property of the type rather than a rule someone
+/// has to remember at each call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupRecord {
+    /// Task that made the change.
+    pub task: &'static str,
+    /// The file that was changed.
+    pub path: String,
+    /// Where the copy of its previous contents lives.
+    pub copy: String,
+    /// When, as the host reported it.
+    pub at: String,
+    /// SHA-256 of the copy, proving it is intact.
+    ///
+    /// A backup silently truncated by a full disk must not be restored over a
+    /// working configuration.
+    pub sha256_before: String,
+    /// SHA-256 of what this tool wrote.
+    ///
+    /// The load-bearing field. On revert the live file is hashed and compared
+    /// against this: a mismatch means somebody edited it since, and restoring
+    /// would discard their work without saying so.
+    pub sha256_after: String,
+    /// The unit to reload once the file is back, if any.
+    pub service: &'static str,
+}
+
+impl BackupRecord {
+    /// Renders the record as one JSON line.
+    ///
+    /// Hand-written rather than through `serde`, which this project does not
+    /// depend on and would not add for seven fields of known shape. Every value
+    /// is either a digest, a timestamp, a task id or a path — the first three
+    /// cannot contain a quote or a backslash, and the fourth is escaped.
+    pub fn to_line(&self) -> String {
+        format!(
+            r#"{{"v":1,"at":"{at}","task":"{task}","path":"{path}","copy":"{copy}","sha256_before":"{before}","sha256_after":"{after}","service":"{service}"}}"#,
+            at = escape(&self.at),
+            task = self.task,
+            path = escape(&self.path),
+            copy = escape(&self.copy),
+            before = escape(&self.sha256_before),
+            after = escape(&self.sha256_after),
+            service = self.service,
+        )
+    }
+
+    /// Reads a record back from one JSON line.
+    ///
+    /// Returns `None` for anything that does not parse, which is what makes an
+    /// interrupted append cost its own line rather than the file: a half-written
+    /// final record is unreadable by definition and is skipped.
+    pub fn from_line(line: &str) -> Option<Self> {
+        let path = field(line, "path")?;
+        let copy = field(line, "copy")?;
+        let at = field(line, "at")?;
+        let sha256_before = field(line, "sha256_before")?;
+        let sha256_after = field(line, "sha256_after")?;
+
+        // The two `&'static str` fields cannot be recovered as such from a
+        // file, so they are matched back against what the tree actually holds.
+        // A record naming a task this build does not have is from a newer
+        // version and is skipped rather than guessed at.
+        let task = crate::tasks::find(&field(line, "task")?).map(|task| task.id())?;
+        let service = field(line, "service")?;
+        let service = known_service(&service)?;
+
+        Some(Self {
+            task,
+            path,
+            copy,
+            at,
+            sha256_before,
+            sha256_after,
+            service,
+        })
+    }
+}
+
+/// The service names a record may name, as `&'static str`.
+///
+/// A record's service is reloaded after a restore, which means it reaches a
+/// command. Matched against a closed set rather than taken from the file, so a
+/// tampered or corrupted index cannot name an arbitrary unit — the index is
+/// written by root and read by root, and a value that crosses that boundary is
+/// checked rather than trusted.
+fn known_service(name: &str) -> Option<&'static str> {
+    // Every unit any family names for a capability this tool configures.
+    const KNOWN: [&str; 7] = [
+        "",
+        "ssh.service",
+        "sshd.service",
+        "sshd",
+        "caddy.service",
+        "fail2ban.service",
+        "crowdsec.service",
+    ];
+
+    KNOWN.into_iter().find(|known| *known == name)
+}
+
+/// Escapes the two characters that would break a JSON string.
+///
+/// Paths are the only field that can contain either, and a path holding a quote
+/// is legal on Linux however unlikely.
+fn escape(value: &str) -> String {
+    value.replace('\\', r"\\").replace('"', "\\\"")
+}
+
+/// Reads one string field out of a JSON line.
+///
+/// A parser for exactly the shape [`BackupRecord::to_line`] writes, rather than
+/// a general one: the file is written by this module and read by this module,
+/// and a dependency for that would be a dependency to audit for the sake of
+/// seven flat fields.
+fn field(line: &str, name: &str) -> Option<String> {
+    let key = format!("\"{name}\":\"");
+    let start = line.find(&key)? + key.len();
+    let rest = &line[start..];
+
+    // Walk rather than `find('"')`, so an escaped quote inside a path does not
+    // end the value early.
+    let mut value = String::new();
+    let mut chars = rest.chars();
+
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => return Some(value),
+            '\\' => value.push(chars.next()?),
+            _ => value.push(character),
+        }
+    }
+
+    None
+}
+
+/// Appends a record, reporting whether it could be kept.
+///
+/// Best effort by design: a host with a read-only `/var/lib`, or one where this
+/// runs unprivileged, gets `Ok(false)` and a task that carries on. The caller
+/// reports that no record was kept rather than failing a change that has
+/// already been applied correctly.
+pub fn append(executor: &dyn Executor, files: &dyn FileEditor, record: &BackupRecord) -> bool {
+    if files.create_dir(executor, BACKUP_DIR, TREE_MODE).is_err() {
+        return false;
+    }
+
+    // `>>` through `sh` rather than `tee -a`, for one reason: `O_APPEND` is
+    // what makes concurrent writes not interleave, and both give it, but `tee`
+    // would also echo the line to stdout and into the output pane.
+    //
+    // The line reaches the shell through stdin rather than as an argument, the
+    // same rule every other write here follows: an argument would need
+    // escaping, and a flaw in that escaping is a root-level injection.
+    let command = Command::new("sh")
+        .args(["-c", &format!("cat >> {INDEX_PATH}")])
+        .privileged()
+        .stdin(format!("{}\n", record.to_line()));
+
+    let Ok(output) = executor.run(&command) else {
+        return false;
+    };
+
+    output.success()
+}
+
+/// Every record this index holds, oldest first.
+///
+/// A missing or unreadable index is an empty list rather than an error: a host
+/// where this tool has never run has no records, and that is an answer.
+pub fn read_all(executor: &dyn Executor, files: &dyn FileEditor) -> Vec<BackupRecord> {
+    let Ok(true) = files.exists(executor, INDEX_PATH) else {
+        return Vec::new();
+    };
+
+    let Ok(contents) = files.read(executor, INDEX_PATH) else {
+        return Vec::new();
+    };
+
+    contents
+        .lines()
+        .filter_map(BackupRecord::from_line)
+        .collect()
+}
+
+/// The newest record for a path, if this tool ever copied it.
+///
+/// Newest because that is the state immediately before the current one. Older
+/// records are kept so a path's history is reviewable, not so a revert can
+/// choose among them: "put it back the way it was" means one thing.
+pub fn latest_for(
+    executor: &dyn Executor,
+    files: &dyn FileEditor,
+    path: &str,
+) -> Option<BackupRecord> {
+    read_all(executor, files)
+        .into_iter()
+        .rfind(|record| record.path == path)
+}
+
+/// SHA-256 of a file, as the host computes it.
+///
+/// `sha256sum` rather than a crate: it is in coreutils and in busybox, this
+/// project already depends on it for release verification, and hashing a file
+/// this tool is about to move is not worth a dependency.
+///
+/// `None` where the file cannot be read, which the caller must treat as "cannot
+/// prove anything" rather than as a mismatch.
+pub fn digest_of(executor: &dyn Executor, path: &str) -> Option<String> {
+    let command = Command::new("sha256sum").arg(path).privileged();
+    let output = executor.run(&command).ok()?;
+
+    if !output.success() {
+        return None;
+    }
+
+    output
+        .stdout
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
+        .filter(|digest| digest.len() == 64)
+}
+
+/// The host's own idea of now, as a filename-safe stamp.
+///
+/// Asked of the machine rather than computed, because this project carries no
+/// time dependency and adding one for a string would be a crate to audit for
+/// something `date` already answers. UTC so that records from a host whose
+/// timezone changes still sort.
+pub fn timestamp(executor: &dyn Executor) -> Option<String> {
+    let command = Command::new("date").args(["-u", "+%Y%m%dT%H%M%SZ"]);
+    let output = executor.run(&command).ok()?;
+
+    if !output.success() {
+        return None;
+    }
+
+    let stamp = output.stdout.trim().to_owned();
+
+    // A stamp that is not the shape asked for means `date` is not the one this
+    // expects; better no record than a filename built from something else.
+    (stamp.len() == 16 && stamp.ends_with('Z')).then_some(stamp)
+}
+
+/// Copies a file aside and records where it went, before it is changed.
+///
+/// Called by a task that wants its change to be revertible later, rather than
+/// happening inside [`FileEditor::write`]. Nine sites write files and most have
+/// no revert to offer — a firewall ruleset restored without the front-end being
+/// told is a file, not a rolled-back change — so recording is a decision a task
+/// makes rather than a side effect of writing.
+///
+/// Returns the copy's path, or `None` where nothing could be recorded. `None`
+/// is not a failure: the caller carries on and says no record was kept, because
+/// the alternative is failing a change that has not been made yet over a
+/// bookkeeping problem.
+///
+/// Call this **before** the write. It records the digest of what was there, and
+/// [`finish`] records the digest of what replaced it once the write has
+/// happened — the pair is what lets a later revert prove the file has not been
+/// edited by somebody else in between.
+pub fn begin(
+    executor: &dyn Executor,
+    files: &dyn FileEditor,
+    task: &'static str,
+    path: &str,
+    service: &'static str,
+) -> Option<BackupRecord> {
+    // Nothing to copy: a file being created has no previous state, and a
+    // record claiming one would offer a revert to an empty file.
+    if !files.exists(executor, path).ok()? {
+        return None;
+    }
+
+    let stamp = timestamp(executor)?;
+    let copy = copy_path(path, &stamp);
+
+    files.create_dir(executor, BACKUP_DIR, TREE_MODE).ok()?;
+
+    // `-p` preserves mode and ownership, so a restore cannot silently loosen
+    // the permissions of a file that was `0600`.
+    let command = Command::new("cp").args(["-p", path, &copy]).privileged();
+
+    if !executor.run(&command).ok()?.success() {
+        return None;
+    }
+
+    Some(BackupRecord {
+        task,
+        path: path.to_owned(),
+        copy,
+        at: stamp,
+        // Of the copy rather than of the original: they are identical now, and
+        // this is the value that later proves the copy itself is intact.
+        sha256_before: digest_of(executor, path)?,
+        // Filled in by `finish`, once there is something to hash.
+        sha256_after: String::new(),
+        service,
+    })
+}
+
+/// Records what the write left behind, completing the record.
+///
+/// Separate from [`begin`] because the digest of the new contents does not
+/// exist until the write has happened, and it is the field a later revert
+/// checks the live file against.
+///
+/// Reports whether the record was kept, so the caller can say plainly that no
+/// revert will be available rather than implying one.
+pub fn finish(executor: &dyn Executor, files: &dyn FileEditor, mut record: BackupRecord) -> bool {
+    let Some(after) = digest_of(executor, &record.path) else {
+        return false;
+    };
+
+    record.sha256_after = after;
+
+    let path = record.path.clone();
+    let kept = append(executor, files, &record);
+
+    // After the append rather than before, so a prune that fails cannot cost
+    // the record it was making room for. Best effort in turn: a host that
+    // could not delete an old copy still has a usable index, just a longer one.
+    prune(executor, files, &path);
+
+    kept
+}
+
+/// Deletes the oldest copies of one path, keeping [`RETAINED_PER_PATH`].
+///
+/// Bounded because the material is sensitive rather than merely bulky: an
+/// unbounded history of `wg0.conf` is an unbounded number of copies of the
+/// server's private key, each one another file that has to stay `0600` forever.
+///
+/// The index keeps its lines. A record whose copy is gone is still the answer
+/// to "what happened to this file and when", and a revert that finds the copy
+/// missing refuses on the digest check rather than on a dangling path.
+fn prune(executor: &dyn Executor, files: &dyn FileEditor, path: &str) {
+    let copies: Vec<String> = read_all(executor, files)
+        .into_iter()
+        .filter(|record| record.path == path)
+        .map(|record| record.copy)
+        .collect();
+
+    let Some(surplus) = copies.len().checked_sub(RETAINED_PER_PATH) else {
+        return;
+    };
+
+    // Oldest first, because records are appended in order.
+    for copy in copies.into_iter().take(surplus) {
+        let command = Command::new("rm").args(["-f", &copy]).privileged();
+        let _ = executor.run(&command);
+    }
+}
+
+/// Where a copy of `path` taken at `stamp` is kept.
+///
+/// The original's path is flattened into the filename rather than recreated as
+/// a directory tree: `/var/lib/initd/backups/etc-ssh-sshd_config.<stamp>` is
+/// one directory to mode `0700` and one to audit, where a mirrored tree is a
+/// new directory per depth, each of which could be created with the wrong mode.
+pub fn copy_path(original: &str, stamp: &str) -> String {
+    let flattened: String = original
+        .trim_start_matches('/')
+        .chars()
+        .map(|character| if character == '/' { '-' } else { character })
+        .collect();
+
+    format!("{BACKUP_DIR}/{flattened}.{stamp}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::mock::{MockExecutor, Reply};
+
+    fn a_record() -> BackupRecord {
+        BackupRecord {
+            task: "ssh.harden",
+            path: "/etc/ssh/sshd_config".to_owned(),
+            copy: "/var/lib/initd/backups/etc-ssh-sshd_config.20260809T142203Z".to_owned(),
+            at: "20260809T142203Z".to_owned(),
+            sha256_before: "a".repeat(64),
+            sha256_after: "b".repeat(64),
+            service: "ssh.service",
+        }
+    }
+
+    #[test]
+    fn a_record_survives_being_written_and_read_back() {
+        let record = a_record();
+
+        assert_eq!(
+            BackupRecord::from_line(&record.to_line()),
+            Some(record),
+            "a record must round-trip through its own format"
+        );
+    }
+
+    #[test]
+    fn a_half_written_line_costs_itself_and_nothing_else() {
+        // What an interrupted append leaves. Discarded rather than parsed
+        // partially, which is the whole reason the file is append-only: no
+        // lock, and the damage is bounded to the last record.
+        let good = a_record().to_line();
+        let truncated = &good[..good.len() / 2];
+
+        assert!(BackupRecord::from_line(truncated).is_none());
+        assert!(BackupRecord::from_line("").is_none());
+        assert!(BackupRecord::from_line("{not json at all").is_none());
+    }
+
+    #[test]
+    fn a_path_holding_a_quote_does_not_break_the_line() {
+        // Legal on Linux, however unlikely, and the one field that can contain
+        // a character the format cares about.
+        let mut record = a_record();
+        record.path = "/etc/we\"ird/na\\me".to_owned();
+
+        let read = BackupRecord::from_line(&record.to_line()).expect("it must round-trip");
+
+        assert_eq!(read.path, "/etc/we\"ird/na\\me");
+    }
+
+    #[test]
+    fn a_record_naming_something_this_build_does_not_have_is_skipped() {
+        // An index written by a newer version, read by an older one. Skipped
+        // rather than guessed at: the alternative is reloading a unit named by
+        // a file, which is a value crossing a trust boundary.
+        let mut line = a_record().to_line();
+        line = line.replace("ssh.harden", "some.future.task");
+
+        assert!(BackupRecord::from_line(&line).is_none());
+
+        let mut line = a_record().to_line();
+        line = line.replace("ssh.service", "attacker.service");
+
+        assert!(
+            BackupRecord::from_line(&line).is_none(),
+            "a unit name from the file must be matched against what this build knows"
+        );
+    }
+
+    #[test]
+    fn the_newest_record_for_a_path_is_the_one_a_revert_would_use() {
+        let mut older = a_record();
+        older.at = "20260101T000000Z".to_owned();
+        older.sha256_after = "c".repeat(64);
+
+        let newer = a_record();
+
+        let index = format!("{}\n{}\n", older.to_line(), newer.to_line());
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok(&index)]);
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        let found = latest_for(&mock, &files, "/etc/ssh/sshd_config").expect("a record must match");
+
+        assert_eq!(found.sha256_after, newer.sha256_after);
+    }
+
+    #[test]
+    fn a_host_this_tool_never_ran_on_has_no_records_rather_than_an_error() {
+        // `test -e` fails: no index. An empty list is the answer, and what
+        // makes "no record means no revert offered" work on a fresh machine.
+        let mock = MockExecutor::with_replies([Reply::failure(1, "")]);
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        assert!(read_all(&mock, &files).is_empty());
+    }
+
+    #[test]
+    fn a_copy_is_named_for_the_file_it_came_from_and_when() {
+        // Flattened rather than mirrored: one directory to mode 0700, not a
+        // new one per depth each of which could be created wrongly.
+        assert_eq!(
+            copy_path("/etc/ssh/sshd_config", "20260809T142203Z"),
+            "/var/lib/initd/backups/etc-ssh-sshd_config.20260809T142203Z"
+        );
+    }
+
+    #[test]
+    fn a_digest_that_is_not_one_is_refused() {
+        // `sha256sum` prints the digest then the filename. A truncated or
+        // error-shaped answer must not be recorded as if it proved something.
+        let good = MockExecutor::with_replies([Reply::ok(format!(
+            "{}  /etc/ssh/sshd_config",
+            "a".repeat(64)
+        ))]);
+        assert_eq!(
+            digest_of(&good, "/etc/ssh/sshd_config"),
+            Some("a".repeat(64))
+        );
+
+        let short = MockExecutor::with_replies([Reply::ok("abc  /etc/ssh/sshd_config")]);
+        assert_eq!(digest_of(&short, "/etc/ssh/sshd_config"), None);
+
+        let failed = MockExecutor::with_replies([Reply::failure(1, "No such file")]);
+        assert_eq!(digest_of(&failed, "/etc/ssh/sshd_config"), None);
+    }
+
+    #[test]
+    fn a_timestamp_that_is_not_the_shape_asked_for_is_refused() {
+        let good = MockExecutor::with_replies([Reply::ok("20260809T142203Z\n")]);
+        assert_eq!(timestamp(&good), Some("20260809T142203Z".to_owned()));
+
+        // A `date` that answered something else entirely. Better no record
+        // than a filename built from a string of unknown shape.
+        let odd = MockExecutor::with_replies([Reply::ok("Sun Aug  9 14:22:03 UTC 2026")]);
+        assert_eq!(timestamp(&odd), None);
+    }
+
+    #[test]
+    fn an_index_that_cannot_be_written_is_reported_rather_than_raised() {
+        // A read-only /var/lib, or running unprivileged. The task has already
+        // applied its change correctly; failing it here would report a
+        // successful change as a failure.
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::failure(1, "Read-only")]);
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        assert!(!append(&mock, &files, &a_record()));
+    }
+
+    #[test]
+    fn a_record_carries_no_field_a_secret_could_reach() {
+        // Enforced by the type rather than by discipline: every field is a
+        // path, a digest, a timestamp or an id, and there is no free-form map
+        // for a caller to put a password in. This test exists so that adding
+        // one is a deliberate act with a failing test attached.
+        let line = a_record().to_line();
+
+        for field in ["password", "secret", "key", "private"] {
+            assert!(
+                !line.contains(field),
+                "the record format must have no field a secret could be put in: {line}"
+            );
+        }
+    }
+}

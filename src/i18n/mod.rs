@@ -242,6 +242,17 @@ pub enum Msg {
     },
     AdminCannotBeRoot,
     CannotDeleteRoot,
+    FileChangedSinceBackup {
+        path: String,
+        expected: String,
+        found: String,
+    },
+    BackupCorrupt {
+        copy: String,
+    },
+    RevertUnverifiable {
+        path: String,
+    },
     ShellNotListed {
         shell: String,
     },
@@ -773,6 +784,10 @@ pub enum Msg {
     TaskBinaryRemoved {
         path: String,
     },
+    /// The previous contents were copied aside and written down.
+    TaskChangeRecorded,
+    /// Nothing could be recorded, so no later revert will be offered.
+    TaskChangeNotRecorded,
     /// A deleted account's home directory was left on disk.
     TaskHomeKept {
         path: String,

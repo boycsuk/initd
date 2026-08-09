@@ -233,6 +233,29 @@ pub(super) fn render(message: &Msg) -> String {
              which refuses unless another account can still get in — a machine \
              with no root is not one this tool can put back"
             .to_owned(),
+        // Both digests, because the difference is the evidence: "the file
+        // changed" alone cannot tell an administrator's own edit from a
+        // package upgrade that replaced a conffile.
+        Msg::FileChangedSinceBackup {
+            path,
+            expected,
+            found,
+        } => format!(
+            "{path} has changed since initd wrote it, so restoring the backup \
+             would discard whatever changed it. Expected {expected}, found \
+             {found}. Reverting by hand from the recorded copy is the way \
+             forward if that is what you want."
+        ),
+        Msg::BackupCorrupt { copy } => format!(
+            "{copy} is not the copy that was recorded — it was truncated or \
+             replaced after being taken. Restoring it would put an incomplete \
+             file over a working one, so nothing was changed."
+        ),
+        Msg::RevertUnverifiable { path } => format!(
+            "{path} could not be read, so nothing can be proven about it \
+             either way. This is not the same as the file having changed: \
+             nothing was restored, and nothing is claimed."
+        ),
         Msg::ShellNotListed { shell } => {
             format!("{shell} is not listed in /etc/shells, so the system will refuse it")
         }
@@ -635,6 +658,19 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::TaskDisabling { unit } => format!("Stopping and disabling {unit}..."),
         Msg::TaskBinaryRemoved { path } => format!("Removed {path}"),
+        Msg::TaskChangeRecorded => {
+            "The previous configuration was copied aside, so this can be put \
+             back in a later session"
+                .to_owned()
+        }
+        // Names the consequence rather than the cause: which of the two steps
+        // failed is a detail, and what the operator needs to know is that
+        // coming back tomorrow will not offer an undo.
+        Msg::TaskChangeNotRecorded => {
+            "The previous configuration could not be recorded, so this change \
+             cannot be put back from a later session"
+                .to_owned()
+        }
         Msg::TaskHomeKept { path } => format!("{path} was left on disk"),
         Msg::TaskHomeDeleted { path } => format!("{path} was deleted"),
         Msg::TaskEnabling { unit } => format!("Enabling {unit}..."),

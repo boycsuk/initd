@@ -7,6 +7,7 @@
 pub mod alpine;
 pub mod apt_periodic;
 pub mod arch;
+pub mod backup_index;
 pub mod busybox_accounts;
 pub mod debian;
 pub mod firewalld;
