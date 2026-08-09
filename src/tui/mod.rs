@@ -23,6 +23,7 @@ pub mod help;
 pub mod layout;
 pub mod navigation;
 pub mod output;
+pub mod probe;
 pub mod render;
 pub mod search;
 pub mod signals;

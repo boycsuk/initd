@@ -10,6 +10,7 @@ use super::confirm::Confirm;
 use super::cursor::TreeCursor;
 use super::form::Form;
 use super::output::OutputPane;
+use super::probe::{InstalledState, Probe};
 use super::search::Search;
 use super::signals::Hangup;
 use super::status::{State, Status};
@@ -160,6 +161,20 @@ pub struct App {
     pub(super) ran_with: ParamValues,
     /// The task currently running, if any.
     pub(super) running: Option<Running>,
+    /// What the host was last measured to already have.
+    ///
+    /// Cached rather than asked while drawing, for the reason
+    /// `offer_what_the_host_knows` records one layer down: a query on every
+    /// arrow press puts the executor in the path of a keystroke. `render::row`
+    /// holds no executor by construction, and this is what keeps that true
+    /// while still letting a row show the verb the machine justifies.
+    pub(super) presence: InstalledState,
+    /// A measurement in flight, if one is.
+    ///
+    /// Dropped when a task starts: the probe is read-only, but its answers
+    /// would describe the machine as it was before the task changed it, and an
+    /// answer that arrives stale is worse than none.
+    pub(super) probe: Option<Probe>,
     /// An applied change waiting to be kept or put back.
     pub(super) verification: Option<Verification>,
     /// The open search, while one is being typed.
@@ -207,6 +222,15 @@ impl App {
         // The root level is never empty, so the cursor always has a row.
         list_state.select(Some(0));
 
+        // Started before the interface exists so the answers are already
+        // arriving while the operator reads the first frame. Costs nothing on
+        // a tree with no reversible pair: `subjects_in` returns empty and the
+        // thread ends having run no command.
+        let probe = Probe::start(
+            distro.clone(),
+            super::probe::subjects_in(tasks::tree().as_slice()),
+        );
+
         Self {
             distro,
             host,
@@ -224,6 +248,8 @@ impl App {
             pending_values: ParamValues::new(),
             ran_with: ParamValues::new(),
             running: None,
+            presence: InstalledState::default(),
+            probe: Some(probe),
             verification: None,
             help: None,
             status: Status::new(),
@@ -359,10 +385,13 @@ impl App {
                 break;
             }
 
-            // Both before drawing: output that has arrived should appear in
-            // this frame, and an expired window should never be shown with a
-            // countdown that has already run out.
+            // All three before drawing: output that has arrived should appear
+            // in this frame, an expired window should never be shown with a
+            // countdown that has already run out, and a row whose verb has
+            // just been settled should be drawn with it rather than one frame
+            // later.
             self.poll_running();
+            self.poll_probe();
             self.expire_verification();
 
             // Before drawing, not after: the frame this loop is about to paint
@@ -406,8 +435,13 @@ impl App {
     }
 
     /// The task currently under the cursor, if the cursor is on one.
+    ///
+    /// A reversible row resolves to whichever half the host justifies, which
+    /// is why this needs the measurements: every caller — the key bar, the
+    /// confirmation, the launch — gets the task the operator is actually
+    /// looking at, without any of them knowing that some rows are pairs.
     pub(super) fn selected_task(&self) -> Option<&dyn Task> {
-        self.cursor.selected_task()
+        self.cursor.selected_task(&self.presence)
     }
 
     /// Whether pressing Enter on the selected row would do anything.
@@ -2039,13 +2073,85 @@ mod tests {
     }
 
     #[test]
+    fn a_reversible_row_draws_the_half_it_would_run() {
+        // The worst thing this feature can do is render "Uninstall Caddy" and
+        // start `caddy.install` when the key is pressed. Both sides resolve
+        // through `probe::task_for`, and this is what holds them to it: the
+        // title drawn is read back off the rendered line and compared against
+        // the task the same state resolves to.
+        use crate::tui::probe::{InstalledState, Presence};
+
+        let pair = Node::Reversible {
+            forward: crate::tasks::find("caddy.install").expect("caddy.install must exist"),
+            inverse: crate::tasks::find("caddy.validate").expect("caddy.validate must exist"),
+        };
+
+        for presence in [Presence::Unknown, Presence::Absent, Presence::Present] {
+            let mut state = InstalledState::default();
+            state.record("caddy.install", presence.clone());
+
+            let drawn: String = row(&pair, Family::Debian, 60, &state)
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+
+            let would_run = crate::tui::probe::task_for(&pair, &state).expect("a pair is a task");
+
+            assert!(
+                drawn.contains(would_run.title()),
+                "measured {presence:?}: the row drew {drawn:?} \
+                 but pressing it would run {:?}",
+                would_run.id()
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_whose_verb_is_unsettled_says_so() {
+        // Transient — a few hundred milliseconds — and long enough to press a
+        // key in. "Install" because nothing was measured is not the same as
+        // "Install" because the subject was found absent.
+        use crate::tui::probe::{InstalledState, Presence};
+
+        let pair = Node::Reversible {
+            forward: crate::tasks::find("caddy.install").expect("caddy.install must exist"),
+            inverse: crate::tasks::find("caddy.validate").expect("caddy.validate must exist"),
+        };
+
+        let unsettled: String = row(&pair, Family::Debian, 60, &InstalledState::default())
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        let mut answered = InstalledState::default();
+        answered.record("caddy.install", Presence::Absent);
+
+        let settled: String = row(&pair, Family::Debian, 60, &answered)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            unsettled.contains(style::MARKER_PROBING),
+            "an unmeasured row must say so: {unsettled}"
+        );
+        assert!(
+            !settled.contains(style::MARKER_PROBING),
+            "an answered row must not keep the marker: {settled}"
+        );
+    }
+
+    #[test]
     fn a_task_that_collects_parameters_is_flagged_in_the_tree() {
         // The operator has to be able to tell, before pressing Enter, which
         // tasks stop to ask and which run straight away.
         let task = crate::tasks::find("users.create").expect("users.create must exist");
         let node = Node::Task(task);
 
-        let line = row(&node, Family::Debian, 60);
+        let line = row(&node, Family::Debian, 60, &InstalledState::default());
         let drawn: String = line
             .spans
             .iter()
@@ -2070,7 +2176,7 @@ mod tests {
         );
 
         let node = Node::Task(task);
-        let line = row(&node, Family::Debian, 60);
+        let line = row(&node, Family::Debian, 60, &InstalledState::default());
         let drawn: String = line
             .spans
             .iter()

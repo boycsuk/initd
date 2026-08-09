@@ -17,7 +17,7 @@ pub mod sshd_config;
 pub mod users;
 pub mod wireguard;
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Capability};
 use crate::distro::Family;
 use crate::error::Result;
 use crate::exec::{Executor, OutputLine, Stream};
@@ -213,6 +213,30 @@ pub trait Task {
     fn consequences(&self, backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let _ = (backend, values);
         Vec::new()
+    }
+
+    /// What the host is asked about to decide which verb this row shows.
+    ///
+    /// Declared by the task rather than by a table beside the tree, for the
+    /// reason every other declaration here is: a table is the thing that goes
+    /// stale when a task changes what it installs, and nothing would fail to
+    /// compile when it did.
+    ///
+    /// `None` for a task with no inverse, which is every task that is not half
+    /// of a [`Node::Reversible`] — a row that cannot change its verb has
+    /// nothing to measure and must not cost a command at startup.
+    fn subject(&self) -> Option<Capability> {
+        None
+    }
+
+    /// Which reversible pairs this task's success may have changed.
+    ///
+    /// Named rather than "everything": re-probing all of them after every task
+    /// would put a second of `fork`/`exec` between finishing and being able to
+    /// read the result. A task names the pair it belongs to, and the rare one
+    /// that disturbs another names that too.
+    fn affects(&self) -> &'static [&'static str] {
+        &[]
     }
 
     /// Whether this task runs on `family`, and if not, why not.

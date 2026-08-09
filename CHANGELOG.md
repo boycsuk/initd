@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A row that can go either way asks the host which way it is, on a thread of
+  its own. The queries are unprivileged — every package manager reads a
+  world-readable database, and `command -v` asks the shell — but eleven of them
+  in series cost between 200 and 900 milliseconds on a slow VPS, paid before
+  the first frame on exactly the hardware this tool exists for. So rows start
+  unmeasured and settle over the following moments, and an unmeasured row shows
+  the *install* verb: offering to install what is already there wastes a
+  keystroke, while offering to remove what was never installed does nothing and
+  explains nothing. While the answer is outstanding the row says so, because
+  those few hundred milliseconds are long enough to press a key in.
+- Nothing is measured while a task runs, and what a finished task touched is
+  forgotten rather than kept. A package manager holds a lock, and an answer
+  taken while an install is half done describes neither the machine before nor
+  the one after. The re-measurement afterwards runs on the failure path too: a
+  task that installed the package and then failed to enable the unit leaves the
+  host in a state nobody knows, and the answer from before it ran describes a
+  machine that no longer exists.
+- What a row draws and what pressing it runs resolve through one function, so
+  they cannot disagree. Rendering "Uninstall Caddy" over a key that starts
+  `caddy.install` is the worst thing this feature could do, and two copies of
+  the rule is how it would happen. The test reads the title back off the
+  rendered line and compares it against the task the same state resolves to —
+  and was confirmed to fail when the resolution was deliberately broken, rather
+  than assumed to.
 - The capability traits gained the verbs that undo what they do: packages can
   be removed or purged, units disabled and stopped, an account deleted, a
   directory measured. Nothing calls them yet. What each family does differs

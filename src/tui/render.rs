@@ -33,6 +33,7 @@ use ratatui::widgets::{
 };
 
 use super::app::{App, Mode, Pane, VERIFY_BANNER_ROWS, VERSION};
+use super::probe::InstalledState;
 use super::status::State;
 use super::verify::Verification;
 use super::{help, layout, search, style};
@@ -219,10 +220,15 @@ fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect, status: Option<Line<'
     let family = app.distro.family;
     // The two borders and the marker column are not available to the row.
     let row_width = tree_area.width.saturating_sub(2) as usize;
+    // Borrowed out before the level is walked: `current_level` borrows the
+    // cursor, and a reversible row needs what the probe measured to know which
+    // of its two verbs to draw.
+    let presence = &app.presence;
     let items: Vec<ListItem> = app
+        .cursor
         .current_level()
         .iter()
-        .map(|node| ListItem::new(row(node, family, row_width)))
+        .map(|node| ListItem::new(row(node, family, row_width, presence)))
         .collect();
 
     let tree_focused = app.focus == Pane::Tree;
@@ -356,13 +362,10 @@ fn tree_scrollbar(frame: &mut Frame, app: &App, area: Rect) {
 /// rather than leaving the pane blank.
 fn detail(frame: &mut Frame, app: &App, area: Rect, status: Option<Line<'static>>) {
     // A reversible pair is reduced to the task the row is drawing, so the
-    // description below reads about the operation the operator would actually
-    // start. Which one that is belongs to the row, not to this pane.
-    let selected = match app.selected_node() {
-        Some(Node::Task(task)) => Some(task.as_ref()),
-        Some(Node::Reversible { forward, .. }) => Some(forward.as_ref()),
-        Some(Node::Category(_)) | None => None,
-    };
+    // description reads about the operation the operator would actually start.
+    // Resolved through the same function the row draws through, so the pane
+    // can never describe one half while the row offers the other.
+    let selected = app.selected_task();
 
     // A task that cannot run here says why, under what it would have done. The
     // tree already dims the row and the pill already reads UNSUPPORTED — both
@@ -736,27 +739,60 @@ fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang
 /// Flags are glyphs rather than colours so that a monochrome terminal loses
 /// nothing, and unsupported tasks stay visible with their reason rather than
 /// being hidden — hiding them makes the tool look inconsistent between hosts.
-pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> Line<'static> {
-    let (marker, marker_style, title, title_style, trailing, trailing_style) = match node {
+pub(super) fn row(
+    node: &Node,
+    family: crate::distro::Family,
+    width: usize,
+    presence: &InstalledState,
+) -> Line<'static> {
+    let RowParts {
+        marker,
+        marker_style,
+        title,
+        title_style,
+        trailing,
+        trailing_style,
+    } = match node {
         // The marker tells a category apart from a task at a glance; with one
         // level on screen there is no indentation to do it.
         //
         // The count is what makes a collapsed level navigable: it tells a
         // 3-task category from an 8-task one without opening either.
-        Node::Category(category) => (
-            CATEGORY_MARKER,
-            style::CATEGORY_COLLAPSED,
-            category.title,
-            style::HEADING,
-            category.task_count().to_string(),
-            style::BLOCK_SUBTITLE,
-        ),
-        // Drawn as whichever of the pair the host justifies. Until the probe
-        // answers that is the forward task, matching `Presence::Unknown`: a row
-        // offering to install what is already there wastes a keystroke, while
-        // one offering to remove what was never installed does nothing and says
-        // nothing about why.
-        Node::Reversible { forward, .. } => task_row_parts(forward.as_ref(), family),
+        Node::Category(category) => RowParts {
+            marker: CATEGORY_MARKER,
+            marker_style: style::CATEGORY_COLLAPSED,
+            title: category.title,
+            title_style: style::HEADING,
+            trailing: category.task_count().to_string(),
+            trailing_style: style::BLOCK_SUBTITLE,
+        },
+        // Drawn as whichever half the host justifies, through the same
+        // resolution the keys act through. Until the probe answers that is the
+        // forward task: a row offering to install what is already there wastes
+        // a keystroke, while one offering to remove what was never installed
+        // does nothing and explains nothing.
+        Node::Reversible { forward, inverse } => {
+            let measured = presence.of(forward.id());
+            let drawn = if measured.calls_for_the_inverse() {
+                inverse
+            } else {
+                forward
+            };
+
+            let mut parts = task_row_parts(drawn.as_ref(), family);
+
+            // Ahead of the task's own flag, and only while the answer is
+            // outstanding. A row showing "Install" because nothing has been
+            // measured is not the same as one showing it because the subject
+            // was found absent, and the difference lasts a few hundred
+            // milliseconds — long enough to press a key in.
+            if !measured.is_settled() && parts.trailing.is_empty() {
+                parts.trailing = style::MARKER_PROBING.to_owned();
+                parts.trailing_style = style::BLOCK_SUBTITLE;
+            }
+
+            parts
+        }
         Node::Task(task) => task_row_parts(task.as_ref(), family),
     };
 
@@ -782,15 +818,26 @@ pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> L
     ])
 }
 
+/// What one row draws, before it is measured against the column width.
+///
+/// A struct rather than the tuple this began as: six positional fields where
+/// four are styles is a shape where two can be swapped without the compiler
+/// noticing, and the pair arm below needs to reach one of them by name.
+struct RowParts {
+    marker: &'static str,
+    marker_style: Style,
+    title: &'static str,
+    title_style: Style,
+    trailing: String,
+    trailing_style: Style,
+}
+
 /// The marker, title and flag a single task contributes to its row.
 ///
 /// Extracted so a reversible pair draws through exactly the same precedence as
 /// a lone task: the flag column answers "what should stop me acting on this
 /// row", and a second copy of that rule would be the one that drifted.
-fn task_row_parts(
-    task: &dyn Task,
-    family: crate::distro::Family,
-) -> (&'static str, Style, &'static str, Style, String, Style) {
+fn task_row_parts(task: &dyn Task, family: crate::distro::Family) -> RowParts {
     let supported = task.supports(family);
     // Destructive outranks input: a task that asks for a port before
     // wiping something is first of all the one that wipes something,
@@ -813,14 +860,14 @@ fn task_row_parts(
         (style::NORMAL, "", style::NORMAL)
     };
 
-    (
-        TASK_MARKER,
-        text_style,
-        task.title(),
-        text_style,
-        flag.to_owned(),
-        flag_style,
-    )
+    RowParts {
+        marker: TASK_MARKER,
+        marker_style: text_style,
+        title: task.title(),
+        title_style: text_style,
+        trailing: flag.to_owned(),
+        trailing_style: flag_style,
+    }
 }
 
 /// How many terminal cells a string occupies.
