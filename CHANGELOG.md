@@ -119,6 +119,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   should cost a deliberate `Shift` rather than a letter that could be a slip.
 
 ### Fixed
+- The container matrix ran eleven times slower than it needed to, on the
+  strength of a measurement nobody had taken. `--test-threads 1` was documented
+  as the answer for six images on a host with more cores than memory, and the
+  helper that panics on `Docker exited 125` recommended it too. Measured: a live
+  container is **4.7 MiB** against **13 GB free**, and sixteen simultaneous
+  starts of the largest image fail **zero** times. Memory was never the
+  constraint — the recurring cause is the daemon refusing every start at once
+  (`unsupported protocol` under WSL2, cleared by `wsl --shutdown`), which looks
+  identical from inside a test and which serialising does not fix. The full
+  suite is **1531 tests in 8m57s at `-j8`, against ~97 minutes serially**. The
+  guard itself was never wrong about what it saw; what it got wrong was the
+  advice appended to a correct observation, which is the part nothing tests.
 - Confirming a task on a row that pairs an install with its undo did nothing at
   all. The eleven reversible rows resolve to one half or the other through the
   probe, and every other part of the interface asked it — the row drew the

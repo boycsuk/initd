@@ -545,10 +545,15 @@ const DOCKER_COULD_NOT_START: i32 = 125;
 /// way. A daemon too loaded to start a container returns empty output and 125;
 /// the scenario then asserts against that emptiness and reports the tool as
 /// broken, sending the reader to `src/` for a defect that is not there. It
-/// surfaced when the matrix grew from four images to six — the two openSUSE
-/// images are large, the host has 32 cores and 15 GB, and nextest sizes its
-/// parallelism by cores — which made a latent fault likely rather than creating
-/// one.
+/// surfaced when the matrix grew from four images to six, which made a latent
+/// fault likely rather than creating one.
+///
+/// The cause was misread at the time as memory: six large images against a host
+/// with more cores than gigabytes. Measured since, that is false — a live
+/// container is 4.7 MiB against 13 GB free, and sixteen simultaneous starts of
+/// `opensuse/tumbleweed` fail zero times. What recurs is the daemon refusing
+/// every start at once, which looks identical from here (exit 125, empty
+/// stdout) and is why the wrong remedy survived a year of full runs.
 ///
 /// A panic naming the image and both streams is the right answer because there
 /// is no honest value to return: "the question could not be asked" is not a
@@ -561,9 +566,14 @@ fn panic_if_the_container_never_ran(image: &Image, output: &std::process::Output
     panic!(
         "{}: the container never started, so this says nothing about the code \
          under test. Docker exited {DOCKER_COULD_NOT_START}.\n\
-         With six images the matrix can exhaust a host that has more cores than \
-         memory — nextest sizes parallelism by cores. Re-run with \
-         `--test-threads 1`.\n\
+         Read the stderr below before changing how the suite is run: this \
+         message used to recommend `--test-threads 1` on the theory that six \
+         images exhaust the host, and that was measured wrong — a live \
+         container is 4.7 MiB and sixteen simultaneous starts of the largest \
+         image fail zero times. The recurring cause is the daemon refusing \
+         every start (`unsupported protocol` on WSL2, cleared by \
+         `wsl --shutdown`), which serialising does not fix and which costs an \
+         eleven-fold slowdown to pretend otherwise.\n\
          stdout: {}\nstderr: {}",
         image.name,
         String::from_utf8_lossy(&output.stdout),
