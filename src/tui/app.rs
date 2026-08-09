@@ -574,6 +574,57 @@ mod tests {
     }
 
     #[test]
+    fn h_opens_the_recorded_changes() {
+        // The binding itself, which `the_history_takes_the_keyboard_and_gives_
+        // _it_back` does not exercise: it builds the view directly, so the key
+        // could stop opening it and that test would still pass. `h` was the
+        // fourth way to leave a category until the vim movement keys went, and
+        // this is what fails if one of them is ever reinstated on top of it.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('h'));
+
+        assert!(
+            matches!(app.mode(), Mode::Reviewing(_)),
+            "h must open the recorded changes"
+        );
+    }
+
+    #[test]
+    fn the_retired_movement_keys_do_nothing() {
+        // h, j, k, g and G were movement; the arrows and Home/End replaced
+        // them. A letter that quietly kept working would be a binding nothing
+        // documents — and `h` in particular now opens a list that restores
+        // configuration files, so a stray `j` reaching the tree would be a
+        // cursor moving under a keypress the operator did not mean to give.
+        for key in ['j', 'k', 'g', 'G'] {
+            let mut app = test_app(Family::Debian);
+
+            // The root, which is the longest level in the tree, with the
+            // cursor parked so there is somewhere to go in both directions.
+            // At the top of a short list `j` cannot move even when it works,
+            // so the assertion would hold against a key that was still live —
+            // which is exactly what it exists to catch. `h` is checked from
+            // the root too, where leaving a category is already a no-op, so
+            // the history assertion below is what speaks for it.
+            assert!(
+                app.current_level().len() > 2,
+                "the level must be long enough for a movement key to show"
+            );
+            app.cursor.list_state().select(Some(1));
+
+            let before = app.cursor.selected();
+            let level = app.cursor.path().to_vec();
+
+            press(&mut app, KeyCode::Char(key));
+
+            assert_eq!(app.cursor.selected(), before, "{key} must not move");
+            assert_eq!(app.cursor.path(), level, "{key} must not change level");
+            assert!(app.history.is_none(), "{key} must not open the history");
+        }
+    }
+
+    #[test]
     fn restoring_asks_before_it_touches_anything() {
         // The key that puts a configuration file back cannot be one keystroke
         // with no question, and the question is at the lockout tier: restoring
@@ -655,8 +706,8 @@ mod tests {
 
     #[test]
     fn movement_keys_address_the_focused_pane() {
-        // j and k mean "next" and "previous" in both panes; focus is what says
-        // which one they act on.
+        // The arrows mean "next" and "previous" in both panes; focus is what
+        // says which one they act on.
         let mut app = test_app(Family::Debian);
         enter_named_category(&mut app, "Remote Access");
         enter_first_category(&mut app);
@@ -672,7 +723,7 @@ mod tests {
         let before = app.cursor.selected();
 
         app.focus = Pane::Output;
-        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Up);
 
         assert_eq!(
             app.cursor.selected(),
@@ -802,16 +853,24 @@ mod tests {
 
     #[test]
     fn a_form_swallows_the_keys_that_are_commands_elsewhere() {
-        // j, k, q and / are literal characters inside a form.
+        // `h`, `q` and `/` are literal characters inside a form. `h` is the
+        // one that matters most now that it opens the recorded changes: a
+        // hostname or a username with an `h` in it is ordinary, and a form
+        // that answered it as a command would replace what was being typed
+        // with a list that restores configuration files.
         let mut app = test_app(Family::Debian);
         select_task(&mut app, "ssh.authorize-key");
         press(&mut app, KeyCode::Enter);
 
-        for character in ['j', 'k', 'q', '/'] {
+        for character in ['h', 'q', '/'] {
             press(&mut app, KeyCode::Char(character));
         }
 
         assert!(!app.should_quit, "q must not quit inside a form");
+        assert!(
+            app.history.is_none(),
+            "h must not open the history in a form"
+        );
 
         let value = app
             .form
@@ -820,7 +879,7 @@ mod tests {
             .map(|field| field.value())
             .expect("the first field holds what was typed");
 
-        assert!(value.ends_with("jkq/"), "got {value:?}");
+        assert!(value.ends_with("hq/"), "got {value:?}");
     }
 
     #[test]
@@ -1035,8 +1094,11 @@ mod tests {
 
     #[test]
     fn lowercase_k_cannot_keep_a_change() {
-        // k is "move up" everywhere else, and this is the one place where a
-        // mistyped navigation key would do something unrecoverable.
+        // `k` was "move up" everywhere else when this was written, and it now
+        // means nothing at all — which is why the assertion outlived its
+        // original reason. This is the one window where a key pressed by
+        // accident does something unrecoverable, so keeping a change must
+        // cost a deliberate `Shift` rather than a letter that could be a slip.
         let mut app = test_app(Family::Debian);
         open_verification(&mut app);
 
@@ -2580,11 +2642,11 @@ mod tests {
         );
 
         // The keys that remain, so this cannot pass by rejecting everything.
-        press(&mut app, KeyCode::Char('k'));
-        assert!(!app.output.is_following(), "k still scrolls");
+        press(&mut app, KeyCode::Up);
+        assert!(!app.output.is_following(), "the arrows still scroll");
 
-        press(&mut app, KeyCode::Char('G'));
-        assert!(app.output.is_following(), "G still re-attaches");
+        press(&mut app, KeyCode::Char('f'));
+        assert!(app.output.is_following(), "f still re-attaches");
     }
 
     #[test]

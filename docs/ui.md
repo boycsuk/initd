@@ -121,18 +121,21 @@ a highlight that failed to paint rather than as a margin.
 
 ## Recorded changes
 
-`H` opens a list of the configuration changes this tool has recorded, newest
+`h` opens a list of the configuration changes this tool has recorded, newest
 first. Each row names the task that made the change, when, and the file — the
 task because a file with ten recorded states is ten indistinguishable
 timestamps without it.
 
-Semi-modal, like search: it takes the movement keys (`↑↓`, `j`/`k`, `g`/`G`)
-and `Esc` closes it having changed nothing. `Enter` offers to put the selected
+Semi-modal, like search: it takes the movement keys (`↑↓`, `Home`/`End`) and
+`Esc` closes it having changed nothing. `Enter` offers to put the selected
 state back, through the same confirmation as any other change that can end the
 session — at the lockout tier, with the red frame.
 
-Opened with `H` rather than `h`, which leaves a category: the two would be one
-keystroke apart on a key that rewrites configuration files.
+`h` was the fourth way to leave a category — after `Esc`, `Backspace` and `←` —
+and was a capital `H` for as long as that was true: one keystroke from a key
+pressed by reflex is a poor place for a list that rewrites configuration files.
+Retiring the vim movement keys freed it, and freed the objection with it, since
+nothing now presses `h` without meaning to.
 
 A host where nothing has been recorded gets a sentence saying so rather than an
 empty list, since an empty list inside a bordered frame reads as a view that
@@ -509,7 +512,7 @@ by name, and a grep for the constant found nothing.
 | `?` | Open the help overlay |
 | `q` | Quit, from any level and either pane |
 
-`j` and `k` mean "next" and "previous" in both panes, so something has to say
+The arrows mean "next" and "previous" in both panes, so something has to say
 which one they address. That something is `Tab` and **nothing else**:
 overloading a movement key with focus is how keys start leaking between panes.
 
@@ -522,13 +525,13 @@ way back.
 
 | Key | Action |
 |-----|--------|
-| `↑` / `k` | Move to the previous row (categories included) |
-| `↓` / `j` | Move to the next row |
-| `g` / `G` | Jump to the first / last row of the level |
+| `↑` | Move to the previous row (categories included) |
+| `↓` | Move to the next row |
+| `Home` / `End` | Jump to the first / last row of the level |
 | `Enter` | Open the selected category, or run the selected task; anything that changes the machine opens the dialog first |
 | `/` | Open search over the whole tree |
-| `H` | Open the recorded changes, with any one restorable |
-| `Esc` / `Backspace` / `←` / `h` | Go back to the parent level; at the top level it reports rather than quitting |
+| `h` | Open the recorded changes, with any one restorable |
+| `Esc` / `Backspace` / `←` | Go back to the parent level; at the top level it reports rather than quitting |
 
 Every row is selectable: a category that could not be selected could not be
 opened. `Esc` means "go back" rather than "quit", so pressing it one level too
@@ -574,11 +577,11 @@ same reason `Enter` is: only one task at a time.
 
 | Key | Action |
 |-----|--------|
-| `↑` / `k` | Scroll one line towards older output, detaching from the tail |
-| `↓` / `j` | Scroll one line back towards the newest |
+| `↑` | Scroll one line towards older output, detaching from the tail |
+| `↓` | Scroll one line back towards the newest |
 | `PageUp` / `PageDown` | Scroll by ten lines |
-| `g` | Jump to the oldest retained line |
-| `G` / `f` | Jump to the newest output and follow it again |
+| `Home` | Jump to the oldest retained line |
+| `End` / `f` | Jump to the newest output and follow it again |
 | `y` | Send the whole transcript to the terminal's clipboard |
 
 Any upward scroll detaches the view from the tail, so reading back through a
@@ -632,9 +635,23 @@ reading. On the tree the `Enter` hint reads *open* on a category and *run* on a
 task; `Esc back` appears only below the top level, and `Tab output` only once
 there is output to switch to.
 
+`h history` is offered unconditionally, where those two are not. The difference
+is what an empty one leads to: `Tab` with nothing to read opens a mute pane,
+while `h` on a host where nothing was recorded answers the question it was
+pressed to ask — *has this tool changed anything here* — and *no* is an answer.
+Testing it first would also mean reading the host's index to draw a frame.
+
+Where the row is too narrow for every hint, hints are dropped rather than
+truncated — the bar does not wrap, so anything past the edge is simply lost, and
+what sits at the edge is `q quit`. They are given up least-useful-first —
+`Tab output`, then `h history`, then `/ find`, then `Esc back` — ordered by how
+discoverable each key is elsewhere rather than by how often it is pressed:
+`?` documents all of them and the header points at `?`, while leaving a category
+has no route but `Esc`. `↑↓`, `Enter` and `q` are never dropped.
+
 ### Parameter form (modal)
 
-Every printable character is **literal** here — `j`, `k`, `q` and `/` type
+Every printable character is **literal** here — `h`, `q` and `/` type
 themselves rather than acting as commands. Only the keys below stay commands.
 
 | Key | Action |
@@ -736,7 +753,7 @@ read one press at a time.
 
 | Key | Action |
 |-----|--------|
-| `↓` / `↑` / `j` / `k` | Move through the list, wrapping at both ends |
+| `↓` / `↑` | Move through the list, wrapping at both ends |
 | `Home` / `End` | First or last option |
 | `Enter` | Take the option and close |
 | `Esc` | Close, leaving the field exactly as it was |
@@ -756,10 +773,10 @@ written to the field until `Enter`.
 
 | Key | Action |
 |-----|--------|
-| `↑` / `k` / `↓` / `j` | Scroll a line |
+| `↑` / `↓` | Scroll a line |
 | `PageUp` / `PageDown` | Scroll a page |
-| `g` / `Home` | Top of the list |
-| `G` / `End` | Bottom of the list |
+| `Home` | Top of the list |
+| `End` | Bottom of the list |
 | *anything else* | Close |
 
 Closing on any other key, including `?` itself, is deliberate: an overlay that
@@ -809,9 +826,11 @@ started until this change is settled.
 | *timer* | Puts the change back on its own after 60 seconds |
 | *anything else* | Refused, restating what the two answers are |
 
-`K` and `R` are **uppercase deliberately**: lowercase `k` is "move up"
-everywhere else in this interface, and this is the one place where a mistyped
-navigation key would do something unrecoverable.
+`K` and `R` are **uppercase deliberately**. They were capitals because `k` was
+"move up" everywhere else, and they stay capitals now that it means nothing:
+this is the one window where a key pressed by accident does something
+unrecoverable, so answering it should cost a deliberate `Shift` rather than a
+letter that could be a slip.
 
 `q` is refused here and is not offered in the key bar. Quitting would abandon
 the change with nobody left to put it back — the one outcome the window exists

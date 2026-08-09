@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   desktop patterns, so a minimally installed server has no such group and
   `usermod -aG` against a missing one exits 6.
 
+- The key bar names `h history`, which it had not. The key answered from
+  anywhere and the help overlay documented it, but the bar is where an operator
+  looks to find out what a state accepts — so the view was reachable only by
+  somebody who already knew it was there. It is offered unconditionally, where
+  `Esc back` and `Tab output` are not, and the difference is what an empty one
+  leads to: `Tab` with nothing to read opens a mute pane, while `h` on a host
+  where nothing was recorded answers the question it was pressed to ask — has
+  this tool changed anything here — and *no* is an answer. Testing that first
+  would also mean reading the host's index to draw a frame.
 - `H` opens the recorded changes and any one of them can be put back. The list
   names the task that made each change as well as when — ten recorded states of
   one file are ten indistinguishable timestamps otherwise, and choosing between
@@ -72,7 +81,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restoration *removes* an authorised key — the direction that locks an
   administrator out rather than rescuing them.
 
+### Changed
+- The vim movement keys are gone. `h`, `j`, `k`, `g` and `G` moved the cursor
+  in five separate places — the tree, the output, the help overlay, the
+  recorded changes and a form's option list — and the arrows, `Home` and `End`
+  did the same in every one of them. What the letters bought was a second way
+  to do what an arrow already did; what they cost was five keys nobody could
+  spend on anything else. `f` keeps following the newest output, since
+  re-attaching to the tail has no arrow of its own and dropping both would
+  make scrolling away from it one-way.
+- The recorded changes open with `h` rather than `H`, which the retirement is
+  what made possible. `h` was the fourth way to leave a category, after `Esc`,
+  `Backspace` and `←`, and a key pressed by reflex is a poor neighbour for a
+  list that rewrites configuration files — one slipped `Shift` away. Nothing
+  presses it by reflex now. `K` and `R` stay capitals in the verification
+  window even though the reason they were capitals has gone: that is the one
+  place where a key pressed by accident does something unrecoverable, so it
+  should cost a deliberate `Shift` rather than a letter that could be a slip.
+
 ### Fixed
+- The key bar ran off the edge of a narrow terminal, and what sits at that edge
+  is `q quit`. It is a paragraph that does not wrap, so a row too short for
+  every hint lost the last of them silently rather than rearranging — leaving
+  the key that leaves the program undiscoverable on exactly the terminal where
+  the operator most needs it. The margin had been one column: the fullest bar
+  measured 59 against a minimum width of 60, so it was correct only by
+  accident, and nothing tested it. Hints are now given up least-useful-first —
+  `Tab output`, then `h history`, then `/ find`, then `Esc back` — ordered by
+  how discoverable each key is elsewhere rather than by how often it is
+  pressed, since `?` documents them all while leaving a category has no route
+  but `Esc`. `↑↓`, `Enter` and `q` are never dropped. Measured from the
+  rendered labels rather than a constant, because a translated label is a
+  different width and a budget fixed by English would overflow in any language
+  with longer words.
 - A container the daemon could not start was reported as a failing assertion
   about the code. `docker run` exits 125 with empty output when it refuses, and
   empty output is also what a scenario whose assertion genuinely failed

@@ -598,10 +598,18 @@ fn tree_keys(app: &App) -> Vec<(&'static str, Msg)> {
 
     // Search is offered from the tree and nowhere else: it exists to reach
     // a task, and the pane holds no tasks to reach.
+    //
+    // `H` is unconditional where `Esc` and `Tab` below are not, and the
+    // difference is what an empty one leads to. `Tab` with nothing to read
+    // opens a mute pane; `H` with nothing recorded answers the question it
+    // was pressed to ask — has this tool changed anything here — and "no" is
+    // an answer. Testing that would also mean reading the host's index to
+    // draw a frame, which is the cost `History` is built to avoid.
     let mut keys = vec![
         ("↑↓", Msg::KeyBarMove),
         ("Enter", enter_hint),
         ("/", Msg::KeyBarFind),
+        ("h", Msg::KeyBarHistory),
     ];
 
     // Going back is only offered where there is somewhere to go back to.
@@ -612,6 +620,56 @@ fn tree_keys(app: &App) -> Vec<(&'static str, Msg)> {
     // Switching panes is pointless with nothing to read.
     if !app.output.is_empty() {
         keys.push(("Tab", Msg::KeyBarOutput));
+    }
+
+    keys
+}
+
+/// The order hints are given up in when the row is too narrow for all of
+/// them, least useful first.
+///
+/// Ordered by how discoverable each key is elsewhere rather than by how
+/// often it is pressed. `Tab` goes first because the header already names
+/// the pane it switches to; `H` and `/` follow because `?` documents them
+/// and the header points at `?`. `Esc` is last to go: leaving a category
+/// has no other route, and a level with no visible way out reads as a
+/// dead end.
+///
+/// Two pairs are absent and cannot be dropped. `Enter` is the only key
+/// that does anything to the row under the cursor, and `q` is the way out
+/// of the program — a bar that omitted either would be narrower and
+/// useless.
+const SHED_ORDER: [Msg; 4] = [
+    Msg::KeyBarOutput,
+    Msg::KeyBarHistory,
+    Msg::KeyBarFind,
+    Msg::KeyBarBack,
+];
+
+/// Drops hints, least useful first, until the rest fit the row.
+///
+/// The header does the same with its help hint, and for the same reason:
+/// the bar is a `Paragraph` with no wrap, so anything past the edge is
+/// truncated rather than moved — and what sits at the edge is `q quit`.
+/// Silently losing the key that leaves the program is worse on a narrow
+/// terminal than showing four hints instead of six.
+///
+/// Measured from the rendered labels rather than from a constant, because
+/// a translated label is a different width and a budget fixed by English
+/// would overflow in any language with longer words.
+fn fitted(mut keys: Vec<(&'static str, Msg)>, lang: Lang, width: u16) -> Vec<(&'static str, Msg)> {
+    // The spaces each pair is drawn with, counted here so the measurement
+    // matches what reaches the screen.
+    let pair_width =
+        |(key, label): &(&'static str, Msg)| cells(key) + 1 + cells(&lang.render(label)) + 2;
+    let total = |keys: &Vec<(&'static str, Msg)>| keys.iter().map(pair_width).sum::<usize>();
+
+    for sheddable in SHED_ORDER {
+        if total(&keys) <= width as usize {
+            break;
+        }
+
+        keys.retain(|(_, label)| *label != sheddable);
     }
 
     keys
@@ -664,7 +722,7 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
             Pane::Tree => tree_keys(app),
             Pane::Output => vec![
                 ("↑↓", Msg::KeyBarScroll),
-                ("G", Msg::KeyBarFollow),
+                ("f", Msg::KeyBarFollow),
                 ("y", Msg::KeyBarCopy),
                 ("Tab", Msg::KeyBarTree),
             ],
@@ -677,6 +735,8 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
     if !matches!(app.mode(), Mode::Running | Mode::Verifying) {
         keys.push(("q", Msg::KeyBarQuit));
     }
+
+    let keys = fitted(keys, app.lang, area.width);
 
     let mut spans = Vec::with_capacity(keys.len() * 3);
     for (key, label) in keys {
@@ -989,4 +1049,135 @@ fn too_small(frame: &mut Frame, lang: Lang) {
             .wrap(Wrap { trim: true }),
         frame.area(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::distro::Family;
+    use crate::tui::fixtures::{enter_first_category, test_app};
+
+    /// The keys the bar offers from the tree, as an operator reads them.
+    fn tree_glyphs(app: &App) -> Vec<&'static str> {
+        tree_keys(app).into_iter().map(|(key, _)| key).collect()
+    }
+
+    #[test]
+    fn the_tree_offers_every_key_that_works_from_it() {
+        // `H` was reachable for a release without being named here, and the
+        // bar is where an operator looks to find out what a state accepts —
+        // so a key the dispatcher answers globally and the bar omits is
+        // invisible unless somebody opens the help overlay to look for it.
+        // Both global keys are asserted, not just the one that was missing:
+        // the fault was a list nothing compared against the dispatcher.
+        let app = test_app(Family::Debian);
+        let glyphs = tree_glyphs(&app);
+
+        assert!(glyphs.contains(&"/"), "got {glyphs:?}");
+        assert!(glyphs.contains(&"h"), "got {glyphs:?}");
+    }
+
+    #[test]
+    fn the_history_is_offered_before_anything_is_recorded() {
+        // Unlike `Esc` and `Tab`, this key is not conditional on leading
+        // somewhere. A fresh host has an empty index, and that is the state
+        // in which somebody most needs to be told the view exists — hiding
+        // it until a task has run makes "has this tool touched anything"
+        // unanswerable from the interface. `test_app` has run nothing, so
+        // this is exactly that host.
+        let app = test_app(Family::Debian);
+
+        assert!(tree_glyphs(&app).contains(&"h"), "on an empty host");
+    }
+
+    #[test]
+    fn the_fullest_bar_fits_the_narrowest_terminal() {
+        // Adding a pair costs columns, and the bar is a `Paragraph` with no
+        // wrap: too many and ratatui truncates at the edge, silently dropping
+        // whichever hint sits last. `q quit` is last, so the key that leaves
+        // the program is the one that would vanish. Measured in cells rather
+        // than bytes — `↑↓` is two of each and would agree by accident.
+        let mut app = test_app(Family::Debian);
+        enter_first_category(&mut app);
+        app.output.push(crate::exec::OutputLine {
+            stream: crate::exec::Stream::Stdout,
+            text: "a line, so Tab is offered".to_owned(),
+        });
+
+        let mut keys = tree_keys(&app);
+        keys.push(("q", Msg::KeyBarQuit));
+
+        // Every width the interface agrees to draw at, not just the
+        // narrowest: shedding that fits at 60 and overflows at 61 would be
+        // a bar broken everywhere except where it was tested.
+        for width in layout::MIN_WIDTH..=200 {
+            let drawn: usize = fitted(keys.clone(), Lang::En, width)
+                .iter()
+                .map(|(key, label)| cells(key) + 1 + cells(&Lang::En.render(label)) + 2)
+                .sum();
+
+            assert!(
+                drawn <= width as usize,
+                "the bar draws {drawn} columns into {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_keys_that_cannot_be_given_up_survive_the_narrowest_row() {
+        // `q` leaves the program and `Enter` acts on the row under the
+        // cursor. Shedding is ordered so neither is reachable, and a future
+        // hint added to SHED_ORDER by mistake should fail here rather than
+        // strand somebody on a narrow terminal with no visible way out.
+        let mut app = test_app(Family::Debian);
+        enter_first_category(&mut app);
+        app.output.push(crate::exec::OutputLine {
+            stream: crate::exec::Stream::Stdout,
+            text: "a line, so Tab is offered".to_owned(),
+        });
+
+        let mut keys = tree_keys(&app);
+        keys.push(("q", Msg::KeyBarQuit));
+
+        let kept = fitted(keys, Lang::En, layout::MIN_WIDTH);
+        let glyphs: Vec<&str> = kept.iter().map(|(key, _)| *key).collect();
+
+        assert!(glyphs.contains(&"q"), "got {glyphs:?}");
+        assert!(glyphs.contains(&"Enter"), "got {glyphs:?}");
+        assert!(glyphs.contains(&"↑↓"), "got {glyphs:?}");
+    }
+
+    #[test]
+    fn a_wide_terminal_keeps_every_hint() {
+        // Shedding is a response to a narrow row, not a permanent trim: at a
+        // width that fits everything, nothing may be dropped. Without this,
+        // a shed order that discarded unconditionally would still pass the
+        // two tests above.
+        let mut app = test_app(Family::Debian);
+        enter_first_category(&mut app);
+        app.output.push(crate::exec::OutputLine {
+            stream: crate::exec::Stream::Stdout,
+            text: "a line, so Tab is offered".to_owned(),
+        });
+
+        let mut keys = tree_keys(&app);
+        keys.push(("q", Msg::KeyBarQuit));
+        let offered = keys.len();
+
+        assert_eq!(fitted(keys, Lang::En, 200).len(), offered);
+    }
+
+    #[test]
+    fn the_bar_never_names_a_retired_movement_key() {
+        // `h` was one of four ways to leave a category until the vim movement
+        // keys were retired, which is what freed it for the history. The bar
+        // is what tells an operator which keys a state accepts, so naming one
+        // the dispatcher no longer answers is worse than naming none: it
+        // sends somebody to press a key that does nothing.
+        let glyphs = tree_glyphs(&test_app(Family::Debian));
+
+        for retired in ["j", "k", "g", "G"] {
+            assert!(!glyphs.contains(&retired), "{retired} in {glyphs:?}");
+        }
+    }
 }

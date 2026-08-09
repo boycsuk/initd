@@ -535,6 +535,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarRun => "run".to_owned(),
         Msg::KeyBarMove => "move".to_owned(),
         Msg::KeyBarFind => "find".to_owned(),
+        Msg::KeyBarHistory => "history".to_owned(),
         Msg::KeyBarBack => "back".to_owned(),
         Msg::KeyBarOutput => "output".to_owned(),
         Msg::KeyBarStop => "stop".to_owned(),

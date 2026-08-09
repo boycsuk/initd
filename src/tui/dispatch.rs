@@ -121,12 +121,16 @@ impl App {
                 self.search = Some(Search::new(self.cursor.tree()));
                 return true;
             }
-            // `H` rather than `h`, which leaves a category — the two would be
-            // one keystroke apart on a key that rewrites configuration files.
+            // `h` is free now that the vim movement keys are gone, and the
+            // objection to it went with them: it was the fourth way to leave
+            // a category, pressed without looking by anyone navigating with
+            // `hjkl`, so a slipped `Shift` would have opened a list that
+            // restores configuration files. Nobody presses it by reflex now.
+            //
             // Read from the host here rather than kept in step with the file:
             // this process is the only writer, so a copy taken on opening is
             // current for as long as the view is up.
-            KeyCode::Char('H') => {
+            KeyCode::Char('h') => {
                 self.history = Some(History::new(crate::backend::backup_index::read_all(
                     self.executor.as_ref(),
                     self.backend.files(),
@@ -152,13 +156,13 @@ impl App {
     /// `Enter` is not here: it runs a task, which needs the terminal.
     fn on_tree_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => {
                 self.leave_category();
             }
-            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
-            KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
-            KeyCode::Char('g') => self.select_first(),
-            KeyCode::Char('G') => self.select_last(),
+            KeyCode::Down => self.select_next(),
+            KeyCode::Up => self.select_previous(),
+            KeyCode::Home => self.select_first(),
+            KeyCode::End => self.select_last(),
             _ => return false,
         }
 
@@ -175,14 +179,15 @@ impl App {
     /// more binding to remember for no decision it helped make.
     fn on_output_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
-            KeyCode::Up | KeyCode::Char('k') => self.output.scroll_up(1),
+            KeyCode::Down => self.output.scroll_down(1),
+            KeyCode::Up => self.output.scroll_up(1),
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
-            KeyCode::Char('g') => self.output.scroll_up(usize::MAX),
-            // `G` and `f` both re-attach to the tail: one is the counterpart
-            // of scrolling away, the other names what it does.
-            KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
+            KeyCode::Home => self.output.scroll_up(usize::MAX),
+            // `f` names what it does, which is what kept it when `G` went:
+            // re-attaching to the tail has no arrow of its own, so dropping
+            // both would leave scrolling away from the tail one-way.
+            KeyCode::End | KeyCode::Char('f') => self.output.scroll_to_tail(),
             KeyCode::Char('y') => self.copy_output(),
             _ => return false,
         }
@@ -231,11 +236,11 @@ impl App {
             KeyCode::Char('c') if control => self.cancel_running(),
             KeyCode::Tab => self.focus = self.focus.other(),
             KeyCode::Char('?') => self.help = Some(0),
-            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
-            KeyCode::Up | KeyCode::Char('k') => self.output.scroll_up(1),
+            KeyCode::Down => self.output.scroll_down(1),
+            KeyCode::Up => self.output.scroll_up(1),
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
-            KeyCode::Char('G' | 'f') => self.output.scroll_to_tail(),
+            KeyCode::End | KeyCode::Char('f') => self.output.scroll_to_tail(),
             // Quitting mid-task is how a server ends up half-configured, so it
             // is refused with the way to actually stop.
             KeyCode::Char('q') => self.status.flash(
@@ -286,27 +291,29 @@ impl App {
         let limit = help::max_scroll(Rect::new(0, 0, 80, 24), self.lang);
 
         self.help = match key.code {
-            KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_add(1).min(limit)),
-            KeyCode::Up | KeyCode::Char('k') => Some(scroll.saturating_sub(1)),
+            KeyCode::Down => Some(scroll.saturating_add(1).min(limit)),
+            KeyCode::Up => Some(scroll.saturating_sub(1)),
             KeyCode::PageDown => Some(scroll.saturating_add(HELP_PAGE).min(limit)),
             KeyCode::PageUp => Some(scroll.saturating_sub(HELP_PAGE)),
-            KeyCode::Home | KeyCode::Char('g') => Some(0),
-            KeyCode::End | KeyCode::Char('G') => Some(limit),
+            KeyCode::Home => Some(0),
+            KeyCode::End => Some(limit),
             _ => None,
         };
     }
     /// Handles a key press while a change is applied but not yet kept.
     ///
-    /// `K` and `R` are uppercase deliberately: lowercase `k` is "move up"
-    /// everywhere else in this interface, and this is the one place where a
-    /// mistyped navigation key would do something unrecoverable. Scrolling
-    /// stays available, because reading the log of what just happened is
-    /// exactly what the administrator needs in order to decide.
+    /// `K` and `R` are uppercase deliberately. They were capitals because `k`
+    /// meant "move up" everywhere else, and they stay capitals now that it
+    /// means nothing: this is the one window where a key pressed by accident
+    /// does something unrecoverable, so it should cost a deliberate `Shift`
+    /// rather than a letter that could be a typo. Scrolling stays available,
+    /// because reading the log of what just happened is exactly what the
+    /// administrator needs in order to decide.
     fn on_verify_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('K') => self.keep_change(),
             KeyCode::Char('R') => self.revert_change(RevertReason::Requested),
-            KeyCode::Down | KeyCode::Char('j') => self.output.scroll_down(1),
+            KeyCode::Down => self.output.scroll_down(1),
             KeyCode::Up => self.output.scroll_up(1),
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
@@ -348,10 +355,9 @@ impl App {
     }
     /// Handles a key while the recorded changes are being reviewed.
     ///
-    /// Movement keys mirror the tree's, including the `j`/`k` pair: an operator
-    /// who navigates the tree that way does not stop when a different list
-    /// opens. `Esc` closes having changed nothing, which is what makes opening
-    /// this safe to do out of curiosity.
+    /// Movement keys mirror the tree's: an operator does not change how they
+    /// move when a different list opens. `Esc` closes having changed nothing,
+    /// which is what makes opening this safe to do out of curiosity.
     fn on_history_key(&mut self, key: KeyEvent) {
         let Some(history) = self.history.as_mut() else {
             return;
@@ -362,10 +368,10 @@ impl App {
                 self.history = None;
                 self.status.set(State::Ready, "");
             }
-            KeyCode::Down | KeyCode::Char('j') => history.select_next(),
-            KeyCode::Up | KeyCode::Char('k') => history.select_previous(),
-            KeyCode::Char('g') => history.select_first(),
-            KeyCode::Char('G') => history.select_last(),
+            KeyCode::Down => history.select_next(),
+            KeyCode::Up => history.select_previous(),
+            KeyCode::Home => history.select_first(),
+            KeyCode::End => history.select_last(),
             KeyCode::Enter => self.confirm_selected_restore(),
             _ => {}
         }
@@ -554,8 +560,8 @@ impl App {
             // Wrapping, like the tree and the search results: a list that
             // stops at its ends makes the operator reverse to reach what is
             // one press the other way.
-            KeyCode::Down | KeyCode::Char('j') => self.options_at = Some((at + 1) % count),
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Down => self.options_at = Some((at + 1) % count),
+            KeyCode::Up => {
                 self.options_at = Some((at + count - 1) % count);
             }
             KeyCode::Home => self.options_at = Some(0),

@@ -45,7 +45,7 @@ const HEIGHT: u16 = 22;
 /// `const` because every message it names is payload-free — a variant carrying
 /// a `String` could not appear in one.
 ///
-/// The key glyphs stay literals. `Tab` and `↑ k` name keys on a keyboard
+/// The key glyphs stay literals. `Tab` and `PageUp` name keys on a keyboard
 /// rather than words in a language, and translating them would describe a
 /// keyboard the operator does not have.
 struct Section {
@@ -70,13 +70,13 @@ const SECTIONS: &[Section] = &[
     Section {
         title: Msg::HelpSectionTree,
         keys: &[
-            ("↑ k", Msg::HelpPreviousRow),
-            ("↓ j", Msg::HelpNextRow),
-            ("g G", Msg::HelpFirstLastRow),
+            ("↑", Msg::HelpPreviousRow),
+            ("↓", Msg::HelpNextRow),
+            ("Home End", Msg::HelpFirstLastRow),
             ("Enter", Msg::HelpOpenOrRun),
             ("/", Msg::HelpFind),
-            ("H", Msg::HelpHistory),
-            ("Esc ← h", Msg::HelpBack),
+            ("h", Msg::HelpHistory),
+            ("Esc ←", Msg::HelpBack),
         ],
     },
     Section {
@@ -104,10 +104,10 @@ const SECTIONS: &[Section] = &[
     Section {
         title: Msg::HelpSectionOutput,
         keys: &[
-            ("↑ k / ↓ j", Msg::HelpScrollLine),
+            ("↑ / ↓", Msg::HelpScrollLine),
             ("PageUp/Down", Msg::HelpScrollPage),
-            ("g", Msg::HelpOldestLine),
-            ("G f", Msg::HelpNewestLine),
+            ("Home", Msg::HelpOldestLine),
+            ("End f", Msg::HelpNewestLine),
             ("y", Msg::HelpCopy),
         ],
     },

@@ -598,6 +598,12 @@ pub enum Msg {
     KeyBarRun,
     KeyBarMove,
     KeyBarFind,
+    /// What `H` opens from the tree.
+    ///
+    /// A noun where its neighbours are verbs, because the key opens a view
+    /// rather than acting: "restore" is what `Enter` does once inside, and
+    /// promising it here would name an action this key does not perform.
+    KeyBarHistory,
     KeyBarBack,
     KeyBarOutput,
     KeyBarStop,
