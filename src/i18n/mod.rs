@@ -781,6 +781,18 @@ pub enum Msg {
     },
     /// Purging was asked for on a family that cannot do it.
     TaskPurgeUnavailable,
+    /// A depth was asked for on a host where the capability is not a package.
+    ///
+    /// Distinct from [`TaskPurgeUnavailable`](Self::TaskPurgeUnavailable),
+    /// which is about a package manager that cannot purge. Here there is no
+    /// package at all: the undo deletes the binary this tool installed, and
+    /// neither depth means anything. The interface no longer asks, so this is
+    /// for the CLI, where the argument is still accepted — a script written
+    /// against a host that packages this should not quietly mean something
+    /// else on one that does not.
+    TaskDepthNotApplicable {
+        what: String,
+    },
     /// There was nothing here to remove.
     TaskNotInstalled {
         what: String,

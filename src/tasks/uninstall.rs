@@ -66,6 +66,29 @@ pub fn removal_param() -> Param {
         .with_hint("remove keeps configuration files; purge deletes them")
 }
 
+/// The removal-depth field, where this host has a depth to choose.
+///
+/// Empty everywhere the answer would be ignored, which is the whole point:
+/// `undo` branches on the same two questions in the same order, so a field
+/// drawn here is one the run will honour.
+///
+/// Two families of case, both measured rather than assumed. A capability that
+/// is not a package on this family — Zellij and Caddy on Debian — is undone by
+/// deleting the binary this tool wrote, where `remove` and `purge` name the
+/// same `rm`. And rpm has no purge at all, so RHEL answers `has_purge_for`
+/// false for every capability it does package.
+///
+/// Takes the capability rather than reading it from the task, because
+/// `Task::subject` returns an `Option` and every caller here has a `Some` in
+/// hand already.
+pub fn removal_param_here(backend: &dyn Backend, capability: Capability) -> Vec<Param> {
+    if !backend.has_package_for(capability) || !backend.has_purge_for() {
+        return Vec::new();
+    }
+
+    vec![removal_param()]
+}
+
 /// Undoes an install, whichever way the capability was installed.
 ///
 /// Mirrors the branch the forward task took rather than assuming one: a family
@@ -157,6 +180,20 @@ pub fn undo(
 
     // No package on this family, so the forward task downloaded a binary and
     // this one deletes the copy it wrote — never whatever the shell resolves.
+    //
+    // Said before anything is removed, and only where a depth was actually
+    // asked for. The interface stopped drawing the field here — a choice with
+    // one outcome is not worth making — but the CLI still takes the argument,
+    // and a script that says `removal=purge` on a host that packages this
+    // capability must not quietly mean something weaker on one that does not.
+    if values.get(REMOVAL).unwrap_or(KEEP_CONFIGURATION) == WITH_CONFIGURATION {
+        report(
+            progress,
+            &Msg::TaskDepthNotApplicable {
+                what: program.to_owned(),
+            },
+        );
+    }
 
     if !backend.binaries().is_installed_here(executor, program)? {
         // Present, but somewhere this tool never wrote. Named rather than
@@ -329,6 +366,62 @@ mod tests {
                 mock.recorded_lines()
             );
         }
+    }
+
+    #[test]
+    fn a_depth_that_cannot_apply_is_said_rather_than_dropped() {
+        // Debian packages no Zellij, so the undo deletes a release binary and
+        // neither depth means anything. The interface no longer asks — but the
+        // CLI still takes the argument, and silently doing the same thing on a
+        // host that packages this capability and one that does not is how a
+        // script comes to mean two things. Reported from the complaint that
+        // the log read identically for both answers.
+        let mut said = Vec::new();
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok("")]);
+
+        undo(
+            &mock,
+            for_family(Family::Debian).as_ref(),
+            &asking_for(WITH_CONFIGURATION),
+            &mut |line| said.push(line.text),
+            Capability::Zellij,
+            "zellij",
+        )
+        .expect("the removal must succeed");
+
+        assert!(
+            said.iter().any(|line| line.contains("packages no zellij")),
+            "an ignored depth must be explained: {said:?}"
+        );
+    }
+
+    #[test]
+    fn a_depth_that_applies_is_not_explained_away() {
+        // The other direction, which the assertion above cannot see: a family
+        // that does package the capability must not carry the notice. One that
+        // appeared on every removal would be read as boilerplate by the time
+        // it mattered.
+        let mut said = Vec::new();
+        let mock = MockExecutor::with_replies([
+            Reply::ok("install ok installed"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        undo(
+            &mock,
+            for_family(Family::Debian).as_ref(),
+            &asking_for(WITH_CONFIGURATION),
+            &mut |line| said.push(line.text),
+            Capability::Fail2ban,
+            "fail2ban",
+        )
+        .expect("the removal must succeed");
+
+        assert!(
+            !said.iter().any(|line| line.contains("packages no")),
+            "a real choice must not be explained away: {said:?}"
+        );
     }
 
     #[test]

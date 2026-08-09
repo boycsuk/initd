@@ -574,6 +574,10 @@ impl Task for UninstallWireguard {
         vec![crate::tasks::uninstall::removal_param()]
     }
 
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Wireguard)
+    }
+
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![
             // Every peer holds a public key for a server that is going away.

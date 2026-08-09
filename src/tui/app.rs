@@ -737,12 +737,64 @@ mod tests {
     }
 
     #[test]
+    fn an_uninstall_asks_how_before_it_asks_whether() {
+        // The order is load-bearing where there is anything to ask: the
+        // dialog states what will happen, and it cannot do that before it
+        // knows whether configuration is being deleted. Arch packages Zellij,
+        // so the depth is a real choice there.
+        let mut app = test_app(Family::Arch);
+        app.presence
+            .record("zellij.install", crate::tui::probe::Presence::Present);
+
+        select_task(&mut app, "zellij.uninstall");
+
+        assert_eq!(
+            app.selected_task().map(crate::tasks::Task::id),
+            Some("zellij.uninstall"),
+            "the row must resolve to the uninstall half"
+        );
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.form.is_some(), "the form must open first");
+        assert!(app.confirm.is_none(), "the confirmation must wait for it");
+    }
+
+    #[test]
+    fn a_depth_this_host_cannot_honour_is_not_asked_for() {
+        // Reported from a real session: `zellij.uninstall` on Debian offered
+        // `remove` or `purge` and the log read identically either way. Debian
+        // packages no Zellij, so the undo deletes the release binary this tool
+        // wrote and the two words name the same `rm` — a field with two
+        // options and one outcome, which is the complaint `has_purge_for`
+        // already answered for RHEL and nothing answered for this.
+        let mut app = test_app(Family::Debian);
+        app.presence
+            .record("zellij.install", crate::tui::probe::Presence::Present);
+
+        select_task(&mut app, "zellij.uninstall");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(
+            app.form.is_none(),
+            "a form with nothing worth asking must not open"
+        );
+        assert!(
+            app.confirm.is_some(),
+            "the confirmation must follow directly"
+        );
+    }
+
+    #[test]
     fn a_closed_choice_is_chosen_with_the_arrows() {
         // The point of the whole feature: `remove` and `purge` were two words
         // a field named in a hint and made the operator type. Stepping to the
         // other one must not require knowing it exists — which is what a blank
         // field with a hint underneath was asking for.
-        let mut app = test_app(Family::Debian);
+        //
+        // Arch, because that is where the choice is real: Debian packages no
+        // Zellij and does not draw the field at all.
+        let mut app = test_app(Family::Arch);
         app.presence
             .record("zellij.install", crate::tui::probe::Presence::Present);
         select_task(&mut app, "zellij.uninstall");

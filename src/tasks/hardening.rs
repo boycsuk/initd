@@ -442,6 +442,10 @@ impl Task for UninstallFail2ban {
         vec![crate::tasks::uninstall::removal_param()]
     }
 
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Fail2ban)
+    }
+
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // The machine goes back to admitting unlimited authentication
         // attempts. Worth saying out loud: an operator removing fail2ban to
@@ -507,6 +511,10 @@ impl Task for UninstallCrowdsec {
         vec![crate::tasks::uninstall::removal_param()]
     }
 
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Crowdsec)
+    }
+
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![Consequence::Invalidates {
             task: "crowdsec.install",
@@ -567,6 +575,10 @@ impl Task for DisableUnattendedUpgrades {
 
     fn params(&self) -> Vec<Param> {
         vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::UnattendedUpgrades)
     }
 
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {

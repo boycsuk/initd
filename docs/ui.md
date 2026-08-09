@@ -735,7 +735,18 @@ thing that decides.
 
 A **closed choice** is the other case. `remove`/`purge`, `tcp`/`udp` and
 `keep`/`delete` are not what the host happens to hold but every value the
-validator will accept, so the list is the permitted set. They were typed by
+validator will accept, so the list is the permitted set.
+
+The removal depth is also **not drawn where this host has no depth to choose**.
+It decides whether configuration survives, and it decides that through a
+package manager — so where a capability is not a package on this family (Zellij
+and Caddy on Debian arrive as verified release binaries) the undo deletes a
+file and both words name the same `rm`. RHEL is the same shape for a different
+reason, rpm having no purge at all. A form whose only field is filtered out
+this way opens no form: the confirmation follows the keypress directly. The CLI
+still takes `removal=` on those hosts and reports that it could not be
+honoured, because a script written against a host that packages the capability
+should not quietly mean something weaker on one that does not. They were typed by
 hand until they were not: the field was a blank with a hint underneath naming
 two words, which asked the operator to read the hint and then spell one of them
 correctly on a choice — in the removal's case — that decides whether a

@@ -91,6 +91,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a convenience, so two tests keep them in step with the validators
   that enforce them: one that every offered value passes its validator, one
   that every kind with a closed validator offers a list at all.
+- The removal depth is no longer asked for where the answer would be ignored.
+  It decides whether configuration survives and it decides that through a
+  package manager, so on a family that packages no Zellij or Caddy — Debian
+  installs both as verified release binaries — the undo deletes a file and both
+  answers name the same `rm`. The log read identically either way, which is how
+  this was found. `has_purge_for` already refused to offer the field on RHEL
+  for the same reason; nothing had asked the question one step earlier. A task
+  whose only field is filtered out now opens no form at all. The CLI still
+  accepts `removal=` there and says why it could not be honoured, since a
+  script should not quietly mean something weaker on one host than another.
 - The vim movement keys are gone. `h`, `j`, `k`, `g` and `G` moved the cursor
   in five separate places — the tree, the output, the help overlay, the
   recorded changes and a form's option list — and the arrows, `Home` and `End`

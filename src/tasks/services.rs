@@ -401,6 +401,10 @@ impl Task for UninstallCaddy {
         vec![crate::tasks::uninstall::removal_param()]
     }
 
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Caddy)
+    }
+
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // The headers snippet is a file `caddy.security-headers` wrote into a
         // Caddyfile that is about to stop being read — or, if purged, to stop

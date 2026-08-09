@@ -684,6 +684,18 @@ pub(super) fn render(message: &Msg) -> String {
              kept as <name>.rpmsave. Removing it by hand is the only way."
                 .to_owned()
         }
+        // Names where the configuration is rather than only that the depth was
+        // ignored: an operator who asked to purge wants to know what survived,
+        // and a release-installed program keeps nothing this tool wrote.
+        Msg::TaskDepthNotApplicable { what } => {
+            format!(
+                "This distribution packages no {what}, so it was installed as a \
+                 verified release and removing it deletes that binary. There is \
+                 no package manager here to keep or discard configuration, so \
+                 remove and purge do the same thing; anything under your own \
+                 home directory is untouched either way."
+            )
+        }
         Msg::TaskNotInstalled { what } => format!("{what} is not installed"),
         Msg::TaskInstalledElsewhere { what, at } => {
             format!("{what} is installed at {at}, which initd did not put there — leaving it alone")

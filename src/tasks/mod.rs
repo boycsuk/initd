@@ -187,9 +187,29 @@ pub trait Task {
         Vec::new()
     }
 
-    /// Whether the task collects anything before it runs.
-    fn needs_input(&self) -> bool {
-        !self.params().is_empty()
+    /// The parameters this task collects **on this host**.
+    ///
+    /// Separate from [`params`](Self::params) because the two answer different
+    /// questions. `params` is what the task takes — a fact about the task,
+    /// asked by the CLI, which documents every argument whether or not this
+    /// machine honours it. This is what is worth *asking an operator*, which
+    /// depends on the machine.
+    ///
+    /// The two come apart wherever a value has one possible outcome here. A
+    /// removal depth decides whether configuration survives, and it decides
+    /// that through a package manager: where a capability is not a package on
+    /// this family — Zellij and Caddy on Debian arrive as verified release
+    /// binaries — the undo deletes a file and `remove` and `purge` name the
+    /// same `rm`. RHEL is the same shape for a different reason, rpm having no
+    /// purge at all.
+    ///
+    /// Filtering rather than refusing: a field with two options and one
+    /// outcome invites a decision and then ignores it, which is the complaint
+    /// that produced this method. The CLI still accepts the argument and says
+    /// when it could not be honoured, because a script written against one
+    /// host should not silently mean something else on another.
+    fn params_here(&self, _backend: &dyn Backend) -> Vec<Param> {
+        self.params()
     }
 
     /// What this task invalidates elsewhere, given the values it ran with.

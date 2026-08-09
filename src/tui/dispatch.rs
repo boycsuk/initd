@@ -689,8 +689,15 @@ impl App {
 
         // Values first, then consent, then the work: the confirmation states
         // what will happen, and it cannot do that before it knows the values.
-        if task.needs_input() {
-            let mut form = Form::new(task.title(), task.params());
+        // `params_here` rather than `params`: a field whose answer this host
+        // would ignore is not worth asking for. This replaced a `needs_input`
+        // that asked `params` — a task whose only field is filtered out here
+        // needs no form at all, and an empty one would put a dialog with
+        // nothing in it between the operator and the confirmation.
+        let asked = task.params_here(self.backend.as_ref());
+
+        if !asked.is_empty() {
+            let mut form = Form::new(task.title(), asked);
             self.offer_what_the_host_knows(&mut form);
             self.form = Some(form);
             return None;

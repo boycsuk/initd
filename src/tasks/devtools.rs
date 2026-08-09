@@ -619,6 +619,10 @@ impl Task for UninstallFish {
         vec![crate::tasks::uninstall::removal_param()]
     }
 
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Fish)
+    }
+
     fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // An account whose login shell is about to stop existing cannot log
         // in. The mirror of what installing says, and the more urgent of the
@@ -682,6 +686,10 @@ impl Task for UninstallZellij {
         vec![crate::tasks::uninstall::removal_param()]
     }
 
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Zellij)
+    }
+
     fn run(
         &self,
         executor: &dyn Executor,
@@ -734,6 +742,10 @@ impl Task for UninstallMise {
         vec![crate::tasks::uninstall::removal_param()]
     }
 
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Mise)
+    }
+
     fn run(
         &self,
         executor: &dyn Executor,
@@ -784,6 +796,10 @@ impl Task for UninstallRust {
 
     fn params(&self) -> Vec<Param> {
         vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Rust)
     }
 
     fn run(
