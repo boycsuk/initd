@@ -436,7 +436,13 @@ for_each_image! {
 #[test]
 fn every_image_in_the_matrix_is_expanded_by_the_macro() {
     // Kept in step by hand with the `@image` lines in `for_each_image!`.
-    const EXPANDED: &[&str] = &["debian", "arch", "alpine", "rhel"];
+    //
+    // `suse` appears twice, and that is the assertion rather than a slip:
+    // Tumbleweed and Leap are two images of one family because they resolve
+    // Zellij differently. Comparing families as a *sequence* is what keeps that
+    // honest — deduplicating here would let one of the two silently vanish from
+    // the matrix while this still passed.
+    const EXPANDED: &[&str] = &["debian", "arch", "alpine", "rhel", "suse", "suse"];
 
     let matrix: Vec<&str> = common::IMAGES.iter().map(|image| image.family).collect();
 

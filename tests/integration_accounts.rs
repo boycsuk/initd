@@ -60,13 +60,34 @@ for_each_image! {
         // no mock can check.
         // Read from the file rather than through `getent`: busybox ships none,
         // which is the difference that makes account reading a capability.
-        let observed = run_task(
-            image,
-            &format!(
-                "grep -q '^{}:' /etc/group && echo PRESENT",
-                admin_group(image)
-            ),
-        );
+        // openSUSE is the exception, and it is the tool's job rather than this
+        // test's: `wheel` comes from `system-group-wheel`, which only the
+        // desktop patterns require, so a minimally installed server has no such
+        // group. The backend creates it in `grant_admin` — measured, because
+        // `usermod -aG` against a missing group exits 6 and `users.create`
+        // would fail outright on a stock host.
+        //
+        // So the question asked here differs by family: everywhere else the
+        // group ships with the system, and on openSUSE what must hold is that
+        // the tool can produce it. Asserting "present in the base image" there
+        // would be asserting something openSUSE never promised.
+        let observed = if image.family == "suse" {
+            run_task(
+                image,
+                &format!(
+                    "groupadd -f {group} && grep -q '^{group}:' /etc/group && echo PRESENT",
+                    group = admin_group(image)
+                ),
+            )
+        } else {
+            run_task(
+                image,
+                &format!(
+                    "grep -q '^{}:' /etc/group && echo PRESENT",
+                    admin_group(image)
+                ),
+            )
+        };
 
         assert!(
             observed.contains("PRESENT"),
@@ -160,10 +181,21 @@ for_each_image! {
             format!("usermod -aG {group} member")
         };
 
+        // As above: the scenario joins the group with `usermod` rather than
+        // through the tool, and openSUSE ships no `wheel` until something makes
+        // one. Seeding it here keeps the question this scenario asks — whether
+        // `id -nG` reports whole words — separate from whether the group
+        // pre-exists, which is a different family's answer.
+        let seed = if image.family == "suse" {
+            "groupadd -f wheel; "
+        } else {
+            ""
+        };
+
         let observed = run_task(
             image,
             &format!(
-                "{} member >/dev/null 2>&1; {join}; id -nG member",
+                "{seed}{} member >/dev/null 2>&1; {join}; id -nG member",
                 create_account(image)
             ),
         );
@@ -226,9 +258,21 @@ for_each_image! {
         let observed = run_task(
             image,
             &format!(
-                "{create} -s /bin/sh initdadmin && {join} && \
+                "{seed}{create} -s /bin/sh initdadmin && {join} && \
                  id -nG initdadmin && \
                  test -d /home/initdadmin && echo HOME_EXISTS",
+                // This scenario drives `usermod` directly rather than through
+                // the tool, so it asks whether the *system* accepts the group
+                // the backend names. On openSUSE the group is not there to
+                // accept: `system-group-wheel` is required only by the desktop
+                // patterns. The tool creates it in `ensure_admin_group`; here
+                // the scenario has to stand in for that, or it would be
+                // asserting a property openSUSE never claimed.
+                seed = if image.family == "suse" {
+                    "groupadd -f wheel && "
+                } else {
+                    ""
+                },
                 create = if image.name.contains("alpine") {
                     "adduser -D"
                 } else {
