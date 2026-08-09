@@ -79,6 +79,21 @@ TUI or CLI:
   run on my system so that I know what is possible before changing anything.
   - Acceptance: tasks not supported on the running distribution are still
     listed, marked, and never silently hidden.
+- As an **administrator**, I can see whether something is already installed
+  before I decide to act, so that I am not offered work the machine has already
+  done.
+  - Acceptance: a row offering to install something the host already has
+    instead offers to remove it, and the reverse. One row, one verb, decided by
+    the machine rather than by me.
+  - Acceptance: the answer is measured in the background rather than making me
+    wait for the interface to open, and a row that has not been settled yet
+    says so instead of silently showing a guess.
+  - Acceptance: the answer is taken again after a task finishes, including one
+    that failed — a task that installed a package and then could not enable the
+    unit leaves a state nobody knows.
+  - Platform exception: TUI only. The CLI measures nothing and lists both the
+    install and the uninstall, since it is a catalogue of what can be run rather
+    than a report on this host.
 - As an **administrator**, I can browse the tasks grouped by area rather than
   as one flat list, so that I can find what I need as the tool grows.
   - Acceptance: tasks are organised into categories that may themselves contain
@@ -146,6 +161,27 @@ TUI or CLI:
     account list could not be read.
   - Acceptance: the accounts this host already has are **not** offered here,
     since every one of them is a value this task refuses.
+- As an **administrator**, I can delete an account, so that someone who has
+  left keeps no way in.
+  - Acceptance: its home directory is kept unless I ask for it to go. Both
+    answers are defensible — a home holding dotfiles is residue, one holding a
+    year of someone's work is not — which is why neither is safe as a default
+    nobody stated.
+  - Acceptance: when I do ask for it to go, the confirmation names the
+    directory **and how much is in it** before anything happens. "Also delete
+    the home directory?" is a question answered by habit; "so will
+    /home/deploy — 2.4 GiB of files this tool did not create and cannot put
+    back" is one that gets read.
+  - Acceptance: a directory whose size could not be read says so rather than
+    reporting zero. Unreadable and empty are different facts, and "0 B"
+    understates the stake by exactly the amount that matters.
+  - Acceptance: it warns that keys authorised for that account, and any
+    allow-list naming it, now refer to something that does not exist — a list
+    naming a deleted account admits nobody under that name while going on
+    looking correct.
+  - Platform exception: TUI only. The interactive confirmation is the only
+    place the path and its size are stated before it happens, and with the home
+    directory deleted there is nothing to put back afterwards.
 - As an **administrator**, I can change an account's login shell, so that a
   user gets the shell they prefer.
   - Acceptance: a shell absent from `/etc/shells` is refused before anything is
@@ -199,6 +235,16 @@ TUI or CLI:
   - Platform exception: Debian only. Arch and Alpine are rolling releases with
     no equivalent, so the task is shown unsupported there rather than doing
     something different under the same name.
+- As an **administrator**, I can remove a banner or stop applying updates
+  automatically, so that I can swap one protection for another or take the
+  machine back under manual control.
+  - Acceptance: removing a banner says plainly that nothing now rate-limits
+    repeated authentication failures — the window between removing one and
+    installing the other is a window where neither watches.
+  - Acceptance: stopping automatic updates says that they now need applying by
+    hand. It is the one removal here with no visible effect: nothing stops
+    working, updates simply stop arriving, and a host left this way looks
+    healthy for as long as it takes to matter.
 
 ### Developer environment
 
@@ -228,6 +274,19 @@ TUI or CLI:
     so suggesting it would be proposing the refusal.
   - Acceptance: the archive is verified before it is extracted.
   - Acceptance: a host that already has the binary downloads nothing.
+- As an **administrator**, I can remove a tool I installed, so that a box I use
+  for one thing does not accumulate the tools I tried for another.
+  - Acceptance: I choose whether its configuration goes with it. The default
+    keeps it, so a reinstall finds what was there.
+  - Acceptance: removing a shell leaves its `/etc/shells` entry, since an
+    account still set to it would otherwise have a login shell no file admits.
+  - Acceptance: removing a tool that came from a release deletes the binary
+    this tool installed and nothing else. A copy of the same program found
+    elsewhere — from `cargo install`, or a vendor script — is named and left
+    where it is.
+  - Acceptance: toolchains and versions the tool managed under an account's own
+    directory stay. This tool installed the manager, not what was built with
+    it.
 
 ### Containers and web server
 
@@ -269,6 +328,16 @@ TUI or CLI:
     overwriting them breaks client-IP detection.
   - Acceptance: a change that does not parse is rolled back, since a broken
     configuration takes every site down at the next reload.
+- As an **administrator**, I can remove the web server or take a container
+  engine off one account, so that a box repurposed for something else is not
+  still serving.
+  - Acceptance: removing the web server stops it and disables it at boot, not
+    one or the other — a service stopped but left enabled is running again
+    after a reboot, having reported itself stopped.
+  - Acceptance: removing the container engine from an account leaves its
+    containers, images and volumes alone: they are that account's data, not
+    this tool's. The engine package also stays, since another account may be
+    running its own from it.
 
 ### WireGuard
 
@@ -294,6 +363,19 @@ TUI or CLI:
   - Acceptance: the peer's private key is shown once and never stored, so the
     tool cannot leak later what it does not keep.
   - Acceptance: adding a peer does not drop the tunnels already established.
+- As an **administrator**, I can remove WireGuard, so that a host that no
+  longer needs a tunnel is not still listening for one.
+  - Acceptance: it carries the same lockout warning as the changes that can end
+    my session, because it can: if I am connected *over* the tunnel, it goes
+    down with the server. It is offered anyway, unlike removing the SSH server,
+    because reaching a host over WireGuard is a choice a console can undo.
+  - Acceptance: `wg0.conf` and the server keys survive unless I ask for them to
+    be purged. They cannot be regenerated to match peers that already hold the
+    public key.
+  - Acceptance: it says that every configured peer now points at a tunnel that
+    is down, and that the firewall rule admitting the port now admits nothing.
+    Neither is visible from here — the peers are elsewhere, and an open port
+    with nothing behind it is exactly the residue a removal should not leave.
 
 ### Firewall and kernel parameters
 
@@ -342,6 +424,13 @@ TUI or CLI:
     script where there are no units at all.
   - Acceptance: running it again on a machine that already has SSH does not
     reinstall the package.
+  - Acceptance: **there is no way to uninstall it from here**, deliberately and
+    permanently, unlike everything else the tool installs. Removing the SSH
+    server over an SSH connection ends the session that asked for it, and the
+    hold-open-and-revert mechanism cannot help: the process that would put it
+    back is being torn down by the disconnection, and putting it back means
+    reinstalling a package over a network connection that no longer exists. A
+    tool driven over SSH does not remove the SSH server.
 - As an **administrator**, I can harden the SSH configuration so that the
   server refuses root logins, password authentication, forwarding and
   tunnelling, limits how long and how often a client may try to authenticate,
