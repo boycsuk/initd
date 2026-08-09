@@ -156,24 +156,14 @@ impl Task for InstallFail2ban {
         // version to keep. Re-running with a different port is the case that
         // records: the state worth going back to is the port that was watched
         // before.
-        if let Some(ref backup) = backup {
-            let kept = crate::backend::backup_index::record_existing(
-                executor,
-                backend.files(),
-                self.id(),
-                backup,
-                backend.service_for(Capability::Fail2ban),
-            );
-
-            report(
-                progress,
-                if kept.is_some() {
-                    &Msg::TaskChangeRecorded
-                } else {
-                    &Msg::TaskChangeNotRecorded
-                },
-            );
-        }
+        crate::backend::backup_index::record_and_report(
+            executor,
+            backend.files(),
+            self.id(),
+            backup.as_ref(),
+            backend.service_for(Capability::Fail2ban),
+            progress,
+        );
 
         backend
             .services()

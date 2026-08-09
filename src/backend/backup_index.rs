@@ -434,6 +434,41 @@ pub fn record_existing(
     Some(record.copy)
 }
 
+/// Records a backup if one was taken, and says so either way.
+///
+/// The three-step sequence every task that edits a configuration file repeats
+/// after its write: skip when the file was newly created and there is nothing
+/// to record, record when it was not, and report which of the two happened.
+///
+/// Reporting is the part worth sharing rather than the recording. An operator
+/// who assumes tomorrow's revert is available and finds none is worse off than
+/// one told today, so the outcome is announced on both paths — and a task that
+/// announced it on only one is how the silence gets introduced.
+///
+/// Answers where the copy ended up, so a caller that names the path to the
+/// operator still can.
+pub fn record_and_report(
+    executor: &dyn Executor,
+    files: &dyn FileEditor,
+    task: &'static str,
+    backup: Option<&crate::domain::files::Backup>,
+    service: &'static str,
+    progress: crate::tasks::Progress<'_>,
+) -> Option<String> {
+    let kept = record_existing(executor, files, task, backup?, service);
+
+    crate::tasks::report(
+        progress,
+        if kept.is_some() {
+            &crate::i18n::Msg::TaskChangeRecorded
+        } else {
+            &crate::i18n::Msg::TaskChangeNotRecorded
+        },
+    );
+
+    kept
+}
+
 /// Deletes the oldest copies of one path, keeping [`RETAINED_PER_PATH`].
 ///
 /// Bounded because the material is sensitive rather than merely bulky: an

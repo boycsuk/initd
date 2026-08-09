@@ -9,8 +9,7 @@ use crate::backend::{Backend, Capability};
 use crate::domain::files::Backup;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
-use crate::i18n::Msg;
-use crate::tasks::{Progress, report};
+use crate::tasks::Progress;
 
 /// Outcome of validating a configuration with `sshd -t`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,21 +298,13 @@ pub fn write_validated(
                 return Ok(None);
             };
 
-            let kept = backup_index::record_existing(
+            let kept = backup_index::record_and_report(
                 executor,
                 backend.files(),
                 task,
-                &backup,
+                Some(&backup),
                 backend.service_for(Capability::Ssh),
-            );
-
-            report(
                 progress,
-                if kept.is_some() {
-                    &Msg::TaskChangeRecorded
-                } else {
-                    &Msg::TaskChangeNotRecorded
-                },
             );
 
             // The returned `Backup` names where the copy *is*, not where it
