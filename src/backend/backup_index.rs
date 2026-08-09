@@ -80,6 +80,16 @@ pub const BACKUP_DIR: &str = "/var/lib/initd/backups";
 /// A mode is a second line of defence; not having the secret is the first.
 pub const TREE_MODE: u32 = 0o700;
 
+/// Mode for the index file itself.
+///
+/// `0600` for the same reason the directories are `0700`, and it has to be set
+/// explicitly: the append is a shell redirect, so the file is created under the
+/// process umask and lands `0644` — measured on `debian:13` and `alpine:3.23`,
+/// which agreed. What that publishes is not a secret but is not nothing: every
+/// path this tool has changed, when, and the digests of their contents before
+/// and after. A map of how the host is configured, readable by any account.
+pub const INDEX_MODE: u32 = 0o600;
+
 /// How many copies of one path are kept.
 ///
 /// Bounded because an unbounded history of a file edited weekly is a directory
@@ -234,7 +244,7 @@ fn field(line: &str, name: &str) -> Option<String> {
 /// reports that no record was kept rather than failing a change that has
 /// already been applied correctly.
 pub fn append(executor: &dyn Executor, files: &dyn FileEditor, record: &BackupRecord) -> bool {
-    if files.create_dir(executor, BACKUP_DIR, TREE_MODE).is_err() {
+    if !make_tree(executor, files) {
         return false;
     }
 
@@ -254,7 +264,37 @@ pub fn append(executor: &dyn Executor, files: &dyn FileEditor, record: &BackupRe
         return false;
     };
 
-    output.success()
+    if !output.success() {
+        return false;
+    }
+
+    // After the append, because the file may not have existed before it, and
+    // `chmod` on a path that is not there fails. Every append re-applies it,
+    // which costs one command and covers an index restored from a backup or
+    // created by an older build that did not set it.
+    //
+    // Measured rather than assumed: without this the shell's redirect creates
+    // the file under the process umask and it lands `0644` on `debian:13` and
+    // `alpine:3.23` alike — world-readable, holding every path this tool has
+    // touched and the digests of their contents.
+    files.set_mode(executor, INDEX_PATH, INDEX_MODE).is_ok()
+}
+
+/// Creates the directories the index lives in, at the mode they must have.
+///
+/// Both of them, and that is the point. `create_dir` on the inner path makes
+/// the parent too — `install -d` does — but it applies the requested mode only
+/// to the leaf, so `/var/lib/initd` came out at the process umask's `0755`
+/// while `/var/lib/initd/backups` underneath it was correctly `0700`. Measured
+/// on `debian:13` and `alpine:3.23`, which agreed.
+///
+/// A world-readable parent does not disclose the copies inside a `0700` child,
+/// but it does disclose that they exist and what they are named — and the names
+/// are the paths this tool has changed, flattened. That is a map of what has
+/// been configured on the host, readable by any account.
+fn make_tree(executor: &dyn Executor, files: &dyn FileEditor) -> bool {
+    files.create_dir(executor, INDEX_DIR, TREE_MODE).is_ok()
+        && files.create_dir(executor, BACKUP_DIR, TREE_MODE).is_ok()
 }
 
 /// Every record this index holds, oldest first.
@@ -677,10 +717,69 @@ mod tests {
         // A read-only /var/lib, or running unprivileged. The task has already
         // applied its change correctly; failing it here would report a
         // successful change as a failure.
-        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::failure(1, "Read-only")]);
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                  // install -d /var/lib/initd
+            Reply::ok(""),                  // install -d …/backups
+            Reply::failure(1, "Read-only"), // the append itself
+        ]);
         let files = crate::backend::unix_files::UnixFiles::new();
 
         assert!(!append(&mock, &files, &a_record()));
+    }
+
+    #[test]
+    fn neither_directory_is_left_readable_by_everyone() {
+        // Both, and that is the point. `install -d` creates the parent on the
+        // way to the leaf but applies the requested mode only to the leaf, so
+        // asking for `…/backups` alone left `/var/lib/initd` at the umask's
+        // 0755 — measured on debian:13 and alpine:3.23, which agreed.
+        //
+        // A readable parent does not disclose the copies inside a 0700 child,
+        // but it discloses their names, and the names are the paths this tool
+        // has changed. That is a map of the host's configuration.
+        let mock = MockExecutor::new();
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        append(&mock, &files, &a_record());
+
+        let created: Vec<String> = mock
+            .recorded_lines()
+            .into_iter()
+            .filter(|line| line.starts_with("install -d"))
+            .collect();
+
+        assert_eq!(
+            created.len(),
+            2,
+            "both directories must be made: {created:?}"
+        );
+
+        for line in &created {
+            assert!(
+                line.contains("700"),
+                "a directory must not be readable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_index_is_not_left_readable_by_everyone_either() {
+        // The append is a shell redirect, so the file is created under the
+        // process umask and lands 0644 unless something says otherwise.
+        // Nothing did, and no mock could have noticed: only a real filesystem
+        // has a umask.
+        let mock = MockExecutor::new();
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        append(&mock, &files, &a_record());
+
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line == "chmod 600 /var/lib/initd/backups.jsonl"),
+            "{:?}",
+            mock.recorded_lines()
+        );
     }
 
     #[test]
