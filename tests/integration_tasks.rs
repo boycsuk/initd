@@ -689,4 +689,85 @@ for_each_image! {
             image.name
         );
     }
+
+    /// A recorded change leaves a copy the next change to the same file cannot
+    /// reach, and an index nobody else can read.
+    fn a_recorded_change_survives_the_next_one_and_stays_private(image) {
+        // `ssh.harden` twice, because one write proves nothing about the
+        // problem the index exists for: the copy `write` takes lands at one
+        // fixed `.initd.bak` per file, so the second change overwrites the
+        // first one's copy. What has to survive is the *older* state.
+        //
+        // The modes are asserted here rather than in a unit test because a
+        // mock has no umask. Both were wrong when this was first written —
+        // /var/lib/initd came out 0755 and the index 0644 — and neither could
+        // have been noticed anywhere but on a filesystem.
+        // `ssh.change-port` twice rather than two different tasks, and the
+        // exit codes are deliberately ignored: reloading sshd fails in a
+        // container with no service manager, and what is being measured here
+        // happens before the reload. A scenario that demanded success would be
+        // testing the container's init rather than the index.
+        let observed = observe_with(
+            image,
+            &format!("{} && ssh-keygen -A", image.install_ssh),
+            "initd run ssh.change-port port=2222 >/dev/null 2>&1; \
+             initd run ssh.change-port port=2223 >/dev/null 2>&1; \
+             echo copies=$(ls /var/lib/initd/backups 2>/dev/null | wc -l); \
+             echo records=$(wc -l < /var/lib/initd/backups.jsonl 2>/dev/null); \
+             echo dirmode=$(stat -c %a /var/lib/initd); \
+             echo filemode=$(stat -c %a /var/lib/initd/backups.jsonl)",
+        );
+
+        // Two changes, two copies. One would mean the second overwrote the
+        // first, which is exactly the failure the timestamped names prevent.
+        assert!(
+            common::has_line(&observed, "copies=2"),
+            "{}: each change must leave its own copy: {observed}",
+            image.name
+        );
+        assert!(
+            common::has_line(&observed, "records=2"),
+            "{}: and its own record: {observed}",
+            image.name
+        );
+        assert!(
+            common::has_line(&observed, "dirmode=700"),
+            "{}: the directory must not be listable by other accounts: {observed}",
+            image.name
+        );
+        assert!(
+            common::has_line(&observed, "filemode=600"),
+            "{}: the index must not be readable by other accounts: {observed}",
+            image.name
+        );
+    }
+
+    /// A record names a copy that really holds the previous contents.
+    fn the_recorded_copy_is_the_state_that_preceded_the_change(image) {
+        // The record's whole promise. A copy that did not hold the previous
+        // version would still satisfy every count above, and would restore
+        // something nobody asked for.
+        let observed = observe_with(
+            image,
+            &format!("{} && ssh-keygen -A", image.install_ssh),
+            "initd run ssh.change-port port=2222 >/dev/null 2>&1; \
+             echo after=$(grep -c '^Port 2222' /etc/ssh/sshd_config); \
+             COPY=$(sed -n 's/.*\"copy\":\"\\([^\"]*\\)\".*/\\1/p' \
+                 /var/lib/initd/backups.jsonl | head -1); \
+             echo incopy=$(grep -c '^Port 2222' \"$COPY\")",
+        );
+
+        // The live file carries the new port; the copy must not, since the
+        // copy is what preceded the change.
+        assert!(
+            common::has_line(&observed, "after=1"),
+            "{}: the task must have written the new port: {observed}",
+            image.name
+        );
+        assert!(
+            common::has_line(&observed, "incopy=0"),
+            "{}: the copy must hold the state from before the change: {observed}",
+            image.name
+        );
+    }
 }

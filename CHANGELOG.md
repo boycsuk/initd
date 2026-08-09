@@ -8,6 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `H` opens the recorded changes and any one of them can be put back. The list
+  names the task that made each change as well as when — ten recorded states of
+  one file are ten indistinguishable timestamps otherwise, and choosing between
+  them is what the list is for. Restoring asks first, at the same tier as every
+  other change that can end the session, since restoring an `sshd_config` is
+  exactly as able to lock somebody out as writing one was.
+- A refusal reports as *not restored* rather than as a failure. The refusals —
+  the file edited since, the copy damaged — leave the machine exactly as it
+  was, which is a different thing from a command that broke, and a host with
+  nothing recorded gets a sentence rather than an empty list.
+- A change to a configuration file can now be put back in a later session, not
+  only in the one that made it. Seven tasks leave a record — the four that edit
+  `sshd_config`, Caddy's headers snippet, fail2ban's jail and fish's entry in
+  `/etc/shells` — copying the previous version under `/var/lib/initd` with a
+  timestamp in its name. The copy `write` already took is moved there rather
+  than a second one being made: `.initd.bak` is one fixed name per file, so the
+  copy the first change leaves is the copy the second change destroys.
+- The record is not state and is built to stay that way. It answers one
+  question — is there a copy of how this file looked before initd touched it,
+  and where — while `PermitRootLogin` is still read from `sshd_config`.
+  Append-only, because a half-written final line is invalid JSON and is
+  discarded, where rewriting in place would need a lock and a lock would need a
+  stale-lock story on a machine that may reboot underneath it. No secret can
+  reach it: the writer takes a typed record with no free-form field.
+- Restoring across sessions refuses where restoring within one need not. A day
+  later the file may have been edited by hand, and putting the copy over that
+  would discard somebody's work while reporting success — so the live file is
+  hashed against what this tool wrote, the copy against what was recorded, and
+  either mismatch stops with both digests named. A file that could not be read
+  is a separate answer from one that changed, because the two call for
+  different actions.
+- Two tasks deliberately record nothing, and say so where somebody would look
+  for the missing call. `wireguard.add-peer` writes the one file holding the
+  server's private key and every peer's preshared key, and a copy of it would
+  be a second copy of all of them. `ssh.authorize-key` is the one file whose
+  restoration *removes* an authorised key — the direction that locks an
+  administrator out rather than rescuing them.
+
+### Fixed
+- The record's own directory and file were world-readable. `install -d` applies
+  the mode it is given to the leaf and leaves the parent at the umask, so
+  `/var/lib/initd` came out `0755` under a correctly-`0700` `backups`; and the
+  append is a shell redirect, so the index itself landed `0644`. No key
+  material was exposed — the one file holding any is deliberately never copied
+  — but the names were a map of every path this tool has changed, readable by
+  any account. Found by running the real command sequence on `debian:13` and
+  `alpine:3.23` rather than against a mock, since a umask is a thing only a
+  filesystem has.
+
 - `root` cannot be deleted, refused in the code rather than warned about in a
   dialog — a confirmation is dismissible, and this is not a decision that
   should be reachable by pressing through one. Locking root stays on offer,

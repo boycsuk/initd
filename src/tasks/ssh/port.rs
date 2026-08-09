@@ -138,7 +138,8 @@ impl Task for ChangePort {
                 to: port.to_string(),
             },
         );
-        let backup = sshd_config::write_validated(executor, backend, &updated, progress)?;
+        let backup =
+            sshd_config::write_validated(executor, backend, self.id(), &updated, progress)?;
 
         // Said before the steps below rather than after them: the file is
         // already written by this point, and each of the three that follow can
@@ -243,9 +244,14 @@ mod tests {
             Reply::ok(""),            // mv
             Reply::ok(""),            // sshd -t
             Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
-            Reply::failure(3, ""),    // ssh.socket is-active
-            Reply::failure(1, ""),    // ssh.socket is-enabled
-            Reply::ok(""),            // reload
+            // Recording the change. Refused rather than answered, which is a
+            // state the tool has to handle anyway: no record is kept and the
+            // task carries on. Scripted explicitly so the replies below still
+            // answer the questions their comments name.
+            Reply::failure(1, ""), // date -u: unavailable
+            Reply::failure(3, ""), // ssh.socket is-active
+            Reply::failure(1, ""), // ssh.socket is-enabled
+            Reply::ok(""),         // reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -278,11 +284,16 @@ mod tests {
             Reply::ok(""),            // mv
             Reply::ok(""),            // sshd -t
             Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
-            Reply::failure(3, ""),    // ssh.socket is-active
-            Reply::failure(1, ""),    // ssh.socket is-enabled
-            Reply::ok(""),            // selinuxenabled
-            Reply::ok(""),            // semanage port -a
-            Reply::ok(""),            // reload
+            // Recording the change. Refused rather than answered, which is a
+            // state the tool has to handle anyway: no record is kept and the
+            // task carries on. Scripted explicitly so the replies below still
+            // answer the questions their comments name.
+            Reply::failure(1, ""), // date -u: unavailable
+            Reply::failure(3, ""), // ssh.socket is-active
+            Reply::failure(1, ""), // ssh.socket is-enabled
+            Reply::ok(""),         // selinuxenabled
+            Reply::ok(""),         // semanage port -a
+            Reply::ok(""),         // reload
         ]);
         let backend = for_family(Family::Rhel);
 
@@ -326,10 +337,15 @@ mod tests {
             Reply::ok(""),            // mv
             Reply::ok(""),            // sshd -t
             Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
-            Reply::failure(3, ""),    // ssh.socket is-active
-            Reply::failure(1, ""),    // ssh.socket is-enabled
-            Reply::failure(1, ""),    // selinuxenabled: disabled
-            Reply::ok(""),            // reload
+            // Recording the change. Refused rather than answered, which is a
+            // state the tool has to handle anyway: no record is kept and the
+            // task carries on. Scripted explicitly so the replies below still
+            // answer the questions their comments name.
+            Reply::failure(1, ""), // date -u: unavailable
+            Reply::failure(3, ""), // ssh.socket is-active
+            Reply::failure(1, ""), // ssh.socket is-enabled
+            Reply::failure(1, ""), // selinuxenabled: disabled
+            Reply::ok(""),         // reload
         ]);
         let backend = for_family(Family::Rhel);
 
@@ -361,9 +377,14 @@ mod tests {
             Reply::ok(""),            // mv
             Reply::ok(""),            // sshd -t
             Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
-            Reply::failure(3, ""),    // ssh.socket is-active
-            Reply::failure(1, ""),    // ssh.socket is-enabled
-            Reply::ok(""),            // reload
+            // Recording the change. Refused rather than answered, which is a
+            // state the tool has to handle anyway: no record is kept and the
+            // task carries on. Scripted explicitly so the replies below still
+            // answer the questions their comments name.
+            Reply::failure(1, ""), // date -u: unavailable
+            Reply::failure(3, ""), // ssh.socket is-active
+            Reply::failure(1, ""), // ssh.socket is-enabled
+            Reply::ok(""),         // reload
         ]);
         let backend = for_family(Family::Debian);
 
@@ -408,7 +429,11 @@ mod tests {
             Reply::ok(""),            // mv
             Reply::ok(""),            // sshd -t
             Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
-            Reply::ok("active\n"),    // ssh.socket is active
+            // Recording the change, refused rather than answered — a state the
+            // tool handles by keeping no record and carrying on. Scripted so
+            // the replies below still answer the questions they name.
+            Reply::failure(1, ""), // date -u: unavailable
+            Reply::ok("active\n"), // ssh.socket is active
             Reply::ok("enabled\n"),
             Reply::ok(""),
         ]);

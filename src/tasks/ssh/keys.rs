@@ -163,6 +163,14 @@ impl Task for AuthorizeKey {
 
         // Authorising a key only ever grants access; undoing it is the
         // dangerous direction, so it is not offered here.
+        //
+        // Deliberately unrecorded for the same reason, and stated here because
+        // this is where somebody will look for the missing call. Every other
+        // file this tool edits leaves a copy under `/var/lib/initd` so the
+        // change can be put back later; restoring this one *removes* an
+        // authorised key, which is the operation that locks an administrator
+        // out rather than the one that rescues them. A history offering it
+        // beside the harmless reverts would make the two look alike.
         Ok(Outcome::Done)
     }
 }

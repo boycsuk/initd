@@ -559,6 +559,52 @@ TUI or CLI:
 
 ### Running tasks safely
 
+- As an **administrator**, I can put a configuration change back in a later
+  session, not only in the one that made it, so that a decision I regret
+  tomorrow is not one I have to undo by hand.
+  - Acceptance: the previous version is copied somewhere the next change to the
+    same file cannot reach. Without that, the second edit destroys the copy the
+    first one left, and the state worth going back to is the older of the two.
+  - Acceptance: the task says whether the change was recorded — either way. A
+    host where the record could not be kept still applies the change correctly,
+    and being told today is better than assuming an undo exists and finding
+    none tomorrow.
+  - Acceptance: restoring refuses if the file has changed since this tool wrote
+    it. A day is long enough for me to have edited it myself, and putting the
+    copy over that would discard my work while reporting success. The refusal
+    names both digests, since "the file changed" alone cannot tell my own edit
+    from a package upgrade replacing a conffile.
+  - Acceptance: restoring also refuses if the copy itself is damaged. A backup
+    truncated by a full disk is a file that exists and is readable, and putting
+    half a configuration over a working one is worse than leaving the change.
+  - Acceptance: a file that could not be read at all is reported as that, not
+    as a file that changed. The two call for different actions, and reporting
+    the second as the first sends me looking for an edit nobody made.
+  - Acceptance: the record holds no secrets and never can — it names paths,
+    times and digests, and there is no field a password could be put in.
+  - Acceptance: the two files whose copies would be dangerous are never
+    recorded: the WireGuard configuration, which holds the server's private key
+    and every peer's preshared key, and `authorized_keys`, whose restoration
+    *removes* an authorised key rather than restoring access.
+- As an **administrator**, I can see what this tool has changed and put any one
+  of it back, so that a configuration I regret is not one I have to reconstruct
+  from memory.
+  - Acceptance: the list names the task that made each change as well as the
+    time. Ten recorded states of one file are ten indistinguishable timestamps
+    without it, and choosing between them is the whole point of the list.
+  - Acceptance: restoring asks first, with the same warning as any other change
+    that can end the session — restoring an `sshd_config` is exactly as able to
+    lock me out as writing one was.
+  - Acceptance: confirming a restore restores; it never starts whatever task
+    the tree's cursor happened to be on.
+  - Acceptance: a refusal — the file edited since, the copy damaged — is
+    reported as *not restored* rather than as a failure, because the machine is
+    left exactly as it was.
+  - Acceptance: a host where nothing has been recorded says so, rather than
+    showing an empty list that looks like a view which failed to load.
+  - Platform exception: TUI only. Choosing among recorded states is a
+    selection, and the CLI has no cursor; `initd` prints the index's path in
+    the task output for anybody who wants to read it with ordinary tools.
 - As an **administrator**, I am asked to confirm before **anything that changes
   the machine**, so that no task installs software, enables a daemon or writes
   a configuration file on a keystroke alone.

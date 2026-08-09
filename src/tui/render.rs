@@ -80,6 +80,7 @@ pub(super) fn all(frame: &mut Frame, app: &mut App) {
     match app.mode_under_help() {
         Mode::Confirming(confirm) => confirm.render(frame, app.lang),
         Mode::Searching(search) => search::render(frame, search, app.lang),
+        Mode::Reviewing(history) => super::history::render(frame, history, app.lang),
         // Asked again below rather than borrowed here: `Form::render`
         // needs `&mut self` for its scroll state, which `mode` cannot
         // lend while it is borrowing the rest of `App`.
@@ -571,6 +572,11 @@ pub(super) fn pill(app: &App) -> State {
         Mode::Help | Mode::Running | Mode::Verifying => app.status.state(),
         Mode::Confirming(_) => State::Confirm,
         Mode::Filling => State::Input,
+        // The history names no pill of its own either, and unlike search it
+        // cannot borrow the tree's: its selected row is a record rather than a
+        // node, so `UNSUPPORTED` — which is about the task under the tree's
+        // cursor — would be answering a question nobody asked.
+        Mode::Reviewing(_) => app.status.state(),
         // Search names no pill of its own: it changes what the keys do,
         // not what the interface is in the middle of.
         Mode::Searching(_) | Mode::Browsing => match app.selected_node() {
@@ -637,6 +643,15 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Searching(_) => vec![
             ("↑↓", Msg::KeyBarMove),
             ("Enter", Msg::KeyBarGo),
+            ("Esc", Msg::KeyBarClose),
+        ],
+        // `Restore` rather than search's `Go`: the same key, and what it does
+        // here is put a file back rather than move a cursor. A bar that said
+        // "go" over a key that rewrites `sshd_config` would be the one label
+        // in the interface an operator could act on and regret.
+        Mode::Reviewing(_) => vec![
+            ("↑↓", Msg::KeyBarMove),
+            ("Enter", Msg::KeyBarRestore),
             ("Esc", Msg::KeyBarClose),
         ],
         // Both draw their own keys inside the dialog, where the operator

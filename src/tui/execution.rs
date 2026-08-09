@@ -17,6 +17,7 @@ use super::probe::Probe;
 use super::status::State;
 use super::verify::Verification;
 use super::worker::{Running, Update};
+use crate::backend::backup_index::BackupRecord;
 use crate::error::{Error, Result};
 use crate::exec::{OutputLine, Stream};
 use crate::i18n::{Msg, RevertReason};
@@ -119,6 +120,46 @@ impl App {
 
         self.finish_run(id, outcome, cancelled);
     }
+    /// Puts a recorded state back, reporting what happened either way.
+    ///
+    /// Done here rather than on the worker thread, unlike every task. A restore
+    /// is one file copy and one reload — bounded, quick, and with no output to
+    /// stream — where the worker exists for work that can take minutes and has
+    /// to stay cancellable. Running it inline also keeps the refusals synchronous,
+    /// which is what lets them be reported as the answer to the keypress that
+    /// asked rather than arriving a tick later.
+    ///
+    /// Every outcome reaches the output pane, including the refusals. They are
+    /// most of what makes this trustworthy: a restore that silently declined
+    /// would be indistinguishable from one that silently succeeded.
+    pub(super) fn restore_recorded(&mut self, record: BackupRecord) {
+        let path = record.path.clone();
+
+        match (Revert::FromIndex { record }).apply(self.executor.as_ref(), self.backend.as_ref()) {
+            Ok(()) => {
+                self.output.push(OutputLine {
+                    stream: Stream::Stdout,
+                    text: self
+                        .lang
+                        .render(&Msg::HistoryRestored { path: path.clone() }),
+                });
+                self.status
+                    .set(State::Done, self.lang.render(&Msg::HistoryRestoredStatus));
+            }
+            Err(ref err) => {
+                // Into the pane as well as the row, the same as a failed task:
+                // the row is one line and a refusal naming two digests does not
+                // fit in it, and the digests are the evidence.
+                self.output.push(OutputLine {
+                    stream: Stream::Stderr,
+                    text: self.lang.render(&err.to_msg()),
+                });
+                self.status
+                    .set(State::Failed, self.lang.render(&Msg::HistoryNotRestored));
+            }
+        }
+    }
+
     /// Takes whatever the probe has measured since the last redraw.
     ///
     /// Separate from [`poll_running`](Self::poll_running) rather than folded

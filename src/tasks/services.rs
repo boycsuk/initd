@@ -558,6 +558,28 @@ impl Task for CaddySecurityHeaders {
             });
         }
 
+        // After the validation, for the same reason `sshd_config` records
+        // after its own: a file that did not parse is restored, so a record of
+        // it would offer to put back what is already there.
+        if let Some(ref backup) = backup {
+            let kept = crate::backend::backup_index::record_existing(
+                executor,
+                files,
+                self.id(),
+                backup,
+                backend.service_for(Capability::Caddy),
+            );
+
+            report(
+                progress,
+                if kept.is_some() {
+                    &Msg::TaskChangeRecorded
+                } else {
+                    &Msg::TaskChangeNotRecorded
+                },
+            );
+        }
+
         report(
             progress,
             &Msg::TaskCaddySnippetWritten {

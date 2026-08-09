@@ -242,6 +242,17 @@ pub enum Msg {
     },
     AdminCannotBeRoot,
     CannotDeleteRoot,
+    FileChangedSinceBackup {
+        path: String,
+        expected: String,
+        found: String,
+    },
+    BackupCorrupt {
+        copy: String,
+    },
+    RevertUnverifiable {
+        path: String,
+    },
     ShellNotListed {
         shell: String,
     },
@@ -326,6 +337,7 @@ pub enum Msg {
     HelpFirstLastRow,
     HelpOpenOrRun,
     HelpFind,
+    HelpHistory,
     HelpBack,
     HelpFilter,
     HelpBetweenResults,
@@ -589,6 +601,7 @@ pub enum Msg {
     KeyBarKeep,
     KeyBarRevert,
     KeyBarGo,
+    KeyBarRestore,
     KeyBarClose,
     KeyBarFollow,
     KeyBarTree,
@@ -773,6 +786,33 @@ pub enum Msg {
     TaskBinaryRemoved {
         path: String,
     },
+    /// Title of the history overlay, carrying how much it holds.
+    HistoryTitle {
+        count: usize,
+    },
+    /// Nothing has been recorded on this host.
+    HistoryEmpty,
+    /// A recorded state was put back.
+    HistoryRestored {
+        path: String,
+    },
+    /// Status row after a successful restore.
+    HistoryRestoredStatus,
+    /// Status row after a restore that was refused.
+    HistoryNotRestored,
+    /// Heading of the confirmation before a recorded state is put back.
+    ConfirmRestoreTitle {
+        path: String,
+    },
+    /// What restoring the selected record would do.
+    ConfirmRestoreBody {
+        task: String,
+        path: String,
+    },
+    /// The previous contents were copied aside and written down.
+    TaskChangeRecorded,
+    /// Nothing could be recorded, so no later revert will be offered.
+    TaskChangeNotRecorded,
     /// A deleted account's home directory was left on disk.
     TaskHomeKept {
         path: String,

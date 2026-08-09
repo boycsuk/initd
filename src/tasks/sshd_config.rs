@@ -4,11 +4,13 @@
 //! validate before reloading, and both must restore their backup if the new
 //! configuration is rejected.
 
+use crate::backend::backup_index;
 use crate::backend::{Backend, Capability};
 use crate::domain::files::Backup;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
-use crate::tasks::Progress;
+use crate::i18n::Msg;
+use crate::tasks::{Progress, report};
 
 /// Outcome of validating a configuration with `sshd -t`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +273,7 @@ fn written_directives(contents: &str) -> Vec<(String, String)> {
 pub fn write_validated(
     executor: &dyn Executor,
     backend: &dyn Backend,
+    task: &'static str,
     contents: &str,
     progress: Progress<'_>,
 ) -> Result<Option<Backup>> {
@@ -284,7 +287,46 @@ pub fn write_validated(
             // write itself is correct.
             warn_if_overridden(executor, contents, progress)?;
 
-            Ok(backup)
+            // Only once the configuration is known good, and only where there
+            // was a previous version to keep: a file this task created has no
+            // earlier state, and a record claiming one would offer to restore
+            // an empty file.
+            //
+            // Said either way rather than only on success. An operator who
+            // assumes tomorrow's revert is available and finds none is worse
+            // off than one told today, and silence produces the first.
+            let Some(mut backup) = backup else {
+                return Ok(None);
+            };
+
+            let kept = backup_index::record_existing(
+                executor,
+                backend.files(),
+                task,
+                &backup,
+                backend.service_for(Capability::Ssh),
+            );
+
+            report(
+                progress,
+                if kept.is_some() {
+                    &Msg::TaskChangeRecorded
+                } else {
+                    &Msg::TaskChangeNotRecorded
+                },
+            );
+
+            // The returned `Backup` names where the copy *is*, not where it
+            // was made. Both hardening tasks and the port task print this path
+            // so that an operator who has locked themselves out knows what to
+            // restore from — and recording moves the file, so returning the
+            // original `.initd.bak` would hand them a path that no longer
+            // exists, in the one message that matters most.
+            if let Some(kept) = kept {
+                backup.copy = kept;
+            }
+
+            Ok(Some(backup))
         }
         Validation::Invalid { details } => {
             // Never leave a broken config in place: put the original back
@@ -537,8 +579,14 @@ mod tests {
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
-        let err = write_validated(&mock, backend.as_ref(), "Prt 22\n", &mut |_| {})
-            .expect_err("an invalid config must fail");
+        let err = write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Prt 22\n",
+            &mut |_| {},
+        )
+        .expect_err("an invalid config must fail");
 
         assert!(matches!(err, Error::InvalidSshdConfig { .. }), "{err:?}");
 
@@ -572,8 +620,14 @@ mod tests {
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
-        let err = write_validated(&mock, backend.as_ref(), "Prt 22\n", &mut |_| {})
-            .expect_err("a rejected config must fail");
+        let err = write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Prt 22\n",
+            &mut |_| {},
+        )
+        .expect_err("a rejected config must fail");
 
         let Error::InvalidSshdConfig { details } = &err else {
             panic!("the rejection must survive the failed restore: {err:?}");
@@ -594,6 +648,180 @@ mod tests {
         assert!(
             details.contains(&format!("{path}.initd.bak")),
             "the backup's path must be named: {details}"
+        );
+    }
+
+    #[test]
+    fn a_change_is_recorded_where_there_was_a_previous_version_to_keep() {
+        // The copy `write` already took is moved under /var/lib/initd with a
+        // timestamp in its name, rather than a second one being made: the fixed
+        // `.initd.bak` is reused by the next write to the same path, so a copy
+        // left there is the copy the second change destroys.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                               // test -e: the file exists
+            Reply::ok(""),                               // cp -p (write's own backup)
+            Reply::ok(""),                               // tee
+            Reply::ok("600"),                            // stat -c %a
+            Reply::ok(""),                               // chmod
+            Reply::ok(""),                               // mv into place
+            Reply::ok(""),                               // sshd -t
+            Reply::ok("port 22\n"),                      // sshd -T
+            Reply::ok("20260809T142203Z\n"),             // date -u
+            Reply::ok(""),                               // install -d /var/lib/initd
+            Reply::ok(""),                               // install -d …/backups
+            Reply::failure(1, ""),                       // test -e: the name is free
+            Reply::ok(""),                               // mv the copy under /var/lib
+            Reply::ok(format!("{}  x", "a".repeat(64))), // digest of the copy
+            Reply::ok(format!("{}  y", "b".repeat(64))), // digest of the new file
+            Reply::ok(""),                               // install -d /var/lib/initd
+            Reply::ok(""),                               // install -d …/backups
+            Reply::ok(""),                               // append
+            Reply::ok(""),                               // chmod 600 on the index
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Port 22\n",
+            &mut |_| {},
+        )
+        .expect("the write must succeed");
+
+        let commands = mock.recorded_lines();
+
+        assert!(
+            commands
+                .iter()
+                .any(|line| line.contains("/var/lib/initd/backups/etc-ssh-sshd_config.")),
+            "the copy must be moved somewhere the next write cannot reach: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|line| line.contains("backups.jsonl")),
+            "the record must be appended: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_backup_returned_is_where_the_copy_actually_is() {
+        // The three tasks that call this print the returned path so an operator
+        // who has locked themselves out knows what to restore from. Recording
+        // *moves* the copy, so returning the `.initd.bak` it was made at would
+        // name a file that no longer exists — in the one message that matters
+        // most. Reproduced on alpine:3.23 before it was fixed.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                               // test -e
+            Reply::ok(""),                               // cp -p
+            Reply::ok(""),                               // tee
+            Reply::ok("600"),                            // stat
+            Reply::ok(""),                               // chmod
+            Reply::ok(""),                               // mv into place
+            Reply::ok(""),                               // sshd -t
+            Reply::ok("port 22\n"),                      // sshd -T
+            Reply::ok("20260809T142203Z\n"),             // date -u
+            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // install -d
+            Reply::failure(1, ""),                       // test -e: the name is free
+            Reply::ok(""),                               // mv the copy
+            Reply::ok(format!("{}  x", "a".repeat(64))), // digest of the copy
+            Reply::ok(format!("{}  y", "b".repeat(64))), // digest of the file
+            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // append
+            Reply::ok(""),                               // chmod on the index
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        let backup = write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Port 22\n",
+            &mut |_| {},
+        )
+        .expect("the write must succeed")
+        .expect("a file that existed must yield a backup");
+
+        assert!(
+            backup.copy.starts_with("/var/lib/initd/backups/"),
+            "the path handed to the operator must be where the copy is: {}",
+            backup.copy
+        );
+        assert!(
+            !backup.copy.ends_with(".initd.bak"),
+            "and not where it was made: {}",
+            backup.copy
+        );
+    }
+
+    #[test]
+    fn a_file_that_did_not_exist_records_nothing_to_go_back_to() {
+        // `write` reports no backup for a file it created, and a record
+        // claiming a previous version would offer to restore an empty file.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(1, ""),  // test -e: no such file
+            Reply::ok(""),          // tee
+            Reply::ok("600"),       // stat
+            Reply::ok(""),          // chmod
+            Reply::ok(""),          // mv
+            Reply::ok(""),          // sshd -t
+            Reply::ok("port 22\n"), // sshd -T
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Port 22\n",
+            &mut |_| {},
+        )
+        .expect("the write must succeed");
+
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|line| line.contains("backups.jsonl")),
+            "{:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn a_rejected_configuration_records_nothing() {
+        // The record would name a state the machine deliberately does not
+        // have: the file is rolled back, so offering to restore what preceded
+        // it is offering to restore what is already there.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                                        // test -e
+            Reply::ok(""),                                        // cp -p
+            Reply::ok(""),                                        // tee
+            Reply::ok("600"),                                     // stat
+            Reply::ok(""),                                        // chmod
+            Reply::ok(""),                                        // mv
+            Reply::failure(255, "bad configuration option: Prt"), // sshd -t
+            Reply::ok(""),                                        // restore
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Prt 22\n",
+            &mut |_| {},
+        )
+        .expect_err("an invalid configuration must be refused");
+
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|line| line.contains("backups.jsonl")),
+            "{:?}",
+            mock.recorded_lines()
         );
     }
 
@@ -622,6 +850,7 @@ mod tests {
         write_validated(
             &mock,
             backend.as_ref(),
+            "ssh.harden",
             "PasswordAuthentication no\n",
             &mut |line| {
                 if line.stream == Stream::Stderr {
@@ -663,6 +892,7 @@ mod tests {
         write_validated(
             &mock,
             backend.as_ref(),
+            "ssh.harden",
             "PasswordAuthentication no\n",
             &mut |line| {
                 if line.stream == Stream::Stderr {
@@ -701,8 +931,14 @@ mod tests {
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
-        write_validated(&mock, backend.as_ref(), "Port 22\n", &mut |_| {})
-            .expect("a valid config must commit");
+        write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Port 22\n",
+            &mut |_| {},
+        )
+        .expect("a valid config must commit");
 
         // Asking the backend rather than a local constant keeps the assertion
         // tied to the path the code under test actually resolves.
@@ -728,8 +964,14 @@ mod tests {
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Arch);
 
-        write_validated(&mock, backend.as_ref(), "Port 22\n", &mut |_| {})
-            .expect("an inconclusive validation must not fail the write");
+        write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Port 22\n",
+            &mut |_| {},
+        )
+        .expect("an inconclusive validation must not fail the write");
 
         // Asking the backend rather than a local constant keeps the assertion
         // tied to the path the code under test actually resolves.
