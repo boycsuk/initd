@@ -34,12 +34,18 @@ pub fn category() -> Category {
         vec![
             Node::Category(Category::new(
                 "Containers",
-                vec![Node::Task(Box::new(InstallDockerRootless))],
+                vec![Node::Reversible {
+                    forward: Box::new(InstallDockerRootless),
+                    inverse: Box::new(UninstallDockerRootless),
+                }],
             )),
             Node::Category(Category::new(
                 "Web server",
                 vec![
-                    Node::Task(Box::new(InstallCaddy)),
+                    Node::Reversible {
+                        forward: Box::new(InstallCaddy),
+                        inverse: Box::new(UninstallCaddy),
+                    },
                     Node::Task(Box::new(ValidateCaddy)),
                     Node::Task(Box::new(CaddySecurityHeaders)),
                 ],
@@ -69,6 +75,14 @@ impl Task for InstallDockerRootless {
         "Installs the Docker engine under one account rather than as root, so a \
          container escape lands in an ordinary user rather than on the machine. \
          The account keeps its services running after logout."
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::DockerRootless)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["docker-rootless.install"]
     }
 
     fn params(&self) -> Vec<Param> {
@@ -252,6 +266,14 @@ impl Task for InstallCaddy {
 
     supported_everywhere!();
 
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Caddy)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["caddy.install"]
+    }
+
     fn consequences(&self, backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![
             Consequence::Invalidates {
@@ -341,6 +363,72 @@ impl Task for InstallCaddy {
         );
 
         Ok(Outcome::Done)
+    }
+}
+
+/// Removes the Caddy web server.
+pub struct UninstallCaddy;
+
+impl Task for UninstallCaddy {
+    fn id(&self) -> &'static str {
+        "caddy.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the Caddy web server"
+    }
+
+    fn description(&self) -> &'static str {
+        "Stops Caddy, disables it at boot, and removes it. Site configuration \
+         is kept unless you ask for it to be purged — this tool did not write \
+         it and does not assume you want it gone."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Caddy)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["caddy.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // The headers snippet is a file `caddy.security-headers` wrote into a
+        // Caddyfile that is about to stop being read — or, if purged, to stop
+        // existing. Stated rather than acted on, as every consequence is.
+        vec![Consequence::Invalidates {
+            task: "caddy.security-headers",
+            reason: Reason::RequiresSetting {
+                setting: "a Caddy installation to serve them",
+            },
+            // No command answers this usefully: whether the snippet still
+            // matters depends on whether Caddy comes back, which is a question
+            // about intent rather than about the host.
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Caddy,
+            "caddy",
+        )
     }
 }
 
@@ -510,6 +598,102 @@ fn security_snippet() -> String {
          \t}}\n\
          }}\n\n"
     )
+}
+
+/// Removes the rootless Docker engine from one account.
+///
+/// The one inverse that is not a package removal, mirroring a forward task
+/// that is not a package install: the engine is set up per account by
+/// upstream's own script, so undoing it means running that script's `uninstall`
+/// as the same account. The package is left alone — another account may be
+/// running its own engine from it.
+pub struct UninstallDockerRootless;
+
+impl Task for UninstallDockerRootless {
+    fn id(&self) -> &'static str {
+        "docker-rootless.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        // Kept within the tree pane's width rather than widening the pane for
+        // every row: "…from a user" says the same thing as "…from an account"
+        // in five fewer cells, and the description below has the room to be
+        // precise.
+        "Remove rootless Docker from a user"
+    }
+
+    fn description(&self) -> &'static str {
+        "Stops the account's engine, runs upstream's own uninstall as that \
+         account, and stops it lingering. Containers, images and volumes under \
+         the account's own directory are left: they are its data, not this \
+         tool's. The Docker package stays, since another account may be \
+         running an engine from it."
+    }
+
+    fn support(&self, family: Family) -> Support {
+        InstallDockerRootless.support(family)
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::DockerRootless)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["docker-rootless.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(InstallDockerRootless::USER, "Username", ParamKind::Username)
+                .with_hint("the account whose engine is removed")
+                .suggesting_accounts()
+                .naming_an_existing_account(),
+        ]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let user = values.get(InstallDockerRootless::USER)?.to_owned();
+        let user_services = backend.user_services();
+
+        report(
+            progress,
+            &Msg::TaskDisabling {
+                unit: DOCKER_USER_SERVICE.to_owned(),
+            },
+        );
+
+        user_services.disable_and_stop(executor, &user, DOCKER_USER_SERVICE)?;
+
+        // Upstream's own script, run as the account for the same reason the
+        // install is: it works inside that account's systemd directory, and as
+        // root it would act on root's engine instead.
+        let teardown = Command::new("runuser")
+            .args(["-l", &user, "-c", "dockerd-rootless-setuptool.sh uninstall"])
+            .privileged();
+
+        crate::backend::systemd::run_checked(executor, &teardown)?;
+
+        // Last, mirroring the install's "lingering first". Withdrawn after the
+        // engine is gone rather than before: linger is what keeps a user's
+        // units alive without a session, and revoking it first would race the
+        // teardown that still needs them.
+        user_services.disable_linger(executor, &user)?;
+
+        report(
+            progress,
+            &Msg::TaskRemoving {
+                what: format!("the rootless engine for {user}"),
+            },
+        );
+
+        Ok(Outcome::Done)
+    }
 }
 
 #[cfg(test)]

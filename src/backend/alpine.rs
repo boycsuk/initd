@@ -238,6 +238,27 @@ impl PackageManager for ApkPackages {
 
         Ok(executor.run(&command)?.success())
     }
+
+    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+        // `apk del` removes the package and any dependency it pulled in that
+        // nothing else needs — apk tracks that itself and there is no flag to
+        // decline it, unlike apt's `--auto-remove` or pacman's `-s`. Stated
+        // rather than left implicit, since the other three families are told
+        // here not to cascade and this one cannot be.
+        let command = Command::new("apk").args(["del", package]).privileged();
+
+        super::systemd::run_checked(executor, &command)
+    }
+
+    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+        // `--purge` additionally deletes modified configuration files that
+        // `apk del` preserves, and clears the package's cache entry.
+        let command = Command::new("apk")
+            .args(["del", "--purge", package])
+            .privileged();
+
+        super::systemd::run_checked(executor, &command)
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +276,20 @@ mod tests {
 
         assert_eq!(mock.recorded_lines(), ["apk add --no-cache openssh"]);
         assert!(mock.any_privileged());
+    }
+
+    #[test]
+    fn removing_keeps_the_configuration_and_purging_does_not() {
+        let removed = MockExecutor::with_replies([Reply::ok("")]);
+        ApkPackages.remove(&removed, "fail2ban").expect("removes");
+
+        let purged = MockExecutor::with_replies([Reply::ok("")]);
+        ApkPackages.purge(&purged, "fail2ban").expect("purges");
+
+        assert_eq!(removed.recorded_lines(), ["apk del fail2ban"]);
+        assert_eq!(purged.recorded_lines(), ["apk del --purge fail2ban"]);
+        assert!(removed.any_privileged());
+        assert!(purged.any_privileged());
     }
 
     #[test]

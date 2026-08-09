@@ -241,6 +241,7 @@ pub enum Msg {
         user: String,
     },
     AdminCannotBeRoot,
+    CannotDeleteRoot,
     ShellNotListed {
         shell: String,
     },
@@ -266,6 +267,10 @@ pub enum Msg {
         service: String,
     },
     ConsequenceAccountNotListed {
+        task: String,
+        user: String,
+    },
+    ConsequenceAccountRemoved {
         task: String,
         user: String,
     },
@@ -686,6 +691,30 @@ pub enum Msg {
     ConfirmRootLockout {
         admin: String,
     },
+    /// About to delete an account and the directory it owns.
+    ///
+    /// Carries the measured size because that is what makes the question
+    /// answerable. "Also delete the home directory?" is answered by habit;
+    /// "delete /home/deploy (2.4 GB)" is read.
+    ConfirmDeleteHome {
+        user: String,
+        path: String,
+        size: String,
+    },
+    /// About to delete an account, leaving the directory it owns.
+    ConfirmKeepHome {
+        user: String,
+        path: String,
+    },
+    /// About to delete an account whose home could not be measured.
+    ///
+    /// Distinct from a size of zero. A directory nobody could read and one that
+    /// is genuinely empty are different facts, and "(0 B)" would understate the
+    /// stake by exactly the amount that matters.
+    ConfirmDeleteHomeUnmeasured {
+        user: String,
+        path: String,
+    },
 
     // --- Interface: terminal too small ---
     //
@@ -715,6 +744,42 @@ pub enum Msg {
     /// A package or program was already there.
     TaskAlreadyInstalled {
         what: String,
+    },
+    /// A package or program is being removed, keeping its configuration.
+    TaskRemoving {
+        what: String,
+    },
+    /// A package is being removed along with its configuration.
+    TaskPurging {
+        what: String,
+    },
+    /// There was nothing here to remove.
+    TaskNotInstalled {
+        what: String,
+    },
+    /// The program is present, but not where this tool installs one.
+    ///
+    /// Carries the path because "installed elsewhere" without saying where
+    /// sends the operator looking for something already located.
+    TaskInstalledElsewhere {
+        what: String,
+        at: String,
+    },
+    /// A unit is being stopped and disabled.
+    TaskDisabling {
+        unit: String,
+    },
+    /// A binary this tool installed has been deleted.
+    TaskBinaryRemoved {
+        path: String,
+    },
+    /// A deleted account's home directory was left on disk.
+    TaskHomeKept {
+        path: String,
+    },
+    /// A deleted account's home directory went with it.
+    TaskHomeDeleted {
+        path: String,
     },
     /// A unit is being enabled and started.
     TaskEnabling {

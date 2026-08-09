@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use super::app::App;
 use super::auth::AuthRequest;
+use super::probe::Probe;
 use super::status::State;
 use super::verify::Verification;
 use super::worker::{Running, Update};
@@ -55,6 +56,13 @@ impl App {
         // which the event loop drains each tick. Running it inline would
         // freeze the interface for the duration: no output as it arrives, no
         // way to cancel, and no clock for the verification window.
+        // Dropped rather than left running alongside. The probe is read-only,
+        // so nothing would break — but a package manager holds a lock, and an
+        // answer measured while an install is half done describes neither the
+        // machine before nor the machine after. The refresh when the task
+        // finishes is the one that counts.
+        self.probe = None;
+
         self.running = Some(Running::start(id, self.distro.clone(), values));
     }
     /// Takes whatever the running task has reported since the last redraw.
@@ -111,6 +119,74 @@ impl App {
 
         self.finish_run(id, outcome, cancelled);
     }
+    /// Takes whatever the probe has measured since the last redraw.
+    ///
+    /// Separate from [`poll_running`](Self::poll_running) rather than folded
+    /// into it: the two report different shapes — a task produces output and
+    /// an outcome, a probe produces facts — and a single channel carrying both
+    /// would make every arm of the task drain handle a variant that cannot
+    /// arrive while a task runs.
+    pub(super) fn poll_probe(&mut self) {
+        let Some(probe) = self.probe.as_mut() else {
+            return;
+        };
+
+        for measurement in probe.drain() {
+            self.presence
+                .record(measurement.forward_id, measurement.presence);
+        }
+
+        // Dropped once it has nothing left to say, so `probe.is_some()` means
+        // "a measurement is in flight" rather than "one ran at some point".
+        // The refresh after a task reads that distinction.
+        if probe.is_finished() {
+            self.probe = None;
+        }
+    }
+
+    /// Re-measures whatever a finished task may have changed.
+    ///
+    /// Only what it named. Re-probing every pair would put a second of
+    /// `fork`/`exec` between a task finishing and its row being readable, on
+    /// the machine that just did the work.
+    ///
+    /// Forgetting first is the load-bearing half: until the new answer lands,
+    /// the row falls back to its forward verb rather than showing what was
+    /// measured about a machine that no longer exists.
+    fn refresh_presence_after(&mut self, id: &str) {
+        let Some(task) = tasks::find(id) else {
+            return;
+        };
+
+        let affected = task.affects();
+
+        if affected.is_empty() {
+            return;
+        }
+
+        let mut subjects = Vec::new();
+
+        for forward_id in affected {
+            self.presence.forget(forward_id);
+
+            if let Some(forward) = tasks::find(forward_id)
+                && let Some(capability) = forward.subject()
+            {
+                subjects.push((*forward_id, capability));
+            }
+        }
+
+        if subjects.is_empty() {
+            return;
+        }
+
+        // Replaces whatever was in flight. A probe started before this task ran
+        // is measuring the machine as it was, so its remaining answers are
+        // stale by definition — and the one it is part-way through may be about
+        // the very row this task changed.
+        self.probe = Some(Probe::start(self.distro.clone(), subjects));
+    }
+
     /// Records how a finished task ended.
     ///
     /// Success and failure are pills of their own, so the outcome is legible
@@ -180,6 +256,14 @@ impl App {
                 );
             }
         }
+
+        // Also after the match, and on the failure path deliberately: a task
+        // that failed halfway installed the package and then could not enable
+        // the unit, so what the host holds is exactly what nobody knows any
+        // more. Asking again is the only way to find out, and the alternative
+        // — keeping the answer from before it ran — describes a machine that
+        // may no longer exist.
+        self.refresh_presence_after(id);
 
         // After the match rather than inside its successful arm, because a
         // task that failed held the same password and reported nothing that

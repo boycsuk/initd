@@ -24,10 +24,22 @@ pub fn category() -> Category {
     Category::new(
         "Developer environment",
         vec![
-            Node::Task(Box::new(InstallFish)),
-            Node::Task(Box::new(InstallZellij)),
-            Node::Task(Box::new(InstallMise)),
-            Node::Task(Box::new(InstallRust)),
+            Node::Reversible {
+                forward: Box::new(InstallFish),
+                inverse: Box::new(UninstallFish),
+            },
+            Node::Reversible {
+                forward: Box::new(InstallZellij),
+                inverse: Box::new(UninstallZellij),
+            },
+            Node::Reversible {
+                forward: Box::new(InstallMise),
+                inverse: Box::new(UninstallMise),
+            },
+            Node::Reversible {
+                forward: Box::new(InstallRust),
+                inverse: Box::new(UninstallRust),
+            },
         ],
     )
 }
@@ -47,6 +59,14 @@ impl Task for InstallFish {
     fn description(&self) -> &'static str {
         "Installs fish and registers it in /etc/shells so an account may adopt \
          it. Set it for a user with users.set-shell."
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Fish)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["fish.install"]
     }
 
     fn support(&self, family: Family) -> Support {
@@ -190,6 +210,14 @@ impl Task for InstallZellij {
          downloaded and its checksum verified."
     }
 
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Zellij)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["zellij.install"]
+    }
+
     fn params(&self) -> Vec<Param> {
         vec![
             // Filled with the newest release this build can verify, and
@@ -313,6 +341,14 @@ impl Task for InstallMise {
          does not run in a non-interactive session."
     }
 
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Mise)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["mise.install"]
+    }
+
     fn support(&self, family: Family) -> Support {
         match family {
             Family::Debian | Family::Arch | Family::Rhel => Support::Yes,
@@ -412,6 +448,14 @@ impl Task for InstallRust {
     fn description(&self) -> &'static str {
         "Installs rustup and a stable toolchain for one account. A toolchain \
          belongs to whoever builds with it, not to the machine."
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Rust)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["rust.install"]
     }
 
     fn params(&self) -> Vec<Param> {
@@ -515,6 +559,230 @@ fn register_shell(executor: &dyn Executor, backend: &dyn Backend, path: &str) ->
     files.write(executor, SHELLS, &format!("{existing}{path}\n"))?;
 
     Ok(())
+}
+
+/// Removes the fish shell.
+pub struct UninstallFish;
+
+impl Task for UninstallFish {
+    fn id(&self) -> &'static str {
+        "fish.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the fish shell"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes fish. Its entry in /etc/shells is left in place: an account \
+         still set to it would otherwise have a login shell no file admits, \
+         and the entry alone is harmless."
+    }
+
+    /// The same families the install runs on, for the same measured reasons.
+    ///
+    /// Written out rather than inherited: a task that offered to remove what
+    /// it could never have installed would be a row promising an operation
+    /// with nothing to operate on.
+    fn support(&self, family: Family) -> Support {
+        InstallFish.support(family)
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Fish)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["fish.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // An account whose login shell is about to stop existing cannot log
+        // in. The mirror of what installing says, and the more urgent of the
+        // two: the forward direction leaves an account working.
+        vec![Consequence::Invalidates {
+            task: "users.set-shell",
+            reason: Reason::RequiresSetting {
+                setting: "a login shell that still exists, for any account set to fish",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Fish,
+            "fish",
+        )
+    }
+}
+
+/// Removes the Zellij multiplexer.
+pub struct UninstallZellij;
+
+impl Task for UninstallZellij {
+    fn id(&self) -> &'static str {
+        "zellij.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the Zellij multiplexer"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes Zellij. Where it came from a release rather than a package, \
+         removes the binary this tool installed — and only that one: a copy \
+         found elsewhere on PATH is named and left where it is."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Zellij)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["zellij.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Zellij,
+            "zellij",
+        )
+    }
+}
+
+/// Removes the mise version manager.
+pub struct UninstallMise;
+
+impl Task for UninstallMise {
+    fn id(&self) -> &'static str {
+        "mise.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the mise version manager"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes mise. Toolchains it installed under each account's own \
+         directory stay: they are the operator's files, not this tool's, and \
+         nothing here wrote them."
+    }
+
+    fn support(&self, family: Family) -> Support {
+        InstallMise.support(family)
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Mise)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["mise.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Mise,
+            "mise",
+        )
+    }
+}
+
+/// Removes the Rust toolchain manager.
+pub struct UninstallRust;
+
+impl Task for UninstallRust {
+    fn id(&self) -> &'static str {
+        "rust.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the Rust toolchain manager"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes rustup. Toolchains under an account's own ~/.rustup and \
+         ~/.cargo stay where they are: this tool installed the manager, not \
+         what each account then built with it."
+    }
+
+    fn support(&self, family: Family) -> Support {
+        InstallRust.support(family)
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Rust)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["rust.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Rust,
+            "rustup",
+        )
+    }
 }
 
 #[cfg(test)]

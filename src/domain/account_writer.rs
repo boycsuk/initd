@@ -81,6 +81,10 @@ pub enum LockMethod {
 }
 
 /// Creates and modifies accounts on the administered system.
+#[allow(
+    dead_code,
+    reason = "delete is called by users.delete, which lands in a later commit"
+)]
 pub trait AccountWriter {
     /// Creates an account with a home directory and a login shell.
     fn create(
@@ -110,6 +114,21 @@ pub trait AccountWriter {
     /// it is refused by `chsh` and, on some systems, by services that consult
     /// the list before granting a session.
     fn set_shell(&self, executor: &dyn Executor, user: &str, shell: &str) -> Result<()>;
+
+    /// Deletes an account.
+    ///
+    /// `remove_home` is a parameter rather than a policy because both answers
+    /// are defensible and neither is safe as a default nobody stated: a home
+    /// holding dotfiles is residue, and one holding a year of someone's work is
+    /// not something an interface should decide about. Callers are expected to
+    /// default to keeping it and to name the path *and its size* when offering
+    /// the other answer — "delete /home/deploy (2.4 GB)" is a decision an
+    /// operator can make, "also delete the home directory?" is not.
+    ///
+    /// The one operation here that destroys data this tool never created,
+    /// which is why the parameter exists at all rather than the method simply
+    /// doing the thorough thing.
+    fn delete(&self, executor: &dyn Executor, user: &str, remove_home: bool) -> Result<()>;
 
     /// Bars an account from logging in by any method.
     fn lock(&self, executor: &dyn Executor, user: &str, method: LockMethod) -> Result<()>;

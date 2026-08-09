@@ -17,6 +17,7 @@
 
 use ratatui::widgets::ListState;
 
+use super::probe::InstalledState;
 use crate::tasks::{Node, Task};
 
 /// The position in the tree: which level is shown, and which row is on.
@@ -66,11 +67,14 @@ impl TreeCursor {
     }
 
     /// The task under the cursor, if the cursor is on one.
-    pub fn selected_task(&self) -> Option<&dyn Task> {
-        match self.selected_node()? {
-            Node::Task(task) => Some(task.as_ref()),
-            Node::Category(_) => None,
-        }
+    ///
+    /// Takes what the host was measured to hold, because a reversible row is
+    /// two tasks and which one is under the cursor is a fact about the machine
+    /// rather than about the tree. Resolved through
+    /// [`probe::task_for`](super::probe::task_for) — the same function the
+    /// renderer draws through, so what is pressed is always what was read.
+    pub fn selected_task<'a>(&'a self, state: &InstalledState) -> Option<&'a dyn Task> {
+        super::probe::task_for(self.selected_node()?, state)
     }
 
     /// Which row is selected.
@@ -374,6 +378,6 @@ mod tests {
 
         // The root level holds categories only.
         assert!(cursor.selected_node().is_some());
-        assert!(cursor.selected_task().is_none());
+        assert!(cursor.selected_task(&InstalledState::default()).is_none());
     }
 }

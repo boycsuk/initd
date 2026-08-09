@@ -227,6 +227,15 @@ pub const MARKER_INPUT: &str = "…";
 /// Precedes a task this host cannot run.
 pub const MARKER_UNSUPPORTED: &str = "·";
 
+/// Precedes a reversible row whose verb the host has not settled yet.
+///
+/// Transient — the probe answers within a few hundred milliseconds of startup
+/// — and worth a glyph for that window: the row is showing "Install" because
+/// nothing has been measured, not because anything was found absent, and a row
+/// that may be about to change its verb is one to wait a moment before acting
+/// on.
+pub const MARKER_PROBING: &str = "?";
+
 /// Marks a task that succeeded during this session.
 pub const MARKER_OK: &str = "✓";
 
@@ -312,6 +321,7 @@ mod tests {
             MARKER_DANGER,
             MARKER_INPUT,
             MARKER_UNSUPPORTED,
+            MARKER_PROBING,
             MARKER_OK,
             MARKER_FAIL,
             MARKER_CURSOR,

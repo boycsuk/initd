@@ -247,11 +247,34 @@ Meaning is carried by a glyph, never by colour alone, so a monochrome or
 | `!` | The task can lock me out of the machine |
 | `…` | The task collects parameters before it runs |
 | `·` | The task is not supported on this host |
+| `?` | The row's verb has not been settled yet |
 
 A row carries at most one flag, and they rank in that order: a task that both
 risks a lockout and takes parameters shows `!`, since the warning outranks the
 notice. `!` marks the lockout tier alone, not every task that confirms —
 almost all of them do, and a marker on nearly every row names none of them.
+
+## Rows that change their verb
+
+Some rows hold two opposed operations and show whichever one the host
+justifies: `Install Caddy` where Caddy is absent, `Uninstall Caddy` where it is
+present. One row rather than two, because exactly one of them is meaningful at
+any moment and a tree offering both makes the reader work out which.
+
+What the host holds is measured in the background at startup, and again after a
+task finishes — never while one runs, and never in the path of a keystroke. Until
+the answer arrives the row shows the *install* verb and carries `?`: offering to
+install something already present wastes a keystroke, while offering to remove
+something absent is a row that does nothing and explains nothing. The marker is
+transient, usually gone within a few hundred milliseconds of startup.
+
+A program found somewhere this tool did not install it — a `zellij` from
+`cargo install`, say — leaves the row on its install verb, and the detail pane
+names the path that was found. What this tool did not put there is not its to
+remove.
+
+Both halves are searchable by name, so `/uninstall` finds a row the tree may be
+drawing as `Install`. Search addresses operations; the tree addresses rows.
 
 ## Status
 
@@ -385,6 +408,7 @@ Two rules govern the table:
 | `flag_danger` | Red + bold | The `!` marker |
 | `flag_input` | Yellow | The `…` marker |
 | `flag_unsupported` | White + dim | The `·` marker |
+| `block_subtitle` | White + dim | Category counts, separators, and the `?` marker |
 | `result_ok` | Green | The `✓` glyph, `ok` lines, and a form field's verdict |
 | `result_fail` | Red + bold | The `✗` glyph |
 | `consequence` | Yellow | The `!` marker on a consequence the tool can check |

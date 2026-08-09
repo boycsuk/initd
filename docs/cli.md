@@ -228,6 +228,7 @@ command line, running the subcommand *is* the confirmation.
 |---------|-----------|---------|---------|
 | `users.create` | `run <id> name=value` | no | Creates an account with a home directory and membership of the group granting sudo on this distribution. `password=` is optional: empty or absent leaves the account without one, and a value is applied through `chpasswd` on stdin. |
 | `users.set-shell` | `run <id> name=value` | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
+| `users.delete` | interactive only | yes | Deletes an account. `home=` chooses `keep` (the default, leaving the files on disk owned by a user id nothing claims) or `delete`. Interactive only: the confirmation names the home directory *and its measured size* before anything happens, and with `home=delete` there is nothing to put back afterwards. |
 | `users.lock-root` | interactive only | yes | Expires the root account so no method admits it, including the provider's rescue console. Refuses unless another account exists, can escalate, and can authenticate — by an authorised key or by a usable password. |
 
 ### Remote Access — SSH
@@ -247,6 +248,7 @@ command line, running the subcommand *is* the confirmation.
 |---------|-----------|---------|---------|
 | `wireguard.status` | `run wireguard.status` | no | Reports whether the tunnel is up and how many peers are configured. |
 | `wireguard.install` | `run <id> name=value` | no | Installs WireGuard, generates the server keys and writes `wg0.conf`. Refuses to overwrite an existing configuration. |
+| `wireguard.uninstall` | `run <id> name=value` | yes | Brings `wg0` down, disables it at boot and removes the WireGuard tools. `removal=` chooses `remove` (the default) or `purge`, which decides only what the package manager takes. `wg0.conf` and the server keys are left on disk either way: they cannot be regenerated to match peers that already hold the public key, so removing them is not something a field with two near-identical values should decide. Lockout because an administrator connected *over* the tunnel loses the session applying it. |
 | `wireguard.add-peer` | `run <id> name=value` | no | Generates a peer keypair, records it on the server, and prints the client configuration once. |
 
 ### Network
@@ -264,7 +266,9 @@ command line, running the subcommand *is* the confirmation.
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
 | `docker-rootless.install` | `run <id> name=value` | no | Installs the Docker engine under one account, with lingering enabled. Refuses an account with no subordinate id range. Where the distribution packages no Docker, registers Docker's own repository first, refusing if its signing key does not match the fingerprint this build carries. |
+| `docker-rootless.uninstall` | `run <id> name=value` | no | Stops the named account's engine, runs upstream's own `dockerd-rootless-setuptool.sh uninstall` as that account, and stops it lingering. Containers, images and volumes under the account's directory are left alone, and so is the Docker package — another account may be running its own engine from it. |
 | `caddy.install` | `run caddy.install` | no | Installs Caddy. From the distribution where one packages it, and it is enabled; otherwise from a checksum-verified release, and no service is enabled because there is no unit to enable. Writes no site configuration either way. |
+| `caddy.uninstall` | `run <id> name=value` | no | Stops Caddy, disables it at boot and removes it. `removal=` chooses `remove` (the default, keeping configuration for a reinstall to find) or `purge`. Where the distribution packages no Caddy, deletes the verified release binary this tool installed — and only that one: a copy found elsewhere on `PATH` is named and left alone. |
 | `caddy.validate` | `run caddy.validate` | no | Asks Caddy whether its configuration parses. |
 | `caddy.security-headers` | `run caddy.security-headers` | yes | Defines a snippet setting HSTS, nosniff, frame-deny and a referrer policy. Rolls back if the result does not parse. |
 
@@ -273,17 +277,24 @@ command line, running the subcommand *is* the confirmation.
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
 | `fish.install` | `run fish.install` | no | Installs fish and registers it in `/etc/shells`. |
+| `fish.uninstall` | `run <id> name=value` | no | Removes fish. Its `/etc/shells` entry stays: an account still set to it would otherwise have a login shell no file admits. |
 | `zellij.install` | `run <id> name=value` | no | Installs Zellij. From the distribution where one packages it, otherwise from a checksum-verified release. `version=` defaults to the newest release this build carries a digest for, and only those may be named: a version published upstream after this binary was built has no compiled-in digest and is refused, naming the ones it knows. |
+| `zellij.uninstall` | `run <id> name=value` | no | Removes Zellij. Where it came from a release rather than a package, deletes the binary this tool installed at `/usr/local/bin` — and only that one: a copy found elsewhere on `PATH` is named and left where it is. |
 | `mise.install` | `run mise.install` | no | Installs mise. From the distribution where one packages it, otherwise from a checksum-verified release. |
+| `mise.uninstall` | `run <id> name=value` | no | Removes mise. Toolchains it installed under each account's own directory stay — this tool did not write them. |
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
+| `rust.uninstall` | `run <id> name=value` | no | Removes rustup. An account's own `~/.rustup` and `~/.cargo` stay: this tool installed the manager, not what was built with it. |
 
 ### Hardening
 
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
 | `fail2ban.install` | `run <id> name=value` | no | Watches the authentication log and bans addresses that fail repeatedly. Conflicts with `crowdsec.install`. |
+| `fail2ban.uninstall` | `run <id> name=value` | no | Stops fail2ban, disables it at boot and removes it. Bans it had applied lapse when the daemon stops — they live in its own state, not in the firewall's saved ruleset. |
 | `crowdsec.install` | `run crowdsec.install` | yes | Bans addresses a reputation network has seen attacking others. Reports what this host sees in exchange. Conflicts with `fail2ban.install`. |
+| `crowdsec.uninstall` | `run <id> name=value` | no | Stops CrowdSec, disables it at boot and removes it. The host stops contributing what it sees, and stops benefiting from what the network has seen. |
 | `updates.unattended-security` | `run updates.unattended-security` | no | Applies security updates automatically, never rebooting. Debian only. |
+| `updates.unattended-security.disable` | `run <id> name=value` | no | Removes unattended-upgrades. Security updates stop being applied without anyone asking — the machine goes on looking exactly the same, which is why the task says so. |
 
 ### Two tasks have no CLI form
 

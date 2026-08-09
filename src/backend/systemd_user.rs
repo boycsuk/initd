@@ -6,7 +6,7 @@
 
 use super::systemd::run_checked;
 use crate::domain::user_services::UserServiceManager;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
 /// Manages a user's own services through `systemctl --user`.
@@ -67,6 +67,37 @@ impl UserServiceManager for SystemdUserServices {
         run_checked(executor, &command)
     }
 
+    fn disable_and_stop(&self, executor: &dyn Executor, user: &str, service: &str) -> Result<()> {
+        let command = Self::as_user(user, &["systemctl", "--user", "disable", "--now", service]);
+        let output = executor.run(&command)?;
+
+        if output.success() {
+            return Ok(());
+        }
+
+        // Absent is the state being asked for, told apart from a refusal by
+        // systemd's own wording because `disable` overloads exit code 1 for
+        // both. The same rescue the system-wide manager makes, for the same
+        // reason: an uninstall that removed the engine took its unit with it.
+        if super::systemd::unit_is_absent(&output.stderr) {
+            return Ok(());
+        }
+
+        Err(Error::CommandFailed {
+            command: command.to_string(),
+            code: output.code,
+            stderr: output.stderr,
+        })
+    }
+
+    fn disable_linger(&self, executor: &dyn Executor, user: &str) -> Result<()> {
+        let command = Command::new("loginctl")
+            .args(["disable-linger", user])
+            .privileged();
+
+        run_checked(executor, &command)
+    }
+
     fn is_active(&self, executor: &dyn Executor, user: &str, service: &str) -> Result<bool> {
         let command = Self::as_user(user, &["systemctl", "--user", "is-active", service]);
         let output = executor.run(&command)?;
@@ -108,6 +139,36 @@ mod tests {
             .expect("a missing entry must not raise");
 
         assert!(!lingering);
+    }
+
+    #[test]
+    fn an_engine_whose_unit_went_with_its_package_is_not_a_failure() {
+        // The uninstall order removes the package, which takes the unit with
+        // it. Stopping the service afterwards must not fail at the last step
+        // having done everything it was asked.
+        let mock = MockExecutor::with_replies([Reply::failure(
+            1,
+            "Failed to disable unit: Unit file docker.service does not exist.",
+        )]);
+
+        SystemdUserServices::new()
+            .disable_and_stop(&mock, "deploy", "docker.service")
+            .expect("an absent unit is the state that was wanted");
+    }
+
+    #[test]
+    fn lingering_is_withdrawn_by_its_own_command() {
+        // Left behind, linger is an account kept awake for a service that is
+        // gone — harmless, and the kind of residue that makes an uninstall
+        // untrustworthy.
+        let mock = MockExecutor::new();
+
+        SystemdUserServices::new()
+            .disable_linger(&mock, "deploy")
+            .expect("withdrawing linger must succeed");
+
+        assert_eq!(mock.recorded_lines(), ["loginctl disable-linger deploy"]);
+        assert!(mock.any_privileged());
     }
 
     #[test]

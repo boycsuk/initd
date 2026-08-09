@@ -213,6 +213,23 @@ fn print_nodes(nodes: &[tasks::Node], family: distro::Family, id_width: usize, d
                     width = id_width
                 );
             }
+            // Both members, on their own lines. The interactive interface draws
+            // one row because it has measured the host; this listing has
+            // measured nothing and is a catalogue of what can be run, so
+            // hiding either would hide an id that `initd run` accepts.
+            tasks::Node::Reversible { forward, inverse } => {
+                for task in [forward, inverse] {
+                    let mark = if task.supports(family) { " " } else { "!" };
+                    println!(
+                        "{}[{}] {:<width$}  {}",
+                        indent,
+                        mark,
+                        task.id(),
+                        task.title(),
+                        width = id_width
+                    );
+                }
+            }
         }
     }
 }
@@ -256,7 +273,16 @@ fn cmd_run(id: Option<&str>, rest: &[String]) -> Result<()> {
 /// Not a limitation of the argument parsing: each applies a change that can
 /// end the session applying it, and only the interactive interface can hold
 /// one open for confirmation and revert it unattended.
-const INTERACTIVE_ONLY: [&str; 2] = ["ssh.allow-users", "users.lock-root"];
+/// Tasks the CLI refuses whatever arguments are given.
+///
+/// `users.delete` joined the two that came before it for a different reason
+/// than theirs. Those apply a change the interactive interface holds open
+/// until the operator proves they can still get in. This one cannot be held
+/// open at all: with `home=delete` there is nothing to put back, and the
+/// interactive confirmation is the only place the path *and its measured size*
+/// are stated before it happens. `initd run users.delete home=delete` in a
+/// script would destroy a directory nobody looked at.
+const INTERACTIVE_ONLY: [&str; 3] = ["ssh.allow-users", "users.lock-root", "users.delete"];
 
 /// Reads `name=value` arguments into the values a task declared.
 ///

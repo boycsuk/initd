@@ -113,6 +113,19 @@ impl AccountWriter for ShadowAccounts {
         run_checked(executor, &command)
     }
 
+    fn delete(&self, executor: &dyn Executor, user: &str, remove_home: bool) -> Result<()> {
+        // `-r` takes the home directory and the mail spool with it. Passed only
+        // when asked for: without it `userdel` leaves the home in place, owned
+        // by a uid nothing claims any more, which is the recoverable outcome.
+        let args: &[&str] = if remove_home { &["-r"] } else { &[] };
+
+        let command = Command::new("userdel")
+            .args(args.iter().copied().chain([user]))
+            .privileged();
+
+        run_checked(executor, &command)
+    }
+
     fn lock(&self, executor: &dyn Executor, user: &str, method: LockMethod) -> Result<()> {
         match method {
             // `--expiredate`, not `passwd -l`. The latter prefixes the password
@@ -169,6 +182,26 @@ mod tests {
 
         assert!(command.args.contains(&"-m".to_owned()), "{command:?}");
         assert!(mock.any_privileged());
+    }
+
+    #[test]
+    fn a_home_directory_survives_unless_deleting_it_was_asked_for() {
+        // The one operation in the tool that destroys data it never created,
+        // so the default is the recoverable one: the home stays, owned by a uid
+        // nothing claims, for an administrator to deal with deliberately.
+        let kept = MockExecutor::with_replies([Reply::ok("")]);
+        ShadowAccounts::new()
+            .delete(&kept, "deploy", false)
+            .expect("deletion must succeed");
+
+        let removed = MockExecutor::with_replies([Reply::ok("")]);
+        ShadowAccounts::new()
+            .delete(&removed, "deploy", true)
+            .expect("deletion must succeed");
+
+        assert_eq!(kept.recorded_lines(), ["userdel deploy"]);
+        assert_eq!(removed.recorded_lines(), ["userdel -r deploy"]);
+        assert!(kept.any_privileged());
     }
 
     #[test]

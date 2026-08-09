@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -32,11 +33,12 @@ use ratatui::widgets::{
 };
 
 use super::app::{App, Mode, Pane, VERIFY_BANNER_ROWS, VERSION};
+use super::probe::InstalledState;
 use super::status::State;
 use super::verify::Verification;
 use super::{help, layout, search, style};
 use crate::i18n::{Lang, Msg};
-use crate::tasks::{Confirmation, Node};
+use crate::tasks::{Confirmation, Node, Task};
 
 /// Marks a row that opens onto another level.
 const CATEGORY_MARKER: &str = "› ";
@@ -218,10 +220,15 @@ fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect, status: Option<Line<'
     let family = app.distro.family;
     // The two borders and the marker column are not available to the row.
     let row_width = tree_area.width.saturating_sub(2) as usize;
+    // Borrowed out before the level is walked: `current_level` borrows the
+    // cursor, and a reversible row needs what the probe measured to know which
+    // of its two verbs to draw.
+    let presence = &app.presence;
     let items: Vec<ListItem> = app
+        .cursor
         .current_level()
         .iter()
-        .map(|node| ListItem::new(row(node, family, row_width)))
+        .map(|node| ListItem::new(row(node, family, row_width, presence)))
         .collect();
 
     let tree_focused = app.focus == Pane::Tree;
@@ -354,14 +361,20 @@ fn tree_scrollbar(frame: &mut Frame, app: &App, area: Rect) {
 /// A category has no description of its own, so it reports what it holds
 /// rather than leaving the pane blank.
 fn detail(frame: &mut Frame, app: &App, area: Rect, status: Option<Line<'static>>) {
-    let description = match app.selected_node() {
-        // A task that cannot run here says why, under what it would have
-        // done. The tree already dims the row and the pill already reads
-        // UNSUPPORTED — both of which state *that* it is refused and
-        // neither of which states why, leaving the operator to guess
-        // whether it is a missing package, a policy, or a bug. The reasons
-        // were measured; this is where they were always meant to be read.
-        Some(Node::Task(task)) => match task.unsupported_reason(app.distro.family) {
+    // A reversible pair is reduced to the task the row is drawing, so the
+    // description reads about the operation the operator would actually start.
+    // Resolved through the same function the row draws through, so the pane
+    // can never describe one half while the row offers the other.
+    let selected = app.selected_task();
+
+    // A task that cannot run here says why, under what it would have done. The
+    // tree already dims the row and the pill already reads UNSUPPORTED — both
+    // of which state *that* it is refused and neither of which states why,
+    // leaving the operator to guess whether it is a missing package, a policy,
+    // or a bug. The reasons were measured; this is where they were always meant
+    // to be read.
+    let description = if let Some(task) = selected {
+        match task.unsupported_reason(app.distro.family) {
             // The blank line between the two is written here rather than
             // in the catalogue: the description above it is the task's own
             // words, and running the two together would read as one
@@ -375,17 +388,19 @@ fn detail(frame: &mut Frame, app: &App, area: Rect, status: Option<Line<'static>
                 })
             ),
             None => task.description().to_owned(),
-        },
-        Some(Node::Category(category)) => app.lang.render(&Msg::DetailCategoryContents {
+        }
+    } else if let Some(Node::Category(category)) = app.selected_node() {
+        app.lang.render(&Msg::DetailCategoryContents {
             title: category.title.to_owned(),
             count: category.task_count(),
-        }),
-        None => String::new(),
+        })
+    } else {
+        String::new()
     };
 
-    let title = match app.selected_node() {
-        Some(Node::Task(task)) => task.title().to_owned(),
-        _ => app.lang.render(&Msg::DetailTitle),
+    let title = match selected {
+        Some(task) => task.title().to_owned(),
+        None => app.lang.render(&Msg::DetailTitle),
     };
 
     let mut block = Block::default()
@@ -724,53 +739,61 @@ fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang
 /// Flags are glyphs rather than colours so that a monochrome terminal loses
 /// nothing, and unsupported tasks stay visible with their reason rather than
 /// being hidden — hiding them makes the tool look inconsistent between hosts.
-pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> Line<'static> {
-    let (marker, marker_style, title, title_style, trailing, trailing_style) = match node {
+pub(super) fn row(
+    node: &Node,
+    family: crate::distro::Family,
+    width: usize,
+    presence: &InstalledState,
+) -> Line<'static> {
+    let RowParts {
+        marker,
+        marker_style,
+        title,
+        title_style,
+        trailing,
+        trailing_style,
+    } = match node {
         // The marker tells a category apart from a task at a glance; with one
         // level on screen there is no indentation to do it.
         //
         // The count is what makes a collapsed level navigable: it tells a
         // 3-task category from an 8-task one without opening either.
-        Node::Category(category) => (
-            CATEGORY_MARKER,
-            style::CATEGORY_COLLAPSED,
-            category.title,
-            style::HEADING,
-            category.task_count().to_string(),
-            style::BLOCK_SUBTITLE,
-        ),
-        Node::Task(task) => {
-            let supported = task.supports(family);
-            // Destructive outranks input: a task that asks for a port before
-            // wiping something is first of all the one that wipes something,
-            // and only one flag fits the column.
-            let (text_style, flag, flag_style) = if !supported {
-                (
-                    style::DISABLED,
-                    style::MARKER_UNSUPPORTED,
-                    style::FLAG_UNSUPPORTED,
-                )
-            // `Lockout` alone, not every task that asks. Almost all of them
-            // ask now, and a danger flag on almost every row marks nothing —
-            // the column exists to say which handful can end the session
-            // reading it.
-            } else if task.confirmation() == Confirmation::Lockout {
-                (style::NORMAL, style::MARKER_DANGER, style::FLAG_DANGER)
-            } else if !task.params().is_empty() {
-                (style::NORMAL, style::MARKER_INPUT, style::FLAG_INPUT)
+        Node::Category(category) => RowParts {
+            marker: CATEGORY_MARKER,
+            marker_style: style::CATEGORY_COLLAPSED,
+            title: category.title,
+            title_style: style::HEADING,
+            trailing: category.task_count().to_string(),
+            trailing_style: style::BLOCK_SUBTITLE,
+        },
+        // Drawn as whichever half the host justifies, through the same
+        // resolution the keys act through. Until the probe answers that is the
+        // forward task: a row offering to install what is already there wastes
+        // a keystroke, while one offering to remove what was never installed
+        // does nothing and explains nothing.
+        Node::Reversible { forward, inverse } => {
+            let measured = presence.of(forward.id());
+            let drawn = if measured.calls_for_the_inverse() {
+                inverse
             } else {
-                (style::NORMAL, "", style::NORMAL)
+                forward
             };
 
-            (
-                TASK_MARKER,
-                text_style,
-                task.title(),
-                text_style,
-                flag.to_owned(),
-                flag_style,
-            )
+            let mut parts = task_row_parts(drawn.as_ref(), family);
+
+            // Ahead of the task's own flag, and only while the answer is
+            // outstanding. A row showing "Install" because nothing has been
+            // measured is not the same as one showing it because the subject
+            // was found absent, and the difference lasts a few hundred
+            // milliseconds — long enough to press a key in.
+            if !measured.is_settled() && parts.trailing.is_empty() {
+                parts.trailing = style::MARKER_PROBING.to_owned();
+                parts.trailing_style = style::BLOCK_SUBTITLE;
+            }
+
+            parts
         }
+        Node::Task(task) => task_row_parts(task.as_ref(), family),
     };
 
     // A title longer than its column is cut with an ellipsis rather than
@@ -793,6 +816,58 @@ pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> L
         Span::raw(" ".repeat(padding)),
         Span::styled(trailing, trailing_style),
     ])
+}
+
+/// What one row draws, before it is measured against the column width.
+///
+/// A struct rather than the tuple this began as: six positional fields where
+/// four are styles is a shape where two can be swapped without the compiler
+/// noticing, and the pair arm below needs to reach one of them by name.
+struct RowParts {
+    marker: &'static str,
+    marker_style: Style,
+    title: &'static str,
+    title_style: Style,
+    trailing: String,
+    trailing_style: Style,
+}
+
+/// The marker, title and flag a single task contributes to its row.
+///
+/// Extracted so a reversible pair draws through exactly the same precedence as
+/// a lone task: the flag column answers "what should stop me acting on this
+/// row", and a second copy of that rule would be the one that drifted.
+fn task_row_parts(task: &dyn Task, family: crate::distro::Family) -> RowParts {
+    let supported = task.supports(family);
+    // Destructive outranks input: a task that asks for a port before
+    // wiping something is first of all the one that wipes something,
+    // and only one flag fits the column.
+    let (text_style, flag, flag_style) = if !supported {
+        (
+            style::DISABLED,
+            style::MARKER_UNSUPPORTED,
+            style::FLAG_UNSUPPORTED,
+        )
+    // `Lockout` alone, not every task that asks. Almost all of them
+    // ask now, and a danger flag on almost every row marks nothing —
+    // the column exists to say which handful can end the session
+    // reading it.
+    } else if task.confirmation() == Confirmation::Lockout {
+        (style::NORMAL, style::MARKER_DANGER, style::FLAG_DANGER)
+    } else if !task.params().is_empty() {
+        (style::NORMAL, style::MARKER_INPUT, style::FLAG_INPUT)
+    } else {
+        (style::NORMAL, "", style::NORMAL)
+    };
+
+    RowParts {
+        marker: TASK_MARKER,
+        marker_style: text_style,
+        title: task.title(),
+        title_style: text_style,
+        trailing: flag.to_owned(),
+        trailing_style: flag_style,
+    }
 }
 
 /// How many terminal cells a string occupies.

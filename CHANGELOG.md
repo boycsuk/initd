@@ -8,6 +8,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `root` cannot be deleted, refused in the code rather than warned about in a
+  dialog — a confirmation is dismissible, and this is not a decision that
+  should be reachable by pressing through one. Locking root stays on offer,
+  guarded by proving another account can still get in; a provider's rescue
+  console undoes a lock and cannot undo a deletion. The confirmation for every
+  other account now also says that deleting it ends this session if it is the
+  account being administered from, which is what the tool can honestly claim:
+  nothing here resolves who is running it, so it names the account rather than
+  implying a check it did not make.
+- A measurement arriving as the probe's thread exits is no longer lost.
+  `is_finished` answered through its own `try_recv`, which *consumes* — so a
+  result landing between the last drain and that question was received,
+  discarded, and its row left showing the install verb for the rest of the
+  session. Narrow, and the case that lands in it is the one that matters most:
+  the refresh after a task probes a single subject, so the thread sends once
+  and returns immediately. Found in review, and the test was written against
+  the defect before the fix — the first attempt passed with the bug still in.
+- `wireguard.uninstall` never deletes `wg0.conf`, and now says so. The task,
+  `cli.md` and `user-stories.md` all claimed the keys were removed on purge;
+  the code passed the choice to the package manager and stopped there, which
+  is the safer of the two behaviours and not the documented one. Corrected
+  towards the code rather than the docs: that file holds the server's private
+  key, every peer already holds the matching public one, and regenerating it
+  invalidates every client rather than restoring anything — not a decision for
+  a field whose two values sit one character apart.
+- `users.delete` removes an account, and its home directory is a field rather
+  than a policy: both answers are defensible — a home holding dotfiles is
+  residue, one holding a year of someone's work is not something a form should
+  decide about — which is exactly why neither is safe as a default nobody
+  stated. It defaults to keeping the files.
+- The confirmation for it is the one warning in the tool that runs commands.
+  Every other is written from what the form already collected; this one asks
+  the host where the home is and how much is in it, because "also delete the
+  home directory?" is a question answered by habit while "deploy will be
+  deleted, and so will /home/deploy — 2.4 GiB of files this tool did not create
+  and cannot put back" is one that gets read. A directory that cannot be
+  measured says so rather than reporting zero: unreadable and empty are
+  different facts, and "(0 B)" understates the stake by exactly the amount that
+  matters. Verified by breaking the measurement on purpose and watching the
+  test fail.
+- It is refused on the command line, joining the two tasks already there but
+  for a different reason. Those apply a change the interactive interface holds
+  open until the operator proves they can still get in; this one cannot be held
+  open at all — with `home=delete` there is nothing to put back, and the
+  interactive confirmation is the only place the path and its size are stated
+  before it happens.
+- It is *not* paired with `users.create` in one row, unlike everything the tool
+  installs. A pair asks "is the subject present?" and shows one verb; there is
+  no such subject here, since one task takes a name that must not exist and the
+  other a name that must. The host cannot answer which applies, because the
+  answer depends on a name nobody has typed yet.
+- Ten things this tool installs, it can now remove: Caddy, rootless Docker,
+  fish, Zellij, mise, rustup, fail2ban, CrowdSec, WireGuard and unattended
+  security updates. Each shares a row with the install it undoes, and the row
+  shows whichever verb the host justifies. `ssh.install` is deliberately not
+  among them — a tool driven over SSH does not remove the SSH server, and the
+  verification window cannot help: the process that would undo it is being torn
+  down by the disconnection it caused.
+- Nine of the ten go through one function rather than being ten near-copies,
+  because the copy that drifts is the one nobody notices. It mirrors the branch
+  the install took — asking `has_package_for` again, in the same order — so a
+  released binary is never handed to `apt-get remove` and a packaged one never
+  has `/usr/local/bin` searched for it. The unit is stopped *before* the package
+  goes: the reverse leaves a running daemon whose unit file has been deleted.
+  WireGuard is the exception, and only because `wg-quick@` is a template rather
+  than a unit.
+- Every removal asks how thorough to be, and defaults to keeping configuration.
+  A reinstall then finds what was there, where the other default would delete a
+  hand-edited `jail.local` on the strength of a field nobody read. The field is
+  not drawn on RHEL at all, because rpm has no purge and a choice with one
+  outcome invites a decision and then ignores it.
+- An uninstall never reverts. The verification window exists for a change whose
+  undo is cheap and local — restore a file, reload a unit — and undoing an
+  uninstall means reinstalling over the network, which fails outright on a host
+  with no egress. A countdown promising an undo that cannot run is worse than
+  no countdown.
+- `wireguard.uninstall` is the one that can end the session applying it, and
+  says so with the red frame the other lockouts use: an administrator connected
+  over the tunnel loses the connection when `wg0` goes down. It is offered
+  anyway, unlike SSH, because reaching a host over WireGuard is a choice and a
+  console can undo it.
+- Two things surfaced from making the tree longer rather than from thinking
+  about it. The tree pane is measured against its longest title, so ten new
+  rows widened it — and one of them, at 49 cells, was shortened instead of
+  widening the pane for every row to fit a single name. A test helper that
+  walked the tree looking for tasks could not see inside a pair, which is the
+  same blind spot the tree's own traversals had and were taught about.
+- A row that can go either way asks the host which way it is, on a thread of
+  its own. The queries are unprivileged — every package manager reads a
+  world-readable database, and `command -v` asks the shell — but eleven of them
+  in series cost between 200 and 900 milliseconds on a slow VPS, paid before
+  the first frame on exactly the hardware this tool exists for. So rows start
+  unmeasured and settle over the following moments, and an unmeasured row shows
+  the *install* verb: offering to install what is already there wastes a
+  keystroke, while offering to remove what was never installed does nothing and
+  explains nothing. While the answer is outstanding the row says so, because
+  those few hundred milliseconds are long enough to press a key in.
+- Nothing is measured while a task runs, and what a finished task touched is
+  forgotten rather than kept. A package manager holds a lock, and an answer
+  taken while an install is half done describes neither the machine before nor
+  the one after. The re-measurement afterwards runs on the failure path too: a
+  task that installed the package and then failed to enable the unit leaves the
+  host in a state nobody knows, and the answer from before it ran describes a
+  machine that no longer exists.
+- What a row draws and what pressing it runs resolve through one function, so
+  they cannot disagree. Rendering "Uninstall Caddy" over a key that starts
+  `caddy.install` is the worst thing this feature could do, and two copies of
+  the rule is how it would happen. The test reads the title back off the
+  rendered line and compares it against the task the same state resolves to —
+  and was confirmed to fail when the resolution was deliberately broken, rather
+  than assumed to.
+- The capability traits gained the verbs that undo what they do: packages can
+  be removed or purged, units disabled and stopped, an account deleted, a
+  directory measured. Nothing calls them yet. What each family does differs
+  more than the naming suggests and was written down where it is read rather
+  than assumed: removal never cascades on Debian or Arch — no `--auto-remove`,
+  no `-Rs`, because what those reach cannot be stated before they run — while
+  apk decides for itself and says so; and RHEL cannot purge at all, since rpm
+  leaves an edited file as `.rpmsave` whatever is asked, so `has_purge_for`
+  answers false there and the choice is not offered rather than being offered
+  and ignored.
+- Removing a downloaded binary asks a different question from installing one.
+  `is_installed` reports whether a program is anywhere on `PATH`, which is
+  right before installing and wrong before removing: an operator holding
+  `~/.cargo/bin/zellij` satisfies it, so a row keyed on that answer offered to
+  uninstall a binary `/usr/local/bin` never held — reporting success having
+  done nothing, or deleting a file this tool did not write from a directory it
+  does not own. `is_installed_here` asks about the one path the installer
+  writes, `location_of` names the copy it found so the interface can say where
+  it is, and removal builds its path from the install directory rather than
+  from what the shell resolved.
+- A unit that no longer exists is the state an uninstall wanted, not a failure.
+  Removing a package takes its unit with it, so stopping the service afterwards
+  would otherwise fail at the last step having done everything it was asked.
+  systemd overloads exit code 1 for "no such unit" and for "I will not", so the
+  two are told apart by its own wording — the one place matching another
+  program's text is unavoidable, and marked as such. OpenRC needs no such
+  rescue, and its two commands run in the mirror order of enabling: stopped
+  first, then out of the runlevel, because a service left in its runlevel is
+  back after a reboot having reported itself stopped.
+- The tree can hold a pair of opposed operations in a single row. One row
+  rather than two because "Install Caddy" and "Uninstall Caddy" are not a
+  choice an operator makes — exactly one of them is meaningful at any moment,
+  and offering both makes the reader work out which. Two *tasks* rather than
+  one task with a verb, because a task's identity is its id: the worker thread
+  re-resolves it, `initd run` names it, and `docs/cli.md` documents it. An id
+  meaning two things depending on the host is one the worker cannot resolve and
+  the contract file cannot describe. Nothing builds a pair yet; what exists is
+  the seam and the nine decisions the compiler demanded at every site that
+  walks the tree — the count beside a category promises rows, so a pair counts
+  once, while search and the task lookup see both members, so every invariant
+  already asserted over the tree covers an inverse the moment one arrives.
 - Every task that changes the machine asks before it runs. It was nine of
   twenty-eight, because the rule read "irreversible enough to warrant a prompt"
   and was applied as "could lock you out" — so `ssh.install` put an SSH server

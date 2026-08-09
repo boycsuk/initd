@@ -16,6 +16,10 @@ use crate::error::Result;
 use crate::exec::Executor;
 
 /// Manages services belonging to one account.
+#[allow(
+    dead_code,
+    reason = "the inverse verbs are called by the uninstall tasks, which land in a later commit"
+)]
 pub trait UserServiceManager {
     /// Whether the account may keep services running with no session open.
     fn is_lingering(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
@@ -28,6 +32,20 @@ pub trait UserServiceManager {
 
     /// Whether one of the account's services is running.
     fn is_active(&self, executor: &dyn Executor, user: &str, service: &str) -> Result<bool>;
+
+    /// Stops one of the account's services and stops it starting at login.
+    ///
+    /// Succeeds when the unit does not exist, for the same reason the
+    /// system-wide [`disable_and_stop`](crate::domain::ServiceManager::disable_and_stop)
+    /// does: an uninstall that removed the engine took its unit with it.
+    fn disable_and_stop(&self, executor: &dyn Executor, user: &str, service: &str) -> Result<()>;
+
+    /// Stops the account keeping services running with no session open.
+    ///
+    /// The inverse of [`enable_linger`](Self::enable_linger). Left behind, it
+    /// is a lingering account with nothing to linger for — harmless, and
+    /// exactly the kind of residue that makes an uninstall untrustworthy.
+    fn disable_linger(&self, executor: &dyn Executor, user: &str) -> Result<()>;
 
     /// The subordinate UID and GID ranges delegated to the account.
     ///

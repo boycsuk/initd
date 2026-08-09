@@ -32,7 +32,9 @@ mod tests {
 
         let expected = match &app.current_level()[0] {
             Node::Category(category) => category.children.len(),
-            Node::Task(_) => panic!("the root must start with a category"),
+            Node::Task(_) | Node::Reversible { .. } => {
+                panic!("the root must start with a category")
+            }
         };
 
         enter_first_category(&mut app);

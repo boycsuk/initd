@@ -67,6 +67,37 @@ mod tests {
     }
 
     #[test]
+    fn a_size_is_measured_in_bytes_whatever_the_host_defaults_to() {
+        // `du -s` alone answers in kibibytes on some systems and 512-byte
+        // blocks on others. A number whose unit depends on the host is worse
+        // than none in a sentence an operator will read as gigabytes.
+        let mock = MockExecutor::with_replies([Reply::ok("2576980378\t/home/deploy")]);
+
+        assert_eq!(
+            UnixAccounts::new()
+                .size_of(&mock, "/home/deploy")
+                .expect("the measurement must succeed"),
+            Some(2_576_980_378)
+        );
+        assert!(mock.single_command().args.contains(&"-sB1".to_owned()));
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_measured_is_not_reported_as_empty() {
+        // Zero and unmeasurable are different facts, and reporting "(0 B)" for
+        // a directory nobody could read understates what is at stake by
+        // exactly the amount that matters.
+        let mock = MockExecutor::with_replies([Reply::failure(1, "du: /home/gone: No such file")]);
+
+        assert_eq!(
+            UnixAccounts::new()
+                .size_of(&mock, "/home/gone")
+                .expect("an unmeasurable path is an answer, not a failure"),
+            None
+        );
+    }
+
+    #[test]
     fn a_missing_account_is_an_answer_not_a_failure() {
         // `getent` exits 2 for "no such key". Treating that as an error would
         // make a typo in an allow-list look like a broken system.

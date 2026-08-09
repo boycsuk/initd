@@ -46,6 +46,14 @@ pub enum Reason {
 
     /// An account was created that an allow-list does not name.
     AccountNotListed { user: String },
+
+    /// An account something else refers to no longer exists.
+    ///
+    /// The mirror of [`AccountNotListed`](Self::AccountNotListed), and the
+    /// more silent of the two: a key authorised for a deleted account
+    /// authorises nothing, and an allow-list naming it admits nobody under
+    /// that name while going on looking correct.
+    AccountRemoved { user: String },
 }
 
 /// What two tasks would contend for.
@@ -205,6 +213,10 @@ impl Consequence {
                     service: (*service).to_owned(),
                 },
                 Reason::AccountNotListed { user } => Msg::ConsequenceAccountNotListed {
+                    task: (*task).to_owned(),
+                    user: user.clone(),
+                },
+                Reason::AccountRemoved { user } => Msg::ConsequenceAccountRemoved {
                     task: (*task).to_owned(),
                     user: user.clone(),
                 },
