@@ -213,13 +213,22 @@ pub fn render(frame: &mut Frame, search: &Search, lang: Lang) {
         }
     });
 
+    // Titled through the catalogue's roles like every other overlay: the
+    // heading in `PANE_TITLE` and the count beneath it in `BLOCK_SUBTITLE`,
+    // which is what `help.rs` draws and what `history.rs` draws. Passing either
+    // as a bare `String` inherits whatever the block's own style happens to be,
+    // so this one modal rendered its chrome in the border's colour while the
+    // six beside it did not.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(style::BORDER_FOCUSED)
-        .title(lang.render(&Msg::SearchTitle {
-            query: search.query().to_owned(),
-        }))
-        .title_bottom(footer);
+        .title(Span::styled(
+            lang.render(&Msg::SearchTitle {
+                query: search.query().to_owned(),
+            }),
+            style::PANE_TITLE,
+        ))
+        .title_bottom(Span::styled(footer, style::BLOCK_SUBTITLE));
 
     let mut state = ListState::default();
     state.select(Some(search.selected()));
@@ -276,6 +285,66 @@ fn row(found: &Match) -> ListItem<'static> {
 mod tests {
     use super::*;
     use crate::tasks::tree;
+
+    #[test]
+    fn the_heading_and_the_count_are_drawn_in_the_roles_every_overlay_uses() {
+        // Asserted on the style rather than on the text, because the text was
+        // never what was wrong: this modal passed its title and footer as bare
+        // `String`s while the six beside it styled theirs, so the heading came
+        // out in the border's colour and the count with it. A screen dump would
+        // have agreed with both versions.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(WIDTH, 20))
+            .expect("the test backend must build");
+
+        let search = Search::new(&tree());
+
+        terminal
+            .draw(|frame| render(frame, &search, Lang::En))
+            .expect("the overlay must draw");
+
+        // Only the two frame rows the titles are drawn into. The result rows
+        // between them carry `PANE_TITLE` and `BLOCK_SUBTITLE` of their own —
+        // a hit is cyan and the breadcrumb beneath it is dim — so a search of
+        // the whole buffer finds both roles whether the titles were styled or
+        // not, and passes against the very code this is here to reject.
+        let buffer = terminal.backend().buffer();
+        let area = layout::centred(WIDTH, HEIGHT, buffer.area);
+
+        let row_styles = |y: u16| -> Vec<_> {
+            (area.x..area.x + area.width)
+                .map(|x| {
+                    let cell = &buffer[(x, y)];
+                    (cell.fg, cell.modifier)
+                })
+                .collect()
+        };
+
+        let top = row_styles(area.y);
+        let bottom = row_styles(area.y + area.height - 1);
+
+        // A role's `fg` is an `Option` because a `Style` may leave the colour
+        // to whatever it is drawn over; a cell's is resolved. Both roles set
+        // one, so the unwrap is the assertion that they do.
+        let role = |style: ratatui::style::Style| {
+            (
+                style.fg.expect("the role must set a colour"),
+                style.add_modifier,
+            )
+        };
+
+        let heading = role(style::PANE_TITLE);
+        let count = role(style::BLOCK_SUBTITLE);
+
+        assert!(
+            top.contains(&heading),
+            "the heading must be drawn in PANE_TITLE, not in the border's own style"
+        );
+
+        assert!(
+            bottom.contains(&count),
+            "the count must be drawn in BLOCK_SUBTITLE, not in the border's own style"
+        );
+    }
 
     #[test]
     fn an_empty_query_finds_every_task() {
