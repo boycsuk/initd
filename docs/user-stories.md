@@ -179,6 +179,12 @@ TUI or CLI:
     allow-list naming it, now refer to something that does not exist — a list
     naming a deleted account admits nobody under that name while going on
     looking correct.
+  - Acceptance: I cannot delete the account I am administering the machine as.
+    Doing so would end the session mid-task and remove whatever grants it root,
+    with nothing left to undo it from. Refused where the escalation says which
+    account it acted for; where nothing says — a root console, `su -` — the
+    confirmation warns instead, because refusing an unanswerable question would
+    stop a root console from deleting anything.
   - Platform exception: TUI only. The interactive confirmation is the only
     place the path and its size are stated before it happens, and with the home
     directory deleted there is nothing to put back afterwards.

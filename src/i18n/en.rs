@@ -256,6 +256,15 @@ pub(super) fn render(message: &Msg) -> String {
              either way. This is not the same as the file having changed: \
              nothing was restored, and nothing is claimed."
         ),
+        // Names the account and what it is: an operator who typed it deliberately
+        // needs to know the tool is not confused, and one who typed it by
+        // mistake needs to know which name was wrong.
+        Msg::CannotDeleteOwnAccount { user } => format!(
+            "{user} is the account this session is being administered as. \
+             Deleting it would end the session and remove whatever grants it \
+             root, with nothing left to undo it from. Do it from another \
+             account, or from a root console."
+        ),
         Msg::ShellNotListed { shell } => {
             format!("{shell} is not listed in /etc/shells, so the system will refuse it")
         }

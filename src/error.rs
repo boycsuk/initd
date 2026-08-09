@@ -236,6 +236,18 @@ pub enum Error {
     /// not the same operation, and only one is undone by a rescue console.
     CannotDeleteRoot,
 
+    /// A deletion named the account this session escalated from.
+    ///
+    /// Refused rather than warned about, because it can now be known: the
+    /// escalation helper says which account it acted for, and deleting that one
+    /// ends the session mid-task along with whatever rule granted it root.
+    ///
+    /// Only raised where the escalation identifies itself. A direct root login
+    /// and `run0` leave nothing to compare against, and those keep the warning
+    /// the confirmation carries — a check that cannot be made is stated as
+    /// such rather than faked.
+    CannotDeleteOwnAccount { user: String },
+
     /// The file has changed since this tool wrote it.
     ///
     /// The refusal a cross-session revert exists to be able to make. Restoring
@@ -524,6 +536,9 @@ impl Error {
             Self::NoWayBackIn { user } => Msg::NoWayBackIn { user: user.clone() },
             Self::AdminCannotBeRoot => Msg::AdminCannotBeRoot,
             Self::CannotDeleteRoot => Msg::CannotDeleteRoot,
+            Self::CannotDeleteOwnAccount { user } => {
+                Msg::CannotDeleteOwnAccount { user: user.clone() }
+            }
             Self::FileChangedSinceBackup {
                 path,
                 expected,

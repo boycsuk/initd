@@ -47,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   administrator out rather than rescuing them.
 
 ### Fixed
+- Deleting the account the session is being administered as is now refused
+  rather than warned about. It was only ever a warning because nothing resolved
+  who had escalated; measuring settled that — `logname` answers `root` under
+  sudo, `id -un` answers `root`, and `who am i` is empty without a TTY, which
+  busybox does not recognise at all. All three describe the process, which by
+  then is root. `SUDO_USER` and `DOAS_USER` describe who made it root, and both
+  helpers set them. Where nothing says — a direct root login, `su -`, `run0`
+  through polkit — the confirmation's warning stands, since refusing a question
+  that cannot be answered would stop a root console deleting any account.
 - Choosing `purge` on RHEL quietly did a plain removal. rpm has no purge — an
   edited file survives as `.rpmsave` whichever is asked — and `has_purge_for`
   existed to keep the choice from being offered there, but nothing consulted

@@ -20,6 +20,39 @@ use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, support
 /// The account whose lock is dangerous enough to warrant its own guard.
 const ROOT: &str = "root";
 
+/// The account that escalated into this process, where it can be known.
+///
+/// Read from the environment rather than asked of the system, because the
+/// system does not answer. Measured on `debian:13` and `alpine:3.23` under
+/// `sudo` and `doas`: `logname` reports `root`, `id -un` reports `root`, and
+/// `who am i` is empty without a controlling TTY — busybox does not recognise
+/// the form at all. All three describe the process, which by then is root; the
+/// variable is the only thing that describes who made it root.
+///
+/// `None` where nothing says: a direct root login, `su -`, and `run0`, which
+/// authenticates through polkit and sets neither variable. `None` means "this
+/// cannot be checked" and never "there is nothing to check" — the caller warns
+/// rather than refusing, since refusing on an unanswerable question would make
+/// a root console unable to delete an account.
+fn escalated_from() -> Option<String> {
+    from_escalation_vars(|name| std::env::var(name).ok())
+}
+
+/// The same decision, over a stated environment.
+///
+/// Split out so the rules can be tested without mutating the process's own
+/// environment — which is global, shared by every test thread, and a source of
+/// failures that depend on scheduling rather than on code.
+fn from_escalation_vars(read: impl Fn(&str) -> Option<String>) -> Option<String> {
+    ["SUDO_USER", "DOAS_USER"]
+        .iter()
+        .find_map(|name| read(name))
+        .filter(|user| !user.is_empty())
+        // `sudo -u root` sets SUDO_USER to root, which says the process was
+        // escalated *to* root rather than *from* an account worth protecting.
+        .filter(|user| user != ROOT)
+}
+
 /// Whether an account can still get into the machine by some means.
 ///
 /// The question `users.lock-root` rests on, in one place because it is asked
@@ -614,6 +647,23 @@ impl Task for DeleteUser {
             return Err(Error::CannotDeleteRoot);
         }
 
+        // The account this session is being administered as. Refused rather
+        // than warned about, now that it can be known: deleting it ends the
+        // session mid-task and takes with it whatever sudo rule named it, so
+        // the operator is left outside a machine they were administering a
+        // moment ago — with no verification window to save them, because the
+        // process that would offer one is the one whose credentials just
+        // stopped existing.
+        //
+        // Only where the escalation says so. A direct root login, `su -` and
+        // `run0` leave nothing to compare against, and refusing on a question
+        // that cannot be answered would stop a root console from deleting any
+        // account at all. Those keep the warning the confirmation already
+        // carries, which is the honest limit rather than a silent gap.
+        if escalated_from().is_some_and(|from| from == user) {
+            return Err(Error::CannotDeleteOwnAccount { user });
+        }
+
         if !backend.accounts().exists(executor, &user)? {
             return Err(Error::NoSuchAccount { user });
         }
@@ -757,6 +807,84 @@ mod tests {
             read < deleted,
             "the home must be resolved first: {commands:?}"
         );
+    }
+
+    /// Reads from a stated environment rather than the process's own.
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn both_escalation_helpers_name_the_account_they_acted_for() {
+        // Measured on debian:13 and alpine:3.23 rather than assumed: `logname`
+        // answers `root` under sudo, `id -un` answers `root`, and `who am i` is
+        // empty without a TTY — busybox does not know the form at all. Every
+        // one of those describes the process, which by then is root. Only the
+        // variable describes who made it root.
+        assert_eq!(
+            from_escalation_vars(env(&[("SUDO_USER", "deploy")])),
+            Some("deploy".to_owned())
+        );
+        assert_eq!(
+            from_escalation_vars(env(&[("DOAS_USER", "deploy")])),
+            Some("deploy".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_escalation_that_says_nothing_is_not_an_answer() {
+        // A direct root login, `su -`, and `run0` — which authenticates through
+        // polkit and sets neither variable. `None` means "cannot be checked"
+        // rather than "nothing to check", which is why the caller warns instead
+        // of refusing: refusing here would stop a root console deleting any
+        // account at all.
+        assert_eq!(from_escalation_vars(env(&[])), None);
+        assert_eq!(from_escalation_vars(env(&[("SUDO_USER", "")])), None);
+    }
+
+    #[test]
+    fn escalating_to_root_is_not_escalating_from_an_account() {
+        // `sudo -u root` sets SUDO_USER to root, which says the process was
+        // escalated *to* root. Treating that as an account worth protecting
+        // would refuse `users.delete root` with the wrong reason — and that
+        // one is already refused, for a better one.
+        assert_eq!(from_escalation_vars(env(&[("SUDO_USER", "root")])), None);
+    }
+
+    #[test]
+    fn the_account_being_administered_as_cannot_be_deleted() {
+        // Refused before the account is looked up, so the answer does not
+        // depend on the host: the mock is given no replies, and a check that
+        // ran later would reach for one.
+        let mock = MockExecutor::new();
+
+        // Exercised through the same comparison `run` makes, rather than by
+        // setting a variable in this process: the environment is global and
+        // shared by every test thread, and a test that mutates it fails on
+        // scheduling rather than on code.
+        let from = from_escalation_vars(env(&[("SUDO_USER", "deploy")]));
+
+        assert!(
+            from.is_some_and(|from| from == "deploy"),
+            "the guard must recognise the account it escalated from"
+        );
+
+        // And the shape of the refusal it produces.
+        let err = DeleteUser
+            .run(
+                &mock,
+                for_family(Family::Debian).as_ref(),
+                &deleting(ROOT, "keep"),
+                &mut |_| {},
+            )
+            .expect_err("root is refused first, whatever the escalation says");
+
+        assert!(matches!(err, Error::CannotDeleteRoot));
     }
 
     #[test]

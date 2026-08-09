@@ -242,6 +242,9 @@ pub enum Msg {
     },
     AdminCannotBeRoot,
     CannotDeleteRoot,
+    CannotDeleteOwnAccount {
+        user: String,
+    },
     FileChangedSinceBackup {
         path: String,
         expected: String,
