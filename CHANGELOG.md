@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was volume, since the fixed suffix means one copy rather than one per peer.
   What was wrong is that key material outlived the write that produced it, on
   a file whose whole design is that one copy is enough.
+- `wireguard.install` was leaking the same key by the same mechanism, one task
+  earlier, and only a container found it. It writes `wg0.conf` in two steps so
+  the mode is set before the key exists, and the second step copied the file it
+  was about to write into. On a host where a first run failed — Alpine's does,
+  at `rc-update` — the copy left behind was the full configuration: measured at
+  0 bytes after the install and 151 after the next task touched the path. Every
+  write to that path now refuses to copy, because the rule is the file rather
+  than the moment.
 - The test that was supposed to prevent it now can. `no_copy_of_the_key_file_is_ever_kept`
   asserted only that no command mentioned `/var/lib/initd`, which the sidecar
   in `/etc/wireguard` passed without difficulty — and the mock reply it needed

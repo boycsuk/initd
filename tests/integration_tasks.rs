@@ -339,6 +339,51 @@ for_each_image! {
         );
     }
 
+    /// Adding a peer leaves no copy of the key file on the filesystem.
+    fn adding_a_peer_leaves_no_copy_of_the_key_file_on_disk(image) {
+        // The unit test asserts which commands the task emits; this asserts
+        // what is on the disk afterwards, which is the thing those commands
+        // were about. `wg0.conf` holds the server's private key and every
+        // peer's preshared key, and the ordinary `write` path copies a file
+        // to `<path>.initd.bak` before changing it — so the task that
+        // deliberately records nothing in the index was still leaving a
+        // second copy of all of it beside the original, for the life of the
+        // host, because retention only reaches copies the index names.
+        //
+        // Asserted by listing the directory rather than by testing one name:
+        // a copy taken under some third suffix is the failure this is for,
+        // and `test -e` on a name nobody chose yet would not find it.
+        //
+        // Both tasks fail at the point they reload a unit no container runs,
+        // so no exit code is asserted — the files are what a container can
+        // settle.
+        let observed = observe_with(
+            image,
+            image.install_wireguard,
+            "initd run wireguard.install subnet=10.89.0.0/24 port=51820 \
+                 >/dev/null 2>&1; \
+                 initd run wireguard.add-peer name=laptop address=10.89.0.2 \
+                 endpoint=198.51.100.7:51820 >/dev/null 2>&1; \
+                 ls /etc/wireguard/; \
+                 echo peers=$(grep -c '\\[Peer\\]' /etc/wireguard/wg0.conf)",
+        );
+
+        assert!(
+            !observed.contains(".initd.bak"),
+            "{}: no copy of the key file may be left beside it: {observed}",
+            image.name
+        );
+
+        // The other direction, so a task that failed before writing anything
+        // cannot pass this by having done nothing. A peer block in the file
+        // is what proves the write the copy would have preceded took place.
+        assert!(
+            common::has_line(&observed, "peers=1"),
+            "{}: and the peer must actually have been added: {observed}",
+            image.name
+        );
+    }
+
     /// Installing over an existing configuration is refused.
     fn installing_wireguard_twice_refuses_rather_than_replacing_the_key(image) {
         // A new server key silently invalidates every peer configured against

@@ -275,9 +275,25 @@ impl Task for InstallWireguard {
         //
         // Creating it empty is what makes the ordering possible: `set_mode`
         // needs a path that exists, and an empty file discloses nothing.
-        files.write(executor, &config, "")?;
+        //
+        // Both writes are `write_uncopied`, and the rule is the path rather
+        // than the moment: nothing may ever copy `wg0.conf`, because a copy of
+        // it is a copy of the server's private key and of every peer's
+        // preshared key, and no retention reaches it — `prune` only deletes
+        // copies the index names, and this task deliberately writes no index
+        // entry.
+        //
+        // The first one looks like it cannot matter, since the file it creates
+        // is empty. It matters on the second run: `install` refuses a host
+        // that is already configured, but a *failed* first run leaves the file
+        // behind, and an ordinary `write` would then copy the key that first
+        // run had written. Measured on `alpine:3.23`, where the task fails at
+        // `rc-update` after writing the key — the copy was 0 bytes after the
+        // install and 151 after the next task touched the path, which is the
+        // whole configuration.
+        files.write_uncopied(executor, &config, "")?;
         files.set_mode(executor, &config, CONFIG_MODE)?;
-        files.write(executor, &config, &contents)?;
+        files.write_uncopied(executor, &config, &contents)?;
 
         report(
             progress,
@@ -821,12 +837,16 @@ mod tests {
             Reply::ok(""),         // mv: publish it
             Reply::ok(""),         // chmod 600, before any secret exists
             Reply::ok(""),         // test -e, opening the real write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: stage the configuration, with the key
-            Reply::ok("600"),      // stat -c %a: the mode set a moment ago
-            Reply::ok(""),         // chmod: carry it onto the staging file
-            Reply::ok(""),         // mv: publish it, already restricted
-            Reply::ok(""),         // systemctl enable
+            // No `cp -p` here, and its absence is the assertion: by this point
+            // the path exists, so an ordinary `write` would copy it to
+            // `wg0.conf.initd.bak` before writing the private key into it —
+            // and nothing would ever remove that copy, since retention only
+            // reaches copies the index names and this task writes none.
+            Reply::ok(""),    // tee: stage the configuration, with the key
+            Reply::ok("600"), // stat -c %a: the mode set a moment ago
+            Reply::ok(""),    // chmod: carry it onto the staging file
+            Reply::ok(""),    // mv: publish it, already restricted
+            Reply::ok(""),    // systemctl enable
         ]);
         let backend = for_family(Family::Debian);
 
