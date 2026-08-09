@@ -114,7 +114,23 @@ pub fn undo(
             backend.services().disable_and_stop(executor, unit)?;
         }
 
-        let purging = values.get(REMOVAL).unwrap_or(KEEP_CONFIGURATION) == WITH_CONFIGURATION;
+        let asked_to_purge =
+            values.get(REMOVAL).unwrap_or(KEEP_CONFIGURATION) == WITH_CONFIGURATION;
+
+        // The field is drawn on every family because `Task::params` has no
+        // backend to ask, and on one family the answer means nothing: rpm has
+        // no purge, so `purge` and `remove` are the same command and a file the
+        // administrator edited survives as `.rpmsave` whichever is chosen.
+        //
+        // Said rather than silently ignored. An operator who picked `purge`
+        // and was given a removal, with nothing on screen about it, would
+        // reasonably believe the configuration was gone — and go looking for
+        // it only after reinstalling and finding their old settings back.
+        let purging = asked_to_purge && backend.has_purge_for();
+
+        if asked_to_purge && !purging {
+            report(progress, &Msg::TaskPurgeUnavailable);
+        }
 
         report(
             progress,
@@ -238,6 +254,46 @@ mod tests {
         assert!(
             disabled < removed,
             "the unit must stop before the package goes: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_family_that_cannot_purge_says_so_rather_than_ignoring_the_answer() {
+        // `Task::params` has no backend to ask, so the field is drawn on every
+        // family — including the one where the answer means nothing. rpm has
+        // no purge, so both values issue the same command.
+        //
+        // The defect this pins is the silent version: an operator who chose
+        // `purge` and was given a removal, with nothing on screen, would
+        // believe the configuration was gone and find their old settings back
+        // on the next install. `has_purge_for` existed for exactly this and
+        // nothing consulted it.
+        // `Wireguard` rather than `Fail2ban`: RHEL packages the first and not
+        // the second, and a capability it has no package for goes down the
+        // binary branch where the removal depth is never consulted at all.
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok(""), Reply::ok("")]);
+        let mut said = Vec::new();
+
+        undo(
+            &mock,
+            for_family(Family::Rhel).as_ref(),
+            &asking_for(WITH_CONFIGURATION),
+            &mut |line| said.push(line.text),
+            Capability::Wireguard,
+            "wg",
+        )
+        .expect("the removal must succeed");
+
+        assert!(
+            said.iter().any(|line| line.contains(".rpmsave")),
+            "the operator must be told their choice could not be honoured: {said:?}"
+        );
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line.contains("dnf remove")),
+            "{:?}",
+            mock.recorded_lines()
         );
     }
 

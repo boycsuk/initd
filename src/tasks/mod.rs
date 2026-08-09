@@ -313,10 +313,6 @@ pub enum Node {
     ///
     /// Both members reach [`all_tasks`], so every invariant already asserted
     /// over the tree covers the inverse without being taught to.
-    #[allow(
-        dead_code,
-        reason = "constructed by the inverse tasks, which land in a later commit"
-    )]
     Reversible {
         /// Run when the subject is absent: the task that puts it there.
         forward: Box<dyn Task>,

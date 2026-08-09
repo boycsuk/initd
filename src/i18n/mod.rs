@@ -766,6 +766,8 @@ pub enum Msg {
     TaskPurging {
         what: String,
     },
+    /// Purging was asked for on a family that cannot do it.
+    TaskPurgeUnavailable,
     /// There was nothing here to remove.
     TaskNotInstalled {
         what: String,

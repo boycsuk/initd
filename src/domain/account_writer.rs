@@ -81,10 +81,6 @@ pub enum LockMethod {
 }
 
 /// Creates and modifies accounts on the administered system.
-#[allow(
-    dead_code,
-    reason = "delete is called by users.delete, which lands in a later commit"
-)]
 pub trait AccountWriter {
     /// Creates an account with a home directory and a login shell.
     fn create(

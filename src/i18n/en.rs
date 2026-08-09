@@ -654,6 +654,15 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskAlreadyInstalled { what } => format!("{what} is already installed"),
         Msg::TaskRemoving { what } => format!("Removing {what}, keeping its configuration..."),
         Msg::TaskPurging { what } => format!("Removing {what} and its configuration..."),
+        // Names what survives rather than only that purging was declined: an
+        // operator who asked for it wants to know where their configuration
+        // now is, and `.rpmsave` is not a thing anybody guesses.
+        Msg::TaskPurgeUnavailable => {
+            "This distribution's package manager has no purge: rpm does not \
+             track configuration as separately removable, so an edited file is \
+             kept as <name>.rpmsave. Removing it by hand is the only way."
+                .to_owned()
+        }
         Msg::TaskNotInstalled { what } => format!("{what} is not installed"),
         Msg::TaskInstalledElsewhere { what, at } => {
             format!("{what} is installed at {at}, which initd did not put there — leaving it alone")

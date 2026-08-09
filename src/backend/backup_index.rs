@@ -45,11 +45,6 @@
 //! form. What this must never do is claim a revert is available when nothing
 //! was recorded.
 
-#![allow(
-    dead_code,
-    reason = "the writers and the History area that reads them land in the commits after this one"
-)]
-
 use crate::domain::files::FileEditor;
 use crate::exec::{Command, Executor};
 
