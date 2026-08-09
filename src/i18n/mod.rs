@@ -241,6 +241,7 @@ pub enum Msg {
         user: String,
     },
     AdminCannotBeRoot,
+    CannotDeleteRoot,
     ShellNotListed {
         shell: String,
     },

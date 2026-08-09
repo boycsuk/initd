@@ -17,7 +17,7 @@ use crate::exec::{Command, Executor};
 /// `/usr/local/bin` rather than `/usr/bin`: the latter belongs to the package
 /// manager, and a file this tool put there is one a distribution upgrade may
 /// overwrite or complain about.
-const INSTALL_DIR: &str = "/usr/local/bin";
+pub const INSTALL_DIR: &str = "/usr/local/bin";
 
 /// Mode for an installed binary.
 const BINARY_MODE: &str = "0755";

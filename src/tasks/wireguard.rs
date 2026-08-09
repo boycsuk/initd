@@ -528,9 +528,10 @@ impl Task for UninstallWireguard {
 
     fn description(&self) -> &'static str {
         "Brings wg0 down, disables it at boot and removes the WireGuard tools. \
-         wg0.conf and the server's keys are left on disk unless purged: they \
-         are what a reinstall would need, and they cannot be regenerated to \
-         match peers that already hold the public key."
+         wg0.conf and the server's keys are always left on disk, whichever \
+         removal is chosen: they cannot be regenerated to match peers that \
+         already hold the public key, so deleting them is a decision for \
+         whoever knows those peers are gone."
     }
 
     /// The one uninstall that can end the session running it.
@@ -612,6 +613,16 @@ impl Task for UninstallWireguard {
             return Ok(Outcome::Done);
         }
 
+        // The choice reaches the package manager and stops there. `purge`
+        // removes what the *package* ships; `/etc/wireguard/wg0.conf` was
+        // written by `wireguard.install` and is deliberately not deleted by
+        // either answer.
+        //
+        // Not an oversight to be tidied up later. That file holds the server's
+        // private key, and every peer already holds the matching public one —
+        // regenerating it does not restore a tunnel, it invalidates every
+        // client. A field whose two values sit one character apart is not
+        // where that should be decided, so neither value decides it.
         let purging = values
             .get(crate::tasks::uninstall::REMOVAL)
             .unwrap_or(crate::tasks::uninstall::KEEP_CONFIGURATION)

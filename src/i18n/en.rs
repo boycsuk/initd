@@ -229,6 +229,10 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::AdminCannotBeRoot => "root cannot be the account that stays usable: it is the \
              one being locked"
             .to_owned(),
+        Msg::CannotDeleteRoot => "root cannot be deleted. Locking it is offered instead, \
+             which refuses unless another account can still get in — a machine \
+             with no root is not one this tool can put back"
+            .to_owned(),
         Msg::ShellNotListed { shell } => {
             format!("{shell} is not listed in /etc/shells, so the system will refuse it")
         }
@@ -567,23 +571,32 @@ pub(super) fn render(message: &Msg) -> String {
         // The path and the size are the whole point. "Also delete the home
         // directory?" is a question answered by habit; a sentence naming
         // /home/deploy and 2.4 GB is one that gets read.
+        // Each of these ends on the same sentence, which is the one the
+        // operator can act on. This tool cannot tell which account is running
+        // it — nothing here resolves the invoking user — so it says what it
+        // knows and names the account rather than implying a check it did not
+        // make. root is refused outright and never reaches this dialog.
         Msg::ConfirmDeleteHome { user, path, size } => {
             format!(
                 "{user} will be deleted, and so will {path} — {size} of files \
-                 this tool did not create and cannot put back."
+                 this tool did not create and cannot put back. If {user} is the \
+                 account you are administering this machine as, this ends your \
+                 access to it."
             )
         }
         Msg::ConfirmDeleteHomeUnmeasured { user, path } => {
             format!(
                 "{user} will be deleted, and so will {path}. Its size could not \
                  be read, so how much is in there is unknown — which is not the \
-                 same as nothing."
+                 same as nothing. If {user} is the account you are administering \
+                 this machine as, this ends your access to it."
             )
         }
         Msg::ConfirmKeepHome { user, path } => {
             format!(
                 "{user} will be deleted. {path} stays on disk, owned by a user \
-                 id nothing claims any more."
+                 id nothing claims any more. If {user} is the account you are \
+                 administering this machine as, this ends your access to it."
             )
         }
         Msg::ConfirmRootLockout { admin } => {

@@ -369,9 +369,11 @@ TUI or CLI:
     my session, because it can: if I am connected *over* the tunnel, it goes
     down with the server. It is offered anyway, unlike removing the SSH server,
     because reaching a host over WireGuard is a choice a console can undo.
-  - Acceptance: `wg0.conf` and the server keys survive unless I ask for them to
-    be purged. They cannot be regenerated to match peers that already hold the
-    public key.
+  - Acceptance: `wg0.conf` and the server keys are left on disk whichever
+    removal I choose. They cannot be regenerated to match peers that already
+    hold the public key, so deleting them is a decision for whoever knows those
+    peers are gone — not one taken by a field whose two values sit a character
+    apart.
   - Acceptance: it says that every configured peer now points at a tunnel that
     is down, and that the firewall rule admitting the port now admits nothing.
     Neither is visible from here — the peers are elsewhere, and an open port

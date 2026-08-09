@@ -225,6 +225,17 @@ pub enum Error {
     /// it is circular, and would pass every other check.
     AdminCannotBeRoot,
 
+    /// A deletion named `root`.
+    ///
+    /// Refused in the code rather than warned about in a dialog, the same way
+    /// `users.lock-root` refuses an administrator of `root`. Every other
+    /// account this tool deletes is one it could also create; `root` is not,
+    /// and a machine without it is not one an operator recovers by running
+    /// this tool again. Locking root is offered — deliberately, with its own
+    /// guard that another way in exists — and deleting it is not: the two are
+    /// not the same operation, and only one is undone by a rescue console.
+    CannotDeleteRoot,
+
     /// A login shell is not listed in `/etc/shells`.
     ///
     /// `chsh` refuses one that is absent, and some PAM configurations refuse a
@@ -482,6 +493,7 @@ impl Error {
             },
             Self::NoWayBackIn { user } => Msg::NoWayBackIn { user: user.clone() },
             Self::AdminCannotBeRoot => Msg::AdminCannotBeRoot,
+            Self::CannotDeleteRoot => Msg::CannotDeleteRoot,
             Self::ShellNotListed { shell } => Msg::ShellNotListed {
                 shell: shell.clone(),
             },

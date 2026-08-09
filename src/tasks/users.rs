@@ -600,6 +600,20 @@ impl Task for DeleteUser {
     ) -> Result<Outcome> {
         let user = values.get(Self::USER)?.to_owned();
 
+        // Refused in the code rather than warned about in the dialog, which is
+        // the shape `users.lock-root` already uses for the comparable risk: a
+        // confirmation is dismissible and this is not a decision an operator
+        // should be able to make by pressing through one.
+        //
+        // Locking root is offered and deleting it is not, which is not an
+        // inconsistency. Locking is guarded by proving another account can get
+        // in, and a provider's rescue console undoes it. Deleting root leaves
+        // a machine this tool cannot put back and a rescue console cannot
+        // either.
+        if user == ROOT {
+            return Err(Error::CannotDeleteRoot);
+        }
+
         if !backend.accounts().exists(executor, &user)? {
             return Err(Error::NoSuchAccount { user });
         }
@@ -742,6 +756,35 @@ mod tests {
         assert!(
             read < deleted,
             "the home must be resolved first: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn root_cannot_be_deleted_at_all() {
+        // Refused in the code rather than warned about in a dialog, because a
+        // confirmation is dismissible and this is not a decision that should
+        // be reachable by pressing through one. `users.lock-root` guards the
+        // comparable risk the same way.
+        //
+        // Refused *before* the account is looked up, so the answer does not
+        // depend on the host: the mock is given no replies at all, and a check
+        // that ran later would panic reaching for one.
+        let mock = MockExecutor::new();
+
+        let err = DeleteUser
+            .run(
+                &mock,
+                for_family(Family::Debian).as_ref(),
+                &deleting(ROOT, "keep"),
+                &mut |_| {},
+            )
+            .expect_err("root must be refused");
+
+        assert!(matches!(err, Error::CannotDeleteRoot));
+        assert!(
+            mock.recorded_lines().is_empty(),
+            "nothing may run before the refusal: {:?}",
+            mock.recorded_lines()
         );
     }
 

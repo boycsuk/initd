@@ -19,6 +19,22 @@
 //! reinstalling from the network, which fails outright on a host with no
 //! egress or a stale package cache. A countdown promising an undo that cannot
 //! run is worse than no countdown.
+//!
+//! **What this deliberately does not remove: the drop-in files the forward
+//! tasks wrote themselves.** `fail2ban.install` writes a jail into
+//! `/etc/fail2ban/jail.d/`, `updates.unattended-security` writes a policy into
+//! `/etc/apt/apt.conf.d/`, and neither is part of any package's manifest, so
+//! no package-manager purge takes them.
+//!
+//! Left on purpose rather than overlooked. Both are small, both are inert once
+//! the program reading them is gone, and both are what a reinstall needs in
+//! order to come back configured the way this tool configured it. The cost of
+//! leaving them is a stale file; the cost of removing them is an operator who
+//! removed a banner to try the other one, changed their mind, and found their
+//! jail gone. Where a leftover would be *dangerous* rather than merely stale —
+//! an open firewall port, a peer pointing at a dead tunnel — the task says so
+//! through `consequences` instead, since that is a thing to be told rather
+//! than a thing to be done silently.
 
 use crate::backend::{Backend, Capability};
 use crate::error::Result;
@@ -160,7 +176,14 @@ pub fn undo(
     report(
         progress,
         &Msg::TaskBinaryRemoved {
-            path: format!("/usr/local/bin/{program}"),
+            // From the installer's own constant rather than a second literal:
+            // the removal above builds its path that way, and a report spelling
+            // it out separately is the copy that goes stale while the deletion
+            // stays correct.
+            path: format!(
+                "{}/{program}",
+                crate::backend::release_installer::INSTALL_DIR
+            ),
         },
     );
 

@@ -248,7 +248,7 @@ command line, running the subcommand *is* the confirmation.
 |---------|-----------|---------|---------|
 | `wireguard.status` | `run wireguard.status` | no | Reports whether the tunnel is up and how many peers are configured. |
 | `wireguard.install` | `run <id> name=value` | no | Installs WireGuard, generates the server keys and writes `wg0.conf`. Refuses to overwrite an existing configuration. |
-| `wireguard.uninstall` | `run <id> name=value` | yes | Brings `wg0` down, disables it at boot and removes the WireGuard tools. `removal=` chooses `remove` (the default) or `purge`; `wg0.conf` and the server keys survive a `remove`, since they cannot be regenerated to match peers that already hold the public key. Lockout because an administrator connected *over* the tunnel loses the session applying it. |
+| `wireguard.uninstall` | `run <id> name=value` | yes | Brings `wg0` down, disables it at boot and removes the WireGuard tools. `removal=` chooses `remove` (the default) or `purge`, which decides only what the package manager takes. `wg0.conf` and the server keys are left on disk either way: they cannot be regenerated to match peers that already hold the public key, so removing them is not something a field with two near-identical values should decide. Lockout because an administrator connected *over* the tunnel loses the session applying it. |
 | `wireguard.add-peer` | `run <id> name=value` | no | Generates a peer keypair, records it on the server, and prints the client configuration once. |
 
 ### Network

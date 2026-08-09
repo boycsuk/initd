@@ -122,6 +122,11 @@ pub struct Measurement {
 /// A probe running on its own thread.
 pub struct Probe {
     results: Receiver<Measurement>,
+    /// Whether the sending thread has been observed to have gone.
+    ///
+    /// Remembered rather than asked, because asking costs a `try_recv` and
+    /// `try_recv` consumes — see [`drain`](Probe::drain).
+    finished: bool,
 }
 
 impl Probe {
@@ -164,7 +169,10 @@ impl Probe {
             }
         });
 
-        Self { results }
+        Self {
+            results,
+            finished: false,
+        }
     }
 
     /// Takes whatever has been measured since the last call.
@@ -175,20 +183,38 @@ impl Probe {
     pub fn drain(&mut self) -> Vec<Measurement> {
         let mut measured = Vec::new();
 
-        // Both ends of the channel stop the loop the same way, unlike the
-        // worker's drain: a thread that died mid-task has to be reported,
-        // while a probe that stopped early just leaves rows at `Unknown` —
-        // a state the interface already draws correctly.
-        while let Ok(measurement) = self.results.try_recv() {
-            measured.push(measurement);
+        loop {
+            match self.results.try_recv() {
+                Ok(measurement) => measured.push(measurement),
+                Err(TryRecvError::Empty) => break,
+                // Recorded here rather than answered by a second `try_recv`
+                // later. `try_recv` *consumes*, so asking "are you finished?"
+                // through one is asking a question that can eat the answer to
+                // a different one: a measurement arriving between the last
+                // drain and that call would be received, discarded, and its
+                // row left at `Unknown` for the rest of the session.
+                //
+                // The window is narrow, and the case that lands in it is the
+                // one that matters most: `refresh_presence_after` starts a
+                // single-subject probe, so that thread sends once and returns
+                // immediately — exactly the shape that races.
+                Err(TryRecvError::Disconnected) => {
+                    self.finished = true;
+                    break;
+                }
+            }
         }
 
         measured
     }
 
     /// Whether the thread has finished sending.
-    pub fn is_finished(&self) -> bool {
-        matches!(self.results.try_recv(), Err(TryRecvError::Disconnected))
+    ///
+    /// Reads what the last [`drain`](Self::drain) observed rather than asking
+    /// the channel again, so answering it can never take a measurement out of
+    /// the queue.
+    pub const fn is_finished(&self) -> bool {
+        self.finished
     }
 }
 
@@ -498,6 +524,65 @@ mod tests {
         assert_eq!(
             task_for(&pair, &state).map(crate::tasks::Task::id),
             Some("caddy.install")
+        );
+    }
+
+    #[test]
+    fn a_measurement_that_arrives_as_the_thread_exits_is_not_lost() {
+        // `is_finished` used to answer through its own `try_recv`, which
+        // consumes: a measurement sent between the last drain and that call
+        // was received, discarded, and its row left at `Unknown` for the rest
+        // of the session.
+        //
+        // The shape reproduced here is the one that matters. Every refresh
+        // after a task is a single-subject probe, so the thread sends once and
+        // returns immediately — the send and the disconnect land together, and
+        // the drain sees both in one pass.
+        let (sender, results) = channel();
+        let mut probe = Probe {
+            results,
+            finished: false,
+        };
+
+        // The tick that finds nothing: the thread has not answered yet, so the
+        // drain is empty and the probe is not finished. This is the call the
+        // lost measurement used to arrive *after*.
+        assert!(probe.drain().is_empty());
+        assert!(!probe.is_finished(), "nothing has been measured yet");
+
+        sender
+            .send(Measurement {
+                forward_id: "caddy.install",
+                presence: Presence::Present,
+            })
+            .expect("the receiver is alive");
+        drop(sender);
+
+        // Ask in the order the event loop asks, which is what makes the defect
+        // reachable: `poll_probe` drains and *then* asks whether to drop the
+        // probe. With `is_finished` implemented as its own `try_recv`, the
+        // first of those two calls is the one that lost the measurement.
+        //
+        // Interleaved deliberately rather than drained first: reading the
+        // whole channel and then asking is the one order the old code
+        // survived, and a test that only exercised it would have passed
+        // against the bug.
+        let finished_first = probe.is_finished();
+        let measured = probe.drain();
+
+        assert_eq!(
+            measured.len(),
+            1,
+            "the measurement must survive being asked whether the probe ended"
+        );
+        assert_eq!(measured[0].forward_id, "caddy.install");
+        assert!(
+            probe.is_finished() || finished_first,
+            "the disconnect must be observed"
+        );
+        assert!(
+            probe.drain().is_empty(),
+            "a finished probe has nothing left to give"
         );
     }
 

@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `root` cannot be deleted, refused in the code rather than warned about in a
+  dialog — a confirmation is dismissible, and this is not a decision that
+  should be reachable by pressing through one. Locking root stays on offer,
+  guarded by proving another account can still get in; a provider's rescue
+  console undoes a lock and cannot undo a deletion. The confirmation for every
+  other account now also says that deleting it ends this session if it is the
+  account being administered from, which is what the tool can honestly claim:
+  nothing here resolves who is running it, so it names the account rather than
+  implying a check it did not make.
+- A measurement arriving as the probe's thread exits is no longer lost.
+  `is_finished` answered through its own `try_recv`, which *consumes* — so a
+  result landing between the last drain and that question was received,
+  discarded, and its row left showing the install verb for the rest of the
+  session. Narrow, and the case that lands in it is the one that matters most:
+  the refresh after a task probes a single subject, so the thread sends once
+  and returns immediately. Found in review, and the test was written against
+  the defect before the fix — the first attempt passed with the bug still in.
+- `wireguard.uninstall` never deletes `wg0.conf`, and now says so. The task,
+  `cli.md` and `user-stories.md` all claimed the keys were removed on purge;
+  the code passed the choice to the package manager and stopped there, which
+  is the safer of the two behaviours and not the documented one. Corrected
+  towards the code rather than the docs: that file holds the server's private
+  key, every peer already holds the matching public one, and regenerating it
+  invalidates every client rather than restoring anything — not a decision for
+  a field whose two values sit one character apart.
 - `users.delete` removes an account, and its home directory is a field rather
   than a policy: both answers are defensible — a home holding dotfiles is
   residue, one holding a year of someone's work is not something a form should
