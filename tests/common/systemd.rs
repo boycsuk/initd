@@ -57,7 +57,7 @@ impl SystemdContainer {
     /// privileged containers has not found a bug.
     pub fn boot(image: &Image, label: &str) -> Option<Self> {
         let tag = build_systemd_image(image)?;
-        let name = format!("initd-systemd-{}-{}", image.family, label);
+        let name = format!("initd-systemd-{}-{}", image.family_tag(), label);
 
         // A leftover from an interrupted run would make `docker run` fail on
         // the name alone.
@@ -173,7 +173,7 @@ fn remove_container(name: &str) {
 /// initd-systemd-arch:test` when the disk matters more than the next run's
 /// speed.
 fn build_systemd_image(image: &Image) -> Option<String> {
-    let tag = format!("initd-systemd-{}:test", image.family);
+    let tag = format!("initd-systemd-{}:test", image.family_tag());
 
     // Already built by an earlier scenario in this run.
     let existing = Command::new("docker")
@@ -184,7 +184,7 @@ fn build_systemd_image(image: &Image) -> Option<String> {
         return Some(tag);
     }
 
-    let builder = format!("initd-systemd-build-{}", image.family);
+    let builder = format!("initd-systemd-build-{}", image.family_tag());
     remove_container(&builder);
 
     let installed = Command::new("docker")

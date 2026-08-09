@@ -149,6 +149,26 @@ pub struct Image {
     pub installed_needle: &'static str,
 }
 
+impl Image {
+    /// A tag fragment identifying this *image*, not merely its family.
+    ///
+    /// Committed images are named after their family, which was unambiguous
+    /// while every family had exactly one image. openSUSE has two, and
+    /// `image.family` answers `suse` for both — so Tumbleweed and Leap would
+    /// share one committed image, and whichever ran second would silently
+    /// exercise the other's packages while reporting its own name.
+    ///
+    /// Derived from the image reference rather than added as a field, so a new
+    /// entry cannot forget it: two images can only collide here by being the
+    /// same image.
+    pub fn family_tag(&self) -> String {
+        self.name
+            .replace(['/', ':', '.'], "-")
+            .trim_matches('-')
+            .to_ascii_lowercase()
+    }
+}
+
 /// Debian and derivatives: `apt`, `openssh-server`.
 pub const DEBIAN: Image = Image {
     name: "debian:13",
@@ -279,12 +299,84 @@ pub const RHEL: Image = Image {
     installed_needle: "openssh-server",
 };
 
+/// openSUSE Tumbleweed: `zypper`, systemd, `wheel` — and a `wheel` that grants
+/// nothing until a drop-in says so.
+///
+/// The rolling variant. Present alongside Leap rather than standing in for the
+/// family because the two disagree: Tumbleweed packages Zellij and Leap does
+/// not, which is the first divergence inside a family this matrix has had to
+/// represent.
+pub const TUMBLEWEED: Image = Image {
+    name: "opensuse/tumbleweed",
+    family: "suse",
+    refresh: "zypper --non-interactive refresh",
+    // `--non-interactive` before the subcommand, as the backend does: zypper
+    // prompts for licence agreements and vendor changes as well as for
+    // confirmation, and none of those are answered by a trailing flag.
+    install_ssh: "zypper --non-interactive install openssh-server",
+    // Split as Debian splits it, and the same quiet failure if omitted: no
+    // client means nothing to connect with, which reads as the daemon
+    // refusing.
+    install_ssh_client: "zypper --non-interactive install openssh-clients",
+    // From shadow, in the base image.
+    install_useradd: "true",
+    install_tmux: "zypper --non-interactive install tmux",
+    install_systemd: "zypper --non-interactive install systemd",
+    init_path: "/usr/lib/systemd/systemd",
+    ssh_unit: "sshd.service",
+    // Not measured either way, and `true` is the answer that cannot produce a
+    // confusing failure: a static binary runs on a host with a current glibc,
+    // where a dynamic one on a host with an older glibc dies with a linker
+    // error that reads as a broken image.
+    needs_static_binary: true,
+    install_nftables: "zypper --non-interactive install nftables",
+    // firewalld is packaged but not installed by default, and the backend
+    // presents nftables alone — so nothing installs it here. Named rather than
+    // left blank because the field is not optional, and `true` is what the
+    // other families use for "nothing to do".
+    install_firewalld: "true",
+    install_wireguard: "zypper --non-interactive install wireguard-tools",
+    install_sysctl: "zypper --non-interactive install procps systemd",
+    query_ssh: "rpm -q openssh-server",
+    installed_needle: "openssh-server",
+};
+
+/// openSUSE Leap 16.0: the same family, resolved to a different set of names.
+///
+/// Carried in the matrix rather than assumed equivalent to Tumbleweed, because
+/// the measurement that produced this family found them disagreeing — Zellij is
+/// packaged on one and absent from the other. A matrix holding only the rolling
+/// variant would have agreed with the backend about a name the stable one does
+/// not have.
+pub const LEAP: Image = Image {
+    name: "opensuse/leap",
+    family: "suse",
+    refresh: "zypper --non-interactive refresh",
+    install_ssh: "zypper --non-interactive install openssh-server",
+    install_ssh_client: "zypper --non-interactive install openssh-clients",
+    install_useradd: "true",
+    install_tmux: "zypper --non-interactive install tmux",
+    install_systemd: "zypper --non-interactive install systemd",
+    init_path: "/usr/lib/systemd/systemd",
+    ssh_unit: "sshd.service",
+    needs_static_binary: true,
+    install_nftables: "zypper --non-interactive install nftables",
+    install_firewalld: "true",
+    install_wireguard: "zypper --non-interactive install wireguard-tools",
+    install_sysctl: "zypper --non-interactive install procps systemd",
+    query_ssh: "rpm -q openssh-server",
+    installed_needle: "openssh-server",
+};
+
 /// Every image the shared scenarios run against.
 ///
 /// Only families [`crate::distro::Family`] actually resolves belong here. SUSE
-/// is absent because its backend is, and a matrix entry without a backend would
-/// fail for code deliberately not written yet.
-pub const IMAGES: &[&Image] = &[&DEBIAN, &ARCH, &ALPINE, &RHEL];
+/// now appears twice, which is a first: every other family is represented by
+/// one image because one set of names describes it. openSUSE needs two because
+/// Tumbleweed and Leap resolve Zellij differently, and a matrix that covered
+/// only one of them would let the backend's `for_distribution` split go
+/// unexercised on the half it was written for.
+pub const IMAGES: &[&Image] = &[&DEBIAN, &ARCH, &ALPINE, &RHEL, &TUMBLEWEED, &LEAP];
 
 /// A public key the hardening tasks accept, so the lockout guard lets them
 /// proceed. Every scenario that hardens needs one first.
@@ -342,6 +434,68 @@ pub fn binary_for(image: &Image) -> Option<String> {
     path.exists().then(|| path.to_string_lossy().into_owned())
 }
 
+/// An image of this family with its package metadata already fetched.
+///
+/// Every scenario starts a fresh container and the harness prepends
+/// [`Image::refresh`] so package installation works. A container keeps nothing
+/// between runs, so that download is paid once per scenario and thrown away —
+/// which is cheap on apt and is not on zypper: measured cold, `apt-get update`
+/// takes about a second on `debian:13` and `zypper refresh` about nine on
+/// `opensuse/tumbleweed`, which refreshes six repositories. Across the 174
+/// openSUSE scenarios that is roughly twenty-six minutes of the run spent
+/// re-fetching metadata that never changes.
+///
+/// So the refresh is done once per family and committed, exactly as
+/// [`systemd::build_systemd_image`] already does for the init packages, and for
+/// the same reason: no build context and no second source of truth about what a
+/// family installs — the command committed here is the family's own
+/// [`Image::refresh`] and nothing else.
+///
+/// Scenarios keep calling refresh; against this image it finds the caches
+/// populated and returns immediately. That is deliberate — the alternative,
+/// dropping the refresh from the script, would make every scenario depend on
+/// this optimisation having worked.
+///
+/// Returns the base image name where anything goes wrong. A committed cache is
+/// a speed-up, and a test run that fails because a speed-up failed would be
+/// worse than a slow one.
+fn cached_image(image: &Image) -> String {
+    let tag = format!("initd-cache-{}:test", image.family_tag());
+
+    let existing = Command::new("docker")
+        .args(["image", "inspect", &tag])
+        .output();
+
+    if existing.is_ok_and(|out| out.status.success()) {
+        return tag;
+    }
+
+    let builder = format!("initd-cache-build-{}", image.family_tag());
+    let _ = Command::new("docker").args(["rm", "-f", &builder]).output();
+
+    let refreshed = Command::new("docker")
+        .args([
+            "run",
+            "--name",
+            &builder,
+            image.name,
+            "sh",
+            "-c",
+            image.refresh,
+        ])
+        .output();
+
+    let built = refreshed.is_ok_and(|out| out.status.success())
+        && Command::new("docker")
+            .args(["commit", &builder, &tag])
+            .output()
+            .is_ok_and(|out| out.status.success());
+
+    let _ = Command::new("docker").args(["rm", "-f", &builder]).output();
+
+    if built { tag } else { image.name.to_owned() }
+}
+
 /// Runs a shell command inside a fresh container, with the binary mounted.
 ///
 /// The binary is bind-mounted rather than copied so the container starts from
@@ -363,19 +517,58 @@ pub fn run_in_container(image: &Image, script: &str) -> std::process::Output {
     // caches aside; joining it here keeps each test to a single container.
     let full_script = format!("{} >/dev/null 2>&1; {script}", image.refresh);
 
-    Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "-v",
-            &mount,
-            image.name,
-            "sh",
-            "-c",
-            &full_script,
-        ])
+    let base = cached_image(image);
+
+    let output = Command::new("docker")
+        .args(["run", "--rm", "-v", &mount, &base, "sh", "-c", &full_script])
         .output()
-        .expect("docker run must execute")
+        .expect("docker run must execute");
+
+    panic_if_the_container_never_ran(image, &output);
+
+    output
+}
+
+/// Docker's own exit code for "the container did not start".
+///
+/// 125 is the daemon refusing before anything ran — out of memory, a bad flag,
+/// an image that will not pull. Distinct by design from the *script's* exit
+/// code, which is what every scenario here is actually asking about, and from
+/// 126/127, which mean the command was found unrunnable inside a container that
+/// did start.
+const DOCKER_COULD_NOT_START: i32 = 125;
+
+/// Fails loudly where the container never ran, rather than letting a scenario
+/// read the silence as an answer.
+///
+/// The rule `exit_code_of` already follows, one layer up and learned the same
+/// way. A daemon too loaded to start a container returns empty output and 125;
+/// the scenario then asserts against that emptiness and reports the tool as
+/// broken, sending the reader to `src/` for a defect that is not there. It
+/// surfaced when the matrix grew from four images to six — the two openSUSE
+/// images are large, the host has 32 cores and 15 GB, and nextest sizes its
+/// parallelism by cores — which made a latent fault likely rather than creating
+/// one.
+///
+/// A panic naming the image and both streams is the right answer because there
+/// is no honest value to return: "the question could not be asked" is not a
+/// result the caller's assertion can represent.
+fn panic_if_the_container_never_ran(image: &Image, output: &std::process::Output) {
+    if output.status.code() != Some(DOCKER_COULD_NOT_START) {
+        return;
+    }
+
+    panic!(
+        "{}: the container never started, so this says nothing about the code \
+         under test. Docker exited {DOCKER_COULD_NOT_START}.\n\
+         With six images the matrix can exhaust a host that has more cores than \
+         memory — nextest sizes parallelism by cores. Re-run with \
+         `--test-threads 1`.\n\
+         stdout: {}\nstderr: {}",
+        image.name,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 /// Runs a shell command inside a fresh `--privileged` container.
@@ -408,22 +601,32 @@ pub fn run_in_privileged_container(image: &Image, script: &str) -> Option<std::p
     let mount = format!("{binary}:/usr/local/bin/initd:ro");
     let full_script = format!("{} >/dev/null 2>&1; {script}", image.refresh);
 
-    Some(
-        Command::new("docker")
-            .args([
-                "run",
-                "--rm",
-                "--privileged",
-                "-v",
-                &mount,
-                image.name,
-                "sh",
-                "-c",
-                &full_script,
-            ])
-            .output()
-            .expect("docker run must execute"),
-    )
+    let base = cached_image(image);
+
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--privileged",
+            "-v",
+            &mount,
+            &base,
+            "sh",
+            "-c",
+            &full_script,
+        ])
+        .output()
+        .expect("docker run must execute");
+
+    // Not folded into the `grants_privileged` check above: that one asks
+    // whether the host *permits* the flag and answers `None` so the scenario
+    // skips, which is the right answer to "this host cannot run this test".
+    // This asks whether the container started at all, and a skip would be the
+    // wrong answer to that — it would hide a matrix too large for the host
+    // behind a message saying the host lacks a capability it has.
+    panic_if_the_container_never_ran(image, &output);
+
+    Some(output)
 }
 
 /// Whether this host will start a `--privileged` container at all.
@@ -823,6 +1026,8 @@ macro_rules! for_each_image {
                 $crate::for_each_image!(@image arch, common::ARCH, $image, $body);
                 $crate::for_each_image!(@image alpine, common::ALPINE, $image, $body);
                 $crate::for_each_image!(@image rhel, common::RHEL, $image, $body);
+                $crate::for_each_image!(@image tumbleweed, common::TUMBLEWEED, $image, $body);
+                $crate::for_each_image!(@image leap, common::LEAP, $image, $body);
             }
         )*
     };
@@ -857,5 +1062,98 @@ mod tests {
             "SSH_LOGIN must echo {CONNECTED}, or every connection scenario \
              greps for a line that is never printed"
         );
+    }
+
+    /// An `Output` with the given exit code, built without running anything.
+    ///
+    /// `ExitStatus` cannot be constructed portably, so this borrows the one a
+    /// real process leaves behind — `sh -c 'exit N'` is the cheapest way to
+    /// obtain a status with a chosen code, and it needs no Docker, which is
+    /// what keeps these two tests in the ordinary suite.
+    fn output_with_code(code: i32) -> std::process::Output {
+        let status = Command::new("sh")
+            .args(["-c", &format!("exit {code}")])
+            .status()
+            .expect("sh must run");
+
+        std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: b"Error response from daemon: cannot allocate memory".to_vec(),
+        }
+    }
+
+    #[test]
+    fn every_image_commits_under_a_tag_of_its_own() {
+        // The defect this was written against, which predates the cache and was
+        // found while adding it: committed images were named after
+        // `image.family`, unambiguous only while every family had one image.
+        // openSUSE has two and both answer `suse`, so Tumbleweed and Leap
+        // shared one committed image — whichever ran second exercised the
+        // other's packages while reporting its own name, which is a test that
+        // lies rather than one that fails.
+        let tags: Vec<String> = IMAGES.iter().map(|image| image.family_tag()).collect();
+
+        for (index, tag) in tags.iter().enumerate() {
+            assert!(
+                !tags[index + 1..].contains(tag),
+                "two images share the tag {tag}, so one would reuse the other's \
+                 committed image: {tags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tag_is_usable_as_a_docker_reference() {
+        // `docker tag` rejects slashes, colons and uppercase in the position
+        // these are interpolated into, and `opensuse/tumbleweed` carries the
+        // first. A tag that Docker refuses would fall back to the base image
+        // silently — the cache would simply never work, and nothing would say
+        // so, because falling back is the designed behaviour on failure.
+        for image in IMAGES {
+            let tag = image.family_tag();
+
+            assert!(
+                !tag.is_empty()
+                    && tag
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{} yields {tag}, which docker will not accept",
+                image.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_container_that_never_started_is_a_panic_rather_than_an_answer() {
+        // The failure this prevents is a scenario reporting the tool as broken
+        // when Docker refused to start anything: stdout is empty either way, so
+        // the assertion cannot tell the two apart. Verified against the real
+        // shape — `docker run` on a host that cannot allocate exits 125 with no
+        // stdout.
+        let refused = output_with_code(DOCKER_COULD_NOT_START);
+
+        let panicked = std::panic::catch_unwind(|| {
+            panic_if_the_container_never_ran(&DEBIAN, &refused);
+        });
+
+        assert!(
+            panicked.is_err(),
+            "a container that never started must not be read as a result"
+        );
+    }
+
+    #[test]
+    fn a_scenario_that_genuinely_failed_is_left_alone() {
+        // The other half, and the one that matters more: 125 is Docker's own
+        // code for "did not start", while a script exiting non-zero *inside* a
+        // container that ran is exactly what several scenarios assert on.
+        // Swallowing those would turn real failures into panics about the
+        // harness — a guard worse than the bug.
+        for code in [0, 1, 2, 6, 126, 127] {
+            let ran = output_with_code(code);
+
+            panic_if_the_container_never_ran(&DEBIAN, &ran);
+        }
     }
 }

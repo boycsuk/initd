@@ -228,6 +228,13 @@ impl Task for CreateUser {
             },
         );
 
+        // Before the account joins it, because `usermod -aG` against a missing
+        // group exits 6 rather than creating one. Four families ship the group
+        // with the system and answer this with nothing; openSUSE requires
+        // `system-group-wheel`, which only its desktop patterns pull in, so a
+        // minimally installed server has no `wheel` until something makes one.
+        backend.ensure_admin_group(executor, group)?;
+
         // Fails rather than reporting success when the group is absent, which
         // is what asking for `sudo` on Arch would do.
         accounts.add_to_group(executor, &user, group)?;
@@ -240,6 +247,14 @@ impl Task for CreateUser {
                 user,
                 group: group.to_owned(),
             });
+        }
+
+        // On a family where the group grants nothing on its own, membership is
+        // only half the work. openSUSE ships `%wheel` commented out, so every
+        // check above passes on an account that still cannot escalate — which
+        // is why this runs after the read-back rather than instead of it.
+        if !backend.admin_group_grants_alone() {
+            backend.grant_admin(executor, group)?;
         }
 
         report(
@@ -484,6 +499,21 @@ impl LockRoot {
             .is_in_group(executor, admin, group)?
         {
             return Err(Error::NotAnAdministrator {
+                user: admin.to_owned(),
+                group: group.to_owned(),
+            });
+        }
+
+        // Membership is the question everywhere the group grants on its own,
+        // and half of it where it does not. This guard's whole purpose is to
+        // refuse locking root while nobody else can administer the machine —
+        // so on a family shipping `%wheel` commented out it would otherwise
+        // approve on a reading that is true and irrelevant, and leave the
+        // operator with no way back in. Refused rather than granted here: this
+        // task locks an account, and silently editing the escalation policy is
+        // not something a lock should do on the way past.
+        if !backend.admin_group_grants_alone() {
+            return Err(Error::AdminGroupGrantsNothing {
                 user: admin.to_owned(),
                 group: group.to_owned(),
             });
@@ -1194,6 +1224,84 @@ mod tests {
         let err = outcome.expect_err("a non-administrator must not vouch");
 
         assert!(matches!(err, Error::NotAnAdministrator { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn the_group_is_created_before_the_account_is_added_to_it() {
+        // Written against a defect a container found rather than review. The
+        // creation first sat inside `grant_admin`, which runs *after* the
+        // membership — and `usermod -aG` against a missing group exits 6, so
+        // `users.create` on a stock openSUSE host failed at a step that never
+        // reached the fix. The container said `usermod: group 'wheel' does not
+        // exist`; every unit test passed.
+        //
+        // Ordering is therefore the assertion. Both commands present in the
+        // wrong order is exactly the state that shipped.
+        let (outcome, commands) = run(
+            &CreateUser,
+            Family::Suse,
+            vec![
+                Reply::failure(2, ""),     // account does not exist
+                Reply::ok(""),             // useradd
+                Reply::ok(""),             // groupadd -f
+                Reply::ok("wheel:x:498:"), // group exists
+                Reply::ok(""),             // usermod -aG
+                Reply::ok("alice wheel"),  // id -nG reads it back
+                Reply::ok(""),             // tee the drop-in
+                Reply::ok("644"),          // stat the staged file
+                Reply::ok(""),             // chmod the staged file
+                Reply::ok(""),             // mv it into place
+                Reply::ok(""),             // chmod 440
+                Reply::ok(""),             // visudo -c
+            ],
+            &values(CreateUser::USER, "alice"),
+        );
+
+        outcome.expect("creating the administrator must succeed");
+
+        let groupadd_at = commands
+            .iter()
+            .position(|line| line.starts_with("groupadd"))
+            .expect("the group must be created");
+        let usermod_at = commands
+            .iter()
+            .position(|line| line.contains("usermod"))
+            .expect("the account must join the group");
+
+        assert!(
+            groupadd_at < usermod_at,
+            "usermod against a missing group exits 6: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn locking_root_refuses_where_the_group_grants_nothing() {
+        // The failure this guard exists to prevent, one level below the one it
+        // was written for. On openSUSE `%wheel` is shipped commented out, so
+        // `alice` reads back as a member — the check above passes — and still
+        // cannot escalate. Approving here would lock root on a machine nobody
+        // can administer, which is precisely the outcome the task refuses for.
+        //
+        // The distinct error matters as much as the refusal: reporting
+        // `NotAnAdministrator` would send the operator to `usermod` for a
+        // problem that command cannot fix, and assert something the system
+        // contradicts.
+        let (outcome, _) = run(
+            &LockRoot,
+            Family::Suse,
+            vec![
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // exists
+                Reply::ok("alice wheel"),                              // in the group
+            ],
+            &values(LockRoot::ADMIN, "alice"),
+        );
+
+        let err = outcome.expect_err("membership alone must not vouch here");
+
+        assert!(
+            matches!(err, Error::AdminGroupGrantsNothing { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]

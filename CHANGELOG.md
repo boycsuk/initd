@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- openSUSE and SLES are a supported family. Tumbleweed and Leap 16.0 were both
+  measured rather than one standing in for the other, and every name in the
+  backend comes from asking the distribution: `zypper` for packages,
+  `sshd.service` for the unit, and the capabilities openSUSE packages that RHEL
+  has to fetch as verified releases — Caddy, fish, rustup and fail2ban among
+  them.
+- A family may now disagree with itself. Tumbleweed packages Zellij and Leap
+  16.0 does not, so the backend resolves a *distribution* where the other four
+  resolve only a family — the mechanism RHEL already used for Docker's
+  repository paths, reached here for an unrelated reason, which is what makes
+  it a pattern rather than a one-off. It is also why openSUSE is the one family
+  carrying two container images: a matrix holding only the rolling variant
+  would have agreed with the backend about a name the stable one lacks.
+- Being in the administrative group and being able to escalate are now separate
+  questions. Four families answer them identically, which is why one was long
+  assumed to imply the other; openSUSE ships `%wheel` commented out in
+  `/usr/etc/sudoers`, so joining the group grants nothing. `users.create` writes
+  a drop-in under `sudoers.d` — created at `0440`, because sudo silently ignores
+  a drop-in it considers too permissive — and validates the result with
+  `visudo -c`, since a sudoers file that does not parse disables sudo entirely
+  rather than ignoring the bad line.
+- The administrative group is created where the distribution does not ship it.
+  `wheel` comes from `system-group-wheel` on openSUSE, required only by the
+  desktop patterns, so a minimally installed server has no such group and
+  `usermod -aG` against a missing one exits 6.
+
 - `H` opens the recorded changes and any one of them can be put back. The list
   names the task that made each change as well as when — ten recorded states of
   one file are ten indistinguishable timestamps otherwise, and choosing between
@@ -47,6 +73,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   administrator out rather than rescuing them.
 
 ### Fixed
+- A container the daemon could not start was reported as a failing assertion
+  about the code. `docker run` exits 125 with empty output when it refuses, and
+  empty output is also what a scenario whose assertion genuinely failed
+  produces — so sixteen scenarios named the backend as broken when the host had
+  run out of memory. Both container helpers now stop with the image and both
+  streams named. The trigger was arithmetic rather than a defect: nextest sizes
+  parallelism by cores, and six images need more memory than four on a host
+  with more cores than gigabytes, so the container matrix now documents
+  `--test-threads 1`.
+- `users.lock-root` would have approved an account that cannot escalate. Its
+  whole purpose is refusing to lock root while nobody else can administer the
+  machine, and it asked the only question that used to mean that: membership of
+  the administrative group. On openSUSE that reading is true and irrelevant, so
+  the guard would have passed and left the operator with no way back in. It now
+  refuses with an error of its own rather than reusing "not an administrator" —
+  that message would send somebody to `usermod` for a problem `usermod` cannot
+  repair, and assert a membership the system contradicts.
+- The five SSH tasks read `/etc/ssh/sshd_config` before editing it, and on
+  openSUSE that file does not exist: the package installs its configuration to
+  `/usr/etc/ssh/sshd_config` under the `/usr/etc` split, while sshd runs
+  perfectly well. The backend now seeds the canonical path from the packaged
+  copy before any task reads it — fixed once rather than in each of the five,
+  which is the shape of change where the sixth is the one that forgets. The
+  packaged file is copied rather than edited in place, since rpm owns it and
+  restores it on upgrade.
 - Deleting the account the session is being administered as is now refused
   rather than warned about. It was only ever a warning because nothing resolved
   who had escalated; measuring settled that — `logname` answers `root` under

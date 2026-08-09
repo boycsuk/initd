@@ -100,6 +100,8 @@ impl Task for RestrictUsers {
             }
         }
 
+        backend.ensure_config_present(executor, Capability::Ssh)?;
+
         let files = backend.files();
         let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
 

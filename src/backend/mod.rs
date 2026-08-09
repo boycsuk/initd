@@ -20,6 +20,7 @@ pub mod rhel;
 pub mod rpm_repositories;
 pub mod semanage;
 pub mod shadow_accounts;
+pub mod suse;
 pub mod systemd;
 pub mod systemd_user;
 pub mod unix_accounts;
@@ -125,12 +126,101 @@ pub trait Backend {
     /// still living above this layer.
     fn path_for(&self, capability: Capability) -> &'static str;
 
+    /// Makes [`Backend::path_for`] name a file that exists.
+    ///
+    /// Four families need nothing here: the packages they install write their
+    /// configuration under `/etc`, so the path is readable the moment the
+    /// capability is installed. openSUSE follows the `/usr/etc` split — the
+    /// packaged `sshd_config` lives there and `/etc/ssh/sshd_config` is absent
+    /// on a fresh host — and the five SSH tasks read that path before editing
+    /// it, so on that family they would fail before writing anything.
+    ///
+    /// Called before a task reads a capability's configuration, and required to
+    /// be idempotent: it runs on every such task, and most of the time the file
+    /// is already there.
+    ///
+    /// This is a path question rather than a task one, which is why it lives
+    /// beside `path_for` instead of in the tasks. Five of them read
+    /// `sshd_config`; fixing it in each is the shape of change where the sixth
+    /// is the one that forgets.
+    fn ensure_config_present(
+        &self,
+        _executor: &dyn Executor,
+        _capability: Capability,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// The group that grants administrative rights on this distribution.
     ///
     /// `sudo` on Debian, `wheel` on Arch and RHEL. The divergence matters more
     /// than most: `usermod -aG sudo` on Arch exits zero and grants nothing,
     /// leaving an account that looks provisioned and cannot escalate.
     fn admin_group(&self) -> &'static str;
+
+    /// Makes [`Backend::admin_group`] name a group that exists.
+    ///
+    /// Four families ship it with the system and need nothing here. openSUSE
+    /// takes `wheel` from `system-group-wheel`, which only its desktop patterns
+    /// require — measured, neither installing `sudo` nor
+    /// `patterns-base-minimal_base` pulls it in — so a minimally installed
+    /// server has no such group.
+    ///
+    /// Called before an account is added to the group rather than as part of
+    /// granting, because `usermod -aG` against a missing group exits 6: the
+    /// membership fails first, and nothing later gets the chance to fix it.
+    /// Separated from [`Backend::grant_admin`] for that reason alone — the two
+    /// read as one job and happen at different moments.
+    ///
+    /// Required to be idempotent: it runs on every account created.
+    fn ensure_admin_group(&self, _executor: &dyn Executor, _group: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Whether joining [`Backend::admin_group`] is by itself enough to escalate.
+    ///
+    /// Four families answer yes, which is why this was a constant for so long:
+    /// the group's name was the whole answer, and a task that added an account
+    /// to it was done. openSUSE is the first to disagree — `wheel` exists and
+    /// is the right group, but the rule granting it is shipped *commented out*
+    /// in `/usr/etc/sudoers`:
+    ///
+    /// ```text
+    /// ## Uncomment to allow members of group wheel to execute any command
+    /// # %wheel ALL=(ALL:ALL) ALL
+    /// ```
+    ///
+    /// Measured on `opensuse/tumbleweed` and `opensuse/leap` 16.0, and `rpm -V`
+    /// reports the file unmodified — so this is the distribution's default
+    /// rather than an artefact of the container image, which was the reading
+    /// that had to be ruled out before changing a trait over it.
+    ///
+    /// What that costs is the failure this whole layer exists to prevent, one
+    /// level deeper than the name: `usermod -aG wheel` succeeds, membership
+    /// reads back true, and the account still cannot escalate. Both callers are
+    /// harmed differently — `users.create` reports an administrator it did not
+    /// make, and `users.lock-root` *verifies* membership before locking root,
+    /// so it would approve the one state it exists to refuse and leave nobody
+    /// able to administer the machine.
+    ///
+    /// A backend answering `false` must implement [`Backend::grant_admin`].
+    fn admin_group_grants_alone(&self) -> bool {
+        true
+    }
+
+    /// Makes membership of [`Backend::admin_group`] actually confer escalation.
+    ///
+    /// Called only where [`Backend::admin_group_grants_alone`] is `false`, and
+    /// only after the account is already in the group. The default is
+    /// unreachable for the four families that grant on membership; it returns
+    /// `Ok(())` rather than panicking, because a trait method that cannot be
+    /// called is still a method and `unreachable!()` in a tool running as root
+    /// is a promise about callers rather than about code — the same reasoning
+    /// [`crate::backend::rhel::DnfPackages::purge`] records for its own
+    /// unreachable branch.
+    fn grant_admin(&self, _executor: &dyn Executor, _group: &str) -> Result<()> {
+        Ok(())
+    }
 
     fn packages(&self) -> &dyn PackageManager;
     fn services(&self) -> &dyn ServiceManager;
@@ -288,6 +378,7 @@ pub fn for_family(family: Family) -> Box<dyn Backend> {
         Family::Arch => Box::new(arch::ArchBackend::new()),
         Family::Alpine => Box::new(alpine::AlpineBackend::new()),
         Family::Rhel => Box::new(rhel::RhelBackend::new()),
+        Family::Suse => Box::new(suse::SuseBackend::new()),
     }
 }
 
@@ -297,15 +388,22 @@ pub fn for_family(family: Family) -> Box<dyn Backend> {
 /// only a family — chiefly tests asserting a property every member of one
 /// shares — and resolves the same backend with the family's own defaults.
 ///
-/// The `ID` narrows exactly one thing: Docker publishes a repository per
-/// distribution rather than per family, and Rocky and AlmaLinux are served by
-/// `linux/centos` where Red Hat's own is `linux/rhel`. That is a URL rather
-/// than a behaviour, so it is resolved here like any other name instead of
-/// splitting the family in two — and tasks remain unable to ask which
-/// distribution they are running on.
+/// The `ID` narrows two things, both of them names rather than behaviours.
+///
+/// On RHEL, Docker publishes a repository per distribution rather than per
+/// family: Rocky and AlmaLinux are served by `linux/centos` where Red Hat's own
+/// is `linux/rhel`. On SUSE, Tumbleweed packages Zellij and Leap 16.0 does not,
+/// so the same capability resolves to a package on one and to a verified
+/// release on the other.
+///
+/// Both are resolved here rather than by splitting either family in two, and
+/// tasks remain unable to ask which distribution they are running on. That the
+/// second case exists at all is the finding SUSE contributed: until it, a
+/// family was assumed to speak with one voice.
 pub fn for_distro(distro: &Distro) -> Box<dyn Backend> {
     match distro.family {
         Family::Rhel => Box::new(rhel::RhelBackend::for_distribution(&distro.id)),
+        Family::Suse => Box::new(suse::SuseBackend::for_distribution(&distro.id)),
         family => for_family(family),
     }
 }
@@ -319,16 +417,21 @@ mod tests {
     fn a_family_that_cannot_purge_is_the_exception_rather_than_the_rule() {
         // Iterating `ALL` for the same reason the dispatch test does: a new
         // family inherits the default `true`, and this is where that shows up
-        // as a decision somebody has to have made rather than as silence. RHEL
-        // is the one that answers false today, and it answers for rpm rather
-        // than for dnf — a fifth family using rpm would answer the same way.
+        // as a decision somebody has to have made rather than as silence.
+        //
+        // This comment used to predict that "a fifth family using rpm would
+        // answer the same way". SUSE is that family and it does — measured
+        // rather than inherited from the kinship: `zypper` has no `purge`
+        // subcommand at all, and `zypper rm` offers nothing that discards
+        // configuration. Both answer for rpm rather than for their own front
+        // end, which is why the two names below sit together.
         let without: Vec<_> = Family::ALL
             .iter()
             .filter(|&&family| !for_family(family).has_purge_for())
             .map(|&family| family.to_string())
             .collect();
 
-        assert_eq!(without, ["rhel"]);
+        assert_eq!(without, ["rhel", "suse"]);
     }
 
     #[test]
@@ -426,6 +529,20 @@ mod tests {
         // the account looks provisioned right up until it needs to escalate.
         assert_eq!(for_family(Family::Debian).admin_group(), "sudo");
         assert_eq!(for_family(Family::Arch).admin_group(), "wheel");
+    }
+
+    #[test]
+    fn the_families_that_grant_on_membership_alone_say_so() {
+        // The supposition four families share and the fifth breaks. Naming the
+        // four rather than iterating `ALL` is deliberate: a new family must
+        // answer this question by being added here, not inherit an answer from
+        // a loop that never mentions it.
+        for family in [Family::Debian, Family::Arch, Family::Alpine, Family::Rhel] {
+            assert!(
+                for_family(family).admin_group_grants_alone(),
+                "{family} grants on membership and must say so"
+            );
+        }
     }
 
     #[test]

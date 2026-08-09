@@ -139,7 +139,8 @@ macro_rules! supported_everywhere {
                 $crate::distro::Family::Debian
                 | $crate::distro::Family::Rhel
                 | $crate::distro::Family::Arch
-                | $crate::distro::Family::Alpine => $crate::tasks::Support::Yes,
+                | $crate::distro::Family::Alpine
+                | $crate::distro::Family::Suse => $crate::tasks::Support::Yes,
             }
         }
     };

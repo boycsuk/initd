@@ -100,7 +100,10 @@ impl Task for InstallDockerRootless {
             // packages no Docker — but it gets there: the task registers
             // Docker's own repository after checking its signing key against a
             // fingerprint published independently of it.
-            Family::Debian | Family::Arch | Family::Rhel => Support::Yes,
+            // openSUSE packages the Moby runtime as `docker` in its own
+            // repositories, so unlike RHEL it needs no repository registered
+            // first, and systemd gives it the per-user manager Alpine lacks.
+            Family::Debian | Family::Arch | Family::Rhel | Family::Suse => Support::Yes,
             Family::Alpine => Support::No(
                 "no per-user service manager at all: the engine runs under the \
                  account's own systemd instance, and OpenRC has no equivalent",

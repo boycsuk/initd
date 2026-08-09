@@ -125,6 +125,16 @@ fn family_from_id(id: &str) -> Option<Family> {
         // and resolving them by their own ID keeps that dependency on a field
         // they are free to change out of the common path.
         "rhel" | "centos" | "rocky" | "almalinux" | "fedora" => Some(Family::Rhel),
+        // openSUSE reports `opensuse-tumbleweed` or `opensuse-leap`; SLES
+        // reports `sles`. The bare `opensuse` and `suse` are what both
+        // variants carry in `ID_LIKE` — and they carry them in opposite
+        // orders, `"opensuse suse"` on Tumbleweed against `"suse opensuse"` on
+        // Leap. That costs nothing only because each token is resolved
+        // independently: a reader taking the first entry as the family name
+        // would work on one variant and not the other.
+        "opensuse-tumbleweed" | "opensuse-leap" | "sles" | "opensuse" | "suse" => {
+            Some(Family::Suse)
+        }
         _ => None,
     }
 }
@@ -254,6 +264,45 @@ mod tests {
 
         assert_eq!(distro.family, Family::Rhel);
         assert_eq!(distro.id, "rocky", "the id it reported must survive");
+    }
+
+    #[test]
+    fn detects_both_suse_variants_by_their_own_ids() {
+        // Both are named in `family_from_id` rather than left to `ID_LIKE`,
+        // for the reason the rebuilds are: `ID` is the field a distribution
+        // owns.
+        let tumbleweed = parse_fixture("tumbleweed").expect("tumbleweed must resolve");
+        let leap = parse_fixture("leap16").expect("leap must resolve");
+
+        assert_eq!(tumbleweed.family, Family::Suse);
+        assert_eq!(tumbleweed.id, "opensuse-tumbleweed");
+        assert_eq!(leap.family, Family::Suse);
+        assert_eq!(leap.version_id.as_deref(), Some("16.0"));
+    }
+
+    #[test]
+    fn the_suse_variants_order_id_like_differently_and_both_resolve() {
+        // Captured from the two images: Tumbleweed reports `"opensuse suse"`
+        // and Leap `"suse opensuse"`. Each token is resolved independently, so
+        // the order costs nothing — but a reader taking the first entry as the
+        // family name would work on one variant and fail on the other, which
+        // is the bug this pins against rather than a restatement of the
+        // fixtures.
+        assert_eq!(
+            resolve_family("something-suse-derived", Some("opensuse suse")),
+            Some(Family::Suse)
+        );
+        assert_eq!(
+            resolve_family("something-suse-derived", Some("suse opensuse")),
+            Some(Family::Suse)
+        );
+    }
+
+    #[test]
+    fn sles_resolves_by_its_own_id() {
+        // The enterprise distribution reports `sles` and shares openSUSE's
+        // packaging, so it reaches the same backend.
+        assert_eq!(resolve_family("sles", None), Some(Family::Suse));
     }
 
     #[test]

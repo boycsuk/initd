@@ -62,10 +62,20 @@ macro_rules! tui {
 /// these scenarios exist to observe never opens. It surfaced on RHEL, where
 /// installing the package leaves the unit enabled but stopped rather than
 /// started, but the race was there for any family whose daemon was slow enough.
+/// The seed is not a workaround for openSUSE so much as the state every other
+/// family is already in. openSUSE ships its `sshd_config` under `/usr/etc` and
+/// leaves `/etc/ssh/sshd_config` absent until something writes it — the tool
+/// does so in `ensure_config_present`, but these scenarios read the path
+/// directly, both here and in ten assertions below. Seeding once at the top
+/// keeps those ten reading a file that exists on all six images; without it
+/// they receive an empty string, and `starts_with('0')` on nothing is a failure
+/// that names the task rather than the missing file.
 const PREPARE_FOR_HARDENING: &str = concat!(
     "initd authorize-key root 'ssh-ed25519 ",
     "AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd",
     "' >/dev/null 2>&1; \
+     [ -f /etc/ssh/sshd_config ] || cp /usr/etc/ssh/sshd_config /etc/ssh/sshd_config \
+       2>/dev/null; \
      systemctl start ssh sshd >/dev/null 2>&1; \
      for _ in $(seq 30); do \
        systemctl is-active --quiet ssh sshd && break; \
