@@ -146,7 +146,31 @@ impl Task for InstallFail2ban {
              findtime = 10m\n"
         );
 
-        backend.files().write(executor, Self::JAIL, &jail)?;
+        let backup = backend.files().write(executor, Self::JAIL, &jail)?;
+
+        // Only where a jail was already there — this file is one this tool
+        // owns, so the ordinary case is creating it and there is no previous
+        // version to keep. Re-running with a different port is the case that
+        // records: the state worth going back to is the port that was watched
+        // before.
+        if let Some(ref backup) = backup {
+            let kept = crate::backend::backup_index::record_existing(
+                executor,
+                backend.files(),
+                self.id(),
+                backup,
+                backend.service_for(Capability::Fail2ban),
+            );
+
+            report(
+                progress,
+                if kept {
+                    &Msg::TaskChangeRecorded
+                } else {
+                    &Msg::TaskChangeNotRecorded
+                },
+            );
+        }
 
         backend
             .services()

@@ -371,6 +371,20 @@ impl Task for AddPeer {
         let server_public = server_public_key(executor, backend, &existing)?;
 
         let peer = peer_block(&name, &keys.public, &keys.preshared, &address);
+
+        // Deliberately unrecorded, unlike every other configuration this tool
+        // edits. `wg0.conf` holds the server's private key *and* every peer's
+        // preshared key, so a copy of it under `/var/lib/initd` is a second
+        // copy of all of them — kept for as long as the retention allows, on a
+        // machine where the point of the original's `0600` was that one copy
+        // was enough.
+        //
+        // The index carries no secrets by construction and this is the other
+        // half of that promise: a record naming a copy full of keys keeps the
+        // secret out of the record and puts it in the file the record points
+        // at. Removing a peer is `wg0.conf` minus one block, which an
+        // administrator can do with an editor; recovering a leaked private key
+        // is not something anybody can do.
         files.write(executor, &config, &format!("{existing}{peer}"))?;
 
         // `syncconf` rather than restarting: a restart drops every established
@@ -1015,6 +1029,51 @@ mod tests {
             .expect_err("a configuration with no key must fail");
 
         assert!(matches!(err, Error::WireguardNotConfigured), "{err:?}");
+    }
+
+    #[test]
+    fn no_copy_of_the_key_file_is_ever_kept() {
+        // The one configuration this tool edits and deliberately does not
+        // record. `wg0.conf` holds the server's private key and every peer's
+        // preshared key, so a copy under /var/lib/initd would be a second copy
+        // of all of them — on a machine where the point of the original's 0600
+        // was that one copy was enough.
+        //
+        // Pinned rather than left to the absence of a call, because the absence
+        // is what a later contributor would read as an oversight and "fix".
+        let existing = format!("[Interface]\nPrivateKey = {KEY}\n");
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok(existing), // read the config
+            Reply::ok(KEY),      // genkey
+            Reply::ok(KEY),      // genpsk
+            Reply::ok(KEY),      // pubkey for the peer
+            Reply::ok(KEY),      // pubkey for the server
+            Reply::ok(""),       // backup
+            Reply::ok(""),       // write
+            Reply::ok(""),       // reload
+        ]);
+
+        let mut values = ParamValues::new();
+        values.set(AddPeer::NAME, "laptop".to_owned());
+        values.set(AddPeer::ADDRESS, "10.89.0.2".to_owned());
+        values.set(AddPeer::ENDPOINT, "203.0.113.7:51820".to_owned());
+
+        AddPeer
+            .run(
+                &mock,
+                for_family(Family::Debian).as_ref(),
+                &values,
+                &mut |_| {},
+            )
+            .expect("adding a peer must succeed");
+
+        for line in mock.recorded_lines() {
+            assert!(
+                !line.contains("/var/lib/initd"),
+                "the key file must never be copied into the index: {line}"
+            );
+        }
     }
 
     #[test]

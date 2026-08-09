@@ -556,7 +556,15 @@ fn register_shell(executor: &dyn Executor, backend: &dyn Backend, path: &str) ->
         return Ok(());
     }
 
-    files.write(executor, SHELLS, &format!("{existing}{path}\n"))?;
+    let backup = files.write(executor, SHELLS, &format!("{existing}{path}\n"))?;
+
+    // No unit to reload: `/etc/shells` is consulted by `chsh` and by PAM at
+    // the next login, so nothing is holding a stale copy. Recorded all the
+    // same — this is a file the distribution owns and this tool appended to,
+    // which makes it exactly the kind of edit somebody may want undone.
+    if let Some(ref backup) = backup {
+        crate::backend::backup_index::record_existing(executor, files, "fish.install", backup, "");
+    }
 
     Ok(())
 }

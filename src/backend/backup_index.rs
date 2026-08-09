@@ -22,11 +22,20 @@
 //!
 //! ## What may never go in
 //!
-//! No secrets, enforced by construction rather than by discipline: the writer
-//! takes a typed [`BackupRecord`] with no free-form field, and `ParamValues`
-//! never reaches this module. `users.create`'s password, `wireguard.add-peer`'s
-//! private key and `ssh.authorize-key`'s key body are all values that pass
-//! through tasks that write files, and none of them can arrive here.
+//! No secrets, and that holds in two places rather than one.
+//!
+//! In the *record*, by construction: the writer takes a typed [`BackupRecord`]
+//! with no free-form field, and `ParamValues` never reaches this module, so
+//! `users.create`'s password cannot arrive however carelessly a caller is
+//! written.
+//!
+//! In the *copies*, by which tasks record at all. A record naming a copy full
+//! of private keys would keep the secret out of the line and put it in the file
+//! the line points at, which is not a distinction worth making. So
+//! `wireguard.add-peer` records nothing — `wg0.conf` holds the server's private
+//! key and every peer's preshared key — and neither does `ssh.authorize-key`,
+//! for a different reason worth reading where it is written: restoring that
+//! file *removes* an authorised key.
 //!
 //! ## Best effort on write, authoritative on read
 //!
@@ -59,17 +68,24 @@ pub const BACKUP_DIR: &str = "/var/lib/initd/backups";
 
 /// Mode for the whole tree.
 ///
-/// `0700`, because a backup of `wg0.conf` contains the server's private key.
-/// The original is `0600` and a copy of it under a world-readable directory
-/// would undo that — the same mistake `wireguard.install` made once by
-/// chmodding after writing rather than before.
+/// `0700` because a copy inherits whatever the original was worth protecting.
+/// `sshd_config` is `0600` on several distributions, and a copy of it under a
+/// world-readable directory would undo that — the same mistake
+/// `wireguard.install` made once by chmodding after writing rather than
+/// before.
+///
+/// It is not what keeps key material safe, because none is kept here:
+/// `wireguard.add-peer` writes the one file that holds private keys and
+/// deliberately records nothing, so this directory never holds a copy of them.
+/// A mode is a second line of defence; not having the secret is the first.
 pub const TREE_MODE: u32 = 0o700;
 
 /// How many copies of one path are kept.
 ///
-/// Bounded because the material is not merely large but sensitive: unbounded
-/// history of `wg0.conf` is unbounded private-key copies. Ten is enough to
-/// reach past a bad afternoon and few enough to stay reviewable by hand.
+/// Bounded because an unbounded history of a file edited weekly is a directory
+/// nobody prunes, on a machine whose disk an administrator is not watching. Ten
+/// is enough to reach past a bad afternoon and few enough to stay reviewable by
+/// hand.
 pub const RETAINED_PER_PATH: usize = 10;
 
 /// One backup, as it is recorded.
