@@ -149,6 +149,26 @@ pub struct Image {
     pub installed_needle: &'static str,
 }
 
+impl Image {
+    /// A tag fragment identifying this *image*, not merely its family.
+    ///
+    /// Committed images are named after their family, which was unambiguous
+    /// while every family had exactly one image. openSUSE has two, and
+    /// `image.family` answers `suse` for both — so Tumbleweed and Leap would
+    /// share one committed image, and whichever ran second would silently
+    /// exercise the other's packages while reporting its own name.
+    ///
+    /// Derived from the image reference rather than added as a field, so a new
+    /// entry cannot forget it: two images can only collide here by being the
+    /// same image.
+    pub fn family_tag(&self) -> String {
+        self.name
+            .replace(['/', ':', '.'], "-")
+            .trim_matches('-')
+            .to_ascii_lowercase()
+    }
+}
+
 /// Debian and derivatives: `apt`, `openssh-server`.
 pub const DEBIAN: Image = Image {
     name: "debian:13",
@@ -414,6 +434,68 @@ pub fn binary_for(image: &Image) -> Option<String> {
     path.exists().then(|| path.to_string_lossy().into_owned())
 }
 
+/// An image of this family with its package metadata already fetched.
+///
+/// Every scenario starts a fresh container and the harness prepends
+/// [`Image::refresh`] so package installation works. A container keeps nothing
+/// between runs, so that download is paid once per scenario and thrown away —
+/// which is cheap on apt and is not on zypper: measured cold, `apt-get update`
+/// takes about a second on `debian:13` and `zypper refresh` about nine on
+/// `opensuse/tumbleweed`, which refreshes six repositories. Across the 174
+/// openSUSE scenarios that is roughly twenty-six minutes of the run spent
+/// re-fetching metadata that never changes.
+///
+/// So the refresh is done once per family and committed, exactly as
+/// [`systemd::build_systemd_image`] already does for the init packages, and for
+/// the same reason: no build context and no second source of truth about what a
+/// family installs — the command committed here is the family's own
+/// [`Image::refresh`] and nothing else.
+///
+/// Scenarios keep calling refresh; against this image it finds the caches
+/// populated and returns immediately. That is deliberate — the alternative,
+/// dropping the refresh from the script, would make every scenario depend on
+/// this optimisation having worked.
+///
+/// Returns the base image name where anything goes wrong. A committed cache is
+/// a speed-up, and a test run that fails because a speed-up failed would be
+/// worse than a slow one.
+fn cached_image(image: &Image) -> String {
+    let tag = format!("initd-cache-{}:test", image.family_tag());
+
+    let existing = Command::new("docker")
+        .args(["image", "inspect", &tag])
+        .output();
+
+    if existing.is_ok_and(|out| out.status.success()) {
+        return tag;
+    }
+
+    let builder = format!("initd-cache-build-{}", image.family_tag());
+    let _ = Command::new("docker").args(["rm", "-f", &builder]).output();
+
+    let refreshed = Command::new("docker")
+        .args([
+            "run",
+            "--name",
+            &builder,
+            image.name,
+            "sh",
+            "-c",
+            image.refresh,
+        ])
+        .output();
+
+    let built = refreshed.is_ok_and(|out| out.status.success())
+        && Command::new("docker")
+            .args(["commit", &builder, &tag])
+            .output()
+            .is_ok_and(|out| out.status.success());
+
+    let _ = Command::new("docker").args(["rm", "-f", &builder]).output();
+
+    if built { tag } else { image.name.to_owned() }
+}
+
 /// Runs a shell command inside a fresh container, with the binary mounted.
 ///
 /// The binary is bind-mounted rather than copied so the container starts from
@@ -435,17 +517,10 @@ pub fn run_in_container(image: &Image, script: &str) -> std::process::Output {
     // caches aside; joining it here keeps each test to a single container.
     let full_script = format!("{} >/dev/null 2>&1; {script}", image.refresh);
 
+    let base = cached_image(image);
+
     let output = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "-v",
-            &mount,
-            image.name,
-            "sh",
-            "-c",
-            &full_script,
-        ])
+        .args(["run", "--rm", "-v", &mount, &base, "sh", "-c", &full_script])
         .output()
         .expect("docker run must execute");
 
@@ -526,6 +601,8 @@ pub fn run_in_privileged_container(image: &Image, script: &str) -> Option<std::p
     let mount = format!("{binary}:/usr/local/bin/initd:ro");
     let full_script = format!("{} >/dev/null 2>&1; {script}", image.refresh);
 
+    let base = cached_image(image);
+
     let output = Command::new("docker")
         .args([
             "run",
@@ -533,7 +610,7 @@ pub fn run_in_privileged_container(image: &Image, script: &str) -> Option<std::p
             "--privileged",
             "-v",
             &mount,
-            image.name,
+            &base,
             "sh",
             "-c",
             &full_script,
@@ -1003,6 +1080,47 @@ mod tests {
             status,
             stdout: Vec::new(),
             stderr: b"Error response from daemon: cannot allocate memory".to_vec(),
+        }
+    }
+
+    #[test]
+    fn every_image_commits_under_a_tag_of_its_own() {
+        // The defect this was written against, which predates the cache and was
+        // found while adding it: committed images were named after
+        // `image.family`, unambiguous only while every family had one image.
+        // openSUSE has two and both answer `suse`, so Tumbleweed and Leap
+        // shared one committed image — whichever ran second exercised the
+        // other's packages while reporting its own name, which is a test that
+        // lies rather than one that fails.
+        let tags: Vec<String> = IMAGES.iter().map(|image| image.family_tag()).collect();
+
+        for (index, tag) in tags.iter().enumerate() {
+            assert!(
+                !tags[index + 1..].contains(tag),
+                "two images share the tag {tag}, so one would reuse the other's \
+                 committed image: {tags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tag_is_usable_as_a_docker_reference() {
+        // `docker tag` rejects slashes, colons and uppercase in the position
+        // these are interpolated into, and `opensuse/tumbleweed` carries the
+        // first. A tag that Docker refuses would fall back to the base image
+        // silently — the cache would simply never work, and nothing would say
+        // so, because falling back is the designed behaviour on failure.
+        for image in IMAGES {
+            let tag = image.family_tag();
+
+            assert!(
+                !tag.is_empty()
+                    && tag
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{} yields {tag}, which docker will not accept",
+                image.name
+            );
         }
     }
 
