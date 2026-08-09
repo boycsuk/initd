@@ -322,6 +322,7 @@ impl Task for AllowPort {
             Param::new(Self::PORT, "Port", ParamKind::Port).with_hint("1-65535"),
             Param::new(Self::PROTOCOL, "Protocol", ParamKind::Protocol)
                 .with_initial("tcp")
+                .offering(&["tcp", "udp"])
                 .with_hint("tcp or udp"),
         ]
     }

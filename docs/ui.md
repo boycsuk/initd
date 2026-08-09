@@ -726,11 +726,24 @@ the system accepts. But a stock Debian carries forty service accounts and two
 of the other kind, and a chooser that opens on `_apt` is one nobody reads to
 the end.
 
-These are **suggestions, never the permitted set**. Every such field stays
-typeable, because the host's answer can be incomplete — an account can be
+These are **suggestions, never the permitted set** — with one exception, and
+the exception is what makes the rule worth stating. Every host-sourced field
+stays typeable, because the host's answer can be incomplete: an account can be
 created between one form opening and the next, and a shell absent from
 `/etc/shells` is still a path. Validation is unchanged and remains the only
 thing that decides.
+
+A **closed choice** is the other case. `remove`/`purge`, `tcp`/`udp` and
+`keep`/`delete` are not what the host happens to hold but every value the
+validator will accept, so the list is the permitted set. They were typed by
+hand until they were not: the field was a blank with a hint underneath naming
+two words, which asked the operator to read the hint and then spell one of them
+correctly on a choice — in the removal's case — that decides whether a
+hand-edited config file survives. The field still accepts typing, because a
+list that also blocked the keyboard would be a different widget for no gain,
+and two tests keep the offered values and the validator from drifting apart:
+one asserts every offered value passes the validator, the other that every kind
+with a closed validator offers a list at all.
 
 The count rides the field's header (`↑↓ 2/6 on this host`), left of the
 verdict, rather than taking a row of its own; on a three-field form a row each
@@ -740,7 +753,9 @@ typed.
 
 The values are resolved **once, when the form opens**, and once per kind rather
 than once per field: running `cat /etc/passwd` on every arrow press would put
-the executor in the path of a keystroke. A host whose file cannot be read
+the executor in the path of a keystroke. Two sources ask the host nothing — the
+verifiable releases and the closed choices are both compiled in — so they are
+answered without a command and cannot fail to resolve. A host whose file cannot be read
 offers nothing and says nothing — the field behaves as it did before there was
 anything to offer, since refusing to open the form would turn a convenience
 into a prerequisite.

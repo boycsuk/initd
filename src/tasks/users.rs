@@ -632,6 +632,7 @@ impl Task for DeleteUser {
                 .naming_an_existing_account(),
             Param::new(Self::HOME, "Home directory", ParamKind::HomeDirectory)
                 .with_initial("keep")
+                .offering(&["keep", "delete"])
                 .with_hint("keep leaves the files on disk; delete removes them"),
         ]
     }

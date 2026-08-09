@@ -737,6 +737,40 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_choice_is_chosen_with_the_arrows() {
+        // The point of the whole feature: `remove` and `purge` were two words
+        // a field named in a hint and made the operator type. Stepping to the
+        // other one must not require knowing it exists — which is what a blank
+        // field with a hint underneath was asking for.
+        let mut app = test_app(Family::Debian);
+        app.presence
+            .record("zellij.install", crate::tui::probe::Presence::Present);
+        select_task(&mut app, "zellij.uninstall");
+
+        press(&mut app, KeyCode::Enter);
+
+        let started_at = app
+            .form
+            .as_mut()
+            .and_then(Form::focused_mut)
+            .map(|field| field.value().to_owned())
+            .expect("the removal field holds the default");
+
+        assert_eq!(started_at, "remove", "the safe answer is the default");
+
+        press(&mut app, KeyCode::Down);
+
+        let after = app
+            .form
+            .as_mut()
+            .and_then(Form::focused_mut)
+            .map(|field| field.value().to_owned())
+            .expect("the field survives the keypress");
+
+        assert_eq!(after, "purge", "↓ must step to the other answer");
+    }
+
+    #[test]
     fn a_reversible_row_actually_starts_its_task() {
         // Reported from a real session: `zellij.uninstall` was confirmed and
         // nothing happened — no output, no status, no command. `run_selected`

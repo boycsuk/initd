@@ -147,6 +147,20 @@ pub enum Suggestions {
     /// otherwise typing a version number into an empty field, from a hint that
     /// said "a version this build can verify" without saying which.
     Releases(&'static [Release]),
+    /// The two or three values a closed choice admits.
+    ///
+    /// The only source whose answers are the *whole* set rather than a
+    /// convenience: an account not on this list is a value the host might
+    /// still accept tomorrow, while a removal depth that is not `remove` or
+    /// `purge` is one the validator refuses outright. That is what makes
+    /// offering them worth more here than anywhere else — the field was a
+    /// blank asking for one of two words it never named, and the hint beside
+    /// it was doing the work a list should do.
+    ///
+    /// Kept as `&'static [&'static str]` so the values reach `Command` the
+    /// same way every other fixed string does, and so the list cannot vary
+    /// between the field that offers it and the validator that checks it.
+    Fixed(&'static [&'static str]),
 }
 
 /// What the host must already say about a value for the task to accept it.
@@ -601,6 +615,18 @@ impl Param {
         self
     }
 
+    /// Offers the values a closed choice admits, in full.
+    ///
+    /// For a field whose validator names its own answers. The list and that
+    /// validator must agree, which is why `a_closed_choice_offers_what_it_
+    /// accepts` walks every kind that has one rather than trusting the two to
+    /// be edited together.
+    #[must_use]
+    pub const fn offering(mut self, values: &'static [&'static str]) -> Self {
+        self.suggestions = Some(Suggestions::Fixed(values));
+        self
+    }
+
     /// Requires that the host already has an account by this name.
     #[must_use]
     pub const fn naming_an_existing_account(mut self) -> Self {
@@ -707,6 +733,105 @@ impl ParamValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every field in the tree that offers a fixed set of values.
+    fn fixed_choices() -> Vec<(&'static str, Param)> {
+        crate::tasks::all_tasks()
+            .into_iter()
+            .flat_map(|task| {
+                task.params()
+                    .into_iter()
+                    .map(move |param| (task.id(), param))
+            })
+            .filter(|(_, param)| matches!(param.suggestions, Some(Suggestions::Fixed(_))))
+            .collect()
+    }
+
+    #[test]
+    fn a_closed_choice_offers_exactly_what_it_accepts() {
+        // The list and the validator are two statements of one fact, written
+        // in different files, and nothing but this makes them agree. An
+        // offered value the validator refuses is worse than no list at all:
+        // the field would suggest a value and then reject it on submit, which
+        // reads as the tool being broken rather than the operator being wrong.
+        for (task, param) in fixed_choices() {
+            let Some(Suggestions::Fixed(offered)) = param.suggestions else {
+                continue;
+            };
+
+            assert!(!offered.is_empty(), "{task}: {} offers nothing", param.name);
+
+            for value in offered {
+                assert!(
+                    param.kind.validate(value).is_ok(),
+                    "{task}: {} offers {value:?}, which its own validator refuses",
+                    param.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_closed_choice_offers_its_own_default() {
+        // The field opens on its initial value, so a list that does not
+        // contain it opens with the cursor on nothing — and moving the cursor
+        // would silently change an answer the operator had not touched.
+        for (task, param) in fixed_choices() {
+            let Some(Suggestions::Fixed(offered)) = param.suggestions else {
+                continue;
+            };
+
+            // An empty initial is a field that starts blank, which is a
+            // different decision and not this test's business.
+            if param.initial.is_empty() {
+                continue;
+            }
+
+            assert!(
+                offered.contains(&param.initial.as_str()),
+                "{task}: {} starts at {:?}, which it does not offer",
+                param.name,
+                param.initial
+            );
+        }
+    }
+
+    #[test]
+    fn every_closed_choice_offers_its_values() {
+        // The three kinds whose validators name their own answers. A fourth
+        // added without a list would be a field asking for one of two words
+        // it never names — which is the state all three were in until now.
+        let offering: Vec<&str> = fixed_choices()
+            .iter()
+            .map(|(_, param)| param.name)
+            .collect();
+
+        for kind in [
+            ParamKind::Protocol,
+            ParamKind::Removal,
+            ParamKind::HomeDirectory,
+        ] {
+            let named: Vec<(&str, Param)> = crate::tasks::all_tasks()
+                .into_iter()
+                .flat_map(|task| {
+                    task.params()
+                        .into_iter()
+                        .map(move |param| (task.id(), param))
+                })
+                .filter(|(_, param)| param.kind == kind)
+                .collect();
+
+            assert!(!named.is_empty(), "{kind:?} is declared by no task");
+
+            for (task, param) in named {
+                assert!(
+                    offering.contains(&param.name),
+                    "{task}: {} is a {kind:?} and offers no list",
+                    param.name
+                );
+            }
+        }
+    }
 
     #[test]
     fn forgetting_secrets_leaves_everything_else() {

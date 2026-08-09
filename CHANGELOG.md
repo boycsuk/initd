@@ -82,6 +82,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   administrator out rather than rescuing them.
 
 ### Changed
+- A closed choice is chosen rather than typed. `remove`/`purge`, `tcp`/`udp`
+  and `keep`/`delete` were three fields that named their two answers in a hint
+  and then made the operator spell one correctly — on the removal's case, a
+  choice deciding whether a hand-edited configuration file survives. `↑↓` now
+  steps between them and `Ctrl-L` opens the list, the mechanism the account and
+  shell fields already used. Unlike those, these lists *are* the permitted set
+  rather than a convenience, so two tests keep them in step with the validators
+  that enforce them: one that every offered value passes its validator, one
+  that every kind with a closed validator offers a list at all.
 - The vim movement keys are gone. `h`, `j`, `k`, `g` and `G` moved the cursor
   in five separate places — the tree, the output, the help overlay, the
   recorded changes and a form's option list — and the arrows, `Home` and `End`

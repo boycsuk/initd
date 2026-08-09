@@ -62,6 +62,7 @@ pub const WITH_CONFIGURATION: &str = "purge";
 pub fn removal_param() -> Param {
     Param::new(REMOVAL, "Configuration", ParamKind::Removal)
         .with_initial(KEEP_CONFIGURATION)
+        .offering(&[KEEP_CONFIGURATION, WITH_CONFIGURATION])
         .with_hint("remove keeps configuration files; purge deletes them")
 }
 
@@ -156,6 +157,7 @@ pub fn undo(
 
     // No package on this family, so the forward task downloaded a binary and
     // this one deletes the copy it wrote — never whatever the shell resolves.
+
     if !backend.binaries().is_installed_here(executor, program)? {
         // Present, but somewhere this tool never wrote. Named rather than
         // reported as absent: the operator can see the program works and would

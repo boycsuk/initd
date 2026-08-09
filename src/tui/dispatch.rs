@@ -765,6 +765,14 @@ impl App {
 
                     continue;
                 }
+                // Compiled in like the releases, and for a stronger reason:
+                // these are not what the host happens to hold but every value
+                // the validator will accept, so there is nothing to ask it.
+                Suggestions::Fixed(values) => {
+                    field.offer(values.iter().map(|value| (*value).to_owned()).collect());
+
+                    continue;
+                }
             };
 
             field.offer(options.clone());
