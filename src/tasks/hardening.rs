@@ -32,11 +32,20 @@ pub fn category() -> Category {
             Node::Category(Category::new(
                 "Brute-force protection",
                 vec![
-                    Node::Task(Box::new(InstallFail2ban)),
-                    Node::Task(Box::new(InstallCrowdsec)),
+                    Node::Reversible {
+                        forward: Box::new(InstallFail2ban),
+                        inverse: Box::new(UninstallFail2ban),
+                    },
+                    Node::Reversible {
+                        forward: Box::new(InstallCrowdsec),
+                        inverse: Box::new(UninstallCrowdsec),
+                    },
                 ],
             )),
-            Node::Task(Box::new(UnattendedUpgrades)),
+            Node::Reversible {
+                forward: Box::new(UnattendedUpgrades),
+                inverse: Box::new(DisableUnattendedUpgrades),
+            },
         ],
     )
 }
@@ -71,6 +80,14 @@ impl Task for InstallFail2ban {
         "Watches the authentication log and bans addresses that fail \
          repeatedly. Everything stays on this host — nothing is reported \
          anywhere."
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Fail2ban)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["fail2ban.install"]
     }
 
     fn params(&self) -> Vec<Param> {
@@ -162,6 +179,14 @@ impl Task for InstallCrowdsec {
         "Bans addresses that attacked other hosts before they reach this one, \
          by consulting a shared reputation network. In exchange this host \
          reports the attacks it sees."
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Crowdsec)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["crowdsec.install"]
     }
 
     /// It sends data off the machine, which is a decision rather than a
@@ -256,6 +281,14 @@ impl Task for UnattendedUpgrades {
          behaviour is still yours to decide."
     }
 
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::UnattendedUpgrades)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["updates.unattended-security"]
+    }
+
     fn support(&self, family: Family) -> Support {
         match family {
             Family::Debian => Support::Yes,
@@ -332,6 +365,198 @@ impl Task for UnattendedUpgrades {
         report(progress, &Msg::TaskUpgradesNoReboot);
 
         Ok(Outcome::Done)
+    }
+}
+
+/// Removes fail2ban.
+pub struct UninstallFail2ban;
+
+impl Task for UninstallFail2ban {
+    fn id(&self) -> &'static str {
+        "fail2ban.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall fail2ban"
+    }
+
+    fn description(&self) -> &'static str {
+        "Stops fail2ban, disables it at boot and removes it. Addresses it had \
+         banned are unbanned by the daemon stopping — the bans live in its \
+         own state, not in the firewall's saved ruleset."
+    }
+
+    fn support(&self, family: Family) -> Support {
+        InstallFail2ban.support(family)
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Fail2ban)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["fail2ban.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // The machine goes back to admitting unlimited authentication
+        // attempts. Worth saying out loud: an operator removing fail2ban to
+        // install crowdsec has a window between the two where neither watches.
+        vec![Consequence::Invalidates {
+            task: "fail2ban.install",
+            reason: Reason::RequiresSetting {
+                setting: "nothing now rate-limits repeated authentication failures",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Fail2ban,
+            "fail2ban",
+        )
+    }
+}
+
+/// Removes CrowdSec.
+pub struct UninstallCrowdsec;
+
+impl Task for UninstallCrowdsec {
+    fn id(&self) -> &'static str {
+        "crowdsec.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall CrowdSec"
+    }
+
+    fn description(&self) -> &'static str {
+        "Stops CrowdSec, disables it at boot and removes it. This host stops \
+         contributing what it sees to the reputation network, and stops \
+         benefiting from what the network has seen."
+    }
+
+    fn support(&self, family: Family) -> Support {
+        InstallCrowdsec.support(family)
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Crowdsec)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["crowdsec.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        vec![Consequence::Invalidates {
+            task: "crowdsec.install",
+            reason: Reason::RequiresSetting {
+                setting: "nothing now blocks addresses the network has seen attacking others",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Crowdsec,
+            "crowdsec",
+        )
+    }
+}
+
+/// Stops applying security updates automatically.
+pub struct DisableUnattendedUpgrades;
+
+impl Task for DisableUnattendedUpgrades {
+    fn id(&self) -> &'static str {
+        "updates.unattended-security.disable"
+    }
+
+    fn title(&self) -> &'static str {
+        "Stop applying security updates automatically"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes unattended-upgrades. Security updates stop being applied \
+         without anyone asking — which is the point of removing it, and worth \
+         stating because the machine goes on looking exactly the same."
+    }
+
+    fn support(&self, family: Family) -> Support {
+        UnattendedUpgrades.support(family)
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::UnattendedUpgrades)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["updates.unattended-security"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // The one uninstall here whose effect is invisible: nothing stops
+        // working, updates simply stop arriving. A host left in this state
+        // looks healthy for as long as it takes to matter.
+        vec![Consequence::Invalidates {
+            task: "updates.unattended-security",
+            reason: Reason::RequiresSetting {
+                setting: "security updates now need applying by hand",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::UnattendedUpgrades,
+            "unattended-upgrade",
+        )
     }
 }
 

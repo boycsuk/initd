@@ -636,6 +636,16 @@ mod tests {
 
                 match app.current_level().get(index) {
                     Some(Node::Task(task)) if task.id() == id => return true,
+                    // A pair is one row, and landing on it selects whichever
+                    // half the measured state resolves to. Matching on the
+                    // forward id is what the caller means: with nothing
+                    // measured — which is every test that does not say
+                    // otherwise — that is the half `selected_task` returns.
+                    Some(Node::Reversible { forward, inverse })
+                        if forward.id() == id || inverse.id() == id =>
+                    {
+                        return true;
+                    }
                     Some(Node::Category(_)) => {
                         app.enter_category(index);
                         if descend(app, id, depth + 1) {

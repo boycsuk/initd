@@ -112,16 +112,21 @@ const SPLIT_LAYOUT_MIN_WIDTH: u16 = 72;
 /// Fixed width of the tree pane in the wide layout.
 ///
 /// Measured against the tree rather than chosen: the longest title in it is
-/// `Allow unprivileged binding to 80 and 443` at 40 cells, and a row spends
-/// six more — two of border, two of marker, one of flag, and the space that
-/// separates the title from it. So 46 is the width at which no task in the
-/// tree is truncated, and it was 34, which cut nine of the twenty-eight.
+/// `Stop applying security updates automatically` at 44 cells, and a row
+/// spends six more — two of border, two of marker, one of flag, and the space
+/// that separates the title from it. So 50 is the width at which no task in
+/// the tree is truncated, and it was 34, which cut nine of the twenty-eight.
 ///
-/// This is the one number that has to grow with the content. A title longer
-/// than this is still cut with an ellipsis rather than clipped, so the cost of
-/// being wrong is legible rather than silent — `tree_rows_are_not_truncated`
-/// is what makes it noticed.
-const TREE_PANE_WIDTH: u16 = 46;
+/// This is the one number that has to grow with the content, and the inverse
+/// tasks are what grew it: an uninstall is named by a longer verb than the
+/// install it undoes. One of them was shortened instead — `Remove rootless
+/// Docker from a user` — because it had reached 49 cells on its own and would
+/// have widened the pane for every row to accommodate a single title.
+///
+/// A title longer than this is still cut with an ellipsis rather than clipped,
+/// so the cost of being wrong is legible rather than silent —
+/// `tree_rows_are_not_truncated` is what makes it noticed.
+const TREE_PANE_WIDTH: u16 = 50;
 
 /// Cells a tree row spends on anything that is not the title.
 ///

@@ -589,6 +589,14 @@ pub(super) fn render(message: &Msg) -> String {
         // changed where they live rather than what they read.
         Msg::TaskInstalling { what } => format!("Installing {what}..."),
         Msg::TaskAlreadyInstalled { what } => format!("{what} is already installed"),
+        Msg::TaskRemoving { what } => format!("Removing {what}, keeping its configuration..."),
+        Msg::TaskPurging { what } => format!("Removing {what} and its configuration..."),
+        Msg::TaskNotInstalled { what } => format!("{what} is not installed"),
+        Msg::TaskInstalledElsewhere { what, at } => {
+            format!("{what} is installed at {at}, which initd did not put there — leaving it alone")
+        }
+        Msg::TaskDisabling { unit } => format!("Stopping and disabling {unit}..."),
+        Msg::TaskBinaryRemoved { path } => format!("Removed {path}"),
         Msg::TaskEnabling { unit } => format!("Enabling {unit}..."),
         Msg::TaskUnitEnabled { unit } => format!("{unit} is enabled"),
         Msg::TaskUnitState {

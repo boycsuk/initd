@@ -716,6 +716,34 @@ pub enum Msg {
     TaskAlreadyInstalled {
         what: String,
     },
+    /// A package or program is being removed, keeping its configuration.
+    TaskRemoving {
+        what: String,
+    },
+    /// A package is being removed along with its configuration.
+    TaskPurging {
+        what: String,
+    },
+    /// There was nothing here to remove.
+    TaskNotInstalled {
+        what: String,
+    },
+    /// The program is present, but not where this tool installs one.
+    ///
+    /// Carries the path because "installed elsewhere" without saying where
+    /// sends the operator looking for something already located.
+    TaskInstalledElsewhere {
+        what: String,
+        at: String,
+    },
+    /// A unit is being stopped and disabled.
+    TaskDisabling {
+        unit: String,
+    },
+    /// A binary this tool installed has been deleted.
+    TaskBinaryRemoved {
+        path: String,
+    },
     /// A unit is being enabled and started.
     TaskEnabling {
         unit: String,

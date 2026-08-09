@@ -56,7 +56,10 @@ pub fn category() -> Category {
         "WireGuard",
         vec![
             Node::Task(Box::new(WireguardStatus)),
-            Node::Task(Box::new(InstallWireguard)),
+            Node::Reversible {
+                forward: Box::new(InstallWireguard),
+                inverse: Box::new(UninstallWireguard),
+            },
             Node::Task(Box::new(AddPeer)),
         ],
     )
@@ -163,6 +166,14 @@ impl Task for InstallWireguard {
         "Installs WireGuard, generates the server keys and writes wg0.conf. \
          The tunnel carries no traffic until forwarding is enabled and the \
          port is open."
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Wireguard)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["wireguard.install"]
     }
 
     fn params(&self) -> Vec<Param> {
@@ -496,6 +507,137 @@ fn first_address(subnet: &str) -> Result<String> {
     octets[3] = "1";
 
     Ok(format!("{}/{mask}", octets.join(".")))
+}
+
+/// Removes WireGuard, taking the tunnel down with it.
+///
+/// Does not delegate to [`crate::tasks::uninstall::undo`], unlike the other
+/// nine. The unit here is a template — `wg-quick@` is not a unit, `wg-quick@wg0`
+/// is — so the shared helper's `service_for` would hand systemd a name it does
+/// not have.
+pub struct UninstallWireguard;
+
+impl Task for UninstallWireguard {
+    fn id(&self) -> &'static str {
+        "wireguard.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall WireGuard"
+    }
+
+    fn description(&self) -> &'static str {
+        "Brings wg0 down, disables it at boot and removes the WireGuard tools. \
+         wg0.conf and the server's keys are left on disk unless purged: they \
+         are what a reinstall would need, and they cannot be regenerated to \
+         match peers that already hold the public key."
+    }
+
+    /// The one uninstall that can end the session running it.
+    ///
+    /// An administrator connected *over* the tunnel loses the connection the
+    /// moment `wg0` goes down — the same shape of mistake `ssh.harden` makes,
+    /// and the reason that task is Lockout too. Unlike SSH, this one is
+    /// offered at all: reaching a host over WireGuard is a choice, and one an
+    /// operator can undo from a console, whereas removing the SSH server
+    /// leaves nothing to reconnect *to*.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Wireguard)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["wireguard.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        vec![
+            // Every peer holds a public key for a server that is going away.
+            // Stated because the peers are elsewhere: nothing on this host can
+            // tell them, and their configurations go on looking correct.
+            Consequence::Invalidates {
+                task: "wireguard.add-peer",
+                reason: Reason::RequiresSetting {
+                    setting: "every configured peer now points at a tunnel that is down",
+                },
+                check: None,
+            },
+            // The firewall rule admitting the tunnel's port outlives the
+            // tunnel, and an open port with nothing behind it is exactly the
+            // residue an uninstall is supposed to avoid leaving.
+            Consequence::Invalidates {
+                task: "firewall.allow-port",
+                reason: Reason::RequiresSetting {
+                    setting: "the rule admitting the WireGuard port now admits nothing",
+                },
+                check: None,
+            },
+        ]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        // The instance name, not the template. `wg-quick@` alone is a prefix
+        // systemd has no unit for.
+        let unit = format!("{}{INTERFACE}", backend.service_for(Capability::Wireguard));
+
+        report(progress, &Msg::TaskDisabling { unit: unit.clone() });
+
+        backend.services().disable_and_stop(executor, &unit)?;
+
+        let package = backend.package_for(Capability::Wireguard);
+
+        if !backend.packages().is_installed(executor, package)? {
+            report(
+                progress,
+                &Msg::TaskNotInstalled {
+                    what: package.to_owned(),
+                },
+            );
+
+            return Ok(Outcome::Done);
+        }
+
+        let purging = values
+            .get(crate::tasks::uninstall::REMOVAL)
+            .unwrap_or(crate::tasks::uninstall::KEEP_CONFIGURATION)
+            == crate::tasks::uninstall::WITH_CONFIGURATION;
+
+        report(
+            progress,
+            &if purging {
+                Msg::TaskPurging {
+                    what: package.to_owned(),
+                }
+            } else {
+                Msg::TaskRemoving {
+                    what: package.to_owned(),
+                }
+            },
+        );
+
+        if purging {
+            backend.packages().purge(executor, package)?;
+        } else {
+            backend.packages().remove(executor, package)?;
+        }
+
+        Ok(Outcome::Done)
+    }
 }
 
 #[cfg(test)]

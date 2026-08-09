@@ -45,6 +45,18 @@ pub enum ParamKind {
     /// interchangeable and a typo would open the wrong one silently — a `tcp`
     /// rule admits nothing for WireGuard.
     Protocol,
+    /// How thoroughly a package is removed: `remove` or `purge`.
+    ///
+    /// A closed choice for the same reason [`Protocol`](Self::Protocol) is:
+    /// the two are not interchangeable and the difference is not recoverable.
+    /// A typo that silently selected `purge` would delete configuration the
+    /// operator meant a reinstall to find.
+    ///
+    /// Not offered on every family. RHEL has no purge — rpm leaves an edited
+    /// file as `.rpmsave` whatever is asked — so `Backend::has_purge_for`
+    /// answers false there and the field is not drawn at all. A field with two
+    /// options and one outcome invites a decision and then ignores it.
+    Removal,
     /// A password, drawn as bullets and never echoed.
     ///
     /// Empty is a valid answer and means "no password": a field left alone
@@ -163,7 +175,7 @@ impl ParamKind {
             Self::Username | Self::UsernameList | Self::PublicKey | Self::Path | Self::Secret => {
                 !character.is_control()
             }
-            Self::Protocol => character.is_ascii_alphabetic(),
+            Self::Protocol | Self::Removal => character.is_ascii_alphabetic(),
             Self::Version => character.is_ascii_digit() || character == '.',
             // Hostnames are admitted in an endpoint, so letters and `-` too.
             Self::Cidr | Self::Ip | Self::Endpoint => {
@@ -184,6 +196,7 @@ impl ParamKind {
             Self::PublicKey => validate_public_key(value),
             Self::Path => validate_path(value),
             Self::Protocol => validate_protocol(value),
+            Self::Removal => validate_removal(value),
             // Nothing to check. Empty means "no password", and the strength of
             // one that is not empty is the system's judgement rather than this
             // tool's: PAM is configured per host, and a rule invented here
@@ -300,6 +313,20 @@ fn validate_protocol(value: &str) -> std::result::Result<(), String> {
         "tcp" | "udp" => Ok(()),
         "" => Err("a protocol is required".to_owned()),
         _ => Err("the protocol must be tcp or udp".to_owned()),
+    }
+}
+
+/// Rejects anything that is not one of the two removal depths.
+///
+/// Empty is refused rather than defaulting to `remove`. The safer of the two
+/// is a tempting default, and a field left blank is a field the operator did
+/// not read — on a choice whose wrong answer deletes configuration, being
+/// asked again is cheaper than guessing kindly.
+fn validate_removal(value: &str) -> std::result::Result<(), String> {
+    match value {
+        "remove" | "purge" => Ok(()),
+        "" => Err("choose remove or purge".to_owned()),
+        _ => Err("the removal must be remove or purge".to_owned()),
     }
 }
 

@@ -14,6 +14,7 @@ pub mod revert;
 pub mod services;
 pub mod ssh;
 pub mod sshd_config;
+pub mod uninstall;
 pub mod users;
 pub mod wireguard;
 
@@ -604,13 +605,19 @@ mod tests {
         // `Lockout` the red frame would mark every row and distinguish none,
         // and the dialog it teaches people to dismiss is the one before
         // `users.lock-root`, whose recovery is the provider's rescue console.
-        const LOCKOUT: [&str; 6] = [
+        const LOCKOUT: [&str; 7] = [
             "firewall.enable",
             "ssh.allow-users",
             "ssh.harden",
             "ssh.harden-strict",
             "ssh.change-port",
             "users.set-shell",
+            // The only uninstall that can end the session running it: an
+            // administrator connected over the tunnel loses the connection
+            // when wg0 goes down. Every other inverse removes something the
+            // session does not depend on — and `ssh.install` has no inverse
+            // at all, for the reason its own module records.
+            "wireguard.uninstall",
         ];
 
         let declared: Vec<_> = all_tasks()

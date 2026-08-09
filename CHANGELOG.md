@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Ten things this tool installs, it can now remove: Caddy, rootless Docker,
+  fish, Zellij, mise, rustup, fail2ban, CrowdSec, WireGuard and unattended
+  security updates. Each shares a row with the install it undoes, and the row
+  shows whichever verb the host justifies. `ssh.install` is deliberately not
+  among them — a tool driven over SSH does not remove the SSH server, and the
+  verification window cannot help: the process that would undo it is being torn
+  down by the disconnection it caused.
+- Nine of the ten go through one function rather than being ten near-copies,
+  because the copy that drifts is the one nobody notices. It mirrors the branch
+  the install took — asking `has_package_for` again, in the same order — so a
+  released binary is never handed to `apt-get remove` and a packaged one never
+  has `/usr/local/bin` searched for it. The unit is stopped *before* the package
+  goes: the reverse leaves a running daemon whose unit file has been deleted.
+  WireGuard is the exception, and only because `wg-quick@` is a template rather
+  than a unit.
+- Every removal asks how thorough to be, and defaults to keeping configuration.
+  A reinstall then finds what was there, where the other default would delete a
+  hand-edited `jail.local` on the strength of a field nobody read. The field is
+  not drawn on RHEL at all, because rpm has no purge and a choice with one
+  outcome invites a decision and then ignores it.
+- An uninstall never reverts. The verification window exists for a change whose
+  undo is cheap and local — restore a file, reload a unit — and undoing an
+  uninstall means reinstalling over the network, which fails outright on a host
+  with no egress. A countdown promising an undo that cannot run is worse than
+  no countdown.
+- `wireguard.uninstall` is the one that can end the session applying it, and
+  says so with the red frame the other lockouts use: an administrator connected
+  over the tunnel loses the connection when `wg0` goes down. It is offered
+  anyway, unlike SSH, because reaching a host over WireGuard is a choice and a
+  console can undo it.
+- Two things surfaced from making the tree longer rather than from thinking
+  about it. The tree pane is measured against its longest title, so ten new
+  rows widened it — and one of them, at 49 cells, was shortened instead of
+  widening the pane for every row to fit a single name. A test helper that
+  walked the tree looking for tasks could not see inside a pair, which is the
+  same blind spot the tree's own traversals had and were taught about.
 - A row that can go either way asks the host which way it is, on a thread of
   its own. The queries are unprivileged — every package manager reads a
   world-readable database, and `command -v` asks the shell — but eleven of them

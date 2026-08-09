@@ -502,9 +502,30 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_with_no_pairs_costs_no_commands() {
-        // Today's tree, before any inverse exists. The probe must ask nothing
-        // rather than walking every task and asking about each.
-        assert!(subjects_in(&crate::tasks::tree()).is_empty());
+    fn every_reversible_row_declares_what_to_measure() {
+        // A pair whose forward task returns `None` from `subject` is a row that
+        // can never learn which verb it should show: the probe would skip it
+        // and it would offer to install for the whole session, including on a
+        // host where the subject is plainly present. Silent, and indisputably
+        // wrong — so the tree is walked rather than trusted.
+        let mut pairs = 0;
+        count_pairs(&crate::tasks::tree(), &mut pairs);
+
+        assert_eq!(
+            subjects_in(&crate::tasks::tree()).len(),
+            pairs,
+            "every reversible pair must declare a subject to measure"
+        );
+    }
+
+    /// Counts reversible pairs in a forest, however deeply nested.
+    fn count_pairs(nodes: &[Node], out: &mut usize) {
+        for node in nodes {
+            match node {
+                Node::Task(_) => {}
+                Node::Reversible { .. } => *out += 1,
+                Node::Category(category) => count_pairs(&category.children, out),
+            }
+        }
     }
 }
