@@ -57,10 +57,22 @@ comes from the operating system: commands that need root are escalated through
   applies the change correctly and exits `0`, having said no record was kept. A
   script that needs the guarantee should check for that line rather than for
   the exit code.
-- **Two tasks deliberately record nothing.** `wireguard.add-peer` writes the
-  one file holding the server's private key and every peer's preshared key, so
-  a copy of it would be a second copy of all of them. `ssh.authorize-key` is
-  the one file whose restoration *removes* an authorised key.
+- **Two tasks deliberately record nothing, and one file is never copied at
+  all.** `ssh.authorize-key` records nothing because restoring its file
+  *removes* an authorised key — the direction that locks an administrator out
+  rather than rescuing them. `wireguard.add-peer` records nothing because
+  `wg0.conf` holds the server's private key and every peer's preshared key, so
+  a copy of it is a copy of all of them.
+
+  For that file the guarantee is stronger than "not recorded": nothing copies
+  it, ever. Both `wireguard.install` and `wireguard.add-peer` write it through
+  a path that takes no sidecar backup, because the ordinary one leaves
+  `wg0.conf.initd.bak` beside the original and only copies named in the index
+  are ever pruned. What that gives up is a way back from a failed write —
+  acceptable because the write is atomic, so the file is the old version or
+  the new one and never a third state. Removing a peer is `wg0.conf` minus one
+  block, which an administrator can do with an editor; recovering a leaked
+  private key is not something anybody can do.
 - **A directive the daemon will not honour is reported on stderr.** Every task
   that edits `sshd_config` reads the effective configuration back afterwards and
   names any directive the daemon disagrees with. Debian 12, Ubuntu 22.04 and
