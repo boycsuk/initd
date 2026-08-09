@@ -115,6 +115,8 @@ impl Task for HardenSsh {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
+        backend.ensure_config_present(executor, Capability::Ssh)?;
+
         let files = backend.files();
         let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
 
@@ -204,7 +206,17 @@ impl Task for HardenSshStrict {
 
     fn support(&self, family: Family) -> Support {
         match family {
-            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
+            // openSUSE carries the same crypto-policies mechanism RHEL does —
+            // `40-suse-crypto-policies.conf`, which Includes
+            // `/etc/crypto-policies/back-ends/opensshserver.config` — and it
+            // loses rather than wins, which is why this is `Yes` where RHEL is
+            // `No`. The shipped `sshd_config` Includes `/etc/ssh/sshd_config.d`
+            // on line 12 and its own `/usr/etc` drop-ins on line 18, and sshd
+            // honours the first occurrence. Measured the way RHEL's refusal
+            // was, against a daemon rather than inferred from the file:
+            // `Ciphers aes256-ctr` written the way this task writes it came
+            // back from `sshd -T` as the effective value.
+            Family::Debian | Family::Arch | Family::Alpine | Family::Suse => Support::Yes,
             Family::Rhel => Support::No(
                 "the only task RHEL's `Include` costs anything. Its shipped \
                  `50-redhat.conf` is read before the main file and carries the \
@@ -226,6 +238,8 @@ impl Task for HardenSshStrict {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
+        backend.ensure_config_present(executor, Capability::Ssh)?;
+
         let files = backend.files();
         let contents = files.read(executor, backend.path_for(Capability::Ssh))?;
 

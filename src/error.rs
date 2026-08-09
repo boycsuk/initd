@@ -207,6 +207,16 @@ pub enum Error {
     /// The account nominated as the way back in cannot escalate.
     NotAnAdministrator { user: String, group: String },
 
+    /// The account is in the administrative group and still cannot escalate.
+    ///
+    /// Separate from [`Error::NotAnAdministrator`] because the two send the
+    /// operator to different places: that one is fixed with `usermod`, this one
+    /// only by editing the distribution's sudoers. openSUSE ships `%wheel`
+    /// commented out, so membership reads back true on an account that cannot
+    /// escalate — and reporting it as "not in the group" would be a message
+    /// asserting something the system contradicts.
+    AdminGroupGrantsNothing { user: String, group: String },
+
     /// The account nominated as the way back in cannot authenticate at all.
     ///
     /// Neither an authorised key nor a usable password, which is what makes it
@@ -530,6 +540,10 @@ impl Error {
                 group: group.clone(),
             },
             Self::NotAnAdministrator { user, group } => Msg::NotAnAdministrator {
+                user: user.clone(),
+                group: group.clone(),
+            },
+            Self::AdminGroupGrantsNothing { user, group } => Msg::AdminGroupGrantsNothing {
                 user: user.clone(),
                 group: group.clone(),
             },

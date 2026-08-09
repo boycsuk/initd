@@ -100,7 +100,10 @@ impl Task for InstallFail2ban {
 
     fn support(&self, family: Family) -> Support {
         match family {
-            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
+            // Packaged in openSUSE's own repositories on both variants, which
+            // is the difference from RHEL below: same rpm ecosystem, and this
+            // one carries it without a third-party repository.
+            Family::Debian | Family::Arch | Family::Alpine | Family::Suse => Support::Yes,
             Family::Rhel => Support::No(
                 "has never been in a base repository, in any release. Being \
                  Python there is no static binary to verify, and `sshguard` is \
@@ -231,6 +234,12 @@ impl Task for InstallCrowdsec {
                  install pipes a script into a shell to register a repository \
                  — the pattern this project rejects in its own installer",
             ),
+            Family::Suse => Support::No(
+                "absent from both Tumbleweed's and Leap's repositories, \
+                 searched with and without exact matching. The route left is \
+                 the one RHEL refuses for the same reason: releases carrying \
+                 no checksums, installed by a script piped into a shell",
+            ),
         }
     }
 
@@ -332,6 +341,13 @@ impl Task for UnattendedUpgrades {
                  collapsed to one. The backend resolves a family rather than a \
                  release, so it cannot name both — and either name is wrong on \
                  half the family",
+            ),
+            Family::Suse => Support::No(
+                "the mechanism depends on how the host was installed rather \
+                 than on the family: a transactional host updates through \
+                 `transactional-update` and an ordinary one through zypper's \
+                 own timer, and the two reboot differently. The backend \
+                 resolves a family, so it cannot tell which this is",
             ),
         }
     }

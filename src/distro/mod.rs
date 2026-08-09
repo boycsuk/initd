@@ -32,6 +32,16 @@ pub enum Family {
     /// than the other families', so several capabilities resolve to a verified
     /// release instead of a package, and a few to nothing at all.
     Rhel,
+    /// openSUSE and SLES: `zypper`, systemd, the shadow suite.
+    ///
+    /// The family that broke a supposition the other four share. Everywhere
+    /// else, adding an account to [`crate::backend::Backend::admin_group`]
+    /// grants it escalation; openSUSE ships the rule commented out, so the two
+    /// are separate facts here. It is also the first family whose variants
+    /// disagree with each other — Tumbleweed packages Zellij, Leap 16.0 does
+    /// not — which is why its backend resolves a distribution and not only a
+    /// family.
+    Suse,
 }
 
 impl Family {
@@ -46,7 +56,13 @@ impl Family {
     /// resolves exactly one — so this is test-only by nature, like
     /// [`crate::backend::Backend::family`] above it.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const ALL: &'static [Self] = &[Self::Debian, Self::Arch, Self::Alpine, Self::Rhel];
+    pub const ALL: &'static [Self] = &[
+        Self::Debian,
+        Self::Arch,
+        Self::Alpine,
+        Self::Rhel,
+        Self::Suse,
+    ];
 
     /// Stable identifier, used in messages and CLI output.
     pub const fn as_str(self) -> &'static str {
@@ -55,6 +71,7 @@ impl Family {
             Self::Arch => "arch",
             Self::Alpine => "alpine",
             Self::Rhel => "rhel",
+            Self::Suse => "suse",
         }
     }
 }
@@ -112,9 +129,10 @@ mod tests {
         assert!(names.contains(&"arch"), "arch missing from ALL");
         assert!(names.contains(&"alpine"), "alpine missing from ALL");
         assert!(names.contains(&"rhel"), "rhel missing from ALL");
+        assert!(names.contains(&"suse"), "suse missing from ALL");
         assert_eq!(
             Family::ALL.len(),
-            4,
+            5,
             "a family was added: list it in ALL and name it here"
         );
     }

@@ -237,6 +237,10 @@ pub enum Msg {
         user: String,
         group: String,
     },
+    AdminGroupGrantsNothing {
+        user: String,
+        group: String,
+    },
     NoWayBackIn {
         user: String,
     },

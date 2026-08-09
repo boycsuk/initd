@@ -220,6 +220,17 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NotAnAdministrator { user, group } => {
             format!("{user} is not in {group}, so it cannot escalate once root is locked")
         }
+        // Deliberately not the message above: {user} *is* in {group}, and
+        // saying otherwise would send the operator to `usermod` for a problem
+        // that command cannot fix. The cause is the distribution's own sudoers,
+        // so the message names the file and the line to uncomment.
+        Msg::AdminGroupGrantsNothing { user, group } => {
+            format!(
+                "{user} is in {group}, but this distribution ships the rule granting it \
+                 commented out, so the account still cannot escalate — uncomment \
+                 \"%{group} ALL=(ALL:ALL) ALL\" in /etc/sudoers before locking root"
+            )
+        }
         Msg::NoWayBackIn { user } => {
             format!(
                 "{user} has neither an authorised key nor a usable password, so it \

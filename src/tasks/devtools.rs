@@ -71,7 +71,11 @@ impl Task for InstallFish {
 
     fn support(&self, family: Family) -> Support {
         match family {
-            Family::Debian | Family::Arch | Family::Alpine => Support::Yes,
+            // openSUSE packages fish in its own repositories, on both
+            // Tumbleweed and Leap 16.0 — which is the same Build Service the
+            // refusal below sends RHEL users to, reached here as a first-party
+            // package rather than a third-party one.
+            Family::Debian | Family::Arch | Family::Alpine | Family::Suse => Support::Yes,
             Family::Rhel => Support::No(
                 "EPEL-only, and unlike Caddy there is no verifiable \
                  alternative — fish publishes source rather than static \
@@ -351,7 +355,10 @@ impl Task for InstallMise {
 
     fn support(&self, family: Family) -> Support {
         match family {
-            Family::Debian | Family::Arch | Family::Rhel => Support::Yes,
+            // Unpackaged on openSUSE too, and reached the same way it is on
+            // RHEL: the musl release with a checksummed manifest, which is the
+            // same artefact Debian installs.
+            Family::Debian | Family::Arch | Family::Rhel | Family::Suse => Support::Yes,
             Family::Alpine => Support::No(
                 "Alpine packages neither this nor the Rust toolchain. Both are \
                  installable there by their own installers, but this tool \
@@ -469,7 +476,11 @@ impl Task for InstallRust {
 
     fn support(&self, family: Family) -> Support {
         match family {
-            Family::Debian | Family::Arch => Support::Yes,
+            // openSUSE packages `rustup` itself, on both variants — the
+            // toolchain manager rather than the compiler-under-a-similar-name
+            // that makes this unsupported on RHEL, so no digest has to be
+            // pinned and no installer run.
+            Family::Debian | Family::Arch | Family::Suse => Support::Yes,
             Family::Alpine => Support::No(
                 "same as mise: unpackaged on Alpine, and rustup is an \
                  installer this tool cannot verify",
