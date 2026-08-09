@@ -586,6 +586,25 @@ TUI or CLI:
     recorded: the WireGuard configuration, which holds the server's private key
     and every peer's preshared key, and `authorized_keys`, whose restoration
     *removes* an authorised key rather than restoring access.
+- As an **administrator**, I can see what this tool has changed and put any one
+  of it back, so that a configuration I regret is not one I have to reconstruct
+  from memory.
+  - Acceptance: the list names the task that made each change as well as the
+    time. Ten recorded states of one file are ten indistinguishable timestamps
+    without it, and choosing between them is the whole point of the list.
+  - Acceptance: restoring asks first, with the same warning as any other change
+    that can end the session — restoring an `sshd_config` is exactly as able to
+    lock me out as writing one was.
+  - Acceptance: confirming a restore restores; it never starts whatever task
+    the tree's cursor happened to be on.
+  - Acceptance: a refusal — the file edited since, the copy damaged — is
+    reported as *not restored* rather than as a failure, because the machine is
+    left exactly as it was.
+  - Acceptance: a host where nothing has been recorded says so, rather than
+    showing an empty list that looks like a view which failed to load.
+  - Platform exception: TUI only. Choosing among recorded states is a
+    selection, and the CLI has no cursor; `initd` prints the index's path in
+    the task output for anybody who wants to read it with ordinary tools.
 - As an **administrator**, I am asked to confirm before **anything that changes
   the machine**, so that no task installs software, enables a daemon or writes
   a configuration file on a keystroke alone.

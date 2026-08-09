@@ -20,6 +20,7 @@ pub mod field;
 pub mod fixtures;
 pub mod form;
 pub mod help;
+pub mod history;
 pub mod layout;
 pub mod navigation;
 pub mod output;

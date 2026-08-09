@@ -23,6 +23,7 @@ use super::confirm::Confirm;
 use super::field::Field;
 use super::form::Form;
 use super::help;
+use super::history::History;
 use super::search::Search;
 use super::status::State;
 use crate::i18n::{Msg, RevertReason};
@@ -76,6 +77,10 @@ impl App {
                 self.on_search_key(key);
                 None
             }
+            Mode::Reviewing(_) => {
+                self.on_history_key(key);
+                None
+            }
             Mode::Browsing => {
                 if self.on_navigation_key(key) {
                     return None;
@@ -114,6 +119,18 @@ impl App {
             // in here" rather than "where is it".
             KeyCode::Char('/') => {
                 self.search = Some(Search::new(self.cursor.tree()));
+                return true;
+            }
+            // `H` rather than `h`, which leaves a category — the two would be
+            // one keystroke apart on a key that rewrites configuration files.
+            // Read from the host here rather than kept in step with the file:
+            // this process is the only writer, so a copy taken on opening is
+            // current for as long as the view is up.
+            KeyCode::Char('H') => {
+                self.history = Some(History::new(crate::backend::backup_index::read_all(
+                    self.executor.as_ref(),
+                    self.backend.files(),
+                )));
                 return true;
             }
             // The only focus key. Overloading a movement key with focus is how
@@ -329,6 +346,62 @@ impl App {
             _ => {}
         }
     }
+    /// Handles a key while the recorded changes are being reviewed.
+    ///
+    /// Movement keys mirror the tree's, including the `j`/`k` pair: an operator
+    /// who navigates the tree that way does not stop when a different list
+    /// opens. `Esc` closes having changed nothing, which is what makes opening
+    /// this safe to do out of curiosity.
+    fn on_history_key(&mut self, key: KeyEvent) {
+        let Some(history) = self.history.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.history = None;
+                self.status.set(State::Ready, "");
+            }
+            KeyCode::Down | KeyCode::Char('j') => history.select_next(),
+            KeyCode::Up | KeyCode::Char('k') => history.select_previous(),
+            KeyCode::Char('g') => history.select_first(),
+            KeyCode::Char('G') => history.select_last(),
+            KeyCode::Enter => self.confirm_selected_restore(),
+            _ => {}
+        }
+    }
+
+    /// Asks before putting the selected record back.
+    ///
+    /// Through the same confirmation every other change goes through, and at
+    /// the lockout tier: restoring an `sshd_config` is exactly as able to end
+    /// the session as writing one was. A restore reachable on `Enter` alone
+    /// would make this the most dangerous list in the interface.
+    fn confirm_selected_restore(&mut self) {
+        let Some(record) = self.history.as_ref().and_then(History::selected).cloned() else {
+            return;
+        };
+
+        // Closed first, so the confirmation is not drawn over a list it is
+        // about — and so answering `no` returns to the tree rather than to a
+        // view whose selection would then be meaningless.
+        self.history = None;
+
+        self.pending_restore = Some(record.clone());
+        self.confirm = Some(
+            Confirm::new(
+                self.lang.render(&Msg::ConfirmRestoreTitle {
+                    path: record.path.clone(),
+                }),
+                self.lang.render(&Msg::ConfirmRestoreBody {
+                    task: record.task.to_owned(),
+                    path: record.path.clone(),
+                }),
+            )
+            .with_warning(self.lang.render(&Msg::ConfirmLockoutWarning)),
+        );
+    }
+
     /// Moves the tree cursor onto the selected match and closes the search.
     ///
     /// Navigates rather than running. The task under the cursor is then
@@ -564,12 +637,24 @@ impl App {
     fn accept_confirmation(&mut self) -> Option<ParamValues> {
         self.confirm = None;
 
+        // A confirmed restore is not a task, so it never reaches the worker:
+        // it is one file copy and one reload, done here and reported like any
+        // other outcome. Intercepted before the values are yielded, since
+        // yielding them would start whatever the tree's cursor happens to be
+        // on — a restore confirmed from the history would run an unrelated
+        // task, which is the worst thing this path could do.
+        if let Some(record) = self.pending_restore.take() {
+            self.restore_recorded(record);
+            return None;
+        }
+
         // Collected by the form before this dialog opened.
         Some(std::mem::take(&mut self.pending_values))
     }
     /// Closes the dialog, discarding anything collected for the task.
     fn cancel_confirmation(&mut self) {
         self.confirm = None;
+        self.pending_restore = None;
         self.pending_values = ParamValues::new();
         self.status
             .set(State::Ready, self.lang.render(&Msg::StatusCancelled));

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `H` opens the recorded changes and any one of them can be put back. The list
+  names the task that made each change as well as when — ten recorded states of
+  one file are ten indistinguishable timestamps otherwise, and choosing between
+  them is what the list is for. Restoring asks first, at the same tier as every
+  other change that can end the session, since restoring an `sshd_config` is
+  exactly as able to lock somebody out as writing one was.
+- A refusal reports as *not restored* rather than as a failure. The refusals —
+  the file edited since, the copy damaged — leave the machine exactly as it
+  was, which is a different thing from a command that broke, and a host with
+  nothing recorded gets a sentence rather than an empty list.
 - A change to a configuration file can now be put back in a later session, not
   only in the one that made it. Seven tasks leave a record — the four that edit
   `sshd_config`, Caddy's headers snippet, fail2ban's jail and fish's entry in

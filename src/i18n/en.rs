@@ -331,6 +331,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpNextRow => "next row".to_owned(),
         Msg::HelpFirstLastRow => "first / last row".to_owned(),
         Msg::HelpOpenOrRun => "open a category, or run a task".to_owned(),
+        Msg::HelpHistory => "recorded changes, with any one restorable".to_owned(),
         Msg::HelpFind => "find a task anywhere in the tree".to_owned(),
         Msg::HelpBack => "back to the parent level".to_owned(),
         Msg::HelpFilter => "filter by title or task id".to_owned(),
@@ -523,6 +524,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarKeep => "keep".to_owned(),
         Msg::KeyBarRevert => "revert".to_owned(),
         Msg::KeyBarGo => "go".to_owned(),
+        Msg::KeyBarRestore => "restore".to_owned(),
         Msg::KeyBarClose => "close".to_owned(),
         Msg::KeyBarFollow => "follow".to_owned(),
         Msg::KeyBarTree => "tree".to_owned(),
@@ -658,6 +660,30 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::TaskDisabling { unit } => format!("Stopping and disabling {unit}..."),
         Msg::TaskBinaryRemoved { path } => format!("Removed {path}"),
+        Msg::HistoryTitle { count } => format!("Recorded changes ({count})"),
+        Msg::HistoryRestored { path } => {
+            format!("{path} was put back to its recorded state and the service reloaded")
+        }
+        Msg::HistoryRestoredStatus => "restored".to_owned(),
+        // "not restored" rather than "failed": the refusals are deliberate and
+        // leave the machine exactly as it was, which is a different thing from
+        // a command that broke.
+        Msg::HistoryNotRestored => "not restored".to_owned(),
+        Msg::ConfirmRestoreTitle { path } => format!("Restore {path}"),
+        // Names the task as well as the file, because the file alone does not
+        // say which of its recorded states this is — the reason the list shows
+        // the task in the first place.
+        Msg::ConfirmRestoreBody { task, path } => format!(
+            "{path} goes back to what it held before {task} changed it. If it \
+             has been edited since, nothing is restored and you are told so."
+        ),
+        // A sentence rather than an empty list, and it says why there is
+        // nothing rather than only that there is nothing: an operator who has
+        // never run a configuration task should not read this as a fault.
+        Msg::HistoryEmpty => "No changes have been recorded on this host yet. A task that edits \
+             a configuration file copies the previous version aside, and what \
+             it copied appears here."
+            .to_owned(),
         Msg::TaskChangeRecorded => {
             "The previous configuration was copied aside, so this can be put \
              back in a later session"

@@ -97,9 +97,9 @@ refusal.
 
 ## Modals
 
-The four dialogs — confirmation, parameter form, help overlay, search — are
-drawn to one set of rules, so a frame does not move for reasons the operator
-cannot name:
+The five dialogs — confirmation, parameter form, help overlay, search,
+recorded changes — are drawn to one set of rules, so a frame does not move for
+reasons the operator cannot name:
 
 | Rule | Value |
 |------|-------|
@@ -115,9 +115,33 @@ footer, the longest fixed string any of them draws: footers are adjacent spans
 that neither wrap nor truncate, so a dialog one cell too narrow silently loses
 `cancel`, the key out of a modal.
 
-The search overlay keeps the gutter vertically only. Its selected row is drawn
+The search and recorded-changes overlays keep the gutter vertically only. Its selected row is drawn
 as a filled band, and one stopping two cells short of each border would read as
 a highlight that failed to paint rather than as a margin.
+
+## Recorded changes
+
+`H` opens a list of the configuration changes this tool has recorded, newest
+first. Each row names the task that made the change, when, and the file — the
+task because a file with ten recorded states is ten indistinguishable
+timestamps without it.
+
+Semi-modal, like search: it takes the movement keys (`↑↓`, `j`/`k`, `g`/`G`)
+and `Esc` closes it having changed nothing. `Enter` offers to put the selected
+state back, through the same confirmation as any other change that can end the
+session — at the lockout tier, with the red frame.
+
+Opened with `H` rather than `h`, which leaves a category: the two would be one
+keystroke apart on a key that rewrites configuration files.
+
+A host where nothing has been recorded gets a sentence saying so rather than an
+empty list, since an empty list inside a bordered frame reads as a view that
+failed to load.
+
+A restore that is refused — because the file has been edited since, or because
+the copy is damaged — reports into the output pane and sets the status row to
+`not restored`. That wording is deliberate: the refusals leave the machine
+exactly as it was, which is a different thing from a command that broke.
 
 ## Panels
 
@@ -503,6 +527,7 @@ way back.
 | `g` / `G` | Jump to the first / last row of the level |
 | `Enter` | Open the selected category, or run the selected task; anything that changes the machine opens the dialog first |
 | `/` | Open search over the whole tree |
+| `H` | Open the recorded changes, with any one restorable |
 | `Esc` / `Backspace` / `←` / `h` | Go back to the parent level; at the top level it reports rather than quitting |
 
 Every row is selectable: a category that could not be selected could not be

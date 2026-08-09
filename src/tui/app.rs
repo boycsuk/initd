@@ -9,6 +9,7 @@ use super::auth::AuthRequest;
 use super::confirm::Confirm;
 use super::cursor::TreeCursor;
 use super::form::Form;
+use super::history::History;
 use super::output::OutputPane;
 use super::probe::{InstalledState, Probe};
 use super::search::Search;
@@ -18,6 +19,7 @@ use super::verify::Verification;
 use super::worker::Running;
 use super::{Tui, render};
 use crate::backend::Backend;
+use crate::backend::backup_index::BackupRecord;
 use crate::distro::Distro;
 use crate::distro::host::HostFacts;
 use crate::error::Result;
@@ -103,6 +105,8 @@ pub(super) enum Mode<'a> {
     Confirming(&'a Confirm),
     /// A search is open over the task tree.
     Searching(&'a Search),
+    /// The recorded changes are open, with one selectable for restoring.
+    Reviewing(&'a History),
     /// The tree, with nothing modal on top of it.
     Browsing,
 }
@@ -183,6 +187,20 @@ pub struct App {
     /// form: it takes the keyboard, but the pane beside it keeps rendering, so
     /// a task's output stays readable while looking for the next one to run.
     pub(super) search: Option<Search>,
+    /// The recorded changes, while they are being reviewed.
+    ///
+    /// Loaded when the view opens rather than kept in step with the file: it
+    /// is appended to by this process alone, so a copy taken on opening is
+    /// current for as long as the view is up, and re-reading per frame would
+    /// put the executor in the path of a keystroke.
+    pub(super) history: Option<History>,
+    /// A record the operator has been asked to confirm restoring.
+    ///
+    /// Held between the confirmation and the restore for the same reason
+    /// `pending_values` is held between the form and the run: the two are
+    /// separate turns of the event loop, and the record has to survive the
+    /// step between.
+    pub(super) pending_restore: Option<BackupRecord>,
     /// Raised when the session this interface runs in is going away.
     ///
     /// Default in tests and where registration was declined: a flag nothing
@@ -254,6 +272,8 @@ impl App {
             help: None,
             status: Status::new(),
             search: None,
+            history: None,
+            pending_restore: None,
             hangup: Hangup::default(),
             lang: Lang::from_env(),
             should_quit: false,
@@ -332,6 +352,13 @@ impl App {
 
         if let Some(ref search) = self.search {
             return Mode::Searching(search);
+        }
+
+        // Below search and above browsing, which is the order they open in:
+        // both are reached from the tree, neither can be open over the other,
+        // and a confirmation raised from a selected record outranks both.
+        if let Some(ref history) = self.history {
+            return Mode::Reviewing(history);
         }
 
         Mode::Browsing
@@ -510,6 +537,103 @@ mod tests {
         // child process, so the tasks exercised here stop at a form or a
         // confirmation rather than running.
         app.dispatch(KeyEvent::from(code));
+    }
+
+    /// An app whose history holds one record, without touching a host.
+    fn app_with_a_record(family: Family) -> App {
+        let mut app = test_app(family);
+
+        app.history = Some(crate::tui::history::History::new(vec![
+            crate::backend::backup_index::BackupRecord {
+                task: "ssh.harden",
+                path: "/etc/ssh/sshd_config".to_owned(),
+                copy: "/var/lib/initd/backups/etc-ssh-sshd_config.20260809T142203Z".to_owned(),
+                at: "20260809T142203Z".to_owned(),
+                sha256_before: "a".repeat(64),
+                sha256_after: "b".repeat(64),
+                service: "ssh.service",
+            },
+        ]));
+
+        app
+    }
+
+    #[test]
+    fn the_history_takes_the_keyboard_and_gives_it_back() {
+        // Semi-modal like search: while it is open the tree's movement keys
+        // address the list, and `Esc` closes it having changed nothing — which
+        // is what makes opening it safe to do out of curiosity.
+        let mut app = app_with_a_record(Family::Debian);
+
+        assert!(matches!(app.mode(), Mode::Reviewing(_)));
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.history.is_none());
+        assert!(matches!(app.mode(), Mode::Browsing));
+    }
+
+    #[test]
+    fn restoring_asks_before_it_touches_anything() {
+        // The key that puts a configuration file back cannot be one keystroke
+        // with no question, and the question is at the lockout tier: restoring
+        // an sshd_config is exactly as able to end the session as writing one.
+        let mut app = app_with_a_record(Family::Debian);
+
+        press(&mut app, KeyCode::Enter);
+
+        let confirm = app.confirm.as_ref().expect("restoring must ask first");
+
+        assert!(
+            confirm.body.contains("/etc/ssh/sshd_config"),
+            "the question must name the file: {}",
+            confirm.body
+        );
+        assert!(
+            confirm.warning.is_some(),
+            "and carry the lockout warning: {confirm:?}"
+        );
+        assert!(
+            !confirm.accepted,
+            "with the safe answer selected, as every other confirmation has"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_restore_never_runs_a_task_from_the_tree() {
+        // The worst thing this path could do. `accept_confirmation` yields the
+        // values that start whatever the tree's cursor is on, so a restore
+        // confirmed from the history would run an unrelated task — with the
+        // operator having answered a question about a file.
+        let mut app = app_with_a_record(Family::Debian);
+
+        press(&mut app, KeyCode::Enter);
+
+        let started = app.dispatch(KeyEvent::from(KeyCode::Char('y')));
+
+        assert!(
+            started.is_none(),
+            "confirming a restore must not start a task"
+        );
+        assert!(app.running.is_none());
+        assert!(
+            app.pending_restore.is_none(),
+            "and the record must not be left pending a second time"
+        );
+    }
+
+    #[test]
+    fn declining_a_restore_leaves_the_record_alone() {
+        let mut app = app_with_a_record(Family::Debian);
+
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('n'));
+
+        assert!(app.confirm.is_none());
+        assert!(
+            app.pending_restore.is_none(),
+            "a declined restore must not stay armed"
+        );
     }
 
     #[test]
