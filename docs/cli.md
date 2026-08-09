@@ -48,6 +48,19 @@ comes from the operating system: commands that need root are escalated through
   `LC_ALL`, `LC_MESSAGES` or `LANG`, falling back to English.
 - **Idempotent where possible.** An operation that finds the system already in
   the desired state reports it and changes nothing.
+- **A change to a configuration file is recorded, and the task says whether it
+  was.** Seven tasks copy the previous version under `/var/lib/initd` before
+  replacing it — the four that edit `sshd_config`, `caddy.security-headers`,
+  `fail2ban.install` and `fish.install` — and print one line saying the change
+  can be put back later, or that it cannot. Recording is best effort: a host
+  with a read-only `/var/lib`, or one where `initd` runs unprivileged, still
+  applies the change correctly and exits `0`, having said no record was kept. A
+  script that needs the guarantee should check for that line rather than for
+  the exit code.
+- **Two tasks deliberately record nothing.** `wireguard.add-peer` writes the
+  one file holding the server's private key and every peer's preshared key, so
+  a copy of it would be a second copy of all of them. `ssh.authorize-key` is
+  the one file whose restoration *removes* an authorised key.
 - **A directive the daemon will not honour is reported on stderr.** Every task
   that edits `sshd_config` reads the effective configuration back afterwards and
   names any directive the daemon disagrees with. Debian 12, Ubuntu 22.04 and
