@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The tree can hold a pair of opposed operations in a single row. One row
+  rather than two because "Install Caddy" and "Uninstall Caddy" are not a
+  choice an operator makes — exactly one of them is meaningful at any moment,
+  and offering both makes the reader work out which. Two *tasks* rather than
+  one task with a verb, because a task's identity is its id: the worker thread
+  re-resolves it, `initd run` names it, and `docs/cli.md` documents it. An id
+  meaning two things depending on the host is one the worker cannot resolve and
+  the contract file cannot describe. Nothing builds a pair yet; what exists is
+  the seam and the nine decisions the compiler demanded at every site that
+  walks the tree — the count beside a category promises rows, so a pair counts
+  once, while search and the task lookup see both members, so every invariant
+  already asserted over the tree covers an inverse the moment one arrives.
 - Every task that changes the machine asks before it runs. It was nine of
   twenty-eight, because the rule read "irreversible enough to warrant a prompt"
   and was applied as "could lock you out" — so `ssh.install` put an SSH server

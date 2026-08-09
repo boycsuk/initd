@@ -270,6 +270,34 @@ pub trait Task {
 /// administration area needs to express itself.
 pub enum Node {
     Task(Box<dyn Task>),
+    /// Two opposed operations sharing a single row.
+    ///
+    /// One row rather than two because "Install Caddy" and "Uninstall Caddy"
+    /// are not a choice an operator makes: exactly one of them is meaningful at
+    /// any moment, and a tree offering both makes the reader work out which.
+    /// The interface asks what the host measured and draws the one that applies.
+    ///
+    /// Two *tasks* rather than one task with a verb, because a task's identity
+    /// is its id. `find` resolves an id, [`crate::tui::worker`] re-resolves it
+    /// on its own thread, `initd run <id>` names it, and
+    /// `docs_cli_lists_exactly_the_tasks_the_tree_offers` gates it. An id that
+    /// meant two things depending on the host would be a task the worker cannot
+    /// resolve, the CLI cannot name, and the contract file cannot describe —
+    /// and `confirmation()` takes only `&self`, so the lockout classification of
+    /// such an id could not be stated either.
+    ///
+    /// Both members reach [`all_tasks`], so every invariant already asserted
+    /// over the tree covers the inverse without being taught to.
+    #[allow(
+        dead_code,
+        reason = "constructed by the inverse tasks, which land in a later commit"
+    )]
+    Reversible {
+        /// Run when the subject is absent: the task that puts it there.
+        forward: Box<dyn Task>,
+        /// Run when the subject is present: the task that takes it away.
+        inverse: Box<dyn Task>,
+    },
     Category(Category),
 }
 
@@ -291,6 +319,10 @@ impl Category {
             .iter()
             .map(|child| match child {
                 Node::Task(_) => 1,
+                // A pair counts once: the number beside a category tells the
+                // operator how many rows are inside it, and a reversible pair
+                // draws one row whichever verb it is showing.
+                Node::Reversible { .. } => 1,
                 Node::Category(category) => category.task_count(),
             })
             .sum()
@@ -344,6 +376,17 @@ fn find_in(nodes: Vec<Node>, id: &str) -> Option<Box<dyn Task>> {
         match node {
             Node::Task(task) if task.id() == id => return Some(task),
             Node::Task(_) => {}
+            // Both members are findable by their own id, which is what lets the
+            // worker thread and `initd run` resolve an inverse without knowing
+            // that it shares a row with anything.
+            Node::Reversible { forward, inverse } => {
+                if forward.id() == id {
+                    return Some(forward);
+                }
+                if inverse.id() == id {
+                    return Some(inverse);
+                }
+            }
             Node::Category(category) => {
                 if let Some(found) = find_in(category.children, id) {
                     return Some(found);
@@ -370,6 +413,14 @@ fn collect_tasks(nodes: Vec<Node>, out: &mut Vec<Box<dyn Task>>) {
     for node in nodes {
         match node {
             Node::Task(task) => out.push(task),
+            // Both members, so that every invariant asserted over `all_tasks`
+            // — unique ids, a reason behind every refusal, the `docs/cli.md`
+            // contract — covers an inverse the moment it joins the tree,
+            // rather than when somebody remembers to teach a test about it.
+            Node::Reversible { forward, inverse } => {
+                out.push(forward);
+                out.push(inverse);
+            }
             Node::Category(category) => collect_tasks(category.children, out),
         }
     }
@@ -416,6 +467,24 @@ fn locate_tasks<'a>(
                 },
                 task.as_ref(),
             )),
+            // Both members are searchable, and both carry the same index: they
+            // share a row, so jumping to either lands on it. Navigation
+            // addresses rows, search addresses operations — which is why
+            // searching "uninstall caddy" finds something the tree may be
+            // drawing as "Install Caddy" at that moment. The row the operator
+            // arrives at shows whichever verb the host justifies.
+            Node::Reversible { forward, inverse } => {
+                for task in [forward, inverse] {
+                    out.push((
+                        TaskLocation {
+                            index,
+                            path: path.clone(),
+                            titles: titles.clone(),
+                        },
+                        task.as_ref(),
+                    ));
+                }
+            }
             Node::Category(category) => {
                 path.push(index);
                 titles.push(category.title);
@@ -719,11 +788,30 @@ mod tests {
         let counted: usize = tree()
             .into_iter()
             .map(|node| match node {
-                Node::Task(_) => 1,
+                Node::Task(_) | Node::Reversible { .. } => 1,
                 Node::Category(category) => category.task_count(),
             })
             .sum();
 
-        assert_eq!(counted, all_tasks().len());
+        // Rows, not tasks — the two stopped being the same number when the
+        // tree gained reversible pairs, and the count beside a category is a
+        // promise about how many rows opening it shows. Every pair contributes
+        // one row and two tasks, so the difference is exactly the pair count;
+        // asserting the relation rather than equality is what keeps this test
+        // meaningful instead of merely passing.
+        let pairs = count_pairs(&tree());
+        assert_eq!(counted + pairs, all_tasks().len());
+    }
+
+    /// Number of reversible pairs anywhere in a forest.
+    fn count_pairs(nodes: &[Node]) -> usize {
+        nodes
+            .iter()
+            .map(|node| match node {
+                Node::Task(_) => 0,
+                Node::Reversible { .. } => 1,
+                Node::Category(category) => count_pairs(&category.children),
+            })
+            .sum()
     }
 }

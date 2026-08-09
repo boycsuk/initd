@@ -213,6 +213,23 @@ fn print_nodes(nodes: &[tasks::Node], family: distro::Family, id_width: usize, d
                     width = id_width
                 );
             }
+            // Both members, on their own lines. The interactive interface draws
+            // one row because it has measured the host; this listing has
+            // measured nothing and is a catalogue of what can be run, so
+            // hiding either would hide an id that `initd run` accepts.
+            tasks::Node::Reversible { forward, inverse } => {
+                for task in [forward, inverse] {
+                    let mark = if task.supports(family) { " " } else { "!" };
+                    println!(
+                        "{}[{}] {:<width$}  {}",
+                        indent,
+                        mark,
+                        task.id(),
+                        task.title(),
+                        width = id_width
+                    );
+                }
+            }
         }
     }
 }

@@ -69,6 +69,12 @@ impl TreeCursor {
     pub fn selected_task(&self) -> Option<&dyn Task> {
         match self.selected_node()? {
             Node::Task(task) => Some(task.as_ref()),
+            // The forward task until the probe says otherwise, which is the
+            // same default `Presence::Unknown` renders: offering to install
+            // something already present is idempotent, while offering to
+            // remove something absent is a keystroke that does nothing and
+            // explains nothing. Whoever knows what was measured overrides this.
+            Node::Reversible { forward, .. } => Some(forward.as_ref()),
             Node::Category(_) => None,
         }
     }

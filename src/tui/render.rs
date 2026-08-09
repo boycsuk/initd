@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -36,7 +37,7 @@ use super::status::State;
 use super::verify::Verification;
 use super::{help, layout, search, style};
 use crate::i18n::{Lang, Msg};
-use crate::tasks::{Confirmation, Node};
+use crate::tasks::{Confirmation, Node, Task};
 
 /// Marks a row that opens onto another level.
 const CATEGORY_MARKER: &str = "› ";
@@ -354,14 +355,23 @@ fn tree_scrollbar(frame: &mut Frame, app: &App, area: Rect) {
 /// A category has no description of its own, so it reports what it holds
 /// rather than leaving the pane blank.
 fn detail(frame: &mut Frame, app: &App, area: Rect, status: Option<Line<'static>>) {
-    let description = match app.selected_node() {
-        // A task that cannot run here says why, under what it would have
-        // done. The tree already dims the row and the pill already reads
-        // UNSUPPORTED — both of which state *that* it is refused and
-        // neither of which states why, leaving the operator to guess
-        // whether it is a missing package, a policy, or a bug. The reasons
-        // were measured; this is where they were always meant to be read.
-        Some(Node::Task(task)) => match task.unsupported_reason(app.distro.family) {
+    // A reversible pair is reduced to the task the row is drawing, so the
+    // description below reads about the operation the operator would actually
+    // start. Which one that is belongs to the row, not to this pane.
+    let selected = match app.selected_node() {
+        Some(Node::Task(task)) => Some(task.as_ref()),
+        Some(Node::Reversible { forward, .. }) => Some(forward.as_ref()),
+        Some(Node::Category(_)) | None => None,
+    };
+
+    // A task that cannot run here says why, under what it would have done. The
+    // tree already dims the row and the pill already reads UNSUPPORTED — both
+    // of which state *that* it is refused and neither of which states why,
+    // leaving the operator to guess whether it is a missing package, a policy,
+    // or a bug. The reasons were measured; this is where they were always meant
+    // to be read.
+    let description = if let Some(task) = selected {
+        match task.unsupported_reason(app.distro.family) {
             // The blank line between the two is written here rather than
             // in the catalogue: the description above it is the task's own
             // words, and running the two together would read as one
@@ -375,17 +385,19 @@ fn detail(frame: &mut Frame, app: &App, area: Rect, status: Option<Line<'static>
                 })
             ),
             None => task.description().to_owned(),
-        },
-        Some(Node::Category(category)) => app.lang.render(&Msg::DetailCategoryContents {
+        }
+    } else if let Some(Node::Category(category)) = app.selected_node() {
+        app.lang.render(&Msg::DetailCategoryContents {
             title: category.title.to_owned(),
             count: category.task_count(),
-        }),
-        None => String::new(),
+        })
+    } else {
+        String::new()
     };
 
-    let title = match app.selected_node() {
-        Some(Node::Task(task)) => task.title().to_owned(),
-        _ => app.lang.render(&Msg::DetailTitle),
+    let title = match selected {
+        Some(task) => task.title().to_owned(),
+        None => app.lang.render(&Msg::DetailTitle),
     };
 
     let mut block = Block::default()
@@ -739,38 +751,13 @@ pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> L
             category.task_count().to_string(),
             style::BLOCK_SUBTITLE,
         ),
-        Node::Task(task) => {
-            let supported = task.supports(family);
-            // Destructive outranks input: a task that asks for a port before
-            // wiping something is first of all the one that wipes something,
-            // and only one flag fits the column.
-            let (text_style, flag, flag_style) = if !supported {
-                (
-                    style::DISABLED,
-                    style::MARKER_UNSUPPORTED,
-                    style::FLAG_UNSUPPORTED,
-                )
-            // `Lockout` alone, not every task that asks. Almost all of them
-            // ask now, and a danger flag on almost every row marks nothing —
-            // the column exists to say which handful can end the session
-            // reading it.
-            } else if task.confirmation() == Confirmation::Lockout {
-                (style::NORMAL, style::MARKER_DANGER, style::FLAG_DANGER)
-            } else if !task.params().is_empty() {
-                (style::NORMAL, style::MARKER_INPUT, style::FLAG_INPUT)
-            } else {
-                (style::NORMAL, "", style::NORMAL)
-            };
-
-            (
-                TASK_MARKER,
-                text_style,
-                task.title(),
-                text_style,
-                flag.to_owned(),
-                flag_style,
-            )
-        }
+        // Drawn as whichever of the pair the host justifies. Until the probe
+        // answers that is the forward task, matching `Presence::Unknown`: a row
+        // offering to install what is already there wastes a keystroke, while
+        // one offering to remove what was never installed does nothing and says
+        // nothing about why.
+        Node::Reversible { forward, .. } => task_row_parts(forward.as_ref(), family),
+        Node::Task(task) => task_row_parts(task.as_ref(), family),
     };
 
     // A title longer than its column is cut with an ellipsis rather than
@@ -793,6 +780,47 @@ pub(super) fn row(node: &Node, family: crate::distro::Family, width: usize) -> L
         Span::raw(" ".repeat(padding)),
         Span::styled(trailing, trailing_style),
     ])
+}
+
+/// The marker, title and flag a single task contributes to its row.
+///
+/// Extracted so a reversible pair draws through exactly the same precedence as
+/// a lone task: the flag column answers "what should stop me acting on this
+/// row", and a second copy of that rule would be the one that drifted.
+fn task_row_parts(
+    task: &dyn Task,
+    family: crate::distro::Family,
+) -> (&'static str, Style, &'static str, Style, String, Style) {
+    let supported = task.supports(family);
+    // Destructive outranks input: a task that asks for a port before
+    // wiping something is first of all the one that wipes something,
+    // and only one flag fits the column.
+    let (text_style, flag, flag_style) = if !supported {
+        (
+            style::DISABLED,
+            style::MARKER_UNSUPPORTED,
+            style::FLAG_UNSUPPORTED,
+        )
+    // `Lockout` alone, not every task that asks. Almost all of them
+    // ask now, and a danger flag on almost every row marks nothing —
+    // the column exists to say which handful can end the session
+    // reading it.
+    } else if task.confirmation() == Confirmation::Lockout {
+        (style::NORMAL, style::MARKER_DANGER, style::FLAG_DANGER)
+    } else if !task.params().is_empty() {
+        (style::NORMAL, style::MARKER_INPUT, style::FLAG_INPUT)
+    } else {
+        (style::NORMAL, "", style::NORMAL)
+    };
+
+    (
+        TASK_MARKER,
+        text_style,
+        task.title(),
+        text_style,
+        flag.to_owned(),
+        flag_style,
+    )
 }
 
 /// How many terminal cells a string occupies.
