@@ -295,26 +295,38 @@ pub fn write_validated(
             // Said either way rather than only on success. An operator who
             // assumes tomorrow's revert is available and finds none is worse
             // off than one told today, and silence produces the first.
-            if let Some(ref backup) = backup {
-                let kept = backup_index::record_existing(
-                    executor,
-                    backend.files(),
-                    task,
-                    backup,
-                    backend.service_for(Capability::Ssh),
-                );
+            let Some(mut backup) = backup else {
+                return Ok(None);
+            };
 
-                report(
-                    progress,
-                    if kept {
-                        &Msg::TaskChangeRecorded
-                    } else {
-                        &Msg::TaskChangeNotRecorded
-                    },
-                );
+            let kept = backup_index::record_existing(
+                executor,
+                backend.files(),
+                task,
+                &backup,
+                backend.service_for(Capability::Ssh),
+            );
+
+            report(
+                progress,
+                if kept.is_some() {
+                    &Msg::TaskChangeRecorded
+                } else {
+                    &Msg::TaskChangeNotRecorded
+                },
+            );
+
+            // The returned `Backup` names where the copy *is*, not where it
+            // was made. Both hardening tasks and the port task print this path
+            // so that an operator who has locked themselves out knows what to
+            // restore from — and recording moves the file, so returning the
+            // original `.initd.bak` would hand them a path that no longer
+            // exists, in the one message that matters most.
+            if let Some(kept) = kept {
+                backup.copy = kept;
             }
 
-            Ok(backup)
+            Ok(Some(backup))
         }
         Validation::Invalid { details } => {
             // Never leave a broken config in place: put the original back
@@ -655,12 +667,16 @@ mod tests {
             Reply::ok(""),                               // sshd -t
             Reply::ok("port 22\n"),                      // sshd -T
             Reply::ok("20260809T142203Z\n"),             // date -u
-            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // install -d /var/lib/initd
+            Reply::ok(""),                               // install -d …/backups
+            Reply::failure(1, ""),                       // test -e: the name is free
             Reply::ok(""),                               // mv the copy under /var/lib
             Reply::ok(format!("{}  x", "a".repeat(64))), // digest of the copy
             Reply::ok(format!("{}  y", "b".repeat(64))), // digest of the new file
-            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // install -d /var/lib/initd
+            Reply::ok(""),                               // install -d …/backups
             Reply::ok(""),                               // append
+            Reply::ok(""),                               // chmod 600 on the index
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
@@ -684,6 +700,58 @@ mod tests {
         assert!(
             commands.iter().any(|line| line.contains("backups.jsonl")),
             "the record must be appended: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_backup_returned_is_where_the_copy_actually_is() {
+        // The three tasks that call this print the returned path so an operator
+        // who has locked themselves out knows what to restore from. Recording
+        // *moves* the copy, so returning the `.initd.bak` it was made at would
+        // name a file that no longer exists — in the one message that matters
+        // most. Reproduced on alpine:3.23 before it was fixed.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),                               // test -e
+            Reply::ok(""),                               // cp -p
+            Reply::ok(""),                               // tee
+            Reply::ok("600"),                            // stat
+            Reply::ok(""),                               // chmod
+            Reply::ok(""),                               // mv into place
+            Reply::ok(""),                               // sshd -t
+            Reply::ok("port 22\n"),                      // sshd -T
+            Reply::ok("20260809T142203Z\n"),             // date -u
+            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // install -d
+            Reply::failure(1, ""),                       // test -e: the name is free
+            Reply::ok(""),                               // mv the copy
+            Reply::ok(format!("{}  x", "a".repeat(64))), // digest of the copy
+            Reply::ok(format!("{}  y", "b".repeat(64))), // digest of the file
+            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // install -d
+            Reply::ok(""),                               // append
+            Reply::ok(""),                               // chmod on the index
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        let backup = write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "Port 22\n",
+            &mut |_| {},
+        )
+        .expect("the write must succeed")
+        .expect("a file that existed must yield a backup");
+
+        assert!(
+            backup.copy.starts_with("/var/lib/initd/backups/"),
+            "the path handed to the operator must be where the copy is: {}",
+            backup.copy
+        );
+        assert!(
+            !backup.copy.ends_with(".initd.bak"),
+            "and not where it was made: {}",
+            backup.copy
         );
     }
 

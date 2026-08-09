@@ -572,7 +572,7 @@ impl Task for CaddySecurityHeaders {
 
             report(
                 progress,
-                if kept {
+                if kept.is_some() {
                     &Msg::TaskChangeRecorded
                 } else {
                     &Msg::TaskChangeNotRecorded

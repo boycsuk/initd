@@ -164,7 +164,7 @@ impl Task for InstallFail2ban {
 
             report(
                 progress,
-                if kept {
+                if kept.is_some() {
                     &Msg::TaskChangeRecorded
                 } else {
                     &Msg::TaskChangeNotRecorded

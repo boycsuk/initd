@@ -392,25 +392,34 @@ pub fn timestamp(executor: &dyn Executor) -> Option<String> {
 /// fixed `.initd.bak` per file, so without this the second change to
 /// `sshd_config` would overwrite the copy the first one left.
 ///
-/// Reports whether a record was kept. `false` is not a failure: the change has
-/// already been applied correctly, and the caller says no cross-session revert
-/// will be available rather than failing a task over bookkeeping.
+/// Answers where the copy ended up, or `None` if nothing was recorded.
+///
+/// The path rather than a yes/no, because the caller has to be able to *name*
+/// it. `ssh.harden` tells the operator where the previous configuration was
+/// saved, and that line is read by somebody who has just locked themselves out
+/// — it named `<file>.initd.bak`, which this function has by then moved, so the
+/// one message that mattered pointed at a path that no longer existed.
+///
+/// `None` is not a failure: the change has already been applied correctly, and
+/// the caller says no cross-session revert will be available rather than
+/// failing a task over bookkeeping.
 pub fn record_existing(
     executor: &dyn Executor,
     files: &dyn FileEditor,
     task: &'static str,
     backup: &crate::domain::files::Backup,
     service: &'static str,
-) -> bool {
-    let Some(at) = timestamp(executor) else {
-        return false;
-    };
+) -> Option<String> {
+    let at = timestamp(executor)?;
 
-    let kept = copy_path(&backup.original, &at);
-
-    if files.create_dir(executor, BACKUP_DIR, TREE_MODE).is_err() {
-        return false;
+    if !make_tree(executor, files) {
+        return None;
     }
+
+    // Before the move, and asked of the filesystem: two changes to one file
+    // inside the same second would otherwise name the same copy and the second
+    // would overwrite the first.
+    let kept = free_copy_path(executor, files, &backup.original, &at)?;
 
     // Moved rather than copied: `write` put it beside the original under one
     // fixed name, and leaving it there means the next write to the same path
@@ -419,31 +428,30 @@ pub fn record_existing(
     let command = Command::new("mv").args([&backup.copy, &kept]).privileged();
 
     if !executor.run(&command).ok().is_some_and(|out| out.success()) {
-        return false;
+        return None;
     }
-
-    let (Some(before), Some(after)) = (
-        digest_of(executor, &kept),
-        digest_of(executor, &backup.original),
-    ) else {
-        return false;
-    };
 
     let record = BackupRecord {
         task,
         path: backup.original.clone(),
+        sha256_before: digest_of(executor, &kept)?,
+        sha256_after: digest_of(executor, &backup.original)?,
         copy: kept,
         at,
-        sha256_before: before,
-        sha256_after: after,
         service,
     };
 
-    let appended = append(executor, files, &record);
+    if !append(executor, files, &record) {
+        // The copy is on disk and the line is not, so nothing can find it
+        // again. Reported as unrecorded rather than as a path the caller would
+        // print: a message naming a copy no index knows about is a message
+        // promising a revert that has no way to happen.
+        return None;
+    }
 
     prune(executor, files, &record.path);
 
-    appended
+    Some(record.copy)
 }
 
 /// Copies a file aside and records where it went, before it is changed.
@@ -572,6 +580,42 @@ pub fn copy_path(original: &str, stamp: &str) -> String {
     format!("{BACKUP_DIR}/{flattened}.{stamp}")
 }
 
+/// A path like [`copy_path`]'s that nothing is using yet.
+///
+/// The stamp has one-second resolution, so two changes to the same file inside
+/// one second name the same copy and the second overwrites the first — which is
+/// precisely the failure this whole index exists to prevent, reappearing one
+/// layer down. Measured rather than reasoned about: two `ssh.change-port` runs
+/// in a container produced two records and one copy.
+///
+/// Answered by asking the filesystem rather than by making the stamp finer.
+/// `date` is the host's, `%N` is a GNU extension busybox does not have, and a
+/// name that is unique because nothing is at it is unique for a reason that
+/// does not depend on a clock.
+///
+/// Gives up after a small number of attempts rather than looping: past that,
+/// something other than a same-second collision is going on, and no record is
+/// better than a loop in a tool running as root.
+fn free_copy_path(
+    executor: &dyn Executor,
+    files: &dyn FileEditor,
+    original: &str,
+    stamp: &str,
+) -> Option<String> {
+    /// How many same-second changes to one file are worth accommodating.
+    const ATTEMPTS: u32 = 100;
+
+    let base = copy_path(original, stamp);
+
+    if !files.exists(executor, &base).ok()? {
+        return Some(base);
+    }
+
+    (1..ATTEMPTS)
+        .map(|nth| format!("{base}.{nth}"))
+        .find(|candidate| files.exists(executor, candidate).is_ok_and(|taken| !taken))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,6 +713,41 @@ mod tests {
         let files = crate::backend::unix_files::UnixFiles::new();
 
         assert!(read_all(&mock, &files).is_empty());
+    }
+
+    #[test]
+    fn two_changes_in_one_second_do_not_share_a_copy() {
+        // The stamp has one-second resolution, so a second change to the same
+        // file inside the same second named the same copy and overwrote the
+        // first — the very failure the index exists to prevent, one layer
+        // down. Measured: two `ssh.change-port` runs in a container left two
+        // records and one copy.
+        let taken = MockExecutor::with_replies([
+            Reply::ok(""),         // test -e on the plain name: taken
+            Reply::failure(1, ""), // test -e on `.1`: free
+        ]);
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        let chosen = free_copy_path(&taken, &files, "/etc/ssh/sshd_config", "20260809T142203Z")
+            .expect("a free name must be found");
+
+        assert_eq!(
+            chosen,
+            "/var/lib/initd/backups/etc-ssh-sshd_config.20260809T142203Z.1"
+        );
+    }
+
+    #[test]
+    fn a_free_name_is_used_as_it_is() {
+        // The ordinary case, and the one that keeps the names readable: only a
+        // collision gets a suffix.
+        let free = MockExecutor::with_replies([Reply::failure(1, "")]);
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        assert_eq!(
+            free_copy_path(&free, &files, "/etc/ssh/sshd_config", "20260809T142203Z"),
+            Some("/var/lib/initd/backups/etc-ssh-sshd_config.20260809T142203Z".to_owned())
+        );
     }
 
     #[test]
