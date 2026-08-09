@@ -741,13 +741,9 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::with_capacity(keys.len() * 3);
     for (key, label) in keys {
         // The spaces around each pair are the bar's own separation rather
-        // than part of either word, so they stay here: a label that
-        // carried them could not be reused where the spacing differs.
-        spans.push(Span::styled(format!(" {key}"), style::KEYBAR_KEY));
-        spans.push(Span::styled(
-            format!(" {} ", app.lang.render(&label)),
-            style::KEYBAR_LABEL,
-        ));
+        // than part of either word, which is why `key_hint` owns them and no
+        // catalogue entry does.
+        spans.extend(style::key_hint(key, &app.lang.render(&label)));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -766,15 +762,19 @@ fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang
             Span::styled(lang.render(&Msg::VerifyApplied), style::NORMAL),
             Span::styled(lang.render(&Msg::VerifyNotYetKept), style::EMPHASIS),
         ]),
-        Line::from(vec![
-            Span::styled(lang.render(&Msg::VerifyRevertingIn), style::DANGER_TEXT),
-            Span::styled(window.countdown(Instant::now()), style::EMPHASIS),
-            Span::raw("   "),
-            Span::styled("K", style::KEYBAR_KEY),
-            Span::styled(lang.render(&Msg::VerifyKeepKey), style::KEYBAR_LABEL),
-            Span::styled("R", style::KEYBAR_KEY),
-            Span::styled(lang.render(&Msg::VerifyRevertKey), style::KEYBAR_LABEL),
-        ]),
+        Line::from(
+            vec![
+                Span::styled(lang.render(&Msg::VerifyRevertingIn), style::DANGER_TEXT),
+                Span::styled(window.countdown(Instant::now()), style::EMPHASIS),
+                // Two spaces rather than three: `key_hint` carries the third, the
+                // way it carries the space before every other glyph in the bar.
+                Span::raw("  "),
+            ]
+            .into_iter()
+            .chain(style::key_hint("K", &lang.render(&Msg::VerifyKeepKey)))
+            .chain(style::key_hint("R", &lang.render(&Msg::VerifyRevertKey)))
+            .collect::<Vec<_>>(),
+        ),
         // The instruction that matters: the tool cannot check this itself, so
         // the one thing the administrator must do is stated outright.
         Line::styled(

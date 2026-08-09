@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reader would otherwise re-derive the figure and find it different.
 - `layout.rs` no longer points at a test that was renamed out from under it,
   and `signals.rs` no longer says three signals are caught where two are.
+- The space around a key hint is the interface's, not the translator's. Eight
+  catalogue entries carried their own padding — `" cancel"`, `" choose   "` —
+  while the key bar's own code wrapped labels in `format!(" {} ")` under a
+  comment saying a label carrying its spaces could not be reused where the
+  spacing differs. Both were true at once, so editing `" cancel"` in a
+  translation moved the layout, and the trailing runs were invisible in a
+  diff. `style::key_hint` now owns the spacing and the eleven sites that drew
+  the pair by hand call it.
 - The search overlay draws its heading and its result count in the same style
   roles every other overlay uses. It passed both as bare strings, so the one
   modal rendered its chrome in the border's colour while the six beside it did

@@ -209,6 +209,27 @@ pub const KEYBAR_KEY: Style = fg_mod(Color::Reset, Modifier::BOLD);
 /// The description beside a key glyph.
 pub const KEYBAR_LABEL: Style = fg_mod(Color::White, Modifier::DIM);
 
+/// One key and what it does, as the bar and the dialogs draw the pair.
+///
+/// The spacing belongs here rather than to either word. It used to live in
+/// both places at once: `render.rs` wrapped the label in `format!(" {} ")`
+/// with a comment saying a label carrying its own spaces could not be reused
+/// where the spacing differs, while eight entries in the catalogue carried
+/// exactly those spaces — `" cancel"`, `" choose   "`. A translator editing
+/// one of those strings was changing the layout without being told, and the
+/// trailing runs were invisible in a diff.
+///
+/// Returned as a pair rather than a `Line`, because callers assemble them
+/// differently: the bar concatenates several, the option list puts two in a
+/// `title_bottom`, and the form pushes them onto a vector it is already
+/// building.
+pub fn key_hint(glyph: &str, label: &str) -> [ratatui::text::Span<'static>; 2] {
+    [
+        ratatui::text::Span::styled(format!(" {glyph}"), KEYBAR_KEY),
+        ratatui::text::Span::styled(format!(" {label} "), KEYBAR_LABEL),
+    ]
+}
+
 /// The step-progress gauge.
 pub const GAUGE: Style = pair(Color::Green, Color::Reset);
 

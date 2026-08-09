@@ -267,14 +267,12 @@ impl Form {
             // The spaces framing it are what hold the border off the words;
             // without them the footer reads as the frame having been drawn
             // through it.
-            .title_bottom(Line::from(vec![
-                Span::raw(" "),
-                Span::styled("Enter", style::KEYBAR_KEY),
-                Span::styled(lang.render(&Msg::FormOptionsChoose), style::KEYBAR_LABEL),
-                Span::styled("Esc", style::KEYBAR_KEY),
-                Span::styled(lang.render(&Msg::FormKeyCancel), style::KEYBAR_LABEL),
-                Span::raw(" "),
-            ]));
+            .title_bottom(Line::from(
+                style::key_hint("Enter", &lang.render(&Msg::FormOptionsChoose))
+                    .into_iter()
+                    .chain(style::key_hint("Esc", &lang.render(&Msg::FormKeyCancel)))
+                    .collect::<Vec<_>>(),
+            ));
 
         let items: Vec<ListItem> = options
             .iter()
@@ -439,10 +437,12 @@ impl Form {
         let mut keys = vec![
             // The gutter every field reserves, so the footer starts on the
             // column the labels do rather than against the border.
-            Span::styled(" ".repeat(GUTTER_WIDTH), style::NORMAL),
-            Span::styled("Tab", style::KEYBAR_KEY),
-            Span::styled(lang.render(&Msg::FormKeyField), style::KEYBAR_LABEL),
+            // One cell short of the gutter, since `key_hint` opens with a
+            // space of its own.
+            Span::styled(" ".repeat(GUTTER_WIDTH - 1), style::NORMAL),
         ];
+
+        keys.extend(style::key_hint("Tab", &lang.render(&Msg::FormKeyField)));
 
         // Offered only where the focused field has something to list, since a
         // hint naming a key that does nothing is worse than no hint. `↑↓` are
@@ -453,27 +453,21 @@ impl Form {
             .get(focus)
             .is_some_and(|field| !field.options().is_empty())
         {
-            keys.push(Span::styled(LIST_KEY_LABEL, style::KEYBAR_KEY));
-            keys.push(Span::styled(
-                lang.render(&Msg::FormKeyList),
-                style::KEYBAR_LABEL,
+            keys.extend(style::key_hint(
+                LIST_KEY_LABEL,
+                &lang.render(&Msg::FormKeyList),
             ));
         }
 
-        keys.push(Span::styled("Enter", style::KEYBAR_KEY));
-        keys.push(Span::styled(
-            lang.render(&if self.is_valid() {
+        keys.extend(style::key_hint(
+            "Enter",
+            &lang.render(&if self.is_valid() {
                 Msg::FormKeyContinue
             } else {
                 Msg::FormKeyIncomplete
             }),
-            style::KEYBAR_LABEL,
         ));
-        keys.push(Span::styled("Esc", style::KEYBAR_KEY));
-        keys.push(Span::styled(
-            lang.render(&Msg::FormKeyCancel),
-            style::KEYBAR_LABEL,
-        ));
+        keys.extend(style::key_hint("Esc", &lang.render(&Msg::FormKeyCancel)));
 
         lines.push(Line::from(keys));
 

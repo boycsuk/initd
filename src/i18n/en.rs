@@ -430,16 +430,16 @@ pub(super) fn render(message: &Msg) -> String {
         },
         Msg::FormFieldOptional => "optional, may be left empty".to_owned(),
         Msg::FormFieldUnset => "(unset)".to_owned(),
-        Msg::FormKeyList => " list   ".to_owned(),
+        Msg::FormKeyList => "list".to_owned(),
         Msg::FormOptionsTitle { label } => format!(" {label} on this host "),
-        Msg::FormOptionsChoose => " choose   ".to_owned(),
-        Msg::FormKeyField => " field   ".to_owned(),
-        Msg::FormKeyContinue => " continue   ".to_owned(),
+        Msg::FormOptionsChoose => "choose".to_owned(),
+        Msg::FormKeyField => "field".to_owned(),
+        Msg::FormKeyContinue => "continue".to_owned(),
         // Parenthesised because it stands where `continue` stands: it names
         // what is missing rather than announcing a refusal, which is what an
         // operator who has just pressed Enter is looking for.
-        Msg::FormKeyIncomplete => " (fill every field)   ".to_owned(),
-        Msg::FormKeyCancel => " cancel".to_owned(),
+        Msg::FormKeyIncomplete => "(fill every field)".to_owned(),
+        Msg::FormKeyCancel => "cancel".to_owned(),
 
         // --- Interface: search ---
         //
@@ -514,8 +514,8 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::VerifyRevertingIn => "reverting in ".to_owned(),
         // Padded to sit against the `K` and `R` glyphs beside them, and to
         // separate the first pair from the second on one line.
-        Msg::VerifyKeepKey => " keep   ".to_owned(),
-        Msg::VerifyRevertKey => " revert now".to_owned(),
+        Msg::VerifyKeepKey => "keep".to_owned(),
+        Msg::VerifyRevertKey => "revert now".to_owned(),
         // Wrapped by hand across two lines to the banner's width. Says what to
         // do, not just that a decision is due: the tool cannot check this
         // itself, and a countdown alone tells nobody how to spend the time.
