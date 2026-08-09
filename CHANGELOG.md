@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   administrator out rather than rescuing them.
 
 ### Fixed
+- Choosing `purge` on RHEL quietly did a plain removal. rpm has no purge — an
+  edited file survives as `.rpmsave` whichever is asked — and `has_purge_for`
+  existed to keep the choice from being offered there, but nothing consulted
+  it. `Task::params` has no backend to ask, so the field is drawn everywhere;
+  the task now says what the package manager cannot do instead of accepting an
+  answer it will ignore. An operator who picked `purge` and was given a removal
+  in silence would believe their configuration was gone, and find their old
+  settings back on the next install.
 - The record's own directory and file were world-readable. `install -d` applies
   the mode it is given to the leaf and leaves the parent at the umask, so
   `/var/lib/initd` came out `0755` under a correctly-`0700` `backups`; and the

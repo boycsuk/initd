@@ -54,10 +54,6 @@ impl Release {
 }
 
 /// Installs binaries from verified release archives.
-#[allow(
-    dead_code,
-    reason = "the inverse verbs are called by the uninstall tasks, which land in a later commit"
-)]
 pub trait BinaryInstaller {
     /// Whether a binary is already on `PATH`.
     /// `&'static str` because the name reaches `Command::locating`, which

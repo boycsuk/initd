@@ -16,10 +16,6 @@ use crate::error::Result;
 use crate::exec::Executor;
 
 /// Manages services belonging to one account.
-#[allow(
-    dead_code,
-    reason = "the inverse verbs are called by the uninstall tasks, which land in a later commit"
-)]
 pub trait UserServiceManager {
     /// Whether the account may keep services running with no session open.
     fn is_lingering(&self, executor: &dyn Executor, user: &str) -> Result<bool>;

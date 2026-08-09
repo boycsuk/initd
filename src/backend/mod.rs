@@ -108,10 +108,6 @@ pub trait Backend {
     /// Asked so the interface can decline to offer a choice that does not
     /// exist. A field with two options that behave identically is worse than
     /// no field: it invites an operator to make a decision, then ignores it.
-    #[allow(
-        dead_code,
-        reason = "asked by the uninstall form, which lands in a later commit"
-    )]
     fn has_purge_for(&self) -> bool {
         true
     }

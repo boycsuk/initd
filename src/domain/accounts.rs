@@ -10,10 +10,6 @@ use crate::error::Result;
 use crate::exec::Executor;
 
 /// Queries the accounts defined on the administered system.
-#[allow(
-    dead_code,
-    reason = "size_of is called by users.delete's confirmation, which lands in a later commit"
-)]
 pub trait AccountReader {
     /// Whether an account with this name exists.
     fn exists(&self, executor: &dyn Executor, user: &str) -> Result<bool>;

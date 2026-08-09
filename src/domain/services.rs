@@ -17,10 +17,6 @@ pub struct ServiceState {
 ///
 /// Implementations know their distribution's unit names: SSH is `ssh.service`
 /// on Debian and `sshd.service` on Arch.
-#[allow(
-    dead_code,
-    reason = "the inverse verbs are called by the uninstall tasks, which land in a later commit"
-)]
 pub trait ServiceManager {
     /// Starts the service now and enables it at boot.
     fn enable_and_start(&self, executor: &dyn Executor, service: &str) -> Result<()>;
