@@ -341,9 +341,16 @@ impl Backend for SuseBackend {
             return Ok(());
         }
 
-        // `cp -p` rather than a read-then-write: it preserves the mode of a
-        // file that sshd requires to be root-owned and not group-writable, and
-        // it never holds the contents in this process.
+        // `cp -p` rather than a read-then-write: it preserves owner and mode,
+        // and never holds the contents in this process. Measured on Leap — the
+        // packaged file is `0640 root:root` and arrives that way.
+        //
+        // Preserving rather than choosing a mode is the point. This tool has no
+        // opinion about what `sshd_config` should be, and the distribution
+        // does; a seed that widened it would hand the operator a file they did
+        // not write and did not loosen. Note `sshd -t` accepts a `0666` config,
+        // so nothing downstream would report the mistake — which is the reason
+        // to preserve rather than the reason not to bother.
         let copy = Command::new("cp")
             .args(["-p", SSH_CONFIG_PACKAGED, SSH_CONFIG])
             .privileged();
@@ -832,6 +839,55 @@ mod tests {
                 "{capability:?} must report no package on openSUSE"
             );
         }
+    }
+
+    #[test]
+    fn seeding_preserves_what_the_distribution_chose() {
+        // `-p` is the whole assertion. The packaged file is `0640 root:root` on
+        // Leap, and a copy without it lands at the umask — a file the operator
+        // did not write and did not loosen. Nothing downstream would say so:
+        // `sshd -t` accepts a `0666` config, measured in a container.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(1, ""), // /etc/ssh/sshd_config absent
+            Reply::ok(""),         // the packaged copy is there
+            Reply::ok(""),         // cp
+        ]);
+
+        SuseBackend::new()
+            .ensure_config_present(&mock, Capability::Ssh)
+            .expect("seeding must succeed");
+
+        let copy = mock
+            .recorded_lines()
+            .into_iter()
+            .find(|line| line.starts_with("cp "))
+            .expect("the packaged file must be copied");
+
+        assert!(copy.contains("-p"), "mode and owner must survive: {copy}");
+        assert!(copy.contains(SSH_CONFIG_PACKAGED), "{copy}");
+        assert!(copy.contains(SSH_CONFIG), "{copy}");
+    }
+
+    #[test]
+    fn a_config_already_in_place_is_left_alone() {
+        // The half that matters more: this runs on every SSH task, so a seed
+        // that copied unconditionally would overwrite the administrator's own
+        // configuration with the packaged one — silently, and on a file the
+        // tool is about to report having edited.
+        let mock = MockExecutor::with_replies([Reply::ok("")]); // it exists
+
+        SuseBackend::new()
+            .ensure_config_present(&mock, Capability::Ssh)
+            .expect("seeding must succeed");
+
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|line| line.starts_with("cp ")),
+            "an existing configuration must not be replaced: {:?}",
+            mock.recorded_lines()
+        );
     }
 
     #[test]
