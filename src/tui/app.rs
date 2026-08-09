@@ -737,6 +737,31 @@ mod tests {
     }
 
     #[test]
+    fn a_reversible_row_actually_starts_its_task() {
+        // Reported from a real session: `zellij.uninstall` was confirmed and
+        // nothing happened — no output, no status, no command. `run_selected`
+        // matched `Node::Task` alone, so every one of the eleven rows that
+        // share an install with its undo fell through to a silent `return`.
+        // A lone task worked, which is why the whole feature looked fine.
+        let mut app = test_app(Family::Debian);
+        app.presence
+            .record("zellij.install", crate::tui::probe::Presence::Present);
+        select_task(&mut app, "zellij.uninstall");
+
+        assert!(
+            matches!(app.selected_node(), Some(Node::Reversible { .. })),
+            "the row under test must be a reversible pair"
+        );
+
+        app.run_selected(ParamValues::new());
+
+        assert!(
+            app.running.is_some(),
+            "a confirmed reversible row must start its task"
+        );
+    }
+
+    #[test]
     fn quitting_works_from_either_pane() {
         // q is refused only while a task runs, never by focus.
         for pane in [Pane::Tree, Pane::Output] {

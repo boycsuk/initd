@@ -100,6 +100,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   should cost a deliberate `Shift` rather than a letter that could be a slip.
 
 ### Fixed
+- Confirming a task on a row that pairs an install with its undo did nothing at
+  all. The eleven reversible rows resolve to one half or the other through the
+  probe, and every other part of the interface asked it — the row drew the
+  right verb, the cursor selected the right task, the confirmation named it —
+  but the one function that *starts* the work matched `Node::Task` alone and
+  returned silently on anything else. No output, no status, no command: from
+  the operator's side, indistinguishable from a keypress that never arrived.
+  A lone task ran perfectly, which is why the feature looked whole. There was
+  already a test that a shared row draws the half it would run; nothing checked
+  that it then ran it, so the rule was verified on the screen and not in the
+  work. Resolved through `probe::task_for` now, the same call drawing uses,
+  which is the thing that was documented as the one place the choice is made.
 - The key bar ran off the edge of a narrow terminal, and what sits at that edge
   is `q quit`. It is a paragraph that does not wrap, so a row too short for
   every hint lost the last of them silently rather than rearranging — leaving

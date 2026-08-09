@@ -22,14 +22,22 @@ use crate::error::{Error, Result};
 use crate::exec::{OutputLine, Stream};
 use crate::i18n::{Msg, RevertReason};
 use crate::tasks;
-use crate::tasks::Node;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::{Outcome, Revert};
 
 impl App {
     /// Executes the selected task, streaming its output into the pane.
     pub(super) fn run_selected(&mut self, values: ParamValues) {
-        let Some(Node::Task(task)) = self.selected_node() else {
+        // Through `selected_task` rather than by matching `Node::Task` here.
+        // That match accepted a lone task and silently dropped every
+        // reversible row — eleven of them, each the *undo* half of an install
+        // — so a confirmed uninstall returned without running, clearing, or
+        // reporting anything. Nothing distinguished it from a keypress that
+        // never arrived. Which half a shared row means is a question the probe
+        // answers, and `probe::task_for` is the one place that answers it:
+        // drawing and running resolve through it precisely so a row cannot
+        // render one verb and start the other.
+        let Some(task) = self.selected_task() else {
             return;
         };
 
