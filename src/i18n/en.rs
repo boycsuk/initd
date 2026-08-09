@@ -244,6 +244,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::ConsequenceAccountNotListed { task, user } => {
             format!("{task} does not name the account {user}")
         }
+        Msg::ConsequenceAccountRemoved { task, user } => {
+            format!("{task} still refers to {user}, which no longer exists")
+        }
         Msg::ConsequenceConflictsOverBanRules { task } => {
             format!(
                 "{task} also writes ban rules through the firewall; running \
@@ -561,6 +564,28 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::ConfirmLockoutWarning => "This operation can lock you out of a server you reach \
              over SSH. Make sure you have another way in before continuing."
             .to_owned(),
+        // The path and the size are the whole point. "Also delete the home
+        // directory?" is a question answered by habit; a sentence naming
+        // /home/deploy and 2.4 GB is one that gets read.
+        Msg::ConfirmDeleteHome { user, path, size } => {
+            format!(
+                "{user} will be deleted, and so will {path} — {size} of files \
+                 this tool did not create and cannot put back."
+            )
+        }
+        Msg::ConfirmDeleteHomeUnmeasured { user, path } => {
+            format!(
+                "{user} will be deleted, and so will {path}. Its size could not \
+                 be read, so how much is in there is unknown — which is not the \
+                 same as nothing."
+            )
+        }
+        Msg::ConfirmKeepHome { user, path } => {
+            format!(
+                "{user} will be deleted. {path} stays on disk, owned by a user \
+                 id nothing claims any more."
+            )
+        }
         Msg::ConfirmRootLockout { admin } => {
             format!(
                 "root will no longer log in by any route, including the provider's \
@@ -597,6 +622,8 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::TaskDisabling { unit } => format!("Stopping and disabling {unit}..."),
         Msg::TaskBinaryRemoved { path } => format!("Removed {path}"),
+        Msg::TaskHomeKept { path } => format!("{path} was left on disk"),
+        Msg::TaskHomeDeleted { path } => format!("{path} was deleted"),
         Msg::TaskEnabling { unit } => format!("Enabling {unit}..."),
         Msg::TaskUnitEnabled { unit } => format!("{unit} is enabled"),
         Msg::TaskUnitState {

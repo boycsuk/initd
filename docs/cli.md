@@ -228,6 +228,7 @@ command line, running the subcommand *is* the confirmation.
 |---------|-----------|---------|---------|
 | `users.create` | `run <id> name=value` | no | Creates an account with a home directory and membership of the group granting sudo on this distribution. `password=` is optional: empty or absent leaves the account without one, and a value is applied through `chpasswd` on stdin. |
 | `users.set-shell` | `run <id> name=value` | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
+| `users.delete` | interactive only | yes | Deletes an account. `home=` chooses `keep` (the default, leaving the files on disk owned by a user id nothing claims) or `delete`. Interactive only: the confirmation names the home directory *and its measured size* before anything happens, and with `home=delete` there is nothing to put back afterwards. |
 | `users.lock-root` | interactive only | yes | Expires the root account so no method admits it, including the provider's rescue console. Refuses unless another account exists, can escalate, and can authenticate — by an authorised key or by a usable password. |
 
 ### Remote Access — SSH

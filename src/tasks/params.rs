@@ -57,6 +57,22 @@ pub enum ParamKind {
     /// answers false there and the field is not drawn at all. A field with two
     /// options and one outcome invites a decision and then ignores it.
     Removal,
+    /// What becomes of a deleted account's home directory: `keep` or `delete`.
+    ///
+    /// A closed choice, and the default is `keep`. Both answers are defensible
+    /// — a home holding dotfiles is residue, one holding a year of someone's
+    /// work is not something a form should decide about — which is exactly why
+    /// neither is safe as a default nobody stated.
+    ///
+    /// This project has been here before: `users.create` once had a second
+    /// field asking whether to use the first, answered by typing the word
+    /// `yes`, and it was removed for teaching people to answer without
+    /// reading. The difference is what the field decides. That one asked
+    /// whether a value counted; this one decides whether data this tool never
+    /// created is destroyed, and its confirmation names the path *and its
+    /// measured size* rather than asking about "the home directory" in the
+    /// abstract.
+    HomeDirectory,
     /// A password, drawn as bullets and never echoed.
     ///
     /// Empty is a valid answer and means "no password": a field left alone
@@ -175,7 +191,7 @@ impl ParamKind {
             Self::Username | Self::UsernameList | Self::PublicKey | Self::Path | Self::Secret => {
                 !character.is_control()
             }
-            Self::Protocol | Self::Removal => character.is_ascii_alphabetic(),
+            Self::Protocol | Self::Removal | Self::HomeDirectory => character.is_ascii_alphabetic(),
             Self::Version => character.is_ascii_digit() || character == '.',
             // Hostnames are admitted in an endpoint, so letters and `-` too.
             Self::Cidr | Self::Ip | Self::Endpoint => {
@@ -197,6 +213,7 @@ impl ParamKind {
             Self::Path => validate_path(value),
             Self::Protocol => validate_protocol(value),
             Self::Removal => validate_removal(value),
+            Self::HomeDirectory => validate_home_directory(value),
             // Nothing to check. Empty means "no password", and the strength of
             // one that is not empty is the system's judgement rather than this
             // tool's: PAM is configured per host, and a rule invented here
@@ -327,6 +344,20 @@ fn validate_removal(value: &str) -> std::result::Result<(), String> {
         "remove" | "purge" => Ok(()),
         "" => Err("choose remove or purge".to_owned()),
         _ => Err("the removal must be remove or purge".to_owned()),
+    }
+}
+
+/// Rejects anything that is not one of the two answers about a home directory.
+///
+/// Empty is refused rather than defaulting to `keep`, on the same reasoning as
+/// the removal depth: a field left blank is a field nobody read, and this one
+/// decides whether data the tool never created is destroyed. Being asked again
+/// costs a keystroke; guessing wrong costs whatever was in there.
+fn validate_home_directory(value: &str) -> std::result::Result<(), String> {
+    match value {
+        "keep" | "delete" => Ok(()),
+        "" => Err("choose keep or delete".to_owned()),
+        _ => Err("the answer must be keep or delete".to_owned()),
     }
 }
 

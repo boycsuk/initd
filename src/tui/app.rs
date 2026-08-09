@@ -736,6 +736,95 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_home_names_the_path_and_what_is_in_it() {
+        // The whole reason this warning runs commands. "Also delete the home
+        // directory?" is answered by habit; a sentence naming /home/deploy and
+        // 2.4 GiB is one that gets read, and it is the operator's last look at
+        // an operation with no undo.
+        let mut app = App::new(
+            crate::tui::fixtures::test_distro(Family::Debian),
+            crate::tui::fixtures::test_host(),
+            crate::backend::for_family(Family::Debian),
+            crate::exec::mock::MockExecutor::with_replies([
+                // `getent passwd deploy`, for the home directory.
+                crate::exec::mock::Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+                // `du -sB1 /home/deploy`.
+                crate::exec::mock::Reply::ok("2576980378\t/home/deploy"),
+            ]),
+        );
+
+        app.pending_values
+            .set(crate::tasks::users::DeleteUser::USER, "deploy");
+        app.pending_values.set(
+            crate::tasks::users::DeleteUser::HOME,
+            crate::tasks::users::DeleteUser::DELETE_HOME,
+        );
+
+        let warning = app.deletion_warning();
+
+        assert!(warning.contains("/home/deploy"), "{warning}");
+        assert!(warning.contains("2.4 GiB"), "{warning}");
+    }
+
+    #[test]
+    fn a_home_that_cannot_be_measured_is_not_reported_as_empty() {
+        // Zero and unmeasurable are different facts. "(0 B)" for a directory
+        // nobody could read understates the stake by the amount that matters.
+        let mut app = App::new(
+            crate::tui::fixtures::test_distro(Family::Debian),
+            crate::tui::fixtures::test_host(),
+            crate::backend::for_family(Family::Debian),
+            crate::exec::mock::MockExecutor::with_replies([
+                crate::exec::mock::Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+                crate::exec::mock::Reply::failure(1, "du: cannot read directory"),
+            ]),
+        );
+
+        app.pending_values
+            .set(crate::tasks::users::DeleteUser::USER, "deploy");
+        app.pending_values.set(
+            crate::tasks::users::DeleteUser::HOME,
+            crate::tasks::users::DeleteUser::DELETE_HOME,
+        );
+
+        let warning = app.deletion_warning();
+
+        assert!(warning.contains("/home/deploy"), "{warning}");
+        assert!(
+            !warning.contains("0 B"),
+            "an unmeasurable home must not read as an empty one: {warning}"
+        );
+    }
+
+    #[test]
+    fn keeping_a_home_says_what_is_left_behind_rather_than_warning_about_it() {
+        // The recoverable answer still names the path: a directory owned by a
+        // user id nothing claims is a thing to know about, just not a thing to
+        // be alarmed by.
+        let mut app = App::new(
+            crate::tui::fixtures::test_distro(Family::Debian),
+            crate::tui::fixtures::test_host(),
+            crate::backend::for_family(Family::Debian),
+            crate::exec::mock::MockExecutor::with_replies([crate::exec::mock::Reply::ok(
+                "deploy:x:1000:1000::/home/deploy:/bin/sh",
+            )]),
+        );
+
+        app.pending_values
+            .set(crate::tasks::users::DeleteUser::USER, "deploy");
+        app.pending_values
+            .set(crate::tasks::users::DeleteUser::HOME, "keep");
+
+        let warning = app.deletion_warning();
+
+        assert!(warning.contains("/home/deploy"), "{warning}");
+        assert!(
+            !warning.contains("GiB") && !warning.contains(" B"),
+            "nothing is being deleted, so nothing needs measuring: {warning}"
+        );
+    }
+
+    #[test]
     fn cancelling_a_form_with_typed_values_asks_first() {
         // Discarding typed work on one keystroke is how values get lost.
         let mut app = test_app(Family::Debian);

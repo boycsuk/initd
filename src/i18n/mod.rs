@@ -269,6 +269,10 @@ pub enum Msg {
         task: String,
         user: String,
     },
+    ConsequenceAccountRemoved {
+        task: String,
+        user: String,
+    },
     ConsequenceConflictsOverBanRules {
         task: String,
     },
@@ -686,6 +690,30 @@ pub enum Msg {
     ConfirmRootLockout {
         admin: String,
     },
+    /// About to delete an account and the directory it owns.
+    ///
+    /// Carries the measured size because that is what makes the question
+    /// answerable. "Also delete the home directory?" is answered by habit;
+    /// "delete /home/deploy (2.4 GB)" is read.
+    ConfirmDeleteHome {
+        user: String,
+        path: String,
+        size: String,
+    },
+    /// About to delete an account, leaving the directory it owns.
+    ConfirmKeepHome {
+        user: String,
+        path: String,
+    },
+    /// About to delete an account whose home could not be measured.
+    ///
+    /// Distinct from a size of zero. A directory nobody could read and one that
+    /// is genuinely empty are different facts, and "(0 B)" would understate the
+    /// stake by exactly the amount that matters.
+    ConfirmDeleteHomeUnmeasured {
+        user: String,
+        path: String,
+    },
 
     // --- Interface: terminal too small ---
     //
@@ -742,6 +770,14 @@ pub enum Msg {
     },
     /// A binary this tool installed has been deleted.
     TaskBinaryRemoved {
+        path: String,
+    },
+    /// A deleted account's home directory was left on disk.
+    TaskHomeKept {
+        path: String,
+    },
+    /// A deleted account's home directory went with it.
+    TaskHomeDeleted {
         path: String,
     },
     /// A unit is being enabled and started.

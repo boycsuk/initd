@@ -605,13 +605,17 @@ mod tests {
         // `Lockout` the red frame would mark every row and distinguish none,
         // and the dialog it teaches people to dismiss is the one before
         // `users.lock-root`, whose recovery is the provider's rescue console.
-        const LOCKOUT: [&str; 7] = [
+        const LOCKOUT: [&str; 8] = [
             "firewall.enable",
             "ssh.allow-users",
             "ssh.harden",
             "ssh.harden-strict",
             "ssh.change-port",
             "users.set-shell",
+            // Deleting the account being escalated through ends the session,
+            // and unlike every other lockout there is nothing to put back: the
+            // account is gone, and with it whatever sudo rule named it.
+            "users.delete",
             // The only uninstall that can end the session running it: an
             // administrator connected over the tunnel loses the connection
             // when wg0 goes down. Every other inverse removes something the

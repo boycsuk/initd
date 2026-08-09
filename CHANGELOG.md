@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `users.delete` removes an account, and its home directory is a field rather
+  than a policy: both answers are defensible — a home holding dotfiles is
+  residue, one holding a year of someone's work is not something a form should
+  decide about — which is exactly why neither is safe as a default nobody
+  stated. It defaults to keeping the files.
+- The confirmation for it is the one warning in the tool that runs commands.
+  Every other is written from what the form already collected; this one asks
+  the host where the home is and how much is in it, because "also delete the
+  home directory?" is a question answered by habit while "deploy will be
+  deleted, and so will /home/deploy — 2.4 GiB of files this tool did not create
+  and cannot put back" is one that gets read. A directory that cannot be
+  measured says so rather than reporting zero: unreadable and empty are
+  different facts, and "(0 B)" understates the stake by exactly the amount that
+  matters. Verified by breaking the measurement on purpose and watching the
+  test fail.
+- It is refused on the command line, joining the two tasks already there but
+  for a different reason. Those apply a change the interactive interface holds
+  open until the operator proves they can still get in; this one cannot be held
+  open at all — with `home=delete` there is nothing to put back, and the
+  interactive confirmation is the only place the path and its size are stated
+  before it happens.
+- It is *not* paired with `users.create` in one row, unlike everything the tool
+  installs. A pair asks "is the subject present?" and shows one verb; there is
+  no such subject here, since one task takes a name that must not exist and the
+  other a name that must. The host cannot answer which applies, because the
+  answer depends on a name nobody has typed yet.
 - Ten things this tool installs, it can now remove: Caddy, rootless Docker,
   fish, Zellij, mise, rustup, fail2ban, CrowdSec, WireGuard and unattended
   security updates. Each shares a row with the install it undoes, and the row

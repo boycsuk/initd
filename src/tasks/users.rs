@@ -51,6 +51,14 @@ pub fn category() -> Category {
         "Users",
         vec![
             Node::Task(Box::new(CreateUser)),
+            // Two rows rather than a reversible pair, unlike everything the
+            // tool installs. A pair asks "is the subject present?" and shows
+            // one verb; there is no such subject here. `users.create` takes a
+            // name that must *not* exist and `users.delete` one that must, so
+            // the host cannot answer which of them applies — the answer
+            // depends on a name nobody has typed yet. Two rows say plainly
+            // that both are always available.
+            Node::Task(Box::new(DeleteUser)),
             Node::Task(Box::new(SetShell)),
             Node::Task(Box::new(LockRoot)),
         ],
@@ -505,6 +513,121 @@ impl LockRoot {
     }
 }
 
+/// Deletes an account.
+///
+/// The one task here that destroys data this tool never created, which is why
+/// its home directory is a field rather than a policy and why its confirmation
+/// names the path *and* its measured size. "Delete /home/deploy (2.4 GB)" is a
+/// decision an operator can make; "also delete the home directory?" is a
+/// question answered by habit.
+pub struct DeleteUser;
+
+impl DeleteUser {
+    /// Name of the parameter holding the account to delete.
+    pub const USER: &'static str = "user";
+
+    /// Name of the parameter deciding what becomes of the home directory.
+    pub const HOME: &'static str = "home";
+
+    /// Id, named because the interface reaches for it when building the
+    /// confirmation this task needs and no other does.
+    pub const ID: &'static str = "users.delete";
+
+    /// The answer that destroys the home directory.
+    pub const DELETE_HOME: &'static str = "delete";
+}
+
+impl Task for DeleteUser {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn title(&self) -> &'static str {
+        "Delete an account"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes an account from the system. Its home directory is kept unless \
+         you ask for it to be deleted — this tool created the account, not \
+         what the account then put in it."
+    }
+
+    /// Deleting the account you escalate through ends the session, and unlike
+    /// every other lockout here there is nothing to put back: the account is
+    /// gone, and with it whatever `sudo` rule named it.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
+    }
+
+    supported_everywhere!();
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::USER, "Username", ParamKind::Username)
+                .with_hint("the account to delete")
+                .suggesting_accounts()
+                .naming_an_existing_account(),
+            Param::new(Self::HOME, "Home directory", ParamKind::HomeDirectory)
+                .with_initial("keep")
+                .with_hint("keep leaves the files on disk; delete removes them"),
+        ]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
+        let Ok(user) = values.get(Self::USER) else {
+            return Vec::new();
+        };
+
+        // An authorised key for an account that no longer exists is a key that
+        // authorises nothing, and `ssh.allow-users` may still name it — a list
+        // naming a deleted account admits nobody under that name and looks
+        // correct while doing it.
+        vec![Consequence::Invalidates {
+            task: "ssh.authorize-key",
+            reason: Reason::AccountRemoved {
+                user: user.to_owned(),
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let user = values.get(Self::USER)?.to_owned();
+
+        if !backend.accounts().exists(executor, &user)? {
+            return Err(Error::NoSuchAccount { user });
+        }
+
+        let remove_home = values.get(Self::HOME)? == Self::DELETE_HOME;
+
+        // Read before the account goes: once it is deleted the passwd entry is
+        // gone and the path can no longer be resolved from it, so a report
+        // naming what was kept would have nothing to name.
+        let home = backend.accounts().home_dir(executor, &user)?;
+
+        backend
+            .account_writer()
+            .delete(executor, &user, remove_home)?;
+
+        report(
+            progress,
+            &if remove_home {
+                Msg::TaskHomeDeleted { path: home }
+            } else {
+                Msg::TaskHomeKept { path: home }
+            },
+        );
+
+        Ok(Outcome::Done)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,6 +643,126 @@ mod tests {
     /// was never a valid key; only the old criterion was lax enough to admit
     /// it, and a guard that admits `garbage` is not guarding `users.lock-root`.
     const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ user@host";
+
+    /// Values naming an account to delete and what to do with its home.
+    fn deleting(user: &str, home: &str) -> ParamValues {
+        let mut values = ParamValues::new();
+        values.set(DeleteUser::USER, user.to_owned());
+        values.set(DeleteUser::HOME, home.to_owned());
+        values
+    }
+
+    #[test]
+    fn a_home_directory_survives_unless_deleting_it_was_asked_for() {
+        // The default is the recoverable answer, and this is the assertion
+        // that keeps it so: the field decides whether data this tool never
+        // created is destroyed, and a default nobody stated is one answered by
+        // habit.
+        let kept = MockExecutor::with_replies([
+            Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+            Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+            Reply::ok(""),
+        ]);
+
+        DeleteUser
+            .run(
+                &kept,
+                for_family(Family::Debian).as_ref(),
+                &deleting("deploy", "keep"),
+                &mut |_| {},
+            )
+            .expect("the deletion must succeed");
+
+        assert!(
+            kept.recorded_lines()
+                .iter()
+                .any(|line| line == "userdel deploy"),
+            "keeping the home must not pass -r: {:?}",
+            kept.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn asking_for_the_home_to_go_is_what_takes_it() {
+        let removed = MockExecutor::with_replies([
+            Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+            Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+            Reply::ok(""),
+        ]);
+
+        DeleteUser
+            .run(
+                &removed,
+                for_family(Family::Debian).as_ref(),
+                &deleting("deploy", DeleteUser::DELETE_HOME),
+                &mut |_| {},
+            )
+            .expect("the deletion must succeed");
+
+        assert!(
+            removed
+                .recorded_lines()
+                .iter()
+                .any(|line| line == "userdel -r deploy"),
+            "{:?}",
+            removed.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn the_home_is_read_before_the_account_that_names_it_is_deleted() {
+        // Once the account is gone its passwd entry is too, so a report naming
+        // what was kept would have nothing to name. Ordering rather than
+        // output, because the report is what the ordering exists for.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+            Reply::ok("deploy:x:1000:1000::/home/deploy:/bin/sh"),
+            Reply::ok(""),
+        ]);
+
+        DeleteUser
+            .run(
+                &mock,
+                for_family(Family::Debian).as_ref(),
+                &deleting("deploy", "keep"),
+                &mut |_| {},
+            )
+            .expect("the deletion must succeed");
+
+        let commands = mock.recorded_lines();
+        let read = commands
+            .iter()
+            .rposition(|line| line.contains("getent") || line.contains("passwd"))
+            .expect("the home must be read");
+        let deleted = commands
+            .iter()
+            .position(|line| line.starts_with("userdel"))
+            .expect("the account must be deleted");
+
+        assert!(
+            read < deleted,
+            "the home must be resolved first: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn deleting_an_account_that_does_not_exist_is_refused_by_name() {
+        // Refused rather than reported as done: `userdel` on a missing account
+        // exits non-zero anyway, and this says which account rather than
+        // handing back another program's stderr.
+        let mock = MockExecutor::with_replies([Reply::failure(2, "")]);
+
+        let err = DeleteUser
+            .run(
+                &mock,
+                for_family(Family::Debian).as_ref(),
+                &deleting("ghost", "keep"),
+                &mut |_| {},
+            )
+            .expect_err("a missing account must be refused");
+
+        assert!(matches!(err, Error::NoSuchAccount { ref user } if user == "ghost"));
+    }
 
     /// Values for a task taking a single named parameter.
     fn values(name: &'static str, value: &str) -> ParamValues {

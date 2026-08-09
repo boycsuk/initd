@@ -27,7 +27,7 @@ use super::search::Search;
 use super::status::State;
 use crate::i18n::{Msg, RevertReason};
 use crate::tasks::params::{ParamValues, Suggestions};
-use crate::tasks::users::LockRoot;
+use crate::tasks::users::{DeleteUser, LockRoot};
 use crate::tasks::{Confirmation, Node};
 
 impl App {
@@ -706,6 +706,7 @@ impl App {
                             admin: admin.to_owned(),
                         })
                     }
+                    _ if task.id() == DeleteUser::ID => self.deletion_warning(),
                     _ => self.lang.render(&Msg::ConfirmLockoutWarning),
                 };
 
@@ -713,5 +714,140 @@ impl App {
             }
             Confirmation::Change | Confirmation::None => confirm,
         });
+    }
+
+    /// States what deleting this account destroys, in the terms it destroys it.
+    ///
+    /// The one warning here that runs commands. Every other one is written
+    /// from what the form already collected; this one needs the *host* — where
+    /// the account's home is, and how much is in it — because the generic
+    /// sentence would ask about "the home directory" and be answered by habit.
+    ///
+    /// Measured when the dialog opens rather than while the form is typed,
+    /// which is the same rule `offer_what_the_host_knows` follows one step
+    /// earlier: two commands at a deliberate moment, none in the path of a
+    /// keystroke.
+    ///
+    /// A path that cannot be measured says so instead of reporting zero. An
+    /// unreadable directory and an empty one are different facts, and "(0 B)"
+    /// understates the stake by exactly the amount that matters.
+    pub(super) fn deletion_warning(&self) -> String {
+        let Ok(user) = self.pending_values.get(DeleteUser::USER) else {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        let deleting = matches!(
+            self.pending_values.get(DeleteUser::HOME),
+            Ok(answer) if answer == DeleteUser::DELETE_HOME
+        );
+
+        let Ok(path) = self
+            .backend
+            .accounts()
+            .home_dir(self.executor.as_ref(), user)
+        else {
+            // No path to name, so there is nothing this can say that the
+            // generic warning does not. Dropped rather than reported: the
+            // account may simply not exist yet, which the task itself refuses
+            // with a better message than a dialog could.
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        if !deleting {
+            return self.lang.render(&Msg::ConfirmKeepHome {
+                user: user.to_owned(),
+                path,
+            });
+        }
+
+        match self
+            .backend
+            .accounts()
+            .size_of(self.executor.as_ref(), &path)
+        {
+            Ok(Some(bytes)) => self.lang.render(&Msg::ConfirmDeleteHome {
+                user: user.to_owned(),
+                path,
+                size: human_size(bytes),
+            }),
+            Ok(None) | Err(_) => self.lang.render(&Msg::ConfirmDeleteHomeUnmeasured {
+                user: user.to_owned(),
+                path,
+            }),
+        }
+    }
+}
+
+/// Bytes as a person reads them.
+///
+/// Binary units, matching what `du -h` and every file manager on the host
+/// report: a number that disagreed with what the operator sees elsewhere would
+/// undermine the sentence it appears in.
+///
+/// One decimal place above a kibibyte and none below. "2.4 GB" is the
+/// precision the decision needs — the difference between 2.4 and 2.5 changes
+/// nothing, and "2 GB" for anything between 2.0 and 2.9 understates by
+/// almost half.
+///
+/// Not in the catalogue, because it is arithmetic rather than words: the
+/// units are the same in every language this tool will render, and a `Msg`
+/// per magnitude would be four variants that only ever say a suffix.
+fn human_size(bytes: u64) -> String {
+    /// Suffixes, smallest first. Each step is 1024 of the one before.
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    /// What separates one unit from the next.
+    const STEP: f64 = 1024.0;
+
+    let mut size = bytes as f64;
+    let mut unit = 0;
+
+    // `UNITS.len() - 1` so the loop cannot walk past the last suffix: a
+    // petabyte home is not a case worth a variant, and reporting it in
+    // tebibytes is right rather than absent.
+    while size >= STEP && unit < UNITS.len() - 1 {
+        size /= STEP;
+        unit += 1;
+    }
+
+    let suffix = UNITS.get(unit).copied().unwrap_or("B");
+
+    if unit == 0 {
+        // Whole bytes: a fractional byte is not a thing, and "512.0 B" reads
+        // as a rounding of something larger.
+        format!("{bytes} {suffix}")
+    } else {
+        format!("{size:.1} {suffix}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_size;
+
+    #[test]
+    fn a_size_is_reported_in_the_units_the_host_uses() {
+        // Binary units, matching `du -h`: a number disagreeing with what the
+        // operator sees elsewhere undermines the sentence carrying it.
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(1024), "1.0 KiB");
+        assert_eq!(human_size(2_576_980_378), "2.4 GiB");
+    }
+
+    #[test]
+    fn bytes_are_whole_and_everything_above_them_is_not() {
+        // "512.0 B" reads as a rounding of something larger, and a fractional
+        // byte is not a thing. Above that the decimal is what makes 2.4 and
+        // 2.0 distinguishable — the difference an operator is deciding on.
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1), "1 B");
+        assert_eq!(human_size(1536), "1.5 KiB");
+    }
+
+    #[test]
+    fn a_size_beyond_the_last_unit_is_reported_rather_than_lost() {
+        // The loop stops at the largest suffix instead of walking off the end
+        // of the table. A petabyte home does not deserve a unit of its own,
+        // and reporting it in tebibytes is right rather than absent.
+        assert_eq!(human_size(u64::MAX), "16777216.0 TiB");
     }
 }
