@@ -243,8 +243,8 @@ impl PackageManager for ApkPackages {
         // `apk del` removes the package and any dependency it pulled in that
         // nothing else needs — apk tracks that itself and there is no flag to
         // decline it, unlike apt's `--auto-remove` or pacman's `-s`. Stated
-        // rather than left implicit, since the other three families are told
-        // here not to cascade and this one cannot be.
+        // rather than left implicit, since three other families are told here
+        // not to cascade and this one cannot be — RHEL is the other that cannot.
         let command = Command::new("apk").args(["del", package]).privileged();
 
         super::systemd::run_checked(executor, &command)

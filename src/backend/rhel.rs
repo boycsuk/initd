@@ -479,7 +479,8 @@ impl PackageManager for DnfPackages {
     fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
         // `dnf remove` takes the dependencies the package pulled in and nothing
         // else needs. Unlike apt and pacman there is no flag to decline that,
-        // so the note the other two carry — "no cascade" — cannot be made here.
+        // so the note the other three carry — "no cascade" — cannot be made
+        // here, and Alpine's `apk del` cannot make it either.
         let command = Command::new("dnf")
             .args(["remove", "-y", package])
             .privileged();

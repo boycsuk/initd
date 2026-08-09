@@ -8,7 +8,7 @@
 //! Which makes the session dying the case the window is *for*, not an edge of
 //! it. When an SSH connection drops, the daemon sends `SIGHUP` to the session
 //! leader; `systemctl stop` and an ordinary `kill` send `SIGTERM`. Under the
-//! default disposition all three kill the process outright, so the countdown
+//! default disposition both kill the process outright, so the countdown
 //! stops, nothing reverts, and the configuration that severed the session is
 //! the one left in place — the exact outcome the window was built to prevent.
 //!

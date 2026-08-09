@@ -114,7 +114,7 @@ impl App {
                 self.help = Some(0);
                 return true;
             }
-            // Twenty-eight tasks across six areas is past what anybody keeps a
+            // Thirty-nine tasks across six areas is past what anybody keeps a
             // map of, and drilling down one level at a time answers "what is
             // in here" rather than "where is it".
             KeyCode::Char('/') => {

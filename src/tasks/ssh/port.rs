@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn a_family_without_selinux_runs_no_check_at_all() {
-        // The three families that have no policy answer from a constant, so
+        // The four families that have no policy answer from a constant, so
         // the task's question costs them nothing — no command, no process.
         let mock = MockExecutor::with_replies([
             Reply::ok("Port 22\n"),   // read

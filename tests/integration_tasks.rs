@@ -136,7 +136,7 @@ for_each_image! {
 
     /// `users.set-shell` changes the shell the passwd entry records.
     fn setting_a_shell_is_visible_in_the_passwd_entry(image) {
-        // `/bin/sh` because it is the one login shell all four families ship,
+        // `/bin/sh` because it is the one login shell all five families ship,
         // and because the task refuses a shell absent from `/etc/shells` —
         // which is the check being relied on, not bypassed.
         let observed = observe(
@@ -551,7 +551,7 @@ for_each_image! {
 
     /// `updates.unattended-security` writes the drop-in that carries the policy.
     fn unattended_updates_leave_the_policy_drop_in_behind(image) {
-        // Debian only, and the task says so itself on the other three — which
+        // Debian only, and the task says so itself on the other four — which
         // is the half asserted there. The drop-in is what a container can
         // settle: the task goes on to ask whether the timer is scheduled, and
         // no container runs one, so the exit code is deliberately not asserted

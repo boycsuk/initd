@@ -1,6 +1,6 @@
 //! APT's unattended-upgrades, as [`AutomaticUpdates`].
 //!
-//! Debian's mechanism, and the only one implemented: the other three families
+//! Debian's mechanism, and the only one implemented: the other four families
 //! declare `updates.unattended-security` unsupported, each for its own reason
 //! recorded beside the declaration. This exists so those reasons are the only
 //! thing keeping them out — before it, the task wrote `/etc/apt` paths itself,

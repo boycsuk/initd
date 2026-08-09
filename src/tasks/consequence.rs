@@ -240,7 +240,7 @@ impl Consequence {
 /// The check that asks whether a port is open, phrased by this host's firewall.
 ///
 /// Here rather than in each task because the answer is not a task's to know.
-/// Three of the four families are driven through `nft`, so a literal spelled
+/// Four of the five families are driven through `nft`, so a literal spelled
 /// in a task looks correct right up until RHEL, where the tool writes the rule
 /// through firewalld and the nftables listing shows a table that was never
 /// created. A consequence checked that way answers "still to do" forever, for

@@ -47,7 +47,7 @@ const SHADOW_EXPIRY_INDEX: usize = 7;
 
 /// Lowest uid a distribution hands to an account a person logs in as.
 ///
-/// The convention on all four families, and a convention rather than a rule —
+/// The convention on all five families, and a convention rather than a rule —
 /// which is why it only *orders* the list and never filters it. A site that
 /// numbers a real account below this still finds it, further down.
 const FIRST_HUMAN_UID: u32 = 1000;
@@ -242,7 +242,7 @@ pub fn set_password(executor: &dyn Executor, user: &str, password: &str) -> Resu
 /// `users.lock-root` rests on:
 ///
 /// - **Empty.** No password at all. Whether it authenticates is PAM's
-///   `nullok` to decide, and it is absent by default on all four families.
+///   `nullok` to decide, and it is absent by default on all five families.
 /// - **`!` prefix.** What `passwd -l` writes, and what `useradd` leaves on an
 ///   account created without one.
 /// - **`*`.** What a system account carries.

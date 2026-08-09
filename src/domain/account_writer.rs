@@ -145,7 +145,7 @@ pub trait AccountWriter {
     ///
     /// True only for a hash that can actually match. The shadow field carries
     /// three states that are not a password: empty (no password at all, so
-    /// PAM's `nullok` decides and it is absent by default on all four
+    /// PAM's `nullok` decides and it is absent by default on all five
     /// families), and `!` or `*` prefixes, which cannot be produced by any
     /// input because neither is in the crypt alphabet — `!` is what `passwd
     /// -l` writes and `*` is what a system account carries.

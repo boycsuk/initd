@@ -103,8 +103,10 @@ pub trait Backend {
     ///
     /// Three families distinguish the two: apt keeps conffiles until asked to
     /// purge, pacman writes `.pacsave` unless told `-n`, apk preserves modified
-    /// files unless told `--purge`. RHEL does not — rpm has no purge, and a
-    /// file the administrator edited is left as `.rpmsave` whatever is asked.
+    /// files unless told `--purge`. RHEL and openSUSE do not — rpm has no
+    /// purge, and a file the administrator edited is left as `.rpmsave`
+    /// whatever is asked. Both answer for rpm rather than for their own front
+    /// end, which is why neither `dnf` nor `zypper` is the name that matters.
     ///
     /// Asked so the interface can decline to offer a choice that does not
     /// exist. A field with two options that behave identically is worse than
@@ -248,7 +250,7 @@ pub trait Backend {
     /// whichever backend is installed, so driving both it and `nft` on one host
     /// is how a rule becomes invisible to the tool that did not write it.
     ///
-    /// nftables alone by default, which is what three of the four families
+    /// nftables alone by default, which is what four of the five families
     /// answer. Where Debian has `ufw` active the nftables implementation
     /// reports itself unavailable rather than fighting it, so the single
     /// candidate still holds there. RHEL overrides this: it is the one family
@@ -278,7 +280,7 @@ pub trait Backend {
 
     /// How this family configures unattended updates, where it has a mechanism.
     ///
-    /// `None` by default and on three of the four families, each for a reason
+    /// `None` by default and on four of the five families, each for a reason
     /// recorded beside `updates.unattended-security`'s refusal: Arch is a
     /// rolling release with no equivalent, Alpine ships none, and RHEL's
     /// package name moved between releases the backend cannot distinguish.
@@ -311,7 +313,7 @@ pub trait Backend {
     /// Families without one return an implementation that reports nothing
     /// enforcing, so a task asks the same question everywhere rather than
     /// branching on the distribution.
-    /// Nothing enforces by default, which is the answer on three of the four
+    /// Nothing enforces by default, which is the answer on four of the five
     /// families: a constant rather than a question put to the host. Tasks still
     /// ask, which is what keeps the check out of them. RHEL is the one family
     /// that has one, and whether it is *enforcing* is asked of the host there.

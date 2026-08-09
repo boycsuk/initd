@@ -121,7 +121,7 @@ pub struct Image {
     /// the host rather than of the family — a RHEL server runs firewalld, and
     /// one where the administrator removed it drives `nft` directly — so a
     /// scenario about the firewall has to give the image what a stock host of
-    /// that family would have. The other three run `true`: honest, and it
+    /// that family would have. The other five run `true`: honest, and it
     /// keeps the scenarios from needing a branch.
     pub install_firewalld: &'static str,
     /// Installs the WireGuard tools, which provide `wg`.
@@ -272,8 +272,8 @@ pub const RHEL: Image = Image {
     // `useradd` is in the base image, from shadow-utils.
     install_useradd: "true",
     install_tmux: "dnf install -y -q tmux",
-    // Not a no-op, unlike the other three: a Rocky base image has no init at
-    // all until this runs. It refreshes first because the image build runs this
+    // Not a no-op, unlike Arch's and Alpine's: a Rocky base image has no init
+    // at all until this runs. It refreshes first because the image build runs this
     // field on its own, without the `refresh` the ephemeral path prepends —
     // which is why Debian's entry carries its own `apt-get update` too.
     install_systemd: "dnf makecache -q && dnf install -y -q systemd",

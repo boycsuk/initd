@@ -115,7 +115,11 @@ const SPLIT_LAYOUT_MIN_WIDTH: u16 = 72;
 /// `Stop applying security updates automatically` at 44 cells, and a row
 /// spends six more — two of border, two of marker, one of flag, and the space
 /// that separates the title from it. So 50 is the width at which no task in
-/// the tree is truncated, and it was 34, which cut nine of the twenty-eight.
+/// the tree is truncated, and it was 34, which cut nine of the twenty-eight
+/// tasks the tree held at the time. Both numbers are what was measured then,
+/// not a count of today's tree — the point they make is that the width was
+/// too narrow, and re-deriving them against thirty-nine tasks gives a
+/// different figure and the same conclusion.
 ///
 /// This is the one number that has to grow with the content, and the inverse
 /// tasks are what grew it: an uninstall is named by a longer verb than the
@@ -125,7 +129,7 @@ const SPLIT_LAYOUT_MIN_WIDTH: u16 = 72;
 ///
 /// A title longer than this is still cut with an ellipsis rather than clipped,
 /// so the cost of being wrong is legible rather than silent —
-/// `tree_rows_are_not_truncated` is what makes it noticed.
+/// `the_tree_pane_fits_the_longest_title_in_the_tree` is what makes it noticed.
 const TREE_PANE_WIDTH: u16 = 50;
 
 /// Cells a tree row spends on anything that is not the title.

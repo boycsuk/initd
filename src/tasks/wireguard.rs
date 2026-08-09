@@ -211,8 +211,8 @@ impl Task for InstallWireguard {
             // admits none of WireGuard's traffic.
             //
             // The query comes from whichever front-end holds this host's
-            // ruleset. Spelling `nft` here would be right on three families and
-            // wrong on the fourth: RHEL runs firewalld, so the rule lives in a
+            // ruleset. Spelling `nft` here would be right on four families and
+            // wrong on the fifth: RHEL runs firewalld, so the rule lives in a
             // zone and `nft list table inet initd` names a table that does not
             // exist — an answer of "still to do" for a port already open.
             Consequence::Invalidates {
@@ -934,8 +934,8 @@ mod tests {
     #[test]
     fn the_firewall_check_asks_whichever_front_end_holds_the_ruleset() {
         // The bug this closes: the query was `nft list table inet initd`,
-        // written into the task. Right on three families and wrong on the
-        // fourth — RHEL runs firewalld, so the rule the tool wrote lives in a
+        // written into the task. Right on four families and wrong on the
+        // fifth — RHEL runs firewalld, so the rule the tool wrote lives in a
         // zone and that table was never created. The check would answer "not
         // done" forever for a port that is already open, and a warning nobody
         // can resolve is one an administrator learns to scroll past, which

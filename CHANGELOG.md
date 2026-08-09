@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whoever wrote the test. It now refuses `.initd.bak` and any `cp` at all, and
   was confirmed to fail against the previous code rather than assumed to.
 
+- Comments that counted four families or twenty-eight tasks now count the five
+  and the thirty-nine that exist. Two of them were wrong about more than a
+  number: the trait's note on purging named RHEL alone where openSUSE answers
+  the same way and for the same reason, and the note on removal cascading said
+  "the other two" where three families decline it and two cannot. The three
+  that narrate a past measurement keep it, with the tense made explicit where a
+  reader would otherwise re-derive the figure and find it different.
+- `layout.rs` no longer points at a test that was renamed out from under it,
+  and `signals.rs` no longer says three signals are caught where two are.
+- The search overlay draws its heading and its result count in the same style
+  roles every other overlay uses. It passed both as bare strings, so the one
+  modal rendered its chrome in the border's colour while the six beside it did
+  not.
+
 ### Added
 - openSUSE and SLES are a supported family. Tumbleweed and Leap 16.0 were both
   measured rather than one standing in for the other, and every name in the

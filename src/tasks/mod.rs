@@ -47,7 +47,7 @@ pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
 ///
 /// The rendering happens here rather than in each task because this is the one
 /// place every line already passes through: a `Lang` threaded into `Task::run`
-/// would be a parameter twenty-eight implementations carry and one forgets.
+/// would be a parameter thirty-nine implementations carry and one forgets.
 pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
     progress(OutputLine {
         stream: Stream::Stdout,
@@ -227,7 +227,7 @@ pub trait Task {
     /// Takes the backend for the same reason every other method does: a
     /// consequence that names a command must let the family spell it. A task
     /// writing `nft list table inet initd` itself is a distro branch wearing a
-    /// string literal — correct on three families and wrong on RHEL, where the
+    /// string literal — correct on four families and wrong on RHEL, where the
     /// rule was written through firewalld and lives in a zone that listing
     /// never shows.
     ///
