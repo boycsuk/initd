@@ -727,9 +727,9 @@ mod tests {
         // The shape this refactor bought. The task used to build `/etc/apt`
         // paths and APT syntax itself, so the only thing keeping an APT policy
         // off an Arch host was the support declaration — a promise rather than
-        // a structure. Now the backend has to offer a mechanism, and three of
-        // the four families offer none.
-        for family in [Family::Arch, Family::Alpine, Family::Rhel] {
+        // a structure. Now the backend has to offer a mechanism, and four of
+        // the five families offer none.
+        for family in [Family::Arch, Family::Alpine, Family::Rhel, Family::Suse] {
             assert!(
                 for_family(family).automatic_updates().is_none(),
                 "{family} must offer no mechanism"
