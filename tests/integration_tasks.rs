@@ -155,14 +155,25 @@ for_each_image! {
 
     /// A shell nothing lists is refused before the entry is touched.
     fn a_shell_that_is_not_a_login_shell_is_refused(image) {
-        // `/bin/false` exists everywhere and is deliberately not in
-        // `/etc/shells`: some PAM configurations refuse a session for an
-        // account whose shell is unlisted, so setting one would produce an
-        // account that cannot log in while reporting success.
+        // The guard: some PAM configurations refuse a session for an account
+        // whose shell is unlisted, so setting one would produce an account that
+        // cannot log in while reporting success.
+        //
+        // This used to name `/bin/false`, on the grounds that it exists
+        // everywhere and is listed nowhere. The first half is true; the second
+        // was true of four families and false of the fifth — openSUSE lists
+        // `/bin/false` in `/etc/shells`, so the task accepted it and this
+        // scenario read a correct refusal-to-refuse as a defect.
+        //
+        // `/bin/sync` is named instead: a real binary on every image and absent
+        // from every `/etc/shells` here, checked on all six. The property being
+        // asserted was always "a shell this system does not list", and naming a
+        // path that happens to satisfy it on the images at hand is how that
+        // turned into a claim about `/bin/false` specifically.
         let observed = observe(
             image,
             "initd run users.create user=deploy >/dev/null 2>&1; \
-             initd run users.set-shell user=deploy shell=/bin/false >/tmp/o 2>&1; \
+             initd run users.set-shell user=deploy shell=/bin/sync >/tmp/o 2>&1; \
              echo exit=$?; cat /tmp/o; grep '^deploy:' /etc/passwd",
         );
 
@@ -172,7 +183,7 @@ for_each_image! {
             image.name
         );
         assert!(
-            !observed.contains("deploy:x:1000:1000::/home/deploy:/bin/false"),
+            !observed.contains("deploy:x:1000:1000::/home/deploy:/bin/sync"),
             "{}: and the entry must not have been changed: {observed}",
             image.name
         );
@@ -617,12 +628,19 @@ for_each_image! {
         // shared refusal would pass if one of the two ids were dropped from the
         // list — and `AllowUsers` naming an account that cannot log in is
         // exactly the lockout the window exists to catch.
+        // `grep -c` over a file that may not be there yet: openSUSE ships its
+        // sshd_config under /usr/etc and /etc/ssh/sshd_config appears only once
+        // a task seeds it — and this task refuses before seeding anything, which
+        // is the behaviour under test. `cat` of both paths, discarding the
+        // error, counts the directive wherever the file lives and answers 0
+        // where neither exists, which is the same answer for the same reason.
         let observed = observe_with(
             image,
             image.install_ssh,
             "initd run ssh.allow-users users=deploy >/tmp/o 2>&1; \
                  echo exit=$?; cat /tmp/o; \
-                 echo directives=$(grep -c '^AllowUsers' /etc/ssh/sshd_config)",
+                 echo directives=$(cat /etc/ssh/sshd_config /usr/etc/ssh/sshd_config \
+                     2>/dev/null | grep -c '^AllowUsers')",
         );
 
         assert!(
