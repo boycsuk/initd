@@ -316,21 +316,6 @@ pub fn read_all(executor: &dyn Executor, files: &dyn FileEditor) -> Vec<BackupRe
         .collect()
 }
 
-/// The newest record for a path, if this tool ever copied it.
-///
-/// Newest because that is the state immediately before the current one. Older
-/// records are kept so a path's history is reviewable, not so a revert can
-/// choose among them: "put it back the way it was" means one thing.
-pub fn latest_for(
-    executor: &dyn Executor,
-    files: &dyn FileEditor,
-    path: &str,
-) -> Option<BackupRecord> {
-    read_all(executor, files)
-        .into_iter()
-        .rfind(|record| record.path == path)
-}
-
 /// SHA-256 of a file, as the host computes it.
 ///
 /// `sha256sum` rather than a crate: it is in coreutils and in busybox, this
@@ -452,89 +437,6 @@ pub fn record_existing(
     prune(executor, files, &record.path);
 
     Some(record.copy)
-}
-
-/// Copies a file aside and records where it went, before it is changed.
-///
-/// Called by a task that wants its change to be revertible later, rather than
-/// happening inside [`FileEditor::write`]. Nine sites write files and most have
-/// no revert to offer — a firewall ruleset restored without the front-end being
-/// told is a file, not a rolled-back change — so recording is a decision a task
-/// makes rather than a side effect of writing.
-///
-/// Returns the copy's path, or `None` where nothing could be recorded. `None`
-/// is not a failure: the caller carries on and says no record was kept, because
-/// the alternative is failing a change that has not been made yet over a
-/// bookkeeping problem.
-///
-/// Call this **before** the write. It records the digest of what was there, and
-/// [`finish`] records the digest of what replaced it once the write has
-/// happened — the pair is what lets a later revert prove the file has not been
-/// edited by somebody else in between.
-pub fn begin(
-    executor: &dyn Executor,
-    files: &dyn FileEditor,
-    task: &'static str,
-    path: &str,
-    service: &'static str,
-) -> Option<BackupRecord> {
-    // Nothing to copy: a file being created has no previous state, and a
-    // record claiming one would offer a revert to an empty file.
-    if !files.exists(executor, path).ok()? {
-        return None;
-    }
-
-    let stamp = timestamp(executor)?;
-    let copy = copy_path(path, &stamp);
-
-    files.create_dir(executor, BACKUP_DIR, TREE_MODE).ok()?;
-
-    // `-p` preserves mode and ownership, so a restore cannot silently loosen
-    // the permissions of a file that was `0600`.
-    let command = Command::new("cp").args(["-p", path, &copy]).privileged();
-
-    if !executor.run(&command).ok()?.success() {
-        return None;
-    }
-
-    Some(BackupRecord {
-        task,
-        path: path.to_owned(),
-        copy,
-        at: stamp,
-        // Of the copy rather than of the original: they are identical now, and
-        // this is the value that later proves the copy itself is intact.
-        sha256_before: digest_of(executor, path)?,
-        // Filled in by `finish`, once there is something to hash.
-        sha256_after: String::new(),
-        service,
-    })
-}
-
-/// Records what the write left behind, completing the record.
-///
-/// Separate from [`begin`] because the digest of the new contents does not
-/// exist until the write has happened, and it is the field a later revert
-/// checks the live file against.
-///
-/// Reports whether the record was kept, so the caller can say plainly that no
-/// revert will be available rather than implying one.
-pub fn finish(executor: &dyn Executor, files: &dyn FileEditor, mut record: BackupRecord) -> bool {
-    let Some(after) = digest_of(executor, &record.path) else {
-        return false;
-    };
-
-    record.sha256_after = after;
-
-    let path = record.path.clone();
-    let kept = append(executor, files, &record);
-
-    // After the append rather than before, so a prune that fails cannot cost
-    // the record it was making room for. Best effort in turn: a host that
-    // could not delete an old copy still has a usable index, just a longer one.
-    prune(executor, files, &path);
-
-    kept
 }
 
 /// Deletes the oldest copies of one path, keeping [`RETAINED_PER_PATH`].
@@ -689,7 +591,12 @@ mod tests {
     }
 
     #[test]
-    fn the_newest_record_for_a_path_is_the_one_a_revert_would_use() {
+    fn records_are_read_back_in_the_order_they_were_written() {
+        // The file is appended to, so it reads oldest first, and the history
+        // reverses it to put the newest under the cursor. Both halves depend
+        // on the order surviving the round trip: a reader that sorted or
+        // reordered would make "the newest" a different record from the last
+        // one written.
         let mut older = a_record();
         older.at = "20260101T000000Z".to_owned();
         older.sha256_after = "c".repeat(64);
@@ -697,12 +604,14 @@ mod tests {
         let newer = a_record();
 
         let index = format!("{}\n{}\n", older.to_line(), newer.to_line());
-        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok(&index)]);
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok(index)]);
         let files = crate::backend::unix_files::UnixFiles::new();
 
-        let found = latest_for(&mock, &files, "/etc/ssh/sshd_config").expect("a record must match");
+        let read = read_all(&mock, &files);
 
-        assert_eq!(found.sha256_after, newer.sha256_after);
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].sha256_after, older.sha256_after);
+        assert_eq!(read[1].sha256_after, newer.sha256_after);
     }
 
     #[test]

@@ -50,10 +50,6 @@ pub enum Revert {
     /// record carries what this tool wrote, the live file is hashed before
     /// anything is restored, and a file that has changed since refuses rather
     /// than merging or overwriting.
-    #[allow(
-        dead_code,
-        reason = "constructed by the History area, which lands in a later commit"
-    )]
     FromIndex { record: BackupRecord },
 }
 
