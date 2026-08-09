@@ -50,27 +50,15 @@
 
 ## WHAT — External integrations (MCP)
 
-Both are navigation aids rather than project rules; the general guidance for
-using them lives in `~/.claude/rules/ai-collaboration.md` and is not restated
-here. What is specific to this repository:
+Navigation aids rather than project rules; the general guidance lives in `~/.claude/rules/ai-collaboration.md`. What is specific here:
 
-- **serena** — symbol-level navigation. The thing worth reaching for it on is a
-  trait implemented once per family: `find_referencing_symbols` on a domain
-  trait answers "which backends implement this" without four greps.
-- **graphify** — the graph answers ripple-effect questions, and this codebase
-  has one shape that makes them worth asking: a change to a domain trait
-  reaches every backend and the tasks above them. `/graphify .` builds it once;
-  `graphify-out/` is gitignored.
-- `.serena/memories/*.md` **are** committed (team-wide context);
-  `.serena/project.local.yml` is not.
+- **serena** — the thing worth reaching for it on is a trait implemented once per family: `find_referencing_symbols` on a domain trait answers "which backends implement this" without four greps.
+- **graphify** — a change to a domain trait reaches every backend and the tasks above them, which is the shape that makes ripple-effect questions worth asking. `/graphify .` builds it once; `graphify-out/` is gitignored.
+- `.serena/memories/*.md` **are** committed (team-wide context); `.serena/project.local.yml` is not.
 
 ## WHAT — Task areas
 
-Twenty-eight tasks across six areas: identity and access, remote access (SSH
-and WireGuard), network (firewall and kernel parameters), services (rootless
-containers, web server), the developer environment, and hardening. `docs/cli.md`
-lists every one, and a test compares that list against the tree in both
-directions so it cannot drift.
+Thirty-nine tasks across six areas: identity and access, remote access (SSH and WireGuard), network (firewall and kernel parameters), services (rootless containers, web server), the developer environment, and hardening. Eleven of them undo an install and share a row with it. `docs/cli.md` lists every one, and a test compares that list against the tree in both directions so it cannot drift.
 
 ## WHY — Architectural decisions
 
