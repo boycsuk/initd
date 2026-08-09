@@ -320,6 +320,76 @@ pub fn timestamp(executor: &dyn Executor) -> Option<String> {
     (stamp.len() == 16 && stamp.ends_with('Z')).then_some(stamp)
 }
 
+/// Records a copy that [`FileEditor::write`] has already taken.
+///
+/// The cheaper of the two ways in, and the one every configuration task uses.
+/// `write` backs a file up before replacing it, so the copy exists by the time
+/// a task can ask about it — taking a second one would double the I/O and, more
+/// to the point, copy the file *after* the write rather than before.
+///
+/// What it costs is two commands: a timestamp and a digest of the new contents.
+/// The digest of the previous contents comes free, because the copy is that
+/// file and hashing it is the same work either way.
+///
+/// The copy is moved under [`BACKUP_DIR`] with a timestamp in its name, which is
+/// what makes it survive the next write to the same path — `write` reuses one
+/// fixed `.initd.bak` per file, so without this the second change to
+/// `sshd_config` would overwrite the copy the first one left.
+///
+/// Reports whether a record was kept. `false` is not a failure: the change has
+/// already been applied correctly, and the caller says no cross-session revert
+/// will be available rather than failing a task over bookkeeping.
+pub fn record_existing(
+    executor: &dyn Executor,
+    files: &dyn FileEditor,
+    task: &'static str,
+    backup: &crate::domain::files::Backup,
+    service: &'static str,
+) -> bool {
+    let Some(at) = timestamp(executor) else {
+        return false;
+    };
+
+    let kept = copy_path(&backup.original, &at);
+
+    if files.create_dir(executor, BACKUP_DIR, TREE_MODE).is_err() {
+        return false;
+    }
+
+    // Moved rather than copied: `write` put it beside the original under one
+    // fixed name, and leaving it there means the next write to the same path
+    // overwrites it. Moving is also what keeps a second copy of a file holding
+    // a private key from existing at all.
+    let command = Command::new("mv").args([&backup.copy, &kept]).privileged();
+
+    if !executor.run(&command).ok().is_some_and(|out| out.success()) {
+        return false;
+    }
+
+    let (Some(before), Some(after)) = (
+        digest_of(executor, &kept),
+        digest_of(executor, &backup.original),
+    ) else {
+        return false;
+    };
+
+    let record = BackupRecord {
+        task,
+        path: backup.original.clone(),
+        copy: kept,
+        at,
+        sha256_before: before,
+        sha256_after: after,
+        service,
+    };
+
+    let appended = append(executor, files, &record);
+
+    prune(executor, files, &record.path);
+
+    appended
+}
+
 /// Copies a file aside and records where it went, before it is changed.
 ///
 /// Called by a task that wants its change to be revertible later, rather than
