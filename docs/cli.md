@@ -66,7 +66,10 @@ comes from the operating system: commands that need root are escalated through
   names any directive the daemon disagrees with. Debian 12, Ubuntu 22.04 and
   RHEL 9 ship `Include /etc/ssh/sshd_config.d/*.conf` as the first line, and
   sshd takes the first occurrence of a directive — so a drop-in left there by a
-  provider image wins over what was written, while `sshd -t` still approves. The
+  provider image wins over what was written, while `sshd -t` still approves.
+  openSUSE Includes the same directory *before* its own crypto-policies
+  drop-in, which is why the same mechanism that makes `ssh.harden-strict`
+  unsupported on RHEL leaves it supported there. The
   task succeeds and exits `0`: what it wrote is correct, and a drop-in is often
   deliberate. A script that treats hardening as complete on exit `0` should read
   stderr too.
@@ -102,7 +105,8 @@ binary nobody can identify cannot be acted on.
 Prints the detected distribution and the family whose backend will be used.
 
 **Output:** `distribution`, `id`, `version` (or `(rolling)` when the system
-declares no `VERSION_ID`), and `family` (`debian`, `arch`, `alpine` or `rhel`).
+declares no `VERSION_ID`), and `family` (`debian`, `arch`, `alpine`, `rhel` or
+`suse`).
 
 **Errors:** an unsupported distribution exits `1`, naming the `ID` and
 `ID_LIKE` that were found and the families that are supported.

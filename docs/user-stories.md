@@ -133,8 +133,18 @@ TUI or CLI:
 - As an **administrator**, I can create an account that can administer the
   server, so that I do not have to work as root.
   - Acceptance: it joins whichever group grants sudo on this distribution —
-    `sudo` on Debian, `wheel` on Arch and Alpine — and the membership is read
-    back rather than assumed, because the command reports success either way.
+    `sudo` on Debian, `wheel` on Arch, Alpine, RHEL and openSUSE — and the
+    membership is read back rather than assumed, because the command reports
+    success either way.
+  - Acceptance: the group is created first where the distribution does not
+    ship one. openSUSE takes `wheel` from a package only its desktop patterns
+    require, so a minimally installed server has none, and adding an account to
+    a missing group fails outright.
+  - Acceptance: where membership alone does not confer escalation, the grant is
+    written as well. openSUSE ships the rule for `wheel` commented out, so an
+    account can be in the right group and still be unable to escalate; a
+    drop-in under `sudoers.d` supplies it, and the result is validated, since a
+    sudoers file that does not parse disables sudo entirely.
   - Acceptance: it is created without a password by default, so it can only be
     reached with a key — but I can give it one, in the same form. That default
     is right for an account reached over SSH and wrong for the one that has to
@@ -206,6 +216,11 @@ TUI or CLI:
     was about every way in, and refused the account a distribution's installer
     made. A `!` or `*` hash is not a password: neither can be produced by any
     input.
+  - Acceptance: refused also where the administrative group grants nothing on
+    its own, even though the account is in it. On openSUSE that membership is a
+    true and irrelevant answer, and accepting it would lock root on a machine
+    nobody can administer — so the refusal names the shipped rule to uncomment
+    rather than reporting an absent membership the system would contradict.
   - Acceptance: I am told that root will no longer log in by any route,
     including the rescue console, and the account that keeps access is named
     back to me before I confirm — it is the only echo of what I typed before an
