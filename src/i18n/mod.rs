@@ -882,9 +882,9 @@ pub enum Msg {
     //
     /// `users.lock-root` has begun asking the host who can still get in.
     ///
-    /// Said before the scan rather than after it, because the scan is around
-    /// twenty-five privileged commands and a pane that went quiet for them
-    /// reads as a tool that has hung.
+    /// Said before the scan rather than after it, because the scan is a
+    /// privileged command per account — 17 on a stock `debian:13` — and a pane
+    /// that went quiet for them reads as a tool that has hung.
     TaskScanningAccounts,
     /// One account that keeps access, and what it authenticates with.
     ///

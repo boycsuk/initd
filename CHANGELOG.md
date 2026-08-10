@@ -48,8 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and it does not stop at the first account that passes, since the operator's
   decision is whether *theirs* is listed and a list of one cannot answer that.
   Both are the obvious optimisation and both were confirmed to fail their tests
-  when introduced, rather than assumed to. The scan costs around twenty-five
-  privileged commands where four were spent before — paid when the dialog
+  when introduced, rather than assumed to. The scan costs one command per
+  account plus three per administrator — measured at 17 on a stock `debian:13`,
+  13 on `rockylinux:9` and 19 on `alpine:3.23`, where four were spent before.
+  The estimate before measuring was twenty-five; a stock image stays well under
+  the bound because almost nothing is in the admin group. Paid when the dialog
   opens, never in the path of a keystroke.
 
   Six container images confirm it on real hosts, which is where the rule about

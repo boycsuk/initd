@@ -161,10 +161,14 @@ impl From<&Examined> for Msg {
 /// can check that theirs is among them, and a scan that returned after the
 /// first would leave them looking at a list of one and cancelling.
 ///
-/// The cost is one `id -nG` and up to three more commands per account — around
-/// twenty-five privileged commands on a stock host, against four before. Paid
-/// at the moment the dialog opens rather than in the path of a keystroke, which
-/// is the rule `deletion_warning` already follows.
+/// The cost is one `id -nG` per account, plus three more for each that is in
+/// the admin group — the passwd lookup, the key file, the shadow read. Measured
+/// rather than estimated, since the estimate was high: **17 commands** on a
+/// stock `debian:13`, 13 on `rockylinux:9` and 19 on `alpine:3.23`, against
+/// four before. The bound is `accounts + 3 × administrators` and a stock image
+/// is nowhere near it, because almost nothing is in the group. Paid at the
+/// moment the dialog opens rather than in the path of a keystroke, which is the
+/// rule `deletion_warning` already follows.
 ///
 /// `root` is not examined. It is the account being locked, and naming it as the
 /// reason it is safe to lock it is circular — it would satisfy every check here

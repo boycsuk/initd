@@ -832,8 +832,9 @@ impl App {
     /// Shows which accounts survive locking root, rather than asking for one.
     ///
     /// The second warning here that runs commands, and by far the more
-    /// expensive: it scans every account on the host — around twenty-five
-    /// privileged commands — where `deletion_warning` spends two. Paid at the
+    /// expensive: it scans every account on the host — 17 privileged commands
+    /// on a stock `debian:13`, measured — where `deletion_warning` spends two.
+    /// Paid at the
     /// moment the dialog opens rather than in the path of a keystroke, which is
     /// the rule that warning already follows, and paid at all because the
     /// alternative was asking the operator to type a name the machine already
