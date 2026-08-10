@@ -208,23 +208,39 @@ TUI or CLI:
     for the task to run.
 - As an **administrator**, I can lock the root account, so that it cannot be
   logged into at all.
-  - Acceptance: refused unless another account already exists, is in the
-    administrative group, and can authenticate — by an authorised key or by a
-    usable password. Either counts, because expiry is applied through PAM and
-    so bars every channel including the provider's rescue console, which never
-    consults `authorized_keys`; demanding a key measured SSH when the question
-    was about every way in, and refused the account a distribution's installer
-    made. A `!` or `*` hash is not a password: neither can be produced by any
-    input.
-  - Acceptance: refused also where the administrative group grants nothing on
-    its own, even though the account is in it. On openSUSE that membership is a
-    true and irrelevant answer, and accepting it would lock root on a machine
-    nobody can administer — so the refusal names the shipped rule to uncomment
-    rather than reporting an absent membership the system would contradict.
+  - Acceptance: I am not asked which account keeps access. The tool scans every
+    account the host has and answers that itself — the question had one right
+    answer the machine already held, and the account I would have named was
+    only ever checked, never locked or modified.
+  - Acceptance: refused unless *some* account is in the administrative group
+    and can authenticate — by an authorised key or by a usable password. Either
+    counts, because expiry is applied through PAM and so bars every channel
+    including the provider's rescue console, which never consults
+    `authorized_keys`; demanding a key measured SSH when the question was about
+    every way in, and refused the account a distribution's installer made. A
+    `!` or `*` hash is not a password: neither can be produced by any input.
+  - Acceptance: the refusal is about the host rather than about a name — "no
+    account here can get back in" — and says how many were examined, so it
+    asserts no more than it measured.
+  - Acceptance: each account that does not qualify is reported with the reason
+    it was set aside. One of those reasons is a fact about the distribution
+    rather than the account: on openSUSE the administrative group grants
+    nothing on its own, so membership reads back true on an account that still
+    cannot escalate — and what I am given is the shipped rule to uncomment
+    rather than an absent membership the system would contradict.
+  - Acceptance: every account below the conventional uid threshold is scanned
+    too. That threshold orders the search and never limits it, so a site that
+    numbers a real administrator below it is not reported as having no way out.
   - Acceptance: I am told that root will no longer log in by any route,
-    including the rescue console, and the account that keeps access is named
-    back to me before I confirm — it is the only echo of what I typed before an
-    irreversible operation.
+    including the rescue console, and shown **every** account that keeps
+    access, each with the credential it gets in by — so I can check that mine
+    is among them rather than having to know the answer in advance. The list
+    scrolls where it is longer than the dialog, so no account is hidden.
+  - Acceptance: where nothing says which account I am connected as — a root
+    console, `su -`, `run0` — the dialog says so rather than marking a row it
+    cannot justify. It never refuses on that basis: the signal is set by
+    whoever is already root, and refusing on an unanswerable question would
+    strand the rescue console this task exists for.
   - Acceptance: the account is expired, not merely password-locked. Whether a
     locked password also blocks a key depends on how the distribution built
     OpenSSH — it does on Alpine, which builds without PAM, and does not on

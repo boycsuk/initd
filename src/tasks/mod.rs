@@ -720,9 +720,14 @@ mod tests {
         // The other direction, so the fix cannot be "suggest nothing
         // anywhere": a field that names an account which must already exist is
         // exactly the case the host's answer is worth reading.
+        //
+        // `users.lock-root` was here and is deliberately not any more. It asked
+        // for an account it only ever *checked* — never locked, never modified,
+        // never recorded — which is a question the machine can answer for
+        // itself, so it now scans instead of asking. A task with no fields has
+        // no field to offer accounts for.
         let expected = [
             "users.set-shell",
-            "users.lock-root",
             "ssh.authorize-key",
             "containers.rootless",
             "devtools.install",

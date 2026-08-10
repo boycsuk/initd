@@ -383,6 +383,41 @@ pub const IMAGES: &[&Image] = &[&DEBIAN, &ARCH, &ALPINE, &RHEL, &TUMBLEWEED, &LE
 pub const TEST_KEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd";
 
+/// The group granting administrative rights on an image.
+///
+/// Five families, two answers: Debian grants sudo through `sudo`, while the
+/// rest use `wheel` — Alpine because it ships `doas`, whose default
+/// configuration grants that group.
+///
+/// The name is the whole answer on four of them and not on openSUSE, where
+/// `%wheel` ships commented out and membership alone grants nothing. That is
+/// the backend's concern rather than this helper's: what is asked for here is
+/// the group a scenario should add an account to, which is `wheel` either way.
+/// A scenario concluding "this account can escalate" from membership alone
+/// would be unsound there, and none does.
+///
+/// Here rather than in one scenario file because two of them need it now, and
+/// the copy that stayed behind would be the one that stopped agreeing.
+pub fn admin_group(image: &Image) -> &'static str {
+    if image.name.contains("debian") {
+        "sudo"
+    } else {
+        "wheel"
+    }
+}
+
+/// The command that creates an account on an image.
+///
+/// `useradd` comes from the shadow suite; busybox provides `adduser` instead,
+/// and its flags differ in meaning rather than in spelling.
+pub fn create_account(image: &Image) -> &'static str {
+    if image.name.contains("alpine") {
+        "adduser -D -H"
+    } else {
+        "useradd -m"
+    }
+}
+
 /// Whether Docker is usable, so tests can skip rather than fail without it.
 pub fn docker_available() -> bool {
     Command::new("docker")

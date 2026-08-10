@@ -76,6 +76,24 @@ const NON_LOGIN_SHELLS: [&str; 4] = [
 /// are forty of them on a stock Debian and two of the other kind, and a
 /// chooser that opens on `_apt` is one nobody reads to the end.
 pub fn list_accounts(executor: &dyn Executor) -> Result<Vec<String>> {
+    Ok(list_ranked_accounts(executor)?
+        .into_iter()
+        .map(|account| account.name)
+        .collect())
+}
+
+/// The same list, with the classification the ordering was derived from.
+///
+/// Kept rather than discarded, which is the whole of this function: the rank
+/// was computed to sort by and thrown away at the boundary, so a caller wanting
+/// to ask the human accounts first had to parse `/etc/passwd` a second time.
+///
+/// It orders and never filters, for the reason [`FIRST_HUMAN_UID`] states.
+/// `users.lock-root` scans every entry this returns — a site that numbers a
+/// real account below the threshold, or one whose administrator's shell is not
+/// in [`NON_LOGIN_SHELLS`], still has a way back in, and a scan that skipped it
+/// would report a host as stranded while somebody was logged into it.
+pub fn list_ranked_accounts(executor: &dyn Executor) -> Result<Vec<RankedAccount>> {
     let command = Command::new("cat").arg(PASSWD_FILE);
     let output = executor.run(&command)?;
 
@@ -87,7 +105,7 @@ pub fn list_accounts(executor: &dyn Executor) -> Result<Vec<String>> {
         });
     }
 
-    let mut accounts: Vec<(Rank, String)> = output
+    let mut accounts: Vec<RankedAccount> = output
         .stdout
         .lines()
         .filter_map(parse_passwd_entry)
@@ -96,11 +114,23 @@ pub fn list_accounts(executor: &dyn Executor) -> Result<Vec<String>> {
     // Sorted by rank first and name second, so the order is total: two runs
     // over the same file must not differ, or the position an operator learned
     // is not the position they find next time.
-    accounts.sort_by(|(rank, name), (other_rank, other_name)| {
-        rank.cmp(other_rank).then_with(|| name.cmp(other_name))
+    accounts.sort_by(|account, other| {
+        account
+            .rank
+            .cmp(&other.rank)
+            .then_with(|| account.name.cmp(&other.name))
     });
 
-    Ok(accounts.into_iter().map(|(_, name)| name).collect())
+    Ok(accounts)
+}
+
+/// An account and where it belongs in the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedAccount {
+    /// The login name, as `/etc/passwd` records it.
+    pub name: String,
+    /// What kind of account this is.
+    pub rank: Rank,
 }
 
 /// How near the front of the list an account belongs.
@@ -110,7 +140,7 @@ pub fn list_accounts(executor: &dyn Executor) -> Result<Vec<String>> {
 /// account, and it is nonetheless the account an administrator is likeliest to
 /// be reaching for. Ordered by declaration, which is what `derive(Ord)` uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Rank {
+pub enum Rank {
     /// The superuser, wherever its uid would otherwise put it.
     Root,
     /// An account a person logs in as.
@@ -120,7 +150,7 @@ enum Rank {
 }
 
 /// Splits one passwd entry into its name and where it belongs in the list.
-fn parse_passwd_entry(entry: &str) -> Option<(Rank, String)> {
+fn parse_passwd_entry(entry: &str) -> Option<RankedAccount> {
     let fields: Vec<&str> = entry.split(':').collect();
 
     // Seven fields, and a line with fewer is not an entry. Indexing without
@@ -143,7 +173,10 @@ fn parse_passwd_entry(entry: &str) -> Option<(Rank, String)> {
         Rank::System
     };
 
-    Some((rank, (*name).to_owned()))
+    Some(RankedAccount {
+        name: (*name).to_owned(),
+        rank,
+    })
 }
 
 /// Reads `/etc/shells`, dropping what is not a shell.
@@ -431,6 +464,64 @@ mod tests {
             MockExecutor::with_replies([Reply::failure(1, "cat: /etc/passwd: No such file")]);
 
         assert!(list_accounts(&mock).is_err());
+    }
+
+    #[test]
+    fn the_rank_that_orders_the_list_is_readable_by_a_caller() {
+        // Computed to sort by and thrown away at the boundary until now, so a
+        // caller wanting the human accounts first had to parse the file again.
+        // The three cases are the whole of the classification: uid 0 is root
+        // wherever its number would otherwise put it, a login shell above the
+        // threshold is a person, and everything else is the system's.
+        let mock = MockExecutor::with_replies([Reply::ok(PASSWD)]);
+
+        let accounts = list_ranked_accounts(&mock).expect("a readable file lists its accounts");
+        let rank_of = |name: &str| {
+            accounts
+                .iter()
+                .find(|account| account.name == name)
+                .map(|account| account.rank)
+        };
+
+        assert_eq!(rank_of("root"), Some(Rank::Root));
+        assert_eq!(rank_of("cosmin"), Some(Rank::Human));
+        assert_eq!(rank_of("alice"), Some(Rank::Human));
+        // Below the threshold, whatever its shell.
+        assert_eq!(rank_of("www-data"), Some(Rank::System));
+        // Above the threshold and unable to log in, which is the other half of
+        // the rule: the uid alone would have made this one `Human`.
+        assert_eq!(rank_of("nobody"), Some(Rank::System));
+        assert_eq!(rank_of("backup"), Some(Rank::System));
+    }
+
+    #[test]
+    fn the_ranked_list_is_the_one_the_names_come_from() {
+        // The two must not drift: `list_accounts` is the chooser's contract and
+        // is now a projection of this. Asserted as an equality rather than by
+        // eye, because a second parse that agreed today is one that can stop
+        // agreeing.
+        let names = MockExecutor::with_replies([Reply::ok(PASSWD)]);
+        let ranked = MockExecutor::with_replies([Reply::ok(PASSWD)]);
+
+        assert_eq!(
+            list_accounts(&names).expect("the names must list"),
+            list_ranked_accounts(&ranked)
+                .expect("the ranked list must list")
+                .into_iter()
+                .map(|account| account.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_unreadable_passwd_file_is_an_error_for_the_ranked_list_too() {
+        // The same rule the name list follows: an empty list would be read as
+        // "this host has no accounts", and `users.lock-root` scanning an empty
+        // list would report a host with administrators as having none.
+        let mock =
+            MockExecutor::with_replies([Reply::failure(1, "cat: /etc/passwd: No such file")]);
+
+        assert!(list_ranked_accounts(&mock).is_err());
     }
 
     #[test]

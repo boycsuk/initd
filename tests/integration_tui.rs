@@ -25,6 +25,7 @@
 mod common;
 
 use common::tui::Tui;
+use common::{admin_group, create_account};
 
 /// The state the interface reports while a change is applied but not kept.
 const VERIFY: &str = "VERIFY";
@@ -427,6 +428,168 @@ for_each_image! {
         assert!(
             !tui.files_match("/tmp/a", "/tmp/does-not-exist"),
             "a missing file must never read as a match"
+        );
+    }
+
+    /// The scan finds the accounts a real host has, and lists every one.
+    ///
+    /// The case a mock cannot give. `id -nG` prints a format nothing in this
+    /// repository controls, `/etc/shadow` holds hashes only the system writes,
+    /// and the whole claim this task now makes — *this host has a way back in*
+    /// — is a claim about a machine. A mock asked the same question would
+    /// answer with the replies it was handed.
+    ///
+    /// Two accounts rather than one, deliberately: the scan must not stop at
+    /// the first that passes, and a scenario with a single administrator
+    /// cannot tell a complete scan from an early return.
+    fn the_scan_lists_every_account_that_keeps_access(image) {
+        let group = admin_group(image);
+        let tui = tui!(
+            image,
+            "lock-root-scan",
+            &format!(
+                // Two administrators, each reachable by a different credential,
+                // so the dialog has to report both facts rather than one twice.
+                // A third account that can log in and cannot escalate is the
+                // control: it must be examined and must not be listed.
+                "groupadd -f {group} >/dev/null 2>&1; \
+                 {create} keeper >/dev/null 2>&1; \
+                 {create} second >/dev/null 2>&1; \
+                 {create} bystander >/dev/null 2>&1; \
+                 usermod -aG {group} keeper >/dev/null 2>&1 || \
+                   addgroup keeper {group} >/dev/null 2>&1; \
+                 usermod -aG {group} second >/dev/null 2>&1 || \
+                   addgroup second {group} >/dev/null 2>&1; \
+                 echo 'keeper:correct horse' | chpasswd >/dev/null 2>&1; \
+                 echo 'second:battery staple' | chpasswd >/dev/null 2>&1; \
+                 echo 'bystander:no escalation' | chpasswd >/dev/null 2>&1",
+                create = create_account(image),
+                group = group,
+            )
+        );
+
+        // Identity & Access is the first category, Users the first inside it,
+        // and locking root the fourth task there. Positional like every other
+        // path in this file, and checked by title for the same reason: a
+        // reordered tree would otherwise point this at another task that also
+        // opens a dialog, and it would keep passing.
+        tui.press("Enter"); // Identity & Access
+        tui.press("Enter"); // Users
+        tui.press("Down");  // create -> delete
+        tui.press("Down");  // delete -> set-shell
+        tui.press("Down");  // set-shell -> lock-root
+
+        let screen = tui.screen();
+        assert!(
+            screen.contains("Lock the root account"),
+            "{}: navigation must land on the lock task; the tree may have been \
+             reordered: {screen}",
+            image.name
+        );
+
+        // Enter opens the confirmation directly, with no form in between. That
+        // it does is half the point: this task used to stop at a field asking
+        // which account keeps access, and the whole change is that it no longer
+        // asks.
+        tui.press("Enter");
+
+        assert!(
+            tui.wait_for("CONFIRM", 20),
+            "{}: the confirmation must open without asking for an account: {}",
+            image.name,
+            tui.screen()
+        );
+
+        let dialog = tui.screen();
+
+        // openSUSE is the family where membership is not the whole answer:
+        // `%wheel` ships commented out, `admin_group_grants_alone` is false for
+        // the family, and both administrators are correctly discarded. Which
+        // makes it the one image where this scenario asserts the *other* half
+        // of the same rule — that the scan does not count a membership the
+        // system does not honour.
+        if image.name.contains("opensuse") {
+            assert!(
+                !dialog.contains("keeper — ") && !dialog.contains("second — "),
+                "{}: membership alone must not be reported as a way back in \
+                 where the group grants nothing: {dialog}",
+                image.name
+            );
+        } else {
+            assert!(
+                dialog.contains("keeper") && dialog.contains("second"),
+                "{}: every account that keeps access must be listed, not just \
+                 the first one found: {dialog}",
+                image.name
+            );
+            assert!(
+                !dialog.contains("bystander"),
+                "{}: an account that cannot escalate is no way back in: {dialog}",
+                image.name
+            );
+        }
+
+        // Cancelled rather than confirmed. What this scenario is about is what
+        // the scan *shows*; locking root here would end with a container whose
+        // remaining assertions run as an account this test just stranded.
+        tui.press("Esc");
+    }
+
+    /// A host with no way back in is refused, and says how many it looked at.
+    ///
+    /// The other half of the claim, and the one that matters: approving a host
+    /// that has no way out is the single mistake this task cannot undo. The
+    /// image is used as it ships — root and the system accounts, none of which
+    /// can both escalate and authenticate.
+    fn a_host_with_no_administrator_is_refused(image) {
+        let tui = tui!(image, "lock-root-refuses", "true");
+
+        tui.press("Enter"); // Identity & Access
+        tui.press("Enter"); // Users
+        tui.press("Down");
+        tui.press("Down");
+        tui.press("Down");
+
+        let screen = tui.screen();
+        assert!(
+            screen.contains("Lock the root account"),
+            "{}: navigation must land on the lock task: {screen}",
+            image.name
+        );
+
+        tui.press("Enter");  // open the confirmation
+        confirm_dialog(&tui); // and answer it Yes
+
+        // The status row rather than the body. The scan reports a line per
+        // account — twenty-one on a stock `debian:13` — so by the time the
+        // refusal is printed it has scrolled the pane, and a scenario reading
+        // the visible portion would be asserting on where the text happened to
+        // land. `wait_for` polls the whole screen, which the diagnosis fills.
+        assert!(
+            tui.wait_for("FAILED", 20),
+            "{}: a host with no way back in must be refused: {}",
+            image.name,
+            tui.status()
+        );
+
+        // And refused for the stated reason rather than by some other failure:
+        // the per-account diagnosis is what the task prints on the way to it,
+        // and it is the thing an operator acts on.
+        assert!(
+            tui.screen().contains("not in"),
+            "{}: and must say why each account was set aside: {}",
+            image.name,
+            tui.screen()
+        );
+
+        // The refusal has to be a refusal rather than a message over a change
+        // that happened anyway. Read out of the shadow entry, which is where
+        // the expiry the task would have written would show.
+        let expiry = tui.exec("grep '^root:' /etc/shadow | cut -d: -f8");
+        assert!(
+            expiry.trim().is_empty(),
+            "{}: root must not have been expired: {expiry:?}",
+            image.name
         );
     }
 

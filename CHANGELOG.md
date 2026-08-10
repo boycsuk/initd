@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `users.lock-root` no longer asks which account keeps access. It opened a form
+  with a chooser offering every account on the host, and did exactly one thing
+  with the answer: check it. The task never locked that account, never modified
+  it and never recorded it anywhere — the hint admitted as much, *"root is
+  locked; this one is only checked"*. The label had been rewritten once before,
+  on the theory that the field read as "the account to lock"; renaming it did
+  not help, because the field was the problem. It now scans every account the
+  host has and answers the question itself.
+- The guard this replaces got stronger rather than weaker. `NoWayBackIn` meant
+  "the name you typed does not work" — try another — and now means *this host
+  has no way out*, which is the claim the task always wanted to make and could
+  not while it was checking one name. It carries how many accounts were
+  examined, so it asserts no more than it measured. Approving when some account
+  passes is correct: if a way back in exists, it exists.
+- The confirmation shows every account that keeps access, each with the
+  credential it gets in by, instead of naming back the one just typed. That is
+  the difference between checking an answer you had to know in advance and
+  recognising your own account in a list. The list scrolls where it is longer
+  than the dialog — a warning carrying one row per administrator is unbounded,
+  and a dialog sized to all of them grows past the terminal, where centring
+  clamps it and the answers at the bottom are what disappear.
+- The three refusals that used to abort the task are now a per-account
+  diagnosis. They described a name the operator had typed and now describe a
+  fact about an account nobody nominated, which is the difference between an
+  error and a diagnosis. `AdminGroupGrantsNothing` is why they stay distinct:
+  it names openSUSE's commented-out `%wheel` and the line to uncomment, and no
+  amount of `usermod` addresses that. `AdminCannotBeRoot` is gone — with
+  nothing typed, root cannot be nominated; it survives as an exclusion from the
+  scan, pinned by a host holding only root being refused.
+- Where nothing says which account the session escalated from — a root console,
+  `su -`, `run0` — the dialog says so rather than marking a row it cannot
+  justify. Never a refusal: the signal is an environment variable set by
+  whoever is already root, and refusing on an unanswerable question would
+  strand the provider's rescue console, which is the case this task exists for.
+
+  The scan orders by the conventional uid threshold and never filters by it, so
+  a site numbering a real administrator below 1000 is not reported as stranded;
+  and it does not stop at the first account that passes, since the operator's
+  decision is whether *theirs* is listed and a list of one cannot answer that.
+  Both are the obvious optimisation and both were confirmed to fail their tests
+  when introduced, rather than assumed to. The scan costs one command per
+  account plus three per administrator — measured at 17 on a stock `debian:13`,
+  13 on `rockylinux:9` and 19 on `alpine:3.23`, where four were spent before.
+  The estimate before measuring was twenty-five; a stock image stays well under
+  the bound because almost nothing is in the admin group. Paid when the dialog
+  opens, never in the path of a keystroke.
+
+  Six container images confirm it on real hosts, which is where the rule about
+  openSUSE showed itself again: with `admin_group_grants_alone` false for that
+  family, two administrators holding passwords and `wheel` are correctly
+  discarded, so that image asserts the other half of the same rule.
+
 ### Fixed
 - `wireguard.add-peer` no longer leaves a copy of the server's private key on
   disk. The task deliberately writes no entry in the index, and its comment

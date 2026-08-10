@@ -233,18 +233,9 @@ pub enum Msg {
         user: String,
         group: String,
     },
-    NotAnAdministrator {
-        user: String,
-        group: String,
-    },
-    AdminGroupGrantsNothing {
-        user: String,
-        group: String,
-    },
     NoWayBackIn {
-        user: String,
+        examined: usize,
     },
-    AdminCannotBeRoot,
     CannotDeleteRoot,
     CannotDeleteOwnAccount {
         user: String,
@@ -391,6 +382,13 @@ pub enum Msg {
     ConfirmYes,
     ConfirmNo,
     ConfirmKeyHint,
+    /// Appended to the hint above where the warning has rows below the fold.
+    ///
+    /// Shown only when scrolling moves something, which today is one dialog:
+    /// `users.lock-root` lists every account that keeps access, and a host with
+    /// a dozen administrators has more than the band can hold. A hint for a key
+    /// that does nothing is how a bar stops being read.
+    ConfirmScrollHint,
 
     // --- Interface: output ---
     //
@@ -706,16 +704,29 @@ pub enum Msg {
     /// the time this is on screen the operator has already decided to proceed
     /// and the useful sentence is the one they can act on.
     ConfirmLockoutWarning,
-    /// The lockout warning for `users.lock-root`, naming both accounts.
+    /// The lockout warning for `users.lock-root`, heading the accounts that
+    /// keep access.
     ///
-    /// Separate from the generic one because this is the only task where two
-    /// accounts are in play and the operator has just typed one of them: the
-    /// form collects the account that *survives*, which reads as the account
-    /// being acted on unless something says otherwise. Naming both is also the
-    /// only echo of the typed value before it is used — a mistyped username
-    /// otherwise reaches an irreversible operation unseen.
+    /// Separate from the generic one because this is the only task that has
+    /// something to *show*: the host was scanned, and the operator's decision
+    /// is whether their own account is among what the scan found. It named a
+    /// single account while the task asked for one — an echo of what had just
+    /// been typed. Nothing is typed now, so what follows this sentence is the
+    /// list, and the count is in it because "3 accounts keep access" and "1
+    /// account keeps access" are different decisions.
     ConfirmRootLockout {
-        admin: String,
+        keeping: usize,
+    },
+    /// One line of that list: an account, and what it gets in with.
+    ///
+    /// Rendered per account rather than joined into the sentence above, because
+    /// the dialog scrolls them — a paragraph cannot be scrolled a line at a
+    /// time, and hiding one of these is hiding the reason the operator is
+    /// about to say yes.
+    ConfirmKeepsAccess {
+        user: String,
+        key: bool,
+        password: bool,
     },
     /// About to delete an account and the directory it owns.
     ///
@@ -868,9 +879,52 @@ pub enum Msg {
     },
 
     // Accounts.
-    TaskUserExists {
+    //
+    /// `users.lock-root` has begun asking the host who can still get in.
+    ///
+    /// Said before the scan rather than after it, because the scan is a
+    /// privileged command per account — 17 on a stock `debian:13` — and a pane
+    /// that went quiet for them reads as a tool that has hung.
+    TaskScanningAccounts,
+    /// One account that keeps access, and what it authenticates with.
+    ///
+    /// Both credentials in one line rather than a line each: this reaches a
+    /// list the operator scans for their own name, and one account occupying
+    /// two rows is one that pushes another off the bottom.
+    TaskAccountKeepsAccess {
+        user: String,
+        key: bool,
+        password: bool,
+    },
+    /// One account that does not keep access, because it cannot escalate.
+    TaskAccountNotAnAdministrator {
+        user: String,
+        group: String,
+    },
+    /// One account in the administrative group that still cannot escalate.
+    ///
+    /// The reason this is its own line rather than folded into the one above:
+    /// it describes a decision the distribution made — openSUSE ships `%wheel`
+    /// commented out — and no amount of `usermod` addresses it. What the
+    /// operator needs is the file and the line to uncomment.
+    TaskAccountGroupGrantsNothing {
+        user: String,
+        group: String,
+    },
+    /// One account that can escalate and holds no credential at all.
+    TaskAccountCannotAuthenticate {
         user: String,
     },
+    /// Nothing said who escalated into this session, so nothing is marked.
+    ///
+    /// A warning rather than a refusal, and the distinction is the whole of it:
+    /// no command answers who a `sudo` process was started by — `whoami`,
+    /// `id -un` and `logname` all describe the process, which by then is root —
+    /// and the environment variables that do answer are set by the subject
+    /// itself. Refusing on a question that cannot be answered would leave the
+    /// provider's rescue console, which arrives as root directly, unable to run
+    /// the one task it exists for.
+    ConfirmSessionAccountUnknown,
     TaskCreatingUser {
         user: String,
     },

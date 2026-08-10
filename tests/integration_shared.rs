@@ -91,7 +91,10 @@ for_each_image! {
             // the session applying it, and only the interactive interface can
             // hold one open to be confirmed.
             "run ssh.allow-users users=root",
-            "run users.lock-root admin=alice",
+            // With no arguments at all, now that this task takes none: the
+            // refusal is structural and precedes argument parsing, so it must
+            // hold for the invocation a script would actually write.
+            "run users.lock-root",
         ] {
             assert_eq!(
                 common::exit_code_of(image, command),

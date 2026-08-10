@@ -34,6 +34,21 @@ fn warning_rows(warning: &str, width: usize) -> u16 {
     layout::wrapped_rows(warning, width) + 1
 }
 
+/// Rows the warning may occupy before it starts scrolling instead of growing.
+///
+/// A ceiling rather than a share of the screen, and it exists because one
+/// warning now carries a list: `users.lock-root` names every account that keeps
+/// access, and a host with twenty administrators would otherwise size a dialog
+/// taller than the terminal — at which point centring clamps it and the choice
+/// at the bottom is what gets cut off, leaving an irreversible operation asking
+/// a question with no visible answers.
+///
+/// Eight rows is a heading and roughly six accounts, which fits inside
+/// [`layout::MIN_HEIGHT`] alongside a description. Beyond that the band stops
+/// growing and scrolls, so no account is hidden with no way to reach it — the
+/// one thing this dialog must not do.
+const WARNING_MAX_ROWS: u16 = 8;
+
 /// A pending confirmation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirm {
@@ -43,6 +58,13 @@ pub struct Confirm {
     pub warning: Option<String>,
     /// Whether "yes" is currently selected.
     pub accepted: bool,
+    /// First visible row of the warning, when it is taller than its band.
+    ///
+    /// Held here rather than computed while drawing, for the reason `Form`
+    /// keeps its own: a scroll position is state, and the alternative is
+    /// `render` mutating what it was handed. Zero for every warning short
+    /// enough to fit, which is all of them but one.
+    pub warning_scroll: u16,
 }
 
 impl Confirm {
@@ -56,6 +78,7 @@ impl Confirm {
             body: body.into(),
             warning: None,
             accepted: false,
+            warning_scroll: 0,
         }
     }
 
@@ -71,6 +94,44 @@ impl Confirm {
         self.accepted = !self.accepted;
     }
 
+    /// Rows the warning needs, and the band it is allowed to have.
+    ///
+    /// Returned together because the second is derived from the first and the
+    /// caller needs both: how far it can scroll is the difference.
+    fn warning_extent(&self, width: usize) -> (u16, u16) {
+        let needed = self
+            .warning
+            .as_deref()
+            .map_or(0, |warning| warning_rows(warning, width));
+
+        (needed, needed.min(WARNING_MAX_ROWS))
+    }
+
+    /// Scrolls the warning by a row, where it has more than it can show.
+    ///
+    /// Clamped at both ends rather than wrapping: a list that jumped back to
+    /// the top on the last keypress would read as having lost rows, and the
+    /// operator is counting accounts here.
+    pub fn scroll_warning(&mut self, delta: i16) {
+        let text_width = layout::DIALOG_WIDTH as usize - 2 - layout::DIALOG_GUTTER * 2;
+        let (needed, band) = self.warning_extent(text_width);
+        let max = needed.saturating_sub(band);
+
+        self.warning_scroll = self.warning_scroll.saturating_add_signed(delta).min(max);
+    }
+
+    /// Whether the warning holds more than its band can show.
+    ///
+    /// Asked by the key bar, so the scroll keys are offered only where they do
+    /// something — a hint for a key that moves nothing is one that teaches the
+    /// operator to distrust the bar.
+    pub fn warning_scrolls(&self) -> bool {
+        let text_width = layout::DIALOG_WIDTH as usize - 2 - layout::DIALOG_GUTTER * 2;
+        let (needed, band) = self.warning_extent(text_width);
+
+        needed > band
+    }
+
     /// Renders the dialog centred over the interface.
     ///
     /// The title, body and warning arrive as text because they are the task's
@@ -81,10 +142,11 @@ impl Confirm {
         // borders and the gutter each side are gone by the time it wraps.
         let text_width = layout::DIALOG_WIDTH as usize - 2 - layout::DIALOG_GUTTER * 2;
         let body_rows = layout::wrapped_rows(&self.body, text_width);
-        let warning_rows = self
-            .warning
-            .as_deref()
-            .map_or(0, |warning| warning_rows(warning, text_width));
+        // The band it gets rather than the rows it wants. A warning carrying a
+        // list of accounts is unbounded — one per administrator on the host —
+        // and a dialog sized to all of them grows past the terminal, where
+        // centring clamps it and the choice at the bottom is what disappears.
+        let (_, warning_rows) = self.warning_extent(text_width);
 
         let area = layout::centred(
             layout::DIALOG_WIDTH,
@@ -183,6 +245,11 @@ impl Confirm {
                 Paragraph::new(warning.clone())
                     .style(style::DANGER_TEXT)
                     .wrap(Wrap { trim: true })
+                    // Scrolled rather than truncated. Where the warning is a
+                    // list of the accounts that survive locking root, a row
+                    // held back is an account the operator cannot see — and
+                    // theirs may be the one below the fold.
+                    .scroll((self.warning_scroll, 0))
                     .alignment(Alignment::Left),
                 warning_area,
             );
@@ -202,12 +269,22 @@ impl Confirm {
             (style::CHOICE_NORMAL, style::CHOICE_SELECTED)
         };
 
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(lang.render(&Msg::ConfirmYes), yes),
             Span::raw("   "),
             Span::styled(lang.render(&Msg::ConfirmNo), no),
             Span::raw(lang.render(&Msg::ConfirmKeyHint)),
-        ])
+        ];
+
+        // Only where it moves something. A hint for a key that does nothing is
+        // how a bar stops being read — and this one appears on exactly one
+        // dialog, where the rows below the fold are accounts the operator is
+        // checking for their own.
+        if self.warning_scrolls() {
+            spans.push(Span::raw(lang.render(&Msg::ConfirmScrollHint)));
+        }
+
+        Line::from(spans)
     }
 }
 
@@ -311,6 +388,104 @@ mod tests {
         assert!(
             screen.contains(&answer(&Msg::ConfirmYes)),
             "and so must the choice: {screen}"
+        );
+    }
+
+    /// A warning shaped like `users.lock-root`'s on a host with many
+    /// administrators: a heading and one row per account that keeps access.
+    fn account_list(accounts: usize) -> String {
+        let mut warning = format!("{accounts} accounts can still get in:");
+
+        for n in 0..accounts {
+            warning.push_str(&format!("\n  admin{n} — key + password"));
+        }
+
+        warning
+    }
+
+    #[test]
+    fn a_warning_longer_than_its_band_scrolls_rather_than_growing() {
+        // The failure this prevents is the one the choice-off-screen tests
+        // already describe, reached by a new route: this warning is unbounded —
+        // one row per administrator on the host — so a dialog sized to all of
+        // them grows past the terminal, centring clamps it, and the answers at
+        // the bottom are what get cut off.
+        let confirm =
+            Confirm::new("Lock the root account", "Continue?").with_warning(account_list(20));
+
+        let (_, height) = bounds_of(&confirm, 100, 50);
+        let screen = rendered(&confirm, 100, 50);
+
+        assert!(
+            height <= 50,
+            "a twenty-account list must not outgrow the terminal: {height}"
+        );
+        assert!(
+            screen.contains(&answer(&Msg::ConfirmYes)),
+            "and the choice must survive it: {screen}"
+        );
+    }
+
+    #[test]
+    fn scrolling_reaches_the_accounts_below_the_fold() {
+        // Decision 7, and the whole reason the band scrolls rather than
+        // truncating: a row held back is an account the operator cannot see,
+        // and theirs may be the one below the fold. Asserted by reading the
+        // last account off the screen, which no amount of clamping produces.
+        let mut confirm =
+            Confirm::new("Lock the root account", "Continue?").with_warning(account_list(20));
+
+        assert!(
+            !rendered(&confirm, 100, 50).contains("admin19"),
+            "the fixture must actually overflow, or this proves nothing"
+        );
+
+        for _ in 0..40 {
+            confirm.scroll_warning(1);
+        }
+
+        assert!(
+            rendered(&confirm, 100, 50).contains("admin19"),
+            "every account must be reachable: {}",
+            rendered(&confirm, 100, 50)
+        );
+    }
+
+    #[test]
+    fn scrolling_stops_at_both_ends_rather_than_wrapping() {
+        // A list that jumped back to the top on the last keypress would read as
+        // having lost rows, and the operator is counting accounts here.
+        let mut confirm =
+            Confirm::new("Lock the root account", "Continue?").with_warning(account_list(20));
+
+        confirm.scroll_warning(-5);
+        assert_eq!(confirm.warning_scroll, 0, "it cannot scroll above the top");
+
+        for _ in 0..100 {
+            confirm.scroll_warning(1);
+        }
+        let bottom = confirm.warning_scroll;
+
+        confirm.scroll_warning(1);
+        assert_eq!(
+            confirm.warning_scroll, bottom,
+            "nor past the last row it has"
+        );
+    }
+
+    #[test]
+    fn a_warning_that_fits_offers_no_scrolling() {
+        // The hint appears on one dialog and must not appear on the others: a
+        // key that does nothing is how a bar stops being read.
+        let short = Confirm::new("Change port", "Continue?")
+            .with_warning("This can lock you out of a remote server.");
+
+        assert!(!short.warning_scrolls());
+        assert!(
+            Confirm::new("Lock the root account", "Continue?")
+                .with_warning(account_list(20))
+                .warning_scrolls(),
+            "and it must appear where there is something below the fold"
         );
     }
 

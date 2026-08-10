@@ -258,7 +258,7 @@ command line, running the subcommand *is* the confirmation.
 | `users.create` | `run <id> name=value` | no | Creates an account with a home directory and membership of the group granting sudo on this distribution. `password=` is optional: empty or absent leaves the account without one, and a value is applied through `chpasswd` on stdin. |
 | `users.set-shell` | `run <id> name=value` | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
 | `users.delete` | interactive only | yes | Deletes an account. `home=` chooses `keep` (the default, leaving the files on disk owned by a user id nothing claims) or `delete`. Interactive only: the confirmation names the home directory *and its measured size* before anything happens, and with `home=delete` there is nothing to put back afterwards. |
-| `users.lock-root` | interactive only | yes | Expires the root account so no method admits it, including the provider's rescue console. Refuses unless another account exists, can escalate, and can authenticate — by an authorised key or by a usable password. |
+| `users.lock-root` | interactive only | yes | Expires the root account so no method admits it, including the provider's rescue console. Takes no arguments: it scans every account on the host and refuses unless at least one of them can escalate *and* authenticate — by an authorised key or by a usable password. The confirmation lists each account that qualifies, with the credential it gets in by. |
 
 ### Remote Access — SSH
 
@@ -331,12 +331,19 @@ Deliberate, not an oversight, and for the same reason in both cases.
 
 `users.lock-root` expires the root account. Every other change this tool makes
 is recoverable from a console; this one can require the hosting provider's
-rescue media. It refuses to run at all unless another account exists, can
-escalate and can authenticate — by an authorised key *or* by a usable
-password, since expiry goes through PAM and therefore bars the rescue console
-too, which never consults `authorized_keys`. But those checks establish that a
-way back in *should* work, not that it does. Only a second session can prove that,
-and only the interactive interface can wait for one.
+rescue media. It takes no arguments — it scans every account the host has and
+refuses to run at all unless one of them can escalate and can authenticate, by
+an authorised key *or* by a usable password, since expiry goes through PAM and
+therefore bars the rescue console too, which never consults `authorized_keys`.
+Accounts that do not qualify are reported with the reason each was set aside,
+because one of those reasons is a fact about the distribution rather than about
+the account: openSUSE ships `%wheel` commented out, so membership reads back
+true on an account that still cannot escalate, and the remedy is a line to
+uncomment rather than a `usermod`.
+
+But those checks establish that a way back in *should* work, not that it does.
+Only a second session can prove that, and only the interactive interface can
+wait for one.
 
 `ssh.allow-users` is the other. `AllowUsers` naming an account that does not
 exist produces a configuration `sshd -t` accepts and that matches nobody, so

@@ -1091,6 +1091,71 @@ mod tests {
     }
 
     #[test]
+    fn locking_root_shows_every_account_that_keeps_access() {
+        // Decision 3: the dialog lists them all, with the credential each one
+        // gets in by, so the operator can check that theirs is among them. It
+        // used to echo a name they had just typed — an account they had to know
+        // in advance rather than one they could recognise.
+        let app = App::new(
+            crate::tui::fixtures::test_distro(Family::Debian),
+            crate::tui::fixtures::test_host(),
+            crate::backend::for_family(Family::Debian),
+            crate::exec::mock::MockExecutor::with_replies([
+                crate::exec::mock::Reply::ok(
+                    "root:x:0:0:root:/root:/bin/bash\n\
+                     cosmin:x:1000:1000::/home/cosmin:/bin/bash\n\
+                     deploy:x:1001:1001::/home/deploy:/bin/bash\n",
+                ),
+                crate::exec::mock::Reply::ok("cosmin sudo"),
+                crate::exec::mock::Reply::failure(1, ""), // cosmin: no key
+                crate::exec::mock::Reply::ok("cosmin:$6$a$b:19000:0:99999:7:::"),
+                crate::exec::mock::Reply::ok("deploy users"), // deploy: cannot escalate
+            ]),
+        );
+
+        // Asserted on the list rather than on the session note beneath it: that
+        // note depends on `SUDO_USER`, which is process-global, so a developer
+        // running the suite under sudo would see a different string than CI.
+        let warning = app.lockout_warning();
+
+        assert!(
+            warning.contains("cosmin") && warning.contains("password"),
+            "the account that keeps access must be named with its credential: {warning}"
+        );
+        assert!(
+            !warning.contains("deploy"),
+            "and one that cannot escalate is not a way back in: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_host_with_no_way_back_in_falls_back_rather_than_claiming_one() {
+        // The dialog cannot approve what the task will refuse. A scan finding
+        // nobody leaves nothing to list, so it says the generic thing and lets
+        // the task refuse on its own terms — which it does with the count and
+        // the per-account reasons, where there is room for them.
+        let app = App::new(
+            crate::tui::fixtures::test_distro(Family::Debian),
+            crate::tui::fixtures::test_host(),
+            crate::backend::for_family(Family::Debian),
+            crate::exec::mock::MockExecutor::with_replies([
+                crate::exec::mock::Reply::ok(
+                    "root:x:0:0:root:/root:/bin/bash\n\
+                     deploy:x:1001:1001::/home/deploy:/bin/bash\n",
+                ),
+                crate::exec::mock::Reply::ok("deploy users"),
+            ]),
+        );
+
+        let warning = app.lockout_warning();
+
+        assert!(
+            !warning.contains("deploy"),
+            "an account that is no way back in must not be listed as one: {warning}"
+        );
+    }
+
+    #[test]
     fn keeping_a_home_says_what_is_left_behind_rather_than_warning_about_it() {
         // The recoverable answer still names the path: a directory owned by a
         // user id nothing claims is a thing to know about, just not a thing to

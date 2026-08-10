@@ -34,7 +34,12 @@ const ROOT: &str = "root";
 /// cannot be checked" and never "there is nothing to check" — the caller warns
 /// rather than refusing, since refusing on an unanswerable question would make
 /// a root console unable to delete an account.
-fn escalated_from() -> Option<String> {
+///
+/// `pub(crate)` because the confirmation for `users.lock-root` asks the same
+/// question for the opposite purpose: `users.delete` refuses when this names
+/// the account being removed, while the dialog uses it to mark which of the
+/// listed accounts is the operator's own — and says so when it cannot.
+pub(crate) fn escalated_from() -> Option<String> {
     from_escalation_vars(|name| std::env::var(name).ok())
 }
 
@@ -53,22 +58,187 @@ fn from_escalation_vars(read: impl Fn(&str) -> Option<String>) -> Option<String>
         .filter(|user| user != ROOT)
 }
 
-/// Whether an account can still get into the machine by some means.
+/// Why an account cannot be the way back into this machine.
 ///
-/// The question `users.lock-root` rests on, in one place because it is asked
-/// twice — once as the guard and once immediately before the irreversible
-/// step — and the two must not drift apart. A recheck stricter than the guard
-/// would refuse the operator it had just accepted.
+/// The three refusals `users.lock-root` used to raise as errors, kept as the
+/// reason *one account* was set aside. They stopped being errors when the task
+/// stopped taking a name: an operator who typed `alcie` had made a mistake the
+/// task could report, and a scan of the host has nobody to correct — every one
+/// of these is now a fact about an account nobody nominated.
 ///
-/// Either credential counts. `Expire` is applied through PAM, so it bars every
-/// channel including the provider's rescue console, and the console never
-/// consults `authorized_keys` — a password is what gets someone in there.
-fn can_authenticate(executor: &dyn Executor, backend: &dyn Backend, user: &str) -> Result<bool> {
-    if has_authorized_key(executor, backend, user)? {
-        return Ok(true);
+/// Kept rather than collapsed into "no", because they send an operator to
+/// different places. [`Self::GroupGrantsNothing`] is the one that justifies the
+/// distinction: it describes a decision the *distribution* made — openSUSE
+/// ships `%wheel` commented out — and names a file and a line to uncomment,
+/// which no amount of `usermod` would fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotAWayIn {
+    /// In no administrative group, so it could log in and not administer.
+    NotAnAdministrator { group: String },
+    /// In the group, on a family where the group grants nothing on its own.
+    GroupGrantsNothing { group: String },
+    /// Able to escalate, and holding neither a key nor a usable password.
+    CannotAuthenticate,
+}
+
+/// What an account that *can* still get in authenticates with.
+///
+/// Both are read rather than one short-circuiting the other, which the guard
+/// already did for a single account and the confirmation now needs for every
+/// one of them: "holds an authorised key" and "has a password" send an operator
+/// to different places if this turns out to have been the wrong call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Credentials {
+    /// At least one key in `~/.ssh/authorized_keys` that parses as one.
+    pub key: bool,
+    /// A hash in `/etc/shadow` that some input can produce.
+    pub password: bool,
+}
+
+/// One account, and whether it is a way back into this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Examined {
+    /// The account, as `/etc/passwd` names it.
+    pub user: String,
+    /// What it can authenticate with, or why it cannot.
+    pub verdict: std::result::Result<Credentials, NotAWayIn>,
+}
+
+impl Examined {
+    /// Whether this account keeps the machine reachable.
+    pub fn keeps_access(&self) -> bool {
+        self.verdict.is_ok()
+    }
+}
+
+/// The line the report draws for one examined account.
+///
+/// A conversion rather than a method returning a string, for the rule the whole
+/// catalogue rests on: what reaches the operator is a [`Msg`] the locale
+/// renders, and a task assembling English here would be the half-translated
+/// screen `src/i18n` exists to prevent.
+impl From<&Examined> for Msg {
+    fn from(account: &Examined) -> Self {
+        let user = account.user.clone();
+
+        match &account.verdict {
+            Ok(Credentials { key, password }) => Self::TaskAccountKeepsAccess {
+                user,
+                key: *key,
+                password: *password,
+            },
+            Err(NotAWayIn::NotAnAdministrator { group }) => Self::TaskAccountNotAnAdministrator {
+                user,
+                group: group.clone(),
+            },
+            Err(NotAWayIn::GroupGrantsNothing { group }) => Self::TaskAccountGroupGrantsNothing {
+                user,
+                group: group.clone(),
+            },
+            Err(NotAWayIn::CannotAuthenticate) => Self::TaskAccountCannotAuthenticate { user },
+        }
+    }
+}
+
+/// Every account on the host, and which of them can still get in.
+///
+/// The question `users.lock-root` rests on, asked of the machine rather than of
+/// the operator. It is asked twice — once as the guard and once immediately
+/// before the irreversible step — and the two must not drift apart, which is
+/// why it lives in one function: a recheck narrower than the guard would refuse
+/// the operator it had just accepted.
+///
+/// Ordered by rank so the human accounts are examined first, and **filtered by
+/// nothing**. The threshold that produces the rank is a convention of the five
+/// families rather than a rule, so a site numbering a real account below it, or
+/// giving its administrator a shell outside the usual set, still has a way back
+/// in — and a scan that skipped those would report a host as stranded while
+/// somebody was logged into it.
+///
+/// It does not stop at the first account that passes, deliberately. Stopping is
+/// the cheap thing to do and it is incompatible with what the confirmation
+/// promises: the dialog lists *every* account that keeps access so the operator
+/// can check that theirs is among them, and a scan that returned after the
+/// first would leave them looking at a list of one and cancelling.
+///
+/// The cost is one `id -nG` per account, plus three more for each that is in
+/// the admin group — the passwd lookup, the key file, the shadow read. Measured
+/// rather than estimated, since the estimate was high: **17 commands** on a
+/// stock `debian:13`, 13 on `rockylinux:9` and 19 on `alpine:3.23`, against
+/// four before. The bound is `accounts + 3 × administrators` and a stock image
+/// is nowhere near it, because almost nothing is in the group. Paid at the
+/// moment the dialog opens rather than in the path of a keystroke, which is the
+/// rule `deletion_warning` already follows.
+///
+/// `root` is not examined. It is the account being locked, and naming it as the
+/// reason it is safe to lock it is circular — it would satisfy every check here
+/// and approve every host.
+fn scan_for_a_way_back_in(executor: &dyn Executor, backend: &dyn Backend) -> Result<Vec<Examined>> {
+    let group = backend.admin_group();
+    let grants_alone = backend.admin_group_grants_alone();
+
+    backend
+        .accounts()
+        .list_ranked(executor)?
+        .into_iter()
+        .filter(|account| account.name != ROOT)
+        .map(|account| {
+            let verdict = examine(executor, backend, &account.name, group, grants_alone);
+
+            verdict.map(|verdict| Examined {
+                user: account.name,
+                verdict,
+            })
+        })
+        .collect()
+}
+
+/// The four questions, asked of one account.
+///
+/// Existence is not among them, unlike the guard this replaces: every name here
+/// came out of `/etc/passwd`, so an account that did not exist could not be in
+/// the list to be asked about.
+fn examine(
+    executor: &dyn Executor,
+    backend: &dyn Backend,
+    user: &str,
+    group: &str,
+    grants_alone: bool,
+) -> Result<std::result::Result<Credentials, NotAWayIn>> {
+    if !backend
+        .account_writer()
+        .is_in_group(executor, user, group)?
+    {
+        return Ok(Err(NotAWayIn::NotAnAdministrator {
+            group: group.to_owned(),
+        }));
     }
 
-    backend.account_writer().has_password(executor, user)
+    // Membership is the whole question everywhere the group grants on its own,
+    // and half of it where it does not. On a family shipping `%wheel` commented
+    // out this account reads back as a member and still cannot escalate, so
+    // counting it as a way back in would approve locking root on a machine
+    // nobody can administer. Set aside rather than granted: this task locks an
+    // account, and silently editing the escalation policy is not something a
+    // lock should do on the way past.
+    if !grants_alone {
+        return Ok(Err(NotAWayIn::GroupGrantsNothing {
+            group: group.to_owned(),
+        }));
+    }
+
+    // Either credential is a way in. `Expire` is applied through PAM, so it
+    // bars every channel including the provider's rescue console — and that
+    // console never consults `authorized_keys`, which makes a password the
+    // thing that gets somebody in there.
+    let key = has_authorized_key(executor, backend, user)?;
+    let password = backend.account_writer().has_password(executor, user)?;
+
+    if !key && !password {
+        return Ok(Err(NotAWayIn::CannotAuthenticate));
+    }
+
+    Ok(Ok(Credentials { key, password }))
 }
 
 /// Default login shell for a newly created account.
@@ -377,22 +547,19 @@ impl Task for LockRoot {
         Confirmation::Lockout
     }
 
+    /// Nothing is asked, because nothing was ever used.
+    ///
+    /// This took a name and a chooser offering every account on the host, and
+    /// did with that name exactly one thing: check it. The task never locked
+    /// it, never modified it and never wrote it anywhere — the hint said so
+    /// outright, *"root is locked; this one is only checked"*. A question whose
+    /// answer the machine already holds is one the machine should answer.
+    ///
+    /// The label was rewritten once before, on the theory that the field read
+    /// as "the account to lock". Renaming it did not help, because the field
+    /// was the problem rather than its name.
     fn params(&self) -> Vec<Param> {
-        vec![
-            // The label names the role rather than the kind of account. It
-            // read as "Administrative account", which alongside a title
-            // saying "Lock the root account" and a chooser offering every
-            // account on the host is indistinguishable from "the account to
-            // lock" — root is a constant and is never chosen here.
-            Param::new(
-                Self::ADMIN,
-                "Account that keeps access",
-                ParamKind::Username,
-            )
-            .with_hint("root is locked; this one is only checked")
-            .suggesting_accounts()
-            .naming_an_existing_account(),
-        ]
+        Vec::new()
     }
 
     supported_everywhere!();
@@ -401,16 +568,14 @@ impl Task for LockRoot {
         &self,
         executor: &dyn Executor,
         backend: &dyn Backend,
-        values: &ParamValues,
+        _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
-        let admin = values.get(Self::ADMIN)?.to_owned();
-
         // The hard prerequisite. Every other change in this tool is
         // recoverable — this one can require the provider's rescue console, so
         // it verifies rather than warns. A dismissible warning is no
         // protection against the only irreversible mistake here.
-        self.verify_a_way_back_in(executor, backend, &admin, progress)?;
+        Self::verify_a_way_back_in(executor, backend, progress)?;
 
         // Idempotent: an already-locked root is the state this task exists to
         // reach, so reaching it twice is success rather than an error. Saying
@@ -431,9 +596,15 @@ impl Task for LockRoot {
         //
         // The same question as the guard above, deliberately: a narrower one
         // here would refuse the operator it had just accepted, which reads as
-        // the tool contradicting itself at the least reassuring moment.
-        if !can_authenticate(executor, backend, &admin)? {
-            return Err(Error::NoWayBackIn { user: admin });
+        // the tool contradicting itself at the least reassuring moment. With a
+        // scan that means scanning again rather than re-checking one account —
+        // the guard's claim is about the host, so the recheck has to be too.
+        let examined = scan_for_a_way_back_in(executor, backend)?;
+
+        if !examined.iter().any(Examined::keeps_access) {
+            return Err(Error::NoWayBackIn {
+                examined: examined.len(),
+            });
         }
 
         report(progress, &Msg::TaskLockingRoot);
@@ -451,9 +622,6 @@ impl Task for LockRoot {
 }
 
 impl LockRoot {
-    /// Name of the parameter holding the account that must remain usable.
-    pub const ADMIN: &'static str = "admin";
-
     /// This task's id, named so the interface can recognise it.
     ///
     /// The confirmation states a warning specific to this task, and matching
@@ -462,117 +630,42 @@ impl LockRoot {
     /// back to the generic warning.
     pub const ID: &'static str = "users.lock-root";
 
-    /// Refuses to continue unless another account can still administer the box.
+    /// Refuses to continue unless some account can still administer the box.
     ///
-    /// Each check answers a different way of being locked out, and all of them
-    /// have to hold: an account that exists but holds no key cannot log in, one
-    /// that logs in but is not in the admin group cannot escalate, and one that
-    /// satisfies both is still stranded if sudo asks for root's password.
-    fn verify_a_way_back_in(
-        &self,
+    /// The claim this makes is about the *host* rather than about a name the
+    /// operator typed, which is what the task always wanted to say and could
+    /// not while it was checking one account. Approving because *some* account
+    /// passes is correct in security terms: if a way back in exists, it exists.
+    ///
+    /// Every account is reported, whether it passed or why it did not. The
+    /// three refusals that used to abort the task are that "why" now — a fact
+    /// about an account nobody nominated is a diagnosis rather than an error,
+    /// and [`NotAWayIn::GroupGrantsNothing`] in particular still has to reach
+    /// the operator: it names a file and a line to uncomment.
+    pub(crate) fn verify_a_way_back_in(
         executor: &dyn Executor,
         backend: &dyn Backend,
-        admin: &str,
         progress: Progress<'_>,
-    ) -> Result<()> {
-        if admin == ROOT {
-            return Err(Error::AdminCannotBeRoot);
+    ) -> Result<Vec<Examined>> {
+        report(progress, &Msg::TaskScanningAccounts);
+
+        let examined = scan_for_a_way_back_in(executor, backend)?;
+
+        for account in &examined {
+            report(progress, &Msg::from(account));
         }
 
-        if !backend.accounts().exists(executor, admin)? {
-            return Err(Error::NoSuchAccount {
-                user: admin.to_owned(),
-            });
-        }
-
-        report(
-            progress,
-            &Msg::TaskUserExists {
-                user: admin.to_string(),
-            },
-        );
-
-        let group = backend.admin_group();
-
-        if !backend
-            .account_writer()
-            .is_in_group(executor, admin, group)?
-        {
-            return Err(Error::NotAnAdministrator {
-                user: admin.to_owned(),
-                group: group.to_owned(),
-            });
-        }
-
-        // Membership is the question everywhere the group grants on its own,
-        // and half of it where it does not. This guard's whole purpose is to
-        // refuse locking root while nobody else can administer the machine —
-        // so on a family shipping `%wheel` commented out it would otherwise
-        // approve on a reading that is true and irrelevant, and leave the
-        // operator with no way back in. Refused rather than granted here: this
-        // task locks an account, and silently editing the escalation policy is
-        // not something a lock should do on the way past.
-        if !backend.admin_group_grants_alone() {
-            return Err(Error::AdminGroupGrantsNothing {
-                user: admin.to_owned(),
-                group: group.to_owned(),
-            });
-        }
-
-        report(
-            progress,
-            &Msg::TaskUserInGroup {
-                user: admin.to_string(),
-                group: group.to_owned(),
-            },
-        );
-
-        // Either credential is a way back in, and demanding the key was this
-        // guard measuring a narrower question than the one it asks. Expiry is
-        // applied through PAM, so it bars every channel — including the
-        // provider's rescue console, which never consults `authorized_keys`
-        // at all. What has to hold beforehand is that *some* account can still
-        // authenticate by *some* means, and a password is one of them.
-        //
-        // Refusing without a key assumed every administrator arrived through
-        // `users.create`, which deliberately creates accounts without a
-        // password. An account the distribution's installer made has one, and
-        // it was refused with a message asserting it did not — the common case
-        // on a provider image, and precisely the case where the console is the
-        // way back in.
-        //
-        // Both are read rather than one short-circuiting the other: the report
-        // names which credential will let the operator back in, and "holds an
-        // authorised key" and "can authenticate with a password" send them to
-        // different places if this turns out to have been the wrong call.
-        let key = has_authorized_key(executor, backend, admin)?;
-        let password = backend.account_writer().has_password(executor, admin)?;
-
-        if !key && !password {
+        if !examined.iter().any(Examined::keeps_access) {
+            // The count rather than a name, because there is no name to give:
+            // the refusal now says "this host has no way back in", and the
+            // number is what stops that claim from asserting more than was
+            // measured.
             return Err(Error::NoWayBackIn {
-                user: admin.to_owned(),
+                examined: examined.len(),
             });
         }
 
-        if key {
-            report(
-                progress,
-                &Msg::TaskUserHoldsKey {
-                    user: admin.to_string(),
-                },
-            );
-        }
-
-        if password {
-            report(
-                progress,
-                &Msg::TaskUserHasPassword {
-                    user: admin.to_string(),
-                },
-            );
-        }
-
-        Ok(())
+        Ok(examined)
     }
 }
 
@@ -1191,40 +1284,97 @@ mod tests {
         );
     }
 
+    /// A passwd file with root and the named accounts in it.
+    ///
+    /// Written as the scan reads it, since the scan starts by listing rather
+    /// than by being told a name. Every account here is above the human
+    /// threshold with a login shell unless the test says otherwise.
+    fn passwd(users: &[&str]) -> String {
+        let mut file = "root:x:0:0:root:/root:/bin/bash\n".to_owned();
+
+        for (offset, user) in users.iter().enumerate() {
+            let uid = 1000 + offset;
+            file.push_str(&format!("{user}:x:{uid}:{uid}::/home/{user}:/bin/bash\n"));
+        }
+
+        file
+    }
+
     #[test]
-    fn locking_root_needs_an_account_that_is_not_root() {
+    fn root_is_not_counted_as_its_own_way_back_in() {
         // Naming the account being locked as the reason it is safe to lock it
-        // is circular, and would satisfy every other check.
+        // is circular, and root would satisfy every check the scan makes. It
+        // used to be refused as a typed value; with nothing typed, the refusal
+        // becomes an exclusion from the scan — and the only way to see it is
+        // that a host holding *only* root is refused.
         let (outcome, commands) = run(
             &LockRoot,
             Family::Debian,
-            vec![],
-            &values(LockRoot::ADMIN, "root"),
+            vec![Reply::ok("root:x:0:0:root:/root:/bin/bash\n")],
+            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("root cannot vouch for itself");
 
-        assert!(matches!(err, Error::AdminCannotBeRoot), "{err:?}");
-        assert!(commands.is_empty(), "nothing must run: {commands:?}");
+        assert!(matches!(err, Error::NoWayBackIn { examined: 0 }), "{err:?}");
+        assert!(
+            !commands.iter().any(|c| c.contains("--expiredate")),
+            "root must not be locked: {commands:?}"
+        );
     }
 
     #[test]
-    fn locking_root_needs_an_administrator_that_can_escalate() {
+    fn an_account_that_cannot_escalate_is_set_aside_with_its_reason() {
         // An account that logs in but cannot escalate leaves nobody able to
-        // administer the machine once root is gone.
+        // administer the machine once root is gone. It used to abort the task
+        // by name; it is now the reason this one account was set aside, and the
+        // refusal is about the host.
         let (outcome, _) = run(
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // exists
-                Reply::ok("alice users"),                              // not in sudo
+                Reply::ok(passwd(&["alice"])),
+                Reply::ok("alice users"), // not in sudo
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
-        let err = outcome.expect_err("a non-administrator must not vouch");
+        let err = outcome.expect_err("a host of non-administrators has no way back in");
 
-        assert!(matches!(err, Error::NotAnAdministrator { .. }), "{err:?}");
+        assert!(matches!(err, Error::NoWayBackIn { examined: 1 }), "{err:?}");
+    }
+
+    #[test]
+    fn every_account_set_aside_is_reported_with_why() {
+        // Decision 5: the three refusals stopped aborting the task and became
+        // the reason each account was discarded. Asserted on the rendered
+        // report rather than on the enum, because the operator's remedy is in
+        // the words — `AdminGroupGrantsNothing` names a file and a line, and a
+        // diagnosis nobody reads is not a diagnosis.
+        let mock = MockExecutor::with_replies(vec![
+            Reply::ok(passwd(&["cosmin", "deploy"])),
+            Reply::ok("cosmin wheel"), // in the group...
+            Reply::ok("deploy users"), // ...and this one is not
+        ]);
+        let backend = for_family(Family::Suse);
+        let mut reported = Vec::new();
+
+        let outcome = LockRoot.run(&mock, backend.as_ref(), &ParamValues::new(), &mut |line| {
+            reported.push(line.text)
+        });
+
+        outcome.expect_err("neither account is a way back in on this family");
+
+        let report = reported.join("\n");
+
+        assert!(
+            report.contains("cosmin") && report.contains("uncomment"),
+            "the distribution's own defect must name its remedy: {report}"
+        );
+        assert!(
+            report.contains("deploy") && report.contains("not in wheel"),
+            "and the ordinary refusal must stay distinct from it: {report}"
+        );
     }
 
     #[test]
@@ -1276,37 +1426,33 @@ mod tests {
     }
 
     #[test]
-    fn locking_root_refuses_where_the_group_grants_nothing() {
+    fn membership_alone_is_not_a_way_in_where_the_group_grants_nothing() {
         // The failure this guard exists to prevent, one level below the one it
         // was written for. On openSUSE `%wheel` is shipped commented out, so
-        // `alice` reads back as a member — the check above passes — and still
-        // cannot escalate. Approving here would lock root on a machine nobody
-        // can administer, which is precisely the outcome the task refuses for.
+        // `alice` reads back as a member — the membership check passes — and
+        // still cannot escalate. Counting her would lock root on a machine
+        // nobody can administer, which is precisely what the task refuses for.
         //
-        // The distinct error matters as much as the refusal: reporting
-        // `NotAnAdministrator` would send the operator to `usermod` for a
-        // problem that command cannot fix, and assert something the system
-        // contradicts.
+        // The distinct diagnosis matters as much as the refusal: reporting
+        // "not in wheel" would send the operator to `usermod` for a problem
+        // that command cannot fix, and assert something the system contradicts.
         let (outcome, _) = run(
             &LockRoot,
             Family::Suse,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // exists
-                Reply::ok("alice wheel"),                              // in the group
+                Reply::ok(passwd(&["alice"])),
+                Reply::ok("alice wheel"), // in the group, which grants nothing here
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("membership alone must not vouch here");
 
-        assert!(
-            matches!(err, Error::AdminGroupGrantsNothing { .. }),
-            "{err:?}"
-        );
+        assert!(matches!(err, Error::NoWayBackIn { examined: 1 }), "{err:?}");
     }
 
     #[test]
-    fn locking_root_needs_an_administrator_that_can_authenticate() {
+    fn an_administrator_that_cannot_authenticate_is_no_way_back_in() {
         // In the admin group and unable to log in by any means is still locked
         // out: no key, and a `!` hash, which is what `useradd` leaves on an
         // account created without a password.
@@ -1314,17 +1460,107 @@ mod tests {
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // exists
-                Reply::ok("alice sudo"),                               // can escalate
-                Reply::failure(1, ""),                                 // no authorized_keys
-                Reply::ok("alice:!:19000:0:99999:7:::"),               // and no password
+                Reply::ok(passwd(&["alice"])),
+                Reply::ok("alice sudo"),                 // can escalate
+                Reply::failure(1, ""),                   // no authorized_keys
+                Reply::ok("alice:!:19000:0:99999:7:::"), // and no password
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("an account with no credential must not vouch");
 
-        assert!(matches!(err, Error::NoWayBackIn { .. }), "{err:?}");
+        assert!(matches!(err, Error::NoWayBackIn { examined: 1 }), "{err:?}");
+    }
+
+    #[test]
+    fn the_scan_does_not_stop_at_the_first_account_that_passes() {
+        // Decision 4's consequence, and the one an optimisation would undo.
+        // Stopping early is the cheap thing to do and it is incompatible with
+        // what the confirmation promises to show: the operator checks whether
+        // *their* account is among those that keep access, and a list of one
+        // cannot answer that.
+        //
+        // Asserted on the second account being asked about at all, which a scan
+        // that returned after `alice` would never do.
+        let mock = MockExecutor::with_replies(vec![
+            Reply::ok(passwd(&["alice", "deploy"])),
+            Reply::ok("alice sudo"),
+            Reply::failure(1, ""),                            // alice: no key
+            Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // alice: a password
+            Reply::ok("deploy sudo"),
+            Reply::failure(1, ""),                           // deploy: no key
+            Reply::ok("deploy:$6$xyz$w:19000:0:99999:7:::"), // deploy: a password too
+            Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"),   // root is not locked
+            // ...and the recheck scans the whole host again.
+            Reply::ok(passwd(&["alice", "deploy"])),
+            Reply::ok("alice sudo"),
+            Reply::failure(1, ""),
+            Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),
+            Reply::ok("deploy sudo"),
+            Reply::failure(1, ""),
+            Reply::ok("deploy:$6$xyz$w:19000:0:99999:7:::"),
+            Reply::ok(""), // the lock itself
+        ]);
+        let backend = for_family(Family::Debian);
+        let mut reported = Vec::new();
+
+        LockRoot
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |line| {
+                reported.push(line.text)
+            })
+            .expect("two administrators keep access");
+
+        let report = reported.join("\n");
+
+        assert!(
+            report.contains("alice") && report.contains("deploy"),
+            "both accounts must be examined and listed: {report}"
+        );
+    }
+
+    #[test]
+    fn a_system_account_that_can_get_in_still_counts_as_a_way_back_in() {
+        // Decision 4: the rank orders the scan and never filters it. The
+        // threshold is a convention of the five families rather than a rule, so
+        // an account numbered below it — with sudo and a key — is a genuine way
+        // back in, and skipping it would report a host as stranded while
+        // somebody was logged into it.
+        let (outcome, commands) = run(
+            &LockRoot,
+            Family::Debian,
+            vec![
+                // uid 998, which the rank calls `System`.
+                Reply::ok(
+                    "root:x:0:0:root:/root:/bin/bash\n\
+                     git:x:998:998::/var/lib/git:/bin/bash\n",
+                ),
+                Reply::ok("git sudo"),
+                Reply::ok("git:x:998:998::/var/lib/git:/bin/bash"), // home
+                Reply::ok(""),                                      // the file exists
+                Reply::ok(TEST_KEY),                                // and holds a key
+                Reply::ok("git:!:19000:0:99999:7:::"),              // no password behind it
+                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"),      // root is not locked
+                Reply::ok(
+                    "root:x:0:0:root:/root:/bin/bash\n\
+                     git:x:998:998::/var/lib/git:/bin/bash\n",
+                ),
+                Reply::ok("git sudo"),
+                Reply::ok("git:x:998:998::/var/lib/git:/bin/bash"),
+                Reply::ok(""),
+                Reply::ok(TEST_KEY),
+                Reply::ok("git:!:19000:0:99999:7:::"),
+                Reply::ok(""), // the lock
+            ],
+            &ParamValues::new(),
+        );
+
+        outcome.expect("an account below the threshold is still an account");
+
+        assert!(
+            commands.iter().any(|c| c.contains("--expiredate 1 root")),
+            "root must be locked: {commands:?}"
+        );
     }
 
     #[test]
@@ -1339,16 +1575,21 @@ mod tests {
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // exists
-                Reply::ok("alice sudo"),                               // can escalate
-                Reply::failure(1, ""),                                 // no authorized_keys
-                Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),      // but a usable hash
-                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"),         // root is not locked
-                Reply::failure(1, ""),                                 // recheck: still no key
-                Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),      // recheck: still a hash
-                Reply::ok(""),                                         // the lock itself
+                Reply::ok(passwd(&["alice"])),
+                Reply::ok("alice sudo"), // can escalate
+                Reply::failure(1, ""),   // no authorized_keys
+                Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // but a usable hash
+                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"), // root is not locked
+                // The recheck scans the host again rather than re-asking about
+                // one account, which is what keeps it the same question the
+                // guard asked.
+                Reply::ok(passwd(&["alice"])),
+                Reply::ok("alice sudo"),
+                Reply::failure(1, ""), // recheck: still no key
+                Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // recheck: still a hash
+                Reply::ok(""),         // the lock itself
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
         outcome.expect("a password is a way back in");
@@ -1372,18 +1613,18 @@ mod tests {
                 &LockRoot,
                 Family::Debian,
                 vec![
-                    Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
+                    Reply::ok(passwd(&["alice"])),
                     Reply::ok("alice sudo"),
                     Reply::failure(1, ""),
                     Reply::ok(format!("alice:{hash}:19000:0:99999:7:::")),
                 ],
-                &values(LockRoot::ADMIN, "alice"),
+                &ParamValues::new(),
             );
 
             let err = outcome.expect_err("a locked hash must not vouch");
 
             assert!(
-                matches!(err, Error::NoWayBackIn { .. }),
+                matches!(err, Error::NoWayBackIn { examined: 1 }),
                 "{hash:?} must not count as a password: {err:?}"
             );
         }
@@ -1397,18 +1638,19 @@ mod tests {
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
+                Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"),
-                Reply::ok(""),                           // the file exists
-                Reply::ok("# added by hand\n\n"),        // and holds no key
-                Reply::ok("alice:!:19000:0:99999:7:::"), // nor a password
+                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // home
+                Reply::ok(""),                                         // the file exists
+                Reply::ok("# added by hand\n\n"),                      // and holds no key
+                Reply::ok("alice:!:19000:0:99999:7:::"),               // nor a password
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("a file of comments must not count as a key");
 
-        assert!(matches!(err, Error::NoWayBackIn { .. }), "{err:?}");
+        assert!(matches!(err, Error::NoWayBackIn { examined: 1 }), "{err:?}");
     }
 
     #[test]
@@ -1420,24 +1662,27 @@ mod tests {
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
+                Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"),
                 // The home comes from passwd rather than from `/home/{user}`,
-                // so each key check spends a `getent` before reading the file.
+                // so each key check spends a lookup before reading the file.
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
                 Reply::ok(""),                                         // file exists
                 Reply::ok(TEST_KEY),                                   // holds a key
-                // Read even though the key already satisfies the guard: the
+                // Read even though the key already satisfies the scan: the
                 // report names every credential that will let the operator
                 // back in, not merely the first one found.
                 Reply::ok("alice:!:19000:0:99999:7:::"), // and no password
                 Reply::ok("Account expires\t: never"),   // not yet locked
+                Reply::ok(passwd(&["alice"])),           // re-check: the scan again
+                Reply::ok("alice sudo"),
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
-                Reply::ok(""),                           // re-check: exists
-                Reply::ok(TEST_KEY),                     // re-check: still there
+                Reply::ok(""),                                         // re-check: exists
+                Reply::ok(TEST_KEY),                                   // re-check: still there
+                Reply::ok("alice:!:19000:0:99999:7:::"), // re-check: still no password
                 Reply::ok(""),                           // usermod
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
         outcome.expect("every prerequisite is satisfied");
@@ -1463,22 +1708,25 @@ mod tests {
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
+                Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"),
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
                 Reply::ok(""),                                         // file exists
                 Reply::ok(TEST_KEY),                                   // holds a key
+                Reply::ok("alice:!:19000:0:99999:7:::"),               // and no password
                 Reply::ok("Account expires\t: never"),                 // not yet locked
+                Reply::ok(passwd(&["alice"])),                         // re-check: the scan
+                Reply::ok("alice sudo"),
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
                 Reply::failure(1, ""),                                 // re-check: key file gone
                 Reply::ok("alice:!:19000:0:99999:7:::"), // re-check: and no password behind it
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("a key that vanished must stop the lock");
 
-        assert!(matches!(err, Error::NoWayBackIn { .. }), "{err:?}");
+        assert!(matches!(err, Error::NoWayBackIn { examined: 1 }), "{err:?}");
         assert!(
             !commands.iter().any(|c| c.contains("--expiredate")),
             "root must not be locked: {commands:?}"
@@ -1493,7 +1741,7 @@ mod tests {
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"),
+                Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"),
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
                 Reply::ok(""),
@@ -1501,7 +1749,7 @@ mod tests {
                 Reply::ok("alice:!:19000:0:99999:7:::"), // no password behind the key
                 Reply::ok("root:$6$salt$hash:19000:0:99999:7::1:"), // already expired
             ],
-            &values(LockRoot::ADMIN, "alice"),
+            &ParamValues::new(),
         );
 
         outcome.expect("an already-locked root is the desired state");

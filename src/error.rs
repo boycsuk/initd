@@ -204,36 +204,20 @@ pub enum Error {
     /// way onto the machine.
     GroupMembershipFailed { user: String, group: String },
 
-    /// The account nominated as the way back in cannot escalate.
-    NotAnAdministrator { user: String, group: String },
-
-    /// The account is in the administrative group and still cannot escalate.
+    /// No account on this host can still get in once root is locked.
     ///
-    /// Separate from [`Error::NotAnAdministrator`] because the two send the
-    /// operator to different places: that one is fixed with `usermod`, this one
-    /// only by editing the distribution's sudoers. openSUSE ships `%wheel`
-    /// commented out, so membership reads back true on an account that cannot
-    /// escalate — and reporting it as "not in the group" would be a message
-    /// asserting something the system contradicts.
-    AdminGroupGrantsNothing { user: String, group: String },
-
-    /// The account nominated as the way back in cannot authenticate at all.
+    /// A claim about the machine rather than about a name, which is what
+    /// `users.lock-root` always meant to assert and could not while it checked
+    /// one account an operator had typed. Carries how many were examined
+    /// because the refusal would otherwise assert more than was measured — the
+    /// per-account reasons reach the operator through the report, where there
+    /// is room for them.
     ///
-    /// Neither an authorised key nor a usable password, which is what makes it
-    /// no way back in. This once demanded the key alone, on the grounds that
-    /// `users.create` leaves accounts without a password — true of the
-    /// accounts this tool makes, and not of the one a distribution's installer
-    /// made, which is the account most administrators nominate. Since
-    /// `users.lock-root` expires root through PAM, it bars the provider's
-    /// rescue console too, and a password is exactly what gets someone in
-    /// there.
-    NoWayBackIn { user: String },
-
-    /// Root was nominated as the account that must remain usable.
-    ///
-    /// Naming the account about to be locked as the reason it is safe to lock
-    /// it is circular, and would pass every other check.
-    AdminCannotBeRoot,
+    /// Why each was set aside lives in
+    /// [`crate::tasks::users::NotAWayIn`] rather than here: those describe one
+    /// account among many and no longer abort anything, which is the difference
+    /// between a diagnosis and an error.
+    NoWayBackIn { examined: usize },
 
     /// A deletion named `root`.
     ///
@@ -539,16 +523,9 @@ impl Error {
                 user: user.clone(),
                 group: group.clone(),
             },
-            Self::NotAnAdministrator { user, group } => Msg::NotAnAdministrator {
-                user: user.clone(),
-                group: group.clone(),
+            Self::NoWayBackIn { examined } => Msg::NoWayBackIn {
+                examined: *examined,
             },
-            Self::AdminGroupGrantsNothing { user, group } => Msg::AdminGroupGrantsNothing {
-                user: user.clone(),
-                group: group.clone(),
-            },
-            Self::NoWayBackIn { user } => Msg::NoWayBackIn { user: user.clone() },
-            Self::AdminCannotBeRoot => Msg::AdminCannotBeRoot,
             Self::CannotDeleteRoot => Msg::CannotDeleteRoot,
             Self::CannotDeleteOwnAccount { user } => {
                 Msg::CannotDeleteOwnAccount { user: user.clone() }
