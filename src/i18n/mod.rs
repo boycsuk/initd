@@ -297,21 +297,6 @@ pub enum Msg {
         source: String,
     },
 
-    // --- Interface: status pills ---
-    //
-    // The words inside the status pill. Payload-free, deliberately: it is what
-    // lets the pill stay resolvable from a `State` alone, and it keeps
-    // `docs/ui.md`'s table of pill words a table of one thing per row.
-    PillReady,
-    PillRunning,
-    PillDone,
-    PillFailed,
-    PillCancelled,
-    PillVerify,
-    PillConfirm,
-    PillInput,
-    PillUnsupported,
-
     // --- Interface: help ---
     //
     // Section titles and the description beside each key. The key glyphs
@@ -392,12 +377,8 @@ pub enum Msg {
 
     // --- Interface: output ---
     //
-    // The pane's title and the word saying whether the view is pinned. Both
-    // are payload-free: the title names one pane, and the two follow states
-    // are a closed pair rather than a value to interpolate.
+    // The pane's title, payload-free: it names one pane.
     OutputTitle,
-    OutputFollowing,
-    OutputDetached,
 
     // --- Interface: forms ---
     //
@@ -620,80 +601,15 @@ pub enum Msg {
 
     // --- Interface: status messages ---
     //
-    // What the status row says beside its pill. Task ids and command names are
-    // interpolated as written: they are what the operator would type or search
-    // for, and translating them would name something that does not exist.
-    /// Refusals raised by a key the current state will not accept. Each names
-    /// the way out rather than only the refusal — an operator who pressed a
-    /// key is looking for what to press instead.
-    StatusTaskRunningQuitRefused,
-    StatusTaskAlreadyRunning,
-    StatusAlreadyStopping,
-    /// Deliberately not "cancelled": the task has been *asked* to stop and has
-    /// not yet done so. Claiming otherwise before the step finishes would be a
-    /// lie about what state the machine is in.
-    StatusStoppingAfterCurrentStep,
-    StatusAlreadyAtTopLevel,
-    /// The two keys the verification window will accept, for every other key.
-    /// Refused rather than ignored: an unanswered window is the one state
-    /// where doing nothing has consequences.
-    StatusVerifyKeysOnly,
-    /// How many lines were handed to the terminal to copy.
-    ///
-    /// Says what was sent rather than what was copied: OSC 52 has no reply,
-    /// and a terminal that refuses it looks identical to one that honoured it.
-    StatusCopied {
-        lines: usize,
-    },
+    // What the interface says about a task's own progress. Task ids and command
+    // names are interpolated as written: they are what the operator would type
+    // or search for, and translating them would name something that does not
+    // exist.
     /// The copy sequence could not be written to the terminal at all.
     StatusCopyFailed,
-    /// Copy was pressed with an empty pane.
-    StatusNothingToCopy,
-    /// The second-press prompt before a form with typed values is discarded.
-    StatusPressEscAgainToDiscard,
-    StatusFillEveryFieldFirst,
     /// Said out loud rather than silently dropped: the operator pressed a key
     /// and is owed an answer, even when the answer is that it arrived late.
     StatusFinishedBeforeItCouldStop,
-    /// Pressing Enter on a row this host cannot run. A refusal, not a state
-    /// change, so it flashes and the tool stays where it was.
-    StatusTaskNotSupported {
-        task: String,
-        family: String,
-    },
-    /// Reported from what the task actually did rather than from the operator
-    /// having asked: the request arrives between two commands, so a task
-    /// already on its last one runs to completion. Naming the command it
-    /// stopped *before* is what tells the operator what ran and what did not.
-    StatusStoppedBefore {
-        task: String,
-        before: String,
-    },
-    /// A change that can sever this session is not reported as done. It is
-    /// applied, and held open until the administrator proves they can get in.
-    StatusAppliedNotYetKept {
-        task: String,
-    },
-    StatusKept {
-        task: String,
-    },
-    /// Names why the change went back, since silence, a keypress and a lost
-    /// session all reach here and mean different things to whoever returns.
-    StatusReverted {
-        task: String,
-        reason: RevertReason,
-    },
-    /// A revert that itself failed, reported rather than swallowed: the
-    /// administrator has to know the machine is in neither state.
-    ///
-    /// Carries the task alone. It used to carry the error pre-rendered into a
-    /// `String` and nested inside this message, which put a `CommandFailed`'s
-    /// whole stderr on a one-line border that truncates without an ellipsis —
-    /// so the evidence for the worst outcome the tool can reach was the part
-    /// that got cut. The error goes to the output pane now, in fields.
-    StatusRevertFailed {
-        task: String,
-    },
     /// Heads the consequences a finished task declared, written into the
     /// output pane where there is room to read them.
     OutputConsequencesHeading,
@@ -869,10 +785,6 @@ pub enum Msg {
     HistoryRestored {
         path: String,
     },
-    /// Status row after a successful restore.
-    HistoryRestoredStatus,
-    /// Status row after a restore that was refused.
-    HistoryNotRestored,
     /// Heading of the confirmation before a recorded state is put back.
     ConfirmRestoreTitle {
         path: String,
@@ -1262,23 +1174,6 @@ pub enum ErrorField {
     Digest,
     /// A URL a failure is about.
     Url,
-}
-
-/// Why an applied change was put back.
-///
-/// A closed set rather than a string, because the three cases mean genuinely
-/// different things to whoever returns to the machine: one was decided, one
-/// was never answered, and one was interrupted. Carrying it as data keeps the
-/// wording in the catalogue while the call sites stay a choice between three
-/// named situations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RevertReason {
-    /// The operator pressed `R`.
-    Requested,
-    /// The session went away before anything was confirmed.
-    SessionEnded,
-    /// The window ran out with nobody answering it.
-    NoConfirmation,
 }
 
 #[cfg(test)]

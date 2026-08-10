@@ -1,6 +1,6 @@
 //! English message catalogue — the default and fallback language.
 
-use super::{ErrorField, Msg, RevertReason};
+use super::{ErrorField, Msg};
 
 /// Width the field labels are padded to, in columns.
 ///
@@ -312,22 +312,6 @@ pub(super) fn render(message: &Msg) -> String {
             format!("terminal error: {source}")
         }
 
-        // --- Interface: status pills ---
-        //
-        // Upper case because the pill is a fixed-width badge read at a glance
-        // from the left edge, not a sentence. A translation should keep them
-        // short for the same reason: the pill's cells are budgeted by the
-        // longest word here.
-        Msg::PillReady => "READY".to_owned(),
-        Msg::PillRunning => "RUNNING".to_owned(),
-        Msg::PillDone => "DONE".to_owned(),
-        Msg::PillFailed => "FAILED".to_owned(),
-        Msg::PillCancelled => "CANCELLED".to_owned(),
-        Msg::PillVerify => "VERIFY".to_owned(),
-        Msg::PillConfirm => "CONFIRM".to_owned(),
-        Msg::PillInput => "INPUT".to_owned(),
-        Msg::PillUnsupported => "UNSUPPORTED".to_owned(),
-
         // --- Interface: help ---
         Msg::HelpTitle => " Keys ".to_owned(),
         Msg::HelpSectionAnywhere => "Anywhere".to_owned(),
@@ -403,10 +387,6 @@ pub(super) fn render(message: &Msg) -> String {
 
         // --- Interface: output ---
         Msg::OutputTitle => "output".to_owned(),
-        // A pane that has silently stopped updating and one that is following a
-        // quiet command look identical, so the title says which it is.
-        Msg::OutputFollowing => "follow".to_owned(),
-        Msg::OutputDetached => "detached".to_owned(),
 
         // --- Interface: forms ---
         //
@@ -548,54 +528,12 @@ pub(super) fn render(message: &Msg) -> String {
 
         // --- Interface: status messages ---
         //
-        // Lower case and unpunctuated: they sit beside the pill as a
-        // continuation of it, not as sentences of their own.
-        Msg::StatusTaskRunningQuitRefused => {
-            "a task is running — Ctrl-C to stop it first".to_owned()
-        }
-        Msg::StatusTaskAlreadyRunning => "a task is already running".to_owned(),
-        Msg::StatusAlreadyStopping => "already stopping — waiting for the current step".to_owned(),
-        // The ellipsis is the point: the task has been asked and has not yet
-        // finished the step it was on.
-        Msg::StatusStoppingAfterCurrentStep => "stopping after the current step...".to_owned(),
-        Msg::StatusAlreadyAtTopLevel => "already at the top level".to_owned(),
-        // Names both keys rather than saying the key was wrong: this is the
-        // one window where doing nothing has consequences.
-        Msg::StatusVerifyKeysOnly => "K keeps this change, R puts it back".to_owned(),
-        // "sent to the terminal" rather than "copied": the tool cannot see
-        // whether the terminal honoured it, and a claim it cannot check is one
-        // the operator learns to disbelieve.
-        Msg::StatusCopied { lines } => {
-            let line = if *lines == 1 { "line" } else { "lines" };
-            format!("{lines} {line} sent to the terminal's clipboard")
-        }
+        // Lower case and unpunctuated: they are read as a continuation of the
+        // line above them, not as sentences of their own.
         Msg::StatusCopyFailed => "the terminal did not accept the copy".to_owned(),
-        Msg::StatusNothingToCopy => "there is no output to copy".to_owned(),
-        Msg::StatusPressEscAgainToDiscard => "press Esc again to discard what you typed".to_owned(),
-        Msg::StatusFillEveryFieldFirst => "fill in every field first".to_owned(),
         Msg::StatusFinishedBeforeItCouldStop => {
             "the task finished before it could be stopped".to_owned()
         }
-        Msg::StatusTaskNotSupported { task, family } => {
-            format!("{task} is not supported on {family}")
-        }
-        // Backticks around the command, as everywhere a command is named: it
-        // is something to type rather than something to read.
-        Msg::StatusStoppedBefore { task, before } => {
-            format!("{task} — stopped before `{before}`")
-        }
-        Msg::StatusAppliedNotYetKept { task } => format!("{task} — applied, not yet kept"),
-        Msg::StatusKept { task } => format!("{task} — kept"),
-        Msg::StatusReverted { task, reason } => {
-            let why = match reason {
-                RevertReason::Requested => "reverted",
-                RevertReason::SessionEnded => "the session ended",
-                RevertReason::NoConfirmation => "no confirmation",
-            };
-
-            format!("{task} — {why}, previous configuration restored")
-        }
-        Msg::StatusRevertFailed { task } => format!("{task} — could not restore"),
         Msg::OutputConsequencesHeading => "Consequences:".to_owned(),
         // The task id is in the heading because the pane outlives the border:
         // a transcript read back an hour later has to say which task the
@@ -770,11 +708,6 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HistoryRestored { path } => {
             format!("{path} was put back to its recorded state and the service reloaded")
         }
-        Msg::HistoryRestoredStatus => "restored".to_owned(),
-        // "not restored" rather than "failed": the refusals are deliberate and
-        // leave the machine exactly as it was, which is a different thing from
-        // a command that broke.
-        Msg::HistoryNotRestored => "not restored".to_owned(),
         Msg::ConfirmRestoreTitle { path } => format!("Restore {path}"),
         // Names the task as well as the file, because the file alone does not
         // say which of its recorded states this is — the reason the list shows

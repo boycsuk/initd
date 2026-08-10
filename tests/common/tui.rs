@@ -148,6 +148,25 @@ impl Tui {
         false
     }
 
+    /// Waits until `needle` is gone from the screen.
+    ///
+    /// The counterpart to [`Self::wait_for`], for a state whose *end* is the
+    /// observable event: the verification banner leaving says a keypress was
+    /// answered, where nothing prints a word about it.
+    ///
+    /// Not the same as one look after a sleep, which is the shape this replaced:
+    /// a fixed wait long enough to be reliable is a second added to every run,
+    /// and one short enough not to be is a flake.
+    pub fn wait_for_absence(&self, needle: &str, seconds: u32) -> bool {
+        for _ in 0..seconds {
+            if !self.screen().contains(needle) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        false
+    }
+
     /// The whole visible screen, as text.
     pub fn screen(&self) -> String {
         let output = self
@@ -157,12 +176,14 @@ impl Tui {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
-    /// The status row and key bar — the last two non-empty lines.
+    /// The last two non-empty lines: the key bar, and whatever sits above it.
     ///
-    /// The interface states what it is doing there (`VERIFY`, `FAILED`,
-    /// `DONE`) and which keys apply, so most assertions belong here rather
-    /// than against the body, which is mostly borders.
-    pub fn status(&self) -> String {
+    /// Useful in a failure message, where the tail of the screen is the part
+    /// that says what the interface was doing when an assertion failed. It is
+    /// no longer a *status* row — nothing is drawn on the border now, and an
+    /// outcome is reported in the output pane — so an assertion about what a
+    /// task did belongs against [`Self::screen`] rather than here.
+    pub fn tail(&self) -> String {
         self.screen()
             .lines()
             .filter(|line| !line.trim().is_empty())

@@ -7,16 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- The status line is gone, and with it `src/tui/status.rs`, the nine states, the
+  twenty-eight messages they carried, and five style roles. Nothing is drawn on
+  the bottom border now but the tree's census.
+  
+  What it said was already on screen said better. `CONFIRM` and `INPUT` named a
+  dialog occupying the middle of the terminal; `UNSUPPORTED` duplicated a dimmed
+  row, a flag in its own column and the detail pane; the two outcomes moved into
+  the transcript. What genuinely goes with it and has no replacement is the
+  liveness pair — a spinner and a wall-clock timer — which were the only thing
+  distinguishing a quiet command from a session that had stopped answering over
+  a slow link. The output pane's write cursor is what is left, and it neither
+  moves nor counts.
+
+  **A refused keystroke now produces no signal at all.** Pressing `Enter` on a
+  task this host cannot run, or `q` while one is running, is declined silently —
+  indistinguishable from a key that never arrived. Nine of the twenty-eight
+  messages were refusals of that kind. Stated in `docs/ui.md` and
+  `docs/user-stories.md` as a known limit rather than left for an operator to
+  discover.
+
+  A task now jumps the pane back to its tail when it finishes. Without it a task
+  narrating more lines than the pane is tall — `users.lock-root` examines
+  twenty-one accounts on a stock `debian:13` — left its own report below the
+  visible rows, which is a correct refusal nobody can see. Measured in a
+  container.
+
 ### Changed
-- A failed task is reported in the output pane, in labelled fields, and the
-  status border names no outcome at all. `FAILED` and `CANCELLED` leave the
-  border for the same reason `READY` was already off it: an outcome belongs
-  beside the commands that produced it. The border is one line that ratatui
-  truncates without an ellipsis, so what it could carry was a task id and a
-  word — `docker-rootless.uninstall — failed` — while the exit code and the
-  stderr that say *why* were either buried mid-sentence or cut. The states left
-  on the border are the ones describing something in progress or awaited, which
-  have no transcript of their own to sit in.
+- A failed task is reported in the output pane, in labelled fields, and no longer
+  anywhere else. `FAILED` and `CANCELLED` left the border first, for the reason
+  the whole line went a commit later: an outcome belongs beside the commands that
+  produced it. The border was one line that ratatui truncates without an
+  ellipsis, so what it could carry was a task id and a word —
+  `docker-rootless.uninstall — failed` — while the exit code and the stderr that
+  say *why* were either buried mid-sentence or cut.
 
   The structure was always there and was thrown away: `CommandFailed` carries
   `command`, `code` and `stderr` as three values, and every failure was

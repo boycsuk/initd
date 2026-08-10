@@ -684,8 +684,33 @@ TUI or CLI:
   - Acceptance: starting a task does not move my cursor. Where I was reading
     and what the arrow keys address are my decision, and a task that moved them
     would make running two in a row cost an extra keystroke to undo.
+  - Acceptance: I read what the program printed, not the codes it printed it
+    with. A script that colours its own output unconditionally — and they do,
+    pipe or no pipe — would otherwise put `[101m[97m[ERROR]` on my screen and
+    into anything I paste elsewhere.
+  - Acceptance: when the task ends, its report is on screen. A task that
+    narrates more lines than the pane is tall would otherwise finish with the
+    outcome below the last visible row, showing me the middle of the run.
+  - Known limit: nothing tells me a task is still alive except the output it
+    produces. Over a slow link a command that has gone quiet and a session that
+    has stopped answering look the same.
   - Platform exception: the TUI shows it in a scrollable pane; the CLI prints
     it as it arrives.
+- Known limit, across the interface: **a refused keystroke produces no
+  message.** Pressing `Enter` on a task this host cannot run, or `q` while a
+  task is running, is declined silently — the screen does not change, which is
+  indistinguishable from a key that never arrived. For the unsupported case the
+  row is dimmed and flagged and the detail pane says why; the others say
+  nothing. Accepted deliberately when the status line was removed: a word in a
+  corner describing a dialog that fills the middle of the screen was judged the
+  larger cost.
+- As an **administrator**, I can read back through a task's output while it runs
+  without the arriving lines dragging me away from what I am reading.
+  - Acceptance: scrolling up detaches from the newest output and stays there.
+  - Acceptance: reaching the bottom again resumes following, with no separate
+    key to press — having caught up is the same thing as wanting to follow.
+  - Platform exception: TUI only. The CLI's output is the terminal's own
+    scrollback, which the terminal already does this for.
 - As an **administrator**, I am told **why** a task failed and not only that it
   did, so that I can act on it instead of guessing.
   - Acceptance: I get the command that failed, the code it exited with, and what

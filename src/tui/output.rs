@@ -93,7 +93,12 @@ impl OutputPane {
         self.lines.is_empty()
     }
 
-    /// Number of retained lines.
+    /// Number of retained lines, for assertions about the ring buffer.
+    ///
+    /// Production had one reader — the line reporting how many lines a copy
+    /// sent — and that report is gone: OSC 52 cannot confirm a copy, and the
+    /// line landed in the transcript the next copy would send.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.lines.len()
     }
@@ -176,35 +181,17 @@ impl OutputPane {
 
     /// Renders the pane, following the newest output unless scrolled away.
     ///
-    /// The title states whether the view is pinned, because a pane that has
-    /// silently stopped updating and one that is following a quiet command
-    /// look the same.
-    ///
     /// The title is resolved here rather than passed in. It named the one pane
     /// this type draws, so a caller supplying it could only ever supply the
     /// same word — and every caller doing so is a call site the catalogue does
     /// not reach.
     ///
-    /// `status` is the opposite case and is passed in: it describes the whole
-    /// application rather than this pane, and this type knows nothing about
-    /// the running task or the mode it would have to read to build it. It
-    /// rides the right of the bottom border, opposite the follow indicator,
-    /// because ratatui aligns every `title_bottom` left by default and two
-    /// left-aligned titles are drawn over each other.
-    pub fn render(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        lang: Lang,
-        focused: bool,
-        status: Option<Line<'static>>,
-    ) {
+    /// Nothing rides the bottom border. The `follow`/`detached` word that used
+    /// to sit there went with the status line: the write cursor already
+    /// distinguishes the two, being drawn only while the view is pinned, so its
+    /// absence is what says the log is being read back.
+    pub fn render(&self, frame: &mut Frame, area: Rect, lang: Lang, focused: bool) {
         let title = lang.render(&Msg::OutputTitle);
-        let follow = lang.render(if self.follow {
-            &Msg::OutputFollowing
-        } else {
-            &Msg::OutputDetached
-        });
 
         // The visible height excludes the block's top and bottom borders.
         let viewport = area.height.saturating_sub(2) as usize;
@@ -238,35 +225,10 @@ impl OutputPane {
             text.push(Line::from(Span::styled(WRITE_CURSOR, style::OUTPUT_CURSOR)));
         }
 
-        let mut block = Block::default()
+        let block = Block::default()
             .borders(Borders::ALL)
             .border_style(style::border(focused))
             .title(Span::styled(format!(" {title} "), style::PANE_TITLE));
-
-        match status {
-            // Opposite ends is not enough on its own: ratatui does not
-            // arbitrate between two bottom titles that outgrow the border, it
-            // draws both, and `following` was rendered as `f`. So the follow
-            // indicator yields whole when the two will not fit — a status may
-            // be the only report of a task that failed, whereas whether the
-            // view is pinned is also visible from the write cursor and from
-            // whether the log is moving.
-            Some(line) => {
-                let width = area.width.saturating_sub(2) as usize;
-
-                // The two spaces framing each, and two more between them.
-                if super::render::cells(&follow) + line.width() + 6 <= width {
-                    block = block
-                        .title_bottom(Span::styled(format!(" {follow} "), style::BLOCK_SUBTITLE));
-                }
-
-                block = block.title_bottom(line.right_aligned());
-            }
-            None => {
-                block =
-                    block.title_bottom(Span::styled(format!(" {follow} "), style::BLOCK_SUBTITLE));
-            }
-        }
 
         let paragraph = Paragraph::new(text)
             .block(block)

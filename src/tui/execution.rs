@@ -14,13 +14,12 @@ use std::time::Instant;
 use super::app::App;
 use super::auth::AuthRequest;
 use super::probe::Probe;
-use super::status::State;
 use super::verify::Verification;
 use super::worker::{Running, Update};
 use crate::backend::backup_index::BackupRecord;
 use crate::error::{Error, Result};
 use crate::exec::{OutputLine, Stream};
-use crate::i18n::{ErrorField, Msg, RevertReason};
+use crate::i18n::Msg;
 use crate::tasks;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::{Outcome, Revert};
@@ -44,7 +43,6 @@ impl App {
         let id = task.id();
 
         self.output.clear();
-        self.status.set(State::Running, id);
 
         // Focus deliberately stays where it was. This used to move to the
         // output on the grounds that reading what is about to happen is the
@@ -151,22 +149,14 @@ impl App {
                         .lang
                         .render(&Msg::HistoryRestored { path: path.clone() }),
                 });
-                self.status
-                    .set(State::Done, self.lang.render(&Msg::HistoryRestoredStatus));
             }
             Err(ref err) => {
                 // In fields rather than as one sentence, for the reason this
                 // path's own comment already gave: a refusal naming two digests
-                // does not fit on a row, and the digests are the evidence. The
-                // status keeps `HistoryNotRestored`, which says the file was
-                // left alone — that is a fact about the machine rather than a
-                // report of the failure, and the operator needs it while the
-                // history view is still open over the pane.
+                // does not fit on a row, and the digests are the evidence.
                 let heading = Msg::OutputRevertFailedHeading { task: path };
 
                 self.report_failure(&heading, err);
-                self.status
-                    .set(State::Failed, self.lang.render(&Msg::HistoryNotRestored));
             }
         }
     }
@@ -250,29 +240,23 @@ impl App {
         // intent would claim a stop that never happened, which is how a server
         // gets called half-configured when it is fully configured — and the
         // reverse, on the next run.
-        if let Err(Error::Cancelled { ref before }) = outcome {
+        if let Err(ref cancellation @ Error::Cancelled { .. }) = outcome {
             // Into the pane rather than onto the border, for the reason a
             // failure goes there: an outcome is read in the transcript beside
             // the commands that produced it, and the command this task stopped
             // *before* is the whole content of the report.
-            self.output.push(OutputLine {
-                stream: Stream::Stdout,
-                text: String::new(),
-            });
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::OutputCancelledHeading {
-                    task: id.to_owned(),
-                }),
-            });
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::OutputErrorField {
-                    label: ErrorField::Command,
-                    value: before.clone(),
-                }),
-            });
-            self.status.set(State::Cancelled, String::new());
+            //
+            // Through `report_failure` rather than three pushes of its own, so
+            // the block a stopped task writes cannot drift from the one a failed
+            // task writes — `Cancelled`'s single field is `command`, which is
+            // what `Error::to_fields` already answers.
+            let heading = Msg::OutputCancelledHeading {
+                task: id.to_owned(),
+            };
+
+            self.report_failure(&heading, cancellation);
+            self.output.scroll_to_tail();
+
             return;
         }
 
@@ -288,7 +272,7 @@ impl App {
 
         // A change that can sever this session is not reported as done: it is
         // applied, and held open until the administrator proves they can still
-        // get in. A failing task is reported in the status row rather than
+        // get in. A failing task is reported in the output pane rather than
         // tearing the interface down — the administrator stays in control.
         match outcome {
             Ok(result) => {
@@ -298,9 +282,8 @@ impl App {
                 // this sits on the success path only.
                 self.report_consequences(id);
 
-                match result {
-                    Outcome::Revertible(revert) => self.begin_verification(id, revert),
-                    Outcome::Done => self.status.set(State::Done, id),
+                if let Outcome::Revertible(revert) = result {
+                    self.begin_verification(id, revert);
                 }
             }
             Err(ref err) => {
@@ -308,20 +291,32 @@ impl App {
                 // truncated with an ellipsis, so a package manager's stderr
                 // arriving through `CommandFailed` was cut mid-sentence with no
                 // way to see the rest — and the pane is the part an
-                // administrator can scroll and paste into a bug report.
-                //
-                // The state is still `Failed`; what changed is that it no
-                // longer draws. See `State::is_worth_naming` for why an
-                // outcome belongs in the transcript and not on a border.
+                // administrator can scroll and paste into a bug report. An
+                // outcome belongs in the transcript beside the commands that
+                // produced it, not on a border that truncates it.
                 self.report_failure(
                     &Msg::OutputFailedHeading {
                         task: id.to_owned(),
                     },
                     err,
                 );
-                self.status.set(State::Failed, String::new());
             }
         }
+
+        // The outcome is the last thing written, so the pane has to be at its
+        // tail for it to be on screen. That is not automatic: a task that
+        // narrates a line per account — `users.lock-root` examines twenty-one on
+        // a stock `debian:13` — writes more than the pane is tall, so the report
+        // lands below the visible rows and the screen shows the middle of the
+        // scan. Measured in a container, where the refusal was correct and
+        // invisible.
+        //
+        // This is the one place that overrides the operator's scroll position,
+        // and only at the moment a task ends: `scroll_up` deliberately detaches
+        // so that reading back is never interrupted by arriving output, but
+        // nobody is reading back through a task they are waiting on — they
+        // pressed a key and are owed its answer.
+        self.output.scroll_to_tail();
 
         // Also after the match, and on the failure path deliberately: a task
         // that failed halfway installed the package and then could not enable
@@ -432,28 +427,11 @@ impl App {
     }
     /// Opens the window in which an applied change can still be undone.
     pub(super) fn begin_verification(&mut self, task: &str, revert: Revert) {
-        let window = Verification::new(task, revert, Instant::now());
-
-        self.status.set(
-            State::Verify,
-            self.lang.render(&Msg::StatusAppliedNotYetKept {
-                task: task.to_owned(),
-            }),
-        );
-        self.verification = Some(window);
+        self.verification = Some(Verification::new(task, revert, Instant::now()));
     }
     /// Keeps an applied change, closing its window.
     pub(super) fn keep_change(&mut self) {
-        let Some(window) = self.verification.take() else {
-            return;
-        };
-
-        self.status.set(
-            State::Done,
-            self.lang.render(&Msg::StatusKept {
-                task: window.task.clone(),
-            }),
-        );
+        self.verification = None;
     }
     /// Puts an applied change back, closing its window.
     ///
@@ -474,7 +452,7 @@ impl App {
     /// which is milliseconds against the seconds a task takes. Moving it to the
     /// worker would trade a pause nobody can perceive for a failure mode that
     /// costs someone their server.
-    pub(super) fn revert_change(&mut self, reason: RevertReason) {
+    pub(super) fn revert_change(&mut self) {
         let Some(window) = self.verification.take() else {
             return;
         };
@@ -483,28 +461,17 @@ impl App {
             .revert()
             .apply(self.executor.as_ref(), self.backend.as_ref());
 
-        match outcome {
-            Ok(()) => self.status.set(
-                State::Done,
-                self.lang.render(&Msg::StatusReverted {
-                    task: window.task.clone(),
-                    reason,
-                }),
-            ),
-            // Into the pane, which this path did not do at all: the error was
-            // pre-rendered into `StatusRevertFailed` and drawn on a one-line
-            // border, so the evidence for the worst outcome this tool can
-            // reach — the machine in neither state — was the part truncation
-            // took. It is the same report a failed task gets now, under a
-            // heading that says the restore is what failed.
-            Err(ref err) => {
-                let heading = Msg::OutputRevertFailedHeading {
-                    task: window.task.clone(),
-                };
+        // Into the pane rather than onto a border: the evidence for the worst
+        // outcome this tool can reach — the machine in neither state — is
+        // exactly the part a one-line border truncated. It is the same report a
+        // failed task gets, under a heading that says the restore is what
+        // failed.
+        if let Err(ref err) = outcome {
+            let heading = Msg::OutputRevertFailedHeading {
+                task: window.task.clone(),
+            };
 
-                self.report_failure(&heading, err);
-                self.status.set(State::Failed, String::new());
-            }
+            self.report_failure(&heading, err);
         }
     }
     /// Puts an unconfirmed change back because the session is ending.
@@ -521,7 +488,7 @@ impl App {
     /// the operator finds the machine as they left it.
     pub(super) fn resolve_on_hangup(&mut self) {
         if self.verification.is_some() {
-            self.revert_change(RevertReason::SessionEnded);
+            self.revert_change();
         }
     }
     /// Puts the change back if its window has run out.
@@ -535,7 +502,7 @@ impl App {
             .is_some_and(|window| window.has_expired(Instant::now()));
 
         if expired {
-            self.revert_change(RevertReason::NoConfirmation);
+            self.revert_change();
         }
     }
 }

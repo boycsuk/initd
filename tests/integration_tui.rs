@@ -125,6 +125,17 @@ fn run_hardening(tui: &Tui) {
 /// scenario that pressed Enter alone would quietly cancel and then assert
 /// against a system nothing had happened to.
 fn confirm_dialog(tui: &Tui) {
+    // Waited for rather than assumed. `Tab` and `Enter` aimed at a dialog that
+    // is not drawn yet reach the tree instead, where `Tab` moves the focus and
+    // `Enter` runs whatever the cursor is on — so the scenario goes on to assert
+    // against a task nobody chose. It used to be reliable by accident, the
+    // interface having had more to draw before the dialog appeared.
+    assert!(
+        tui.wait_for("Enter to confirm", 10),
+        "the confirmation must be on screen before it is answered: {}",
+        tui.screen()
+    );
+
     tui.press("Tab");
     tui.press("Enter");
 }
@@ -243,10 +254,10 @@ for_each_image! {
         assert!(
             tui.wait_for(VERIFY, WINDOW_OPENS_WITHIN),
             "the verification window must open: {}",
-            tui.status()
+            tui.tail()
         );
 
-        let status = tui.status();
+        let status = tui.tail();
         assert!(
             status.contains("K keep") && status.contains("R revert"),
             "the window must offer both answers: {status}"
@@ -273,15 +284,19 @@ for_each_image! {
         assert!(
             tui.wait_for(VERIFY, WINDOW_OPENS_WITHIN),
             "the verification window must open before it can be declined: {}",
-            tui.status()
+            tui.tail()
         );
 
         tui.type_char('R');
 
+        // The window closing is what says the answer landed. Nothing reports the
+        // revert in words any more — that line lived on the status border — so
+        // waiting on the banner's disappearance is what keeps this from racing
+        // the assertion below, which is the one that proves the file went back.
         assert!(
-            tui.wait_for("reverted", WINDOW_OPENS_WITHIN),
-            "the interface must report the revert: {}",
-            tui.status()
+            tui.wait_for_absence(VERIFY, WINDOW_OPENS_WITHIN),
+            "the verification window must close once R is answered: {}",
+            tui.tail()
         );
 
         assert!(
@@ -312,7 +327,7 @@ for_each_image! {
         assert!(
             tui.wait_for(VERIFY, WINDOW_OPENS_WITHIN),
             "the verification window must open before the session can be lost: {}",
-            tui.status()
+            tui.tail()
         );
 
         // Confirms the change really landed first: a test that reverts nothing
@@ -383,7 +398,7 @@ for_each_image! {
         assert!(
             tui.wait_for(VERIFY, WINDOW_OPENS_WITHIN),
             "the verification window must open: {}",
-            tui.status()
+            tui.tail()
         );
 
         tui.type_char('K');
@@ -493,8 +508,11 @@ for_each_image! {
         // asks.
         tui.press("Enter");
 
+        // Matched on the dialog's own key hint rather than on a word in the
+        // border: nothing is drawn there now, and the hint is unique to this
+        // window — a form draws its own, different one.
         assert!(
-            tui.wait_for("CONFIRM", 20),
+            tui.wait_for("Enter to confirm", 20),
             "{}: the confirmation must open without asking for an account: {}",
             image.name,
             tui.screen()
@@ -560,16 +578,18 @@ for_each_image! {
         tui.press("Enter");  // open the confirmation
         confirm_dialog(&tui); // and answer it Yes
 
-        // The status row rather than the body. The scan reports a line per
-        // account — twenty-one on a stock `debian:13` — so by the time the
-        // refusal is printed it has scrolled the pane, and a scenario reading
-        // the visible portion would be asserting on where the text happened to
-        // land. `wait_for` polls the whole screen, which the diagnosis fills.
+        // `wait_for` rather than one look at the screen: the scan reports a line
+        // per account — twenty-one on a stock `debian:13` — so the refusal
+        // arrives after a delay that depends on how many accounts the host has.
+        //
+        // The heading is what is matched, the failure now being reported in the
+        // output pane rather than on a border. It is visible because the pane is
+        // still following its tail, which is where a report written last lands.
         assert!(
             tui.wait_for("FAILED", 20),
             "{}: a host with no way back in must be refused: {}",
             image.name,
-            tui.status()
+            tui.screen()
         );
 
         // And refused for the stated reason rather than by some other failure:

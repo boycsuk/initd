@@ -53,15 +53,22 @@ twenty-four rows a terminal is assumed to have.
 │                      │                             │
 │ Body                 │                     flexible│
 │                      │                             │
-│ └ census ────────────┴───────────── status ───────┘│
+│ └ census ────────────┴─────────────────────────────┘│
 ├────────────────────────────────────────────────────┤
 │ Key bar                                       1 row│
 └────────────────────────────────────────────────────┘
 ```
 
-The status has no band of its own. It rides the bottom border of the pane on
-the right, the way the tree's census rides its own, so it costs no rows — the
-row it used to occupy belongs to the body.
+Nothing is drawn on the bottom border except the tree's census. There is no
+status line: what the tool is doing is said by what is on screen — a dialog or
+a form occupies the middle of it, an unsupported row is dimmed and flagged —
+and what a task *did* is reported in the output pane, beside the commands that
+produced it. See *Failure reports*.
+
+What went with it and has no replacement: the spinner and wall-clock timer that
+distinguished a quiet command from a session that had stopped answering. The
+output pane's write cursor is what is left of that signal, and it neither moves
+nor counts.
 
 The body's split follows the terminal width:
 
@@ -89,8 +96,8 @@ Below 72 columns the two panes become **two views of one area**, switched with
 nothing else would say which of the two is showing and `Tab` would look like it
 did nothing.
 
-The key bar is dropped below 24 rows — it is a convenience, and it is now the
-only band that can be given up at all, since the status costs no row to keep.
+The key bar is dropped below 24 rows — it is a convenience, and it is the only
+band that can be given up at all.
 Below **60 × 15** the interface is not drawn at all: it states the size it needs
 instead, because a garbled layout on a production server is worse than a clear
 refusal.
@@ -142,9 +149,10 @@ empty list, since an empty list inside a bordered frame reads as a view that
 failed to load.
 
 A restore that is refused — because the file has been edited since, or because
-the copy is damaged — reports into the output pane and sets the status row to
-`not restored`. That wording is deliberate: the refusals leave the machine
-exactly as it was, which is a different thing from a command that broke.
+the copy is damaged — reports into the output pane under a `COULD NOT RESTORE`
+heading, with the two digests that disagree as fields. That heading is deliberate:
+the refusals leave the machine exactly as it was, which is a different thing from
+a command that broke.
 
 ## Panels
 
@@ -175,21 +183,20 @@ exactly as it was, which is a different thing from a command that broke.
   The command is rendered as the task asked for it, without the `sudo`/`doas`
   wrapper this host resolved, and never carries what was fed on stdin (a
   WireGuard private key travels that way precisely to stay out of view).
-  A failed task's error is written here and **only** here — the status border
-  names no outcome, since it is a single line and a package manager's stderr
-  does not fit in it. See *Failure reports*.
-  Retains the most recent 5000 lines in a ring buffer, dropping the oldest. The bottom border states whether the view
-  is pinned to the newest output (`follow`) or has been scrolled away
-  (`detached`), and while following, a `▌` cursor marks where the next line
-  will land — a quiet command and a frozen screen otherwise look identical.
+  A failed task's error is written here and **only** here. See *Failure
+  reports*.
+  Retains the most recent 5000 lines in a ring buffer, dropping the oldest.
+  While the view is pinned to the newest output a `▌` cursor marks where the
+  next line will land; scrolling away detaches, and the cursor's absence is
+  what says so. A finishing task jumps the view back to the tail, so its report
+  is on screen even where a chatty task wrote more lines than the pane is tall.
+  Escape sequences are stripped from what a command prints, so a script that
+  colours unconditionally does not put raw `\x1b[` codes on the screen or into
+  the transcript.
 - **Detail** — occupies the same area as Output before any task has run,
   showing what the selected task does, titled with the task's own name. With a
   category selected it shows the category name and how many tasks it holds at
   any depth.
-- **Status** — the state word plus a message, on the bottom border of whichever
-  pane is showing on the right. Costs no rows. Right-aligned, opposite the
-  census on the tree and opposite `follow`/`detached` on the output, since two
-  bottom titles at the same end are drawn over each other.
 - **Key bar** — the key hints for the current row and state. One borderless
   row, dropped on terminals shorter than 24 rows.
 - **Parameter form** — overlays the centre of the screen for tasks that collect
@@ -303,49 +310,33 @@ remove.
 Both halves are searchable by name, so `/uninstall` finds a row the tree may be
 drawing as `Install`. Search addresses operations; the tree addresses rows.
 
-## Status
+## What the interface says it is doing
 
-One authoritative place for what the tool is doing: the bottom border of the
-pane on the right, right-aligned. It reads as up to three parts in a fixed
-order — the liveness signals, the state's word, then its message — separated by
-`·` and drawn only where each applies:
+There is no status line. What the tool is doing is said by what is on screen,
+and what a task *did* is said by the output pane.
 
-```
-└ VERIFY  ·  ssh.harden — applied, not yet kept ┘
-└ ⠿  0:12  ·  RUNNING  ·  installing openssh    ┘
-```
+| Situation | How it is shown |
+|-----------|-----------------|
+| A task is running | The output pane streams its lines; `▌` marks where the next lands |
+| A task succeeded | Its output, and any consequences it declared, in the pane |
+| A task failed | A `FAILED` block in the pane — see *Failure reports* |
+| A task was stopped | A `STOPPED` block naming the command it stopped before |
+| A change is applied, not yet kept | The verification banner, with its countdown and both keys |
+| A confirmation is open | The dialog itself, centred and modal |
+| A form is collecting values | The form itself, centred and modal |
+| The selected task cannot run here | The row is dimmed and flagged; the detail pane says why |
 
-The word carries the meaning alone when colour is absent; the colour is
-redundant reinforcement rather than the signal.
-
-Three states are **not** named on the border, for two different reasons.
-
-`READY` is the state the tool is in whenever it is in no other, so a border
-reading it for most of a session says only that the program is running — which
-the screen already says.
-
-`FAILED` and `CANCELLED` are **outcomes**, and an outcome is reported in the
-output pane instead — beside the commands that produced it, with room for the
-exit code and the stderr a one-line border cannot hold. See *Failure reports*
-below. The border keeps only the states describing something in progress or
-awaited, which have no transcript of their own to sit in.
-
-| State | Border | Meaning |
-|------|--------|---------|
-| — | not drawn | Waiting for input |
-| `RUNNING` | drawn | A task is running |
-| `DONE` | drawn | The last task succeeded |
-| `FAILED` | not drawn | The last task failed — reported in the output pane |
-| `CANCELLED` | not drawn | The last task was interrupted — reported in the output pane |
-| `VERIFY` | drawn | A change is applied but not yet kept |
-| `CONFIRM` | drawn | A confirmation dialog is open |
-| `INPUT` | drawn | A parameter form is open, collecting input before the task runs |
-| `UNSUPPORTED` | drawn | The selected task cannot run on this host |
+**What this gives up.** A refusal that answers a keystroke — pressing `Enter` on
+an unsupported row, `q` while a task runs — now produces no message. The screen
+does not change, which is indistinguishable from a key that never arrived. The
+dimmed row and its flag are what remain for the unsupported case; the others say
+nothing at all. Accepted deliberately: a word in the corner describing a dialog
+that occupies the middle of the screen was the larger cost.
 
 **Every word in this document's tables is the English rendering.** All
-user-facing text — these state words, the key bar's labels, the help overlay, the
-verification banner — is resolved through the message catalogue against the
-locale in the environment (`LC_ALL` > `LC_MESSAGES` > `LANG`, falling back to
+user-facing text — the key bar's labels, the help overlay, the verification
+banner, the failure blocks — is resolved through the message catalogue against
+the locale in the environment (`LC_ALL` > `LC_MESSAGES` > `LANG`, falling back to
 English). English is the only catalogue that exists today, so what is tabulated
 here is what every host shows; a second language would change the words without
 changing anything else in this document. Two kinds of string stay out of the
@@ -356,52 +347,11 @@ A test that reads the screen is therefore locale-sensitive by construction and
 must pin `LC_ALL`, rather than relying on the developer's environment happening
 to be English.
 
-Three of these describe the cursor rather than the past and therefore override
-whatever the last action left behind: `CONFIRM` while a dialog is open, `INPUT`
-while a form is, and `UNSUPPORTED` when the selected row cannot run here. The
-state must always say what pressing `Enter` would do now.
-
-`CONFIRM` outranks `INPUT` where both apply: a task that confirms collects its
-parameters first and confirms after, so once the confirmation is up it is the
-live question.
-
-### Transient messages
-
-Refusals — "already at the top level", "not supported on arch" — flash beside
-the state's word for two seconds and then disappear on their own. They override
-the state's message but **never** its word: losing sight of what the tool is
-doing because something was refused is exactly what the separation prevents.
-
-There are no toasts and no overlays. A message that occludes content is
-unacceptable when the content is the log of a command running as root.
-
-### When the border runs out of room
-
-A border is narrower than a row was, so two rules decide what goes first, and
-both protect the state's word:
-
-- **The message is truncated, never the word.** It loses its tail to a `…`;
-  below eight cells it is dropped whole instead, since what survives at that
-  width is a smear rather than a shortened sentence.
-- **The pane's own indicator yields the border entirely** where the two would
-  not both fit — the tree's census, the output pane's `following`/`detached`.
-  Neither is the only place its information appears: the census counts rows
-  already on screen, and whether the view is pinned is also visible from the
-  write cursor and from whether the log is moving. The status may be the only
-  report of what the tool is waiting for.
-
-  Opposite ends is not enough on its own. Ratatui draws two bottom titles that
-  outgrow the border rather than arbitrating between them, which rendered the
-  census as `6 ca VERIFY …` and `following` as `f`.
-
-Below 72 columns only one pane is drawn, and the status follows it: with focus
-on the tree it rides the tree's border, so pressing `Tab` back never hides what
-the tool is doing.
-
 ## Failure reports
 
-A failure is reported in the output pane, never on the status border. It is
-written as a heading naming the task, then one row per field of the error:
+A failure is reported in the output pane, which is the only place it is
+reported. It is written as a heading naming the task, then one row per field of
+the error:
 
 ```
 $ systemctl --user disable docker.service
@@ -496,19 +446,12 @@ Two rules govern the table:
 | `choice_normal` | White + dim | The other answer |
 | `search_match` | Black on yellow | The matched substring in a filtered row |
 | `badge_busy` | Black on yellow + bold | The `VERIFY` badge in the verification banner |
-| `status_ready` | Green + bold | `DONE` on the pane border |
-| `status_busy` | Yellow + bold | `RUNNING` and `VERIFY` on the pane border |
-| `status_error` | Red + bold | `CONFIRM` on the pane border |
-| `status_input` | Blue + bold | `INPUT` on the pane border |
-| `status_inert` | White + dim | `UNSUPPORTED` on the pane border |
 | `keybar_key` | Reset + bold | The key glyph in the key bar |
 | `keybar_label` | White + dim | Its description |
 | `gauge` | Green | The step-progress gauge |
 
-The `status_*` roles set a foreground only, unlike the badge above them. They
-are drawn on a pane's bottom border, where a background fills the cells the
-border runs through and reads as a gap in the frame rather than as emphasis.
-`badge_busy` keeps its pair because the verification banner is a block of its
+`badge_busy` is the one place a word is drawn on a filled background, and it
+keeps its pair because the verification banner is a block of its
 own rather than a border it has to sit inside.
 
 `selection_focused` sets an explicit foreground/background pair rather than
@@ -867,19 +810,17 @@ but nothing new may be started, and nothing already applied may be answered.
 
 **Cancellation is cooperative, and honest about it.** `Ctrl-C` asks the task to
 stop between two commands rather than killing it mid-write — a half-written
-configuration file is how a machine ends up in a state nobody chose. Until the
-current step ends the status still reads `RUNNING`, with the message
-*stopping after the current step*; once the task has actually stopped the border
-clears and the output pane reports where it got to, under a `STOPPED` heading
-naming the command it stopped before.
+configuration file is how a machine ends up in a state nobody chose. The request
+lands between commands, so a task already on its last one finishes: what is
+reported is what actually happened. Once the task has stopped, the output pane
+reports where it got to under a `STOPPED` heading naming the command it stopped
+*before*; a task that finished first is reported as done, with the near miss
+said out loud rather than silently dropped.
 
-The status opens with two liveness signals while a task runs: a one-character
-ASCII spinner and a wall-clock timer, both driven by the clock rather than by
-arriving output. Over a slow link a quiet command and a frozen screen are
-otherwise indistinguishable. They lead rather than trail so they sit at a fixed
-distance from the pane's corner while the message beside them changes length.
-The spinner is ASCII rather than braille, which is missing or double-width in
-too many of the fonts a server console actually has.
+Nothing signals that a task is still alive beyond the output it produces. A
+spinner and a wall-clock timer used to ride the status border for exactly that —
+over a slow link a quiet command and a frozen screen are otherwise
+indistinguishable — and they went with it. The write cursor is what is left.
 
 ### Verification window (semi-modal)
 

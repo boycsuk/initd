@@ -1,6 +1,6 @@
 //! Application state, navigation and the event loop.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::widgets::ListState;
@@ -14,7 +14,6 @@ use super::output::OutputPane;
 use super::probe::{InstalledState, Probe};
 use super::search::Search;
 use super::signals::Hangup;
-use super::status::{State, Status};
 use super::verify::Verification;
 use super::worker::Running;
 use super::{Tui, render};
@@ -24,7 +23,7 @@ use crate::distro::Distro;
 use crate::distro::host::HostFacts;
 use crate::error::Result;
 use crate::exec::Executor;
-use crate::i18n::{Lang, Msg};
+use crate::i18n::Lang;
 use crate::tasks::params::ParamValues;
 use crate::tasks::{self, Node, Task};
 
@@ -211,7 +210,6 @@ pub struct App {
     /// `None` means it is closed: the overlay has no state worth keeping
     /// between openings, and it always starts at the top.
     pub(super) help: Option<u16>,
-    pub(super) status: Status,
     /// The locale every user-facing string is rendered through.
     ///
     /// Resolved once here rather than per message. Errors reach the catalogue
@@ -270,7 +268,6 @@ impl App {
             probe: Some(probe),
             verification: None,
             help: None,
-            status: Status::new(),
             search: None,
             history: None,
             pending_restore: None,
@@ -382,24 +379,15 @@ impl App {
     /// Descends into the category under the cursor.
     pub(super) fn enter_category(&mut self, index: usize) {
         self.cursor.enter_category(index);
-        self.status.set(State::Ready, "");
     }
 
     /// Returns to the parent level, restoring the cursor it was left on.
     ///
-    /// At the root there is nowhere to go, so this reports rather than quits:
-    /// `q` is the way out, and an `Esc` that sometimes exits the program would
-    /// make going back one level too far a destructive mistake. The cursor
-    /// answers whether it moved; phrasing the refusal is the interface's job.
+    /// At the root there is nowhere to go, so this does nothing rather than
+    /// quitting: `q` is the way out, and an `Esc` that sometimes exits the
+    /// program would make going back one level too far a destructive mistake.
     pub(super) fn leave_category(&mut self) {
-        if !self.cursor.leave_category() {
-            // A refusal, not a state: the tool is still ready, the key simply
-            // had nowhere to go.
-            self.status.flash(
-                self.lang.render(&Msg::StatusAlreadyAtTopLevel),
-                Instant::now(),
-            );
-        }
+        self.cursor.leave_category();
     }
 
     /// Runs the event loop until the user quits.
@@ -522,9 +510,11 @@ mod tests {
     // used these moved to the sibling modules, and only the tests still reach
     // for them from here.
     use crate::error::Error;
+    use crate::i18n::Msg;
     use crate::tasks::revert::{Outcome, Revert};
     use crossterm::event::{KeyCode, KeyEvent};
     use ratatui::layout::Rect;
+    use std::time::Instant;
 
     /// Feeds a key to the app, as the event loop would.
     ///
@@ -1006,10 +996,6 @@ mod tests {
         press(&mut app, KeyCode::Enter);
 
         assert!(app.form.is_some(), "an invalid form stays open");
-        assert!(
-            app.status.message(Instant::now()).contains("fill in"),
-            "the refusal must say what is missing"
-        );
     }
 
     #[test]
@@ -1215,21 +1201,14 @@ mod tests {
 
     #[test]
     fn closing_a_form_or_a_dialog_reports_nothing() {
-        // Both used to leave `cancelled` on the border, which states back a
-        // decision the operator had just made — and outlives the moment, since
-        // nothing clears the status until the next thing sets it. Pressing Esc
-        // is answered by the form leaving the screen.
+        // Pressing Esc is answered by the form leaving the screen, and nothing
+        // else: declining to run a task changed nothing to tell anybody about.
         let mut app = test_app(Family::Debian);
         select_task(&mut app, "ssh.change-port");
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Esc);
 
         assert!(app.form.is_none(), "the form must close");
-        assert_eq!(
-            app.status.message(Instant::now()),
-            "",
-            "an untouched form closing has nothing to report"
-        );
 
         // The confirmation dialog, declined. A second `App` because
         // `select_task` walks from the level the cursor is on, and the one above
@@ -1241,12 +1220,6 @@ mod tests {
 
         press(&mut app, KeyCode::Esc);
         assert!(app.confirm.is_none(), "and must close");
-
-        assert_eq!(
-            app.status.message(Instant::now()),
-            "",
-            "declining a task has nothing to report"
-        );
     }
 
     #[test]
@@ -1283,13 +1256,12 @@ mod tests {
     }
 
     #[test]
-    fn a_revertible_change_is_not_reported_as_done() {
-        // "Done" would claim the tool knows the administrator can still get
-        // in, which is exactly what it cannot know.
+    fn a_revertible_change_opens_its_window_rather_than_finishing() {
+        // Closing the run outright would claim the tool knows the administrator
+        // can still get in, which is exactly what it cannot know.
         let mut app = test_app(Family::Debian);
         open_verification(&mut app);
 
-        assert_eq!(app.status.state(), State::Verify);
         assert!(app.verification.is_some());
     }
 
@@ -1301,7 +1273,6 @@ mod tests {
         press(&mut app, KeyCode::Char('K'));
 
         assert!(app.verification.is_none());
-        assert_eq!(app.status.state(), State::Done);
     }
 
     #[test]
@@ -1377,13 +1348,6 @@ mod tests {
             app.verification.is_none(),
             "a change nobody confirmed must go back when the session ends"
         );
-        assert!(
-            app.status
-                .message(Instant::now())
-                .contains("the session ended"),
-            "the report must say why it went back: {:?}",
-            app.status.message(Instant::now())
-        );
     }
 
     #[test]
@@ -1395,7 +1359,11 @@ mod tests {
         app.hangup.raise();
         app.resolve_on_hangup();
 
-        assert_eq!(app.status.state(), State::Ready);
+        assert!(app.verification.is_none());
+        assert!(
+            app.output.is_empty(),
+            "nothing was undone, so nothing to say"
+        );
     }
 
     #[test]
@@ -1412,9 +1380,8 @@ mod tests {
         app.hangup.raise();
         app.resolve_on_hangup();
 
-        assert_ne!(
-            app.status.state(),
-            State::Failed,
+        assert!(
+            app.verification.is_none(),
             "a kept change must not be reverted by a later hangup"
         );
     }
@@ -1455,19 +1422,15 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognised_key_says_what_the_two_answers_are() {
-        // Doing nothing has consequences here, so a stray key is refused with
-        // the answer rather than ignored.
+    fn an_unrecognised_key_settles_nothing() {
+        // Doing nothing has consequences here, so a stray key must neither keep
+        // nor revert: the window stays open until one of the two answers.
         let mut app = test_app(Family::Debian);
         open_verification(&mut app);
 
         press(&mut app, KeyCode::Char('x'));
 
-        let message = app.status.message(Instant::now());
-        assert!(
-            message.contains('K') && message.contains('R'),
-            "got {message}"
-        );
+        assert!(app.verification.is_some(), "a stray key must not settle it");
     }
 
     #[test]
@@ -1508,70 +1471,20 @@ mod tests {
         assert!(screen.contains("not yet kept"), "{screen}");
         assert!(screen.contains("reverting in"), "{screen}");
         assert!(screen.contains("second session"), "{screen}");
-        // The word is on the log's bottom border now rather than in a band of
-        // its own, so this asserts the last row of the body rather than the
-        // row below it.
-        assert!(rows[22].contains("VERIFY"), "got {:?}", rows[22]);
     }
 
     #[test]
-    fn going_back_too_far_flashes_rather_than_changing_state() {
-        // Overshooting by one level is a refusal, not a state: the tool is
-        // still ready, the key simply had nowhere to go.
+    fn going_back_too_far_changes_nothing() {
+        // Overshooting by one level had nowhere to go, so the cursor stays put
+        // rather than the program exiting: `q` is the way out, and an `Esc`
+        // that sometimes quits makes one level too far a destructive mistake.
         let mut app = test_app(Family::Debian);
+        let before = app.breadcrumb();
 
         app.leave_category();
 
-        assert_eq!(app.status.state(), State::Ready);
-        assert!(
-            app.status.message(Instant::now()).contains("top level"),
-            "the refusal must say why nothing happened"
-        );
-    }
-
-    #[test]
-    fn a_refusal_leaves_the_pill_alone() {
-        // Losing sight of what the tool is doing because something was refused
-        // is the failure this separation exists to prevent.
-        let mut app = test_app(Family::Debian);
-        app.status.set(State::Done, "ssh.install");
-
-        app.leave_category();
-
-        assert_eq!(
-            render::pill(&app),
-            State::Done,
-            "the pill reports the last outcome, not the refusal"
-        );
-    }
-
-    #[test]
-    fn an_open_dialog_owns_the_pill() {
-        // The pill must describe what Enter would do now, which while a dialog
-        // is open is answering it, whatever ran before.
-        let mut app = test_app(Family::Debian);
-        app.status.set(State::Done, "ssh.install");
-        app.confirm = Some(Confirm::new("Harden", "..."));
-
-        assert_eq!(render::pill(&app), State::Confirm);
-    }
-
-    #[test]
-    fn the_status_row_states_what_the_tool_is_waiting_for() {
-        // The state has a word of its own, so it is legible without reading the
-        // message beside it.
-        //
-        // Driven by `Verify` because an outcome no longer draws here at all —
-        // see `an_outcome_never_reaches_the_border`. What this pins is the
-        // border still carrying a state that *is* worth naming, on a terminal
-        // wide enough for both panes.
-        let mut app = test_app(Family::Debian);
-        app.status.set(State::Verify, "not yet kept");
-
-        let rows = render_to_rows(&mut app, 80, 24);
-
-        assert!(rows[22].contains("VERIFY"), "got {:?}", rows[22]);
-        assert!(rows[22].contains("not yet kept"), "got {:?}", rows[22]);
+        assert_eq!(app.breadcrumb(), before);
+        assert!(!app.should_quit, "leaving the root must not quit");
     }
 
     /// Renders the app into an off-screen buffer and returns it as text rows.
@@ -1823,110 +1736,6 @@ mod tests {
             "row 24 is the key bar: {:?}",
             rows[23]
         );
-    }
-
-    #[test]
-    fn a_state_reaches_the_border_of_whichever_pane_is_showing() {
-        // The status rides the right pane's bottom border, and on a terminal
-        // too narrow for two panes that pane may not be drawn at all — so the
-        // tree takes it. Without that, pressing Tab back to the tree hides the
-        // only report of what the tool is doing.
-        //
-        // Driven by `Verify` rather than `Failed`: an outcome no longer draws
-        // on the border at all, and `Verify` is the state whose word the
-        // operator must least afford to miss — a change is applied and waiting
-        // to be confirmed.
-        let mut app = test_app(Family::Debian);
-        app.status
-            .set(State::Verify, "ssh.harden — applied, not yet kept");
-
-        let narrow = render_to_rows(&mut app, 60, 15).join("\n");
-
-        assert!(narrow.contains("VERIFY"), "got {narrow}");
-        assert!(narrow.contains("not yet kept"), "got {narrow}");
-    }
-
-    #[test]
-    fn an_outcome_never_reaches_the_border() {
-        // A failure is read in the transcript, beside the commands that
-        // produced it and with the exit code and stderr a border cannot hold.
-        // Naming it in the corner as well splits the operator's attention at
-        // the moment the pane is what has to be read.
-        //
-        // Asserted for both outcomes and against the word rather than the
-        // message, since a label with no message still draws.
-        for state in [State::Failed, State::Cancelled] {
-            let mut app = test_app(Family::Debian);
-            app.status.set(state, "");
-
-            let rendered = render_to_rows(&mut app, 60, 15).join("\n");
-
-            assert!(
-                !rendered.contains("FAILED") && !rendered.contains("CANCELLED"),
-                "{state:?} must not name itself on the border: {rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_census_yields_the_border_rather_than_colliding_with_the_status() {
-        // Both ride the tree's bottom border once the tree is the whole body,
-        // and ratatui draws two overlapping titles rather than arbitrating
-        // between them — which rendered the census as "6 ca VERIFY …". The
-        // census counts rows already on screen; the status may be the only
-        // report of what the tool is waiting for, so the census is what goes.
-        let mut app = test_app(Family::Debian);
-        app.status
-            .set(State::Verify, "ssh.harden — applied, not yet kept");
-
-        let rows = render_to_rows(&mut app, 60, 15);
-        let border = rows.last().expect("the tree's bottom border").clone();
-
-        assert!(
-            border.contains("applied, not yet kept"),
-            "the status must survive whole: {border}"
-        );
-        assert!(
-            !border.contains("categor"),
-            "the census must yield rather than be eaten into: {border}"
-        );
-    }
-
-    #[test]
-    fn the_census_keeps_the_border_when_there_is_room_for_both() {
-        // The census only yields where it must; a short message leaves room
-        // for both, and dropping it there would trade one signal for nothing.
-        let mut app = test_app(Family::Debian);
-        app.status.set(State::Verify, "kept");
-
-        let rows = render_to_rows(&mut app, 60, 15);
-        let border = rows.last().expect("the tree's bottom border").clone();
-
-        assert!(border.contains("categor"), "got {border}");
-        assert!(border.contains("VERIFY"), "got {border}");
-    }
-
-    #[test]
-    fn a_message_too_long_for_the_border_loses_its_tail_and_not_its_state() {
-        // Ratatui cuts a right-aligned title at its head, which took the first
-        // characters of VERIFY and left "RIFY" on screen during the one state
-        // whose word must not be misread. The message is truncated before the
-        // line is built so the state's word is never the part that goes.
-        let mut app = test_app(Family::Debian);
-        open_verification(&mut app);
-
-        let rows = render_to_rows(&mut app, 80, 24);
-        let border = rows[22].clone();
-
-        // Asserted on the word with the separator that precedes it, not on
-        // "VERIFY" alone: a cut leaves "RIFY", and every truncation of the
-        // word is a substring of the whole one — the same trap `is-active`
-        // and `inactive` set in the systemd tests.
-        assert!(
-            border.contains("┘└ VERIFY  ·"),
-            "the state must reach the border whole: {border}"
-        );
-        assert!(border.contains('…'), "a dropped tail must be marked");
     }
 
     /// A passwd file and an `/etc/shells`, in the order the form asks for
@@ -2722,23 +2531,6 @@ mod tests {
     }
 
     #[test]
-    fn an_open_form_says_the_tool_is_waiting_for_input() {
-        // The pill is the one place that always states what the interface is
-        // doing; a form open with a READY pill would misreport it.
-        let mut app = test_app(Family::Debian);
-        assert_eq!(render::pill(&app), State::Ready);
-
-        app.form = Some(Form::new(
-            "Create a user",
-            crate::tasks::find("users.create")
-                .expect("users.create must exist")
-                .params(),
-        ));
-
-        assert_eq!(render::pill(&app), State::Input);
-    }
-
-    #[test]
     fn a_narrow_terminal_draws_one_pane_at_a_time() {
         // Below the split threshold both panes are handed the whole area, so
         // drawing both would overwrite one with the other.
@@ -2776,7 +2568,6 @@ mod tests {
             app.distro.clone(),
             ParamValues::new(),
         ));
-        app.status.set(State::Running, "ssh.install");
     }
 
     #[test]
@@ -2789,42 +2580,10 @@ mod tests {
         app.run_selected(ParamValues::new());
 
         assert!(app.running.is_some(), "the task runs in the background");
-        assert_eq!(app.status.state(), State::Running);
     }
 
     #[test]
-    fn the_follow_indicator_yields_rather_than_being_cut_to_one_letter() {
-        // Both ride the output pane's bottom border, and ratatui draws two
-        // that do not fit rather than arbitrating: `following` was rendered as
-        // `f`. A status may be the only report of a task that failed, whereas
-        // whether the view is pinned is also visible from the write cursor.
-        let mut app = test_app(Family::Debian);
-        app.focus = Pane::Output;
-        app.output.push(crate::exec::OutputLine {
-            stream: crate::exec::Stream::Stdout,
-            text: "a line".to_owned(),
-        });
-        app.status.flash(
-            app.lang
-                .render(&crate::i18n::Msg::StatusCopied { lines: 4 }),
-            Instant::now(),
-        );
-
-        let rows = render_to_rows(&mut app, 80, 24);
-        let border = rows
-            .iter()
-            .find(|row| row.contains("sent to the terminal"))
-            .expect("the message must be drawn")
-            .clone();
-
-        assert!(
-            !border.contains("└ f "),
-            "the indicator must yield whole rather than be cut: {border}"
-        );
-    }
-
-    #[test]
-    fn copying_an_empty_pane_says_so_rather_than_claiming_success() {
+    fn copying_an_empty_pane_writes_nothing() {
         // Asserted on the empty case because it is the branch that does *not*
         // write to the terminal: the others emit an OSC 52 sequence to real
         // stdout, which a test must not do — it would land in the harness's
@@ -2836,11 +2595,8 @@ mod tests {
         press(&mut app, KeyCode::Char('y'));
 
         assert!(
-            app.status
-                .message(Instant::now())
-                .contains("no output to copy"),
-            "got {:?}",
-            app.status.message(Instant::now())
+            app.output.is_empty(),
+            "an empty pane has nothing to copy and nothing to report"
         );
     }
 
@@ -2936,16 +2692,10 @@ mod tests {
             app.form.is_none() && app.confirm.is_none(),
             "Enter must not start anything"
         );
-        assert!(
-            app.status
-                .message(Instant::now())
-                .contains("already running"),
-            "the refusal must say why"
-        );
     }
 
     #[test]
-    fn quitting_mid_task_is_refused_with_the_way_to_stop() {
+    fn quitting_mid_task_is_refused() {
         // Quitting halfway through is how a server ends up half-configured.
         let mut app = test_app(Family::Debian);
         pretend_running(&mut app);
@@ -2953,10 +2703,7 @@ mod tests {
         press(&mut app, KeyCode::Char('q'));
 
         assert!(!app.should_quit, "q must not quit mid-task");
-        assert!(
-            app.status.message(Instant::now()).contains("Ctrl-C"),
-            "the refusal must name the way to actually stop"
-        );
+        assert!(app.running.is_some(), "and the task keeps running");
     }
 
     #[test]
@@ -2978,39 +2725,18 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_says_it_is_stopping_rather_than_stopped() {
-        // Claiming to have stopped before the current step finishes would be a
-        // lie about what state the machine is in.
+    fn cancelling_asks_rather_than_stopping_outright() {
+        // Treating the task as stopped before the current step finishes would
+        // be a lie about what state the machine is in.
         let mut app = test_app(Family::Debian);
         pretend_running(&mut app);
 
         app.cancel_running();
 
-        assert_eq!(
-            app.status.state(),
-            State::Running,
-            "still running until the step ends"
-        );
+        let running = app.running.as_ref().expect("still running");
         assert!(
-            app.status.message(Instant::now()).contains("stopping"),
-            "but the message says what is happening"
-        );
-    }
-
-    #[test]
-    fn cancelling_twice_reports_that_it_is_already_stopping() {
-        let mut app = test_app(Family::Debian);
-        pretend_running(&mut app);
-
-        app.cancel_running();
-        app.cancel_running();
-
-        assert!(
-            app.status
-                .message(Instant::now())
-                .contains("already stopping"),
-            "got {:?}",
-            app.status.message(Instant::now())
+            running.is_cancelling(),
+            "the request is recorded rather than acted on immediately"
         );
     }
 
@@ -3028,21 +2754,13 @@ mod tests {
             true,
         );
 
-        assert_eq!(app.status.state(), State::Cancelled);
-
-        // In the transcript rather than on the border. The property is
-        // unchanged — the command it stopped before is named — and only the
-        // place moved, so the assertion follows it rather than being dropped.
+        // In the transcript, which is where the command it stopped before is
+        // named: the operator is otherwise left guessing what ran.
         let transcript = app.output.transcript();
         assert!(
             transcript.contains("systemctl restart ssh.service"),
             "got {transcript:?}"
         );
-
-        // And the border says nothing, which is the half that would otherwise
-        // regress silently: a status message reintroduced here still leaves
-        // this test passing on the assertion above.
-        assert_eq!(app.status.message(Instant::now()), "");
     }
 
     /// Types a query into an open search, one key at a time.
@@ -3244,7 +2962,6 @@ mod tests {
             false,
         );
 
-        assert_eq!(app.status.state(), State::Failed);
         assert!(
             app.output
                 .lines()
@@ -3264,10 +2981,10 @@ mod tests {
 
         app.finish_run("ssh.install", Ok(Outcome::Done), true);
 
-        assert_eq!(
-            app.status.state(),
-            State::Done,
-            "a task that finished must be reported as done, not cancelled"
+        let transcript = app.output.transcript();
+        assert!(
+            !transcript.contains("CANCELLED"),
+            "a task that finished must not be reported as stopped: {transcript}"
         );
     }
 
@@ -3303,20 +3020,11 @@ mod tests {
             false,
         );
 
-        assert_eq!(app.status.state(), State::Failed);
-    }
-
-    #[test]
-    fn a_running_task_shows_a_clock_and_a_spinner() {
-        // Over a bad link a quiet command and a frozen screen look identical,
-        // so both signals keep moving whether or not output arrives.
-        let mut app = test_app(Family::Debian);
-        pretend_running(&mut app);
-
-        let status = render_to_rows(&mut app, 80, 24)[22].clone();
-
-        assert!(status.contains("RUNNING"), "got {status:?}");
-        assert!(status.contains("0:0"), "the clock must show: {status:?}");
+        let transcript = app.output.transcript();
+        assert!(
+            transcript.contains("ssh.install"),
+            "a vanished task must be reported: {transcript}"
+        );
     }
 
     #[test]
@@ -3474,29 +3182,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_task_says_so_in_the_status_pill() {
-        // The pill is the one place that always states what Enter would do.
-        // Driven onto a task that is genuinely refused rather than hoping the
-        // cursor lands on one: the old version returned early when the family
-        // supported everything, so it could pass having rendered nothing.
-        let mut app = test_app(Family::Rhel);
-
-        jump_to_unsupported(&mut app, Family::Rhel);
-
-        let rows = render_to_rows(&mut app, 80, 24);
-
-        assert!(
-            rows.iter().any(|row| row.contains("UNSUPPORTED")),
-            "the pill must name the refusal: {rows:#?}"
-        );
-    }
-
-    #[test]
     fn the_cursor_on_an_unsupported_task_is_not_drawn_as_an_invitation() {
         // The blue cursor reads as "press Enter", and pressing it here does
         // nothing — which looks like the interface dropping the key rather than
-        // the host refusing the task. The pill and the detail pane both say so,
-        // but only after the eye has moved off the row.
+        // the host refusing the task. The detail pane says so, but only after
+        // the eye has moved off the row.
         //
         // Colour is not carrying this alone: the same row already shows
         // `MARKER_UNSUPPORTED` in its flag column, so a monochrome terminal
@@ -3694,18 +3384,13 @@ mod tests {
 
         // The revert runs against a mock whose replies do not satisfy the hash
         // check, standing in for a file edited by hand since this tool wrote it.
-        app.revert_change(crate::i18n::RevertReason::Requested);
+        app.revert_change();
 
         let transcript = app.output.transcript();
 
         assert!(
             transcript.contains("COULD NOT RESTORE"),
             "the failure must reach the transcript: {transcript}"
-        );
-        assert_eq!(
-            app.status.message(Instant::now()),
-            "",
-            "and must not also be named on the border"
         );
     }
 

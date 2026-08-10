@@ -11,8 +11,6 @@
 //! fields — so the file boundary does not buy any decoupling. It buys a reader
 //! who wants to know what `Esc` does somewhere to look in one place.
 
-use std::time::Instant;
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 
@@ -25,8 +23,8 @@ use super::form::Form;
 use super::help;
 use super::history::History;
 use super::search::Search;
-use super::status::State;
-use crate::i18n::{Msg, RevertReason};
+use crate::exec::{OutputLine, Stream};
+use crate::i18n::Msg;
 use crate::tasks::params::{ParamValues, Suggestions};
 use crate::tasks::users::{Credentials, DeleteUser, Examined, LockRoot, escalated_from};
 use crate::tasks::{Confirmation, Node};
@@ -201,29 +199,25 @@ impl App {
     /// rectangles of screen, so dragging over the pane takes its border and
     /// the tree's flags, and takes only what the pane was wide enough to draw.
     ///
-    /// The message says the transcript was *sent* to the terminal rather than
-    /// that it was copied. OSC 52 has no reply, and terminals that refuse it
-    /// are real — some ship with it disabled, since a program that can write
-    /// the clipboard can also overwrite what was in it. Reporting success the
-    /// tool cannot observe is how a message stops being believed.
+    /// Only a refusal is reported, and it goes into the pane. Success is
+    /// silent: OSC 52 has no reply, so a line claiming the transcript was
+    /// copied asserts something this tool cannot observe — and it would land in
+    /// the transcript itself, so the next copy would carry the previous one's
+    /// receipt into whatever bug report it was pasted into. A refusal is the
+    /// half that is both observable and worth acting on.
     fn copy_output(&mut self) {
         if self.output.is_empty() {
-            self.status
-                .flash(self.lang.render(&Msg::StatusNothingToCopy), Instant::now());
             return;
         }
 
-        let lines = self.output.len();
-
         if clipboard::copy(&self.output.transcript()) {
-            self.status.flash(
-                self.lang.render(&Msg::StatusCopied { lines }),
-                Instant::now(),
-            );
-        } else {
-            self.status
-                .flash(self.lang.render(&Msg::StatusCopyFailed), Instant::now());
+            return;
         }
+
+        self.output.push(OutputLine {
+            stream: Stream::Stderr,
+            text: self.lang.render(&Msg::StatusCopyFailed),
+        });
     }
     /// Handles a key press while a task is running.
     ///
@@ -242,15 +236,8 @@ impl App {
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
             KeyCode::End | KeyCode::Char('f') => self.output.scroll_to_tail(),
             // Quitting mid-task is how a server ends up half-configured, so it
-            // is refused with the way to actually stop.
-            KeyCode::Char('q') => self.status.flash(
-                self.lang.render(&Msg::StatusTaskRunningQuitRefused),
-                Instant::now(),
-            ),
-            _ => self.status.flash(
-                self.lang.render(&Msg::StatusTaskAlreadyRunning),
-                Instant::now(),
-            ),
+            // is refused: `Ctrl-C` is the way to actually stop.
+            _ => {}
         }
     }
     /// Asks the running task to stop at its next step boundary.
@@ -260,21 +247,10 @@ impl App {
         };
 
         if running.is_cancelling() {
-            self.status.flash(
-                self.lang.render(&Msg::StatusAlreadyStopping),
-                Instant::now(),
-            );
             return;
         }
 
         running.cancel();
-        // Not "cancelled": the task has been asked to stop and has not yet
-        // done so. Saying otherwise before the step finishes would be a lie
-        // about what state the machine is in.
-        self.status.set(
-            State::Running,
-            self.lang.render(&Msg::StatusStoppingAfterCurrentStep),
-        );
     }
     /// Handles a key press while the help overlay is showing.
     ///
@@ -312,16 +288,14 @@ impl App {
     fn on_verify_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('K') => self.keep_change(),
-            KeyCode::Char('R') => self.revert_change(RevertReason::Requested),
+            KeyCode::Char('R') => self.revert_change(),
             KeyCode::Down => self.output.scroll_down(1),
             KeyCode::Up => self.output.scroll_up(1),
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
-            // Every other key is refused rather than ignored: an unanswered
-            // window is the one state where doing nothing has consequences.
-            _ => self
-                .status
-                .flash(self.lang.render(&Msg::StatusVerifyKeysOnly), Instant::now()),
+            // Every other key is refused: an unanswered window is the one
+            // state where doing nothing has consequences.
+            _ => {}
         }
     }
     /// Handles a key press while the search is open.
@@ -335,10 +309,7 @@ impl App {
         };
 
         match key.code {
-            KeyCode::Esc => {
-                self.search = None;
-                self.status.set(State::Ready, "");
-            }
+            KeyCode::Esc => self.search = None,
             KeyCode::Enter => self.jump_to_selected_match(),
             KeyCode::Down => search.select_next(),
             KeyCode::Up => search.select_previous(),
@@ -346,7 +317,6 @@ impl App {
             // query is empty, so the operator is undoing having opened it.
             KeyCode::Backspace if !search.backspace(self.cursor.tree()) => {
                 self.search = None;
-                self.status.set(State::Ready, "");
             }
             KeyCode::Backspace => {}
             KeyCode::Char(character) => search.push(character, self.cursor.tree()),
@@ -364,10 +334,7 @@ impl App {
         };
 
         match key.code {
-            KeyCode::Esc => {
-                self.history = None;
-                self.status.set(State::Ready, "");
-            }
+            KeyCode::Esc => self.history = None,
             KeyCode::Down => history.select_next(),
             KeyCode::Up => history.select_previous(),
             KeyCode::Home => history.select_first(),
@@ -424,7 +391,6 @@ impl App {
             .jump_to(&found.location.path, found.location.index);
         self.focus = Pane::Tree;
         self.search = None;
-        self.status.set(State::Ready, "");
     }
     /// Handles a key press while the parameter form is open.
     ///
@@ -452,18 +418,8 @@ impl App {
                     // The list belongs to a field of this form; leaving it set
                     // would reopen it over the next form that is opened.
                     self.options_at = None;
-                    // Nothing to report: the operator pressed `Esc`, nothing
-                    // ran, and the form leaving the screen is the answer to the
-                    // keystroke. A line saying `cancelled` states back a
-                    // decision they had just made, and it outlives the moment —
-                    // it sat on the border until the next thing set the status.
-                    self.status.set(State::Ready, "");
                 } else {
                     form.arm_cancel();
-                    self.status.flash(
-                        self.lang.render(&Msg::StatusPressEscAgainToDiscard),
-                        Instant::now(),
-                    );
                 }
 
                 return None;
@@ -596,10 +552,6 @@ impl App {
         // one is wrong.
         if let Some(index) = form.first_invalid() {
             form.focus_on(index);
-            self.status.flash(
-                self.lang.render(&Msg::StatusFillEveryFieldFirst),
-                Instant::now(),
-            );
             return None;
         }
 
@@ -677,10 +629,6 @@ impl App {
         self.confirm = None;
         self.pending_restore = None;
         self.pending_values = ParamValues::new();
-        // Nothing to report, for the reason the form's own `Esc` reports
-        // nothing: the dialog closing is the answer, and declining to run a
-        // task changed nothing to tell anybody about.
-        self.status.set(State::Ready, "");
     }
     /// Acts on the selected row: descends into a category, or runs a task.
     fn activate(&mut self) -> Option<ParamValues> {
@@ -695,12 +643,8 @@ impl App {
 
         if !task.supports(self.distro.family) {
             // Pressing Enter on a row the host cannot run is a refusal, not a
-            // state change: the reason flashes and the tool stays where it was.
-            let reason = self.lang.render(&Msg::StatusTaskNotSupported {
-                task: task.id().to_owned(),
-                family: self.distro.family.to_string(),
-            });
-            self.status.flash(reason, Instant::now());
+            // state change: the detail pane states the reason and the tool
+            // stays where it was.
             return None;
         }
 

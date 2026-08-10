@@ -17,7 +17,7 @@
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::distro::Distro;
 use crate::error::Error;
@@ -106,25 +106,10 @@ impl TerminalBroker for ChannelBroker {
     }
 }
 
-/// The spinner's frames.
-///
-/// ASCII rather than braille: braille spinners are missing or double-width in
-/// too many of the fonts a server console actually has, and a spinner that
-/// renders as a blank or shifts the columns beside it is worse than none.
-const SPINNER: [&str; 4] = ["-", "\\", "|", "/"];
-
-/// How often the spinner advances.
-///
-/// Slow enough to read as motion rather than a flicker, and fast enough that a
-/// quiet command still visibly differs from a frozen screen.
-const SPINNER_INTERVAL: Duration = Duration::from_millis(250);
-
 /// A task running on another thread.
 pub struct Running {
     /// Which task is running, for the interface to name.
     pub task_id: &'static str,
-    /// When it started, for the elapsed clock.
-    started: Instant,
     updates: Receiver<Update>,
     /// Set when the operator asks to stop.
     ///
@@ -193,32 +178,10 @@ impl Running {
 
         Self {
             task_id,
-            started: Instant::now(),
             updates,
             cancel,
             cancelling: false,
         }
-    }
-
-    /// How long the task has been running, as `m:ss`.
-    ///
-    /// One of the liveness signals: a wall clock advances whether or not the
-    /// child says anything, so a slow package manager stays distinguishable
-    /// from a stalled one.
-    pub fn elapsed(&self, now: Instant) -> String {
-        let seconds = now.duration_since(self.started).as_secs();
-
-        format!("{}:{:02}", seconds / 60, seconds % 60)
-    }
-
-    /// The spinner frame for this moment.
-    ///
-    /// Driven by the clock rather than by arriving output, which is the point:
-    /// it keeps moving through a command that produces nothing for a minute.
-    pub fn spinner(&self, now: Instant) -> &'static str {
-        let ticks = now.duration_since(self.started).as_millis() / SPINNER_INTERVAL.as_millis();
-
-        SPINNER[ticks as usize % SPINNER.len()]
     }
 
     /// Takes whatever the task has reported since the last call.
@@ -354,48 +317,6 @@ mod tests {
         // Whatever this returns, it must return: a blocking drain would freeze
         // the interface between redraws.
         let _ = running.drain();
-    }
-
-    #[test]
-    fn the_clock_reads_as_minutes_and_seconds() {
-        let running = Running::start("ssh.install", debian(), ParamValues::new());
-        let start = running.started;
-
-        assert_eq!(running.elapsed(start), "0:00");
-        assert_eq!(running.elapsed(start + Duration::from_secs(7)), "0:07");
-        assert_eq!(running.elapsed(start + Duration::from_secs(75)), "1:15");
-    }
-
-    #[test]
-    fn the_spinner_advances_on_the_clock_not_on_output() {
-        // A command that says nothing for a minute still has to look alive.
-        let running = Running::start("ssh.install", debian(), ParamValues::new());
-        let start = running.started;
-
-        let frames: Vec<&str> = (0..SPINNER.len())
-            .map(|tick| running.spinner(start + SPINNER_INTERVAL * tick as u32))
-            .collect();
-
-        let mut unique = frames.clone();
-        unique.sort_unstable();
-        unique.dedup();
-
-        assert_eq!(unique.len(), SPINNER.len(), "every frame is distinct");
-        assert_eq!(
-            running.spinner(start + SPINNER_INTERVAL * SPINNER.len() as u32),
-            frames[0],
-            "the sequence wraps"
-        );
-    }
-
-    #[test]
-    fn the_spinner_is_single_width_ascii() {
-        // Braille frames are missing or double-width in too many of the fonts
-        // a server console actually has.
-        for frame in SPINNER {
-            assert_eq!(frame.chars().count(), 1, "{frame:?} must be one cell");
-            assert!(frame.is_ascii(), "{frame:?} must be ASCII");
-        }
     }
 
     #[test]

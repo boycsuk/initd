@@ -28,7 +28,6 @@ pub mod probe;
 pub mod render;
 pub mod search;
 pub mod signals;
-pub mod status;
 pub mod style;
 pub mod verify;
 pub mod worker;
