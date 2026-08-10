@@ -743,7 +743,10 @@ package manager — so where a capability is not a package on this family (Zelli
 and Caddy on Debian arrive as verified release binaries) the undo deletes a
 file and both words name the same `rm`. RHEL is the same shape for a different
 reason, rpm having no purge at all. A form whose only field is filtered out
-this way opens no form: the confirmation follows the keypress directly. The CLI
+this way opens no form: the confirmation follows the keypress directly, which
+is also what `users.lock-root` now does — for the opposite reason, having no
+fields to filter. It asked which account keeps access and did nothing with the
+answer but check it, so it reads the host instead and shows what it found. The CLI
 still takes `removal=` on those hosts and reports that it could not be
 honoured, because a script written against a host that packages the capability
 should not quietly mean something weaker on one that does not. They were typed by
@@ -884,12 +887,21 @@ disbelieve all of it.
 | Key | Action |
 |-----|--------|
 | `Tab` / `←` / `→` | Switch between Yes and No |
+| `↑` / `↓` / `k` / `j` | Scroll the warning, where it has more than it shows |
 | `y` | Apply |
 | `n` / `Esc` | Cancel |
 | `Enter` | Confirm the current answer |
 
 The dialog opens on **No**, so a stray `Enter` cannot start a change. `n` and `Esc` both mean the safe answer, so the reflex to back out
 lands on it whichever key it reaches for.
+
+The warning scrolls because one of them carries a list rather than a sentence:
+`users.lock-root` names every account that keeps access, which is unbounded —
+one row per administrator the host has. A dialog sized to all of them would
+grow past the terminal, where centring clamps it and the answers at the bottom
+are what disappear. So the band is capped and scrolls instead, and the scroll
+hint appears only on a dialog that has rows below the fold: a key hint for a
+key that moves nothing is how a bar stops being read.
 
 ## Running a privileged task
 

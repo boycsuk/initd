@@ -382,6 +382,13 @@ pub enum Msg {
     ConfirmYes,
     ConfirmNo,
     ConfirmKeyHint,
+    /// Appended to the hint above where the warning has rows below the fold.
+    ///
+    /// Shown only when scrolling moves something, which today is one dialog:
+    /// `users.lock-root` lists every account that keeps access, and a host with
+    /// a dozen administrators has more than the band can hold. A hint for a key
+    /// that does nothing is how a bar stops being read.
+    ConfirmScrollHint,
 
     // --- Interface: output ---
     //

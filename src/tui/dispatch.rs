@@ -623,6 +623,17 @@ impl App {
 
         match key.code {
             KeyCode::Tab | KeyCode::Left | KeyCode::Right => confirm.toggle(),
+            // The warning scrolls where it carries a list — `users.lock-root`
+            // names every account that keeps access, and a host with a dozen
+            // administrators has more of them than the band can show. Up and
+            // down rather than left and right, which already answer the
+            // question; `j` and `k` beside them, as the tree has them.
+            //
+            // `n` is not among these even though `j`/`k` are: it is the safe
+            // answer, and a key that sometimes scrolls and sometimes cancels
+            // is one nobody presses with confidence.
+            KeyCode::Down | KeyCode::Char('j') => confirm.scroll_warning(1),
+            KeyCode::Up | KeyCode::Char('k') => confirm.scroll_warning(-1),
             // `n` and `Esc` both mean the safe answer, so the reflex to back
             // out of something lands on it whichever key it reaches for.
             KeyCode::Esc | KeyCode::Char('n' | 'N') => self.cancel_confirmation(),

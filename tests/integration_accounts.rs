@@ -10,39 +10,7 @@
 
 mod common;
 
-use common::{Image, run_in_container, stdout_of};
-
-/// The group granting administrative rights on an image.
-///
-/// Five families, two answers: Debian grants sudo through `sudo`, while the
-/// rest use `wheel` — Alpine because it ships `doas`, whose default
-/// configuration grants that group.
-///
-/// The name is the whole answer on four of them and not on openSUSE, where
-/// `%wheel` ships commented out and membership alone grants nothing. That is
-/// the backend's concern rather than this helper's: what is asked for here is
-/// the group a scenario should add an account to, which is `wheel` either way.
-/// A scenario concluding "this account can escalate" from membership alone
-/// would be unsound there, and none does.
-fn admin_group(image: &Image) -> &'static str {
-    if image.name.contains("debian") {
-        "sudo"
-    } else {
-        "wheel"
-    }
-}
-
-/// The command that creates an account on an image.
-///
-/// `useradd` comes from the shadow suite; busybox provides `adduser` instead,
-/// and its flags differ in meaning rather than in spelling.
-fn create_account(image: &Image) -> &'static str {
-    if image.name.contains("alpine") {
-        "adduser -D -H"
-    } else {
-        "useradd -m"
-    }
-}
+use common::{Image, admin_group, create_account, run_in_container, stdout_of};
 
 /// Runs a task and returns everything it printed, out and err together.
 ///

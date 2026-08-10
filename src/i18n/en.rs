@@ -392,6 +392,7 @@ pub(super) fn render(message: &Msg) -> String {
         // while `Enter` commits is the one place in the interface where the
         // two differ — guessing wrong here applies the change.
         Msg::ConfirmKeyHint => "      (Tab to switch, Enter to confirm, Esc to cancel)".to_owned(),
+        Msg::ConfirmScrollHint => "  ↑↓ to scroll the list".to_owned(),
 
         // --- Interface: output ---
         Msg::OutputTitle => "output".to_owned(),

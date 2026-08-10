@@ -639,7 +639,7 @@ for_each_image! {
         let observed = observe(
             image,
             "cp /etc/shadow /tmp/before; \
-                 initd run users.lock-root admin=deploy >/tmp/o 2>&1; \
+                 initd run users.lock-root >/tmp/o 2>&1; \
                  echo exit=$?; cat /tmp/o; \
                  before=$(sha256sum </tmp/before); \
                  after=$(sha256sum </etc/shadow); \
