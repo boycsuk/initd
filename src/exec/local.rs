@@ -424,10 +424,17 @@ impl Executor for LocalExecutor {
                         source,
                     })?;
 
+                // Stripped here as well as in `spawn_reader`, because these are
+                // two independent paths to the same text and only one of them
+                // was covered. This is the one taken with no observer — the
+                // command line, and every backend that reads what a program
+                // printed — and it is also where a failing command's stderr
+                // comes from, which is what `CommandFailed` carries into the
+                // report an operator reads.
                 (
                     output.status.code(),
-                    String::from_utf8_lossy(&output.stdout).into_owned(),
-                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                    without_escapes(&String::from_utf8_lossy(&output.stdout)),
+                    without_escapes(&String::from_utf8_lossy(&output.stderr)),
                 )
             }
         };
@@ -469,11 +476,92 @@ fn spawn_reader(
 
             // A send failure means the drain has gone; nothing would read
             // anything sent after it.
-            if sender.send(OutputLine { stream, text }).is_err() {
+            if sender
+                .send(OutputLine {
+                    stream,
+                    text: without_escapes(&text),
+                })
+                .is_err()
+            {
                 break;
             }
         }
     })
+}
+
+/// Strips terminal escape sequences from a line of a command's output.
+///
+/// A child inherits no terminal here — its output is a pipe — but plenty of
+/// programs colour unconditionally, and `dockerd-rootless-setuptool.sh` is one:
+/// its `[ERROR]` arrived as `\x1b[101m\x1b[97m[ERROR]\x1b[49m\x1b[39m`. Ratatui
+/// draws that as text rather than acting on it, so the codes were on screen as
+/// `[101m[97m[ERROR]` — and in the transcript that gets pasted into a bug
+/// report.
+///
+/// Stripped rather than interpreted. Interpreting means translating SGR into
+/// ratatui styles and deciding what to do with everything that is not a colour;
+/// this keeps the words, which is what the report is for. Done here rather than
+/// at the pane because this is the one place every line of every command passes
+/// through, and the transcript needs it as much as the screen does.
+///
+/// Handles the two forms a program actually emits: CSI (`\x1b[` … final byte in
+/// `@`-`~`), which is all of SGR and the cursor moves, and OSC (`\x1b]` …
+/// terminated by BEL or ST), which is how a title is set. A lone `\x1b` with
+/// nothing recognisable after it is dropped along with the byte following it —
+/// leaving it in would put the escape back on screen.
+fn without_escapes(text: &str) -> String {
+    if !text.contains('\x1b') {
+        // The overwhelmingly common case, and worth not allocating for: this
+        // runs on every line of every command.
+        return text.to_owned();
+    }
+
+    let mut clean = String::with_capacity(text.len());
+    let mut characters = text.chars();
+
+    while let Some(character) = characters.next() {
+        if character != '\x1b' {
+            clean.push(character);
+            continue;
+        }
+
+        match characters.next() {
+            // CSI: parameters and intermediates, then one final byte that ends
+            // the sequence. Consuming through the final byte is what stops a
+            // colour's digits being left behind as `101m`.
+            Some('[') => {
+                for parameter in characters.by_ref() {
+                    if matches!(parameter, '@'..='~') {
+                        break;
+                    }
+                }
+            }
+            // OSC: ends at BEL, or at ST — an escape followed by a backslash.
+            Some(']') => {
+                while let Some(parameter) = characters.next() {
+                    match parameter {
+                        '\u{7}' => break,
+                        '\x1b' => {
+                            // The `\` of an ST belongs to the terminator; any
+                            // other escape starts something new, so it is not
+                            // consumed here.
+                            if characters.clone().next() == Some('\\') {
+                                characters.next();
+                            }
+
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // A two-character escape (`\x1bc`, `\x1b7`) or a stray one at the
+            // end of the line. Either way nothing of it belongs on screen.
+            _ => {}
+        }
+    }
+
+    clean
 }
 
 /// Writes the command's stdin payload on a separate thread.
@@ -551,6 +639,77 @@ mod tests {
 
         assert!(out.success());
         assert_eq!(out.stdout.trim(), "hello");
+    }
+
+    #[test]
+    fn a_real_command_output_is_stripped_on_both_paths() {
+        // The unit tests below exercise `without_escapes` directly; this runs a
+        // command, because the strip has to happen on *two* independent paths
+        // and only one of them was covered at first. `spawn_reader` handles the
+        // streaming case, and this — no observer — is the other: the command
+        // line, every backend that parses what a program printed, and the
+        // `stderr` a failing command carries into `CommandFailed`, which is what
+        // an operator reads in the report.
+        let out = executor()
+            .run(
+                &Command::new("sh")
+                    .arg("-c")
+                    .arg("printf '\\033[101m[ERROR]\\033[0m one\\ntwo\\n' >&2; exit 1"),
+            )
+            .expect("sh must run");
+
+        assert_eq!(
+            out.stderr, "[ERROR] one\ntwo\n",
+            "the codes go and the newlines stay"
+        );
+        assert_eq!(out.code, 1, "stripping must not disturb the outcome");
+    }
+
+    #[test]
+    fn a_colouring_script_reaches_the_pane_as_words() {
+        // The exact bytes `dockerd-rootless-setuptool.sh` emitted, which reached
+        // the screen as `[101m[97m[ERROR][49m[39m Refusing…` because ratatui
+        // draws an escape as text rather than acting on it.
+        let coloured = "\x1b[101m\x1b[97m[ERROR]\x1b[49m\x1b[39m Refusing to install";
+
+        assert_eq!(
+            without_escapes(coloured),
+            "[ERROR] Refusing to install",
+            "the words survive and the codes do not"
+        );
+    }
+
+    #[test]
+    fn nothing_of_an_escape_is_left_behind() {
+        // Each of these left something on screen under a lesser strip: the
+        // parameters of a CSI whose final byte was not consumed (`101m`), an
+        // OSC's title text, or the escape itself.
+        for (input, expected) in [
+            // Two-parameter SGR, and a reset.
+            ("\x1b[1;31mbold red\x1b[0m", "bold red"),
+            // A cursor move, which is not a colour at all.
+            ("before\x1b[2Kafter", "beforeafter"),
+            // OSC terminated by BEL, then by ST.
+            ("\x1b]0;a title\u{7}text", "text"),
+            ("\x1b]0;a title\x1b\\text", "text"),
+            // A two-character escape, and a stray one at the end of a line.
+            ("\x1bcreset", "reset"),
+            ("trailing\x1b", "trailing"),
+            // 256-colour and truecolour forms, which carry the most digits.
+            ("\x1b[38;5;208morange\x1b[0m", "orange"),
+            ("\x1b[38;2;255;0;0mred\x1b[0m", "red"),
+        ] {
+            assert_eq!(without_escapes(input), expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_with_no_escape_is_returned_unchanged() {
+        // The overwhelmingly common case. Also pins that the fast path does not
+        // alter anything — a `[` in ordinary output is not the start of one.
+        let plain = "Removed /etc/systemd/system/docker.service [ok]";
+
+        assert_eq!(without_escapes(plain), plain);
     }
 
     #[test]

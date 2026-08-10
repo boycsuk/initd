@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state, which is worse than a task that did not run).
 
 ### Fixed
+- Terminal escape sequences are stripped from what a command prints, so a script
+  that colours unconditionally no longer puts raw codes on the screen. A child
+  here inherits a pipe rather than a terminal, and plenty of programs colour
+  anyway: `dockerd-rootless-setuptool.sh` emitted its `[ERROR]` wrapped in SGR,
+  ratatui drew the escapes as text, and the operator read
+  `[101m[97m[ERROR][49m[39m Refusing to install…`. Stripped rather than
+  interpreted — the words are what a bug report needs — and stripped at the
+  executor, which is where every line of every command already passes and so
+  covers the transcript as well as the pane.
+
+  Two independent paths reach the same text and only one was covered at first.
+  `spawn_reader` handles the streamed case; the unobserved capture is the other,
+  and it is the one the CLI takes, every backend that parses what a program
+  printed, and the `stderr` a failing command carries into `CommandFailed` — so
+  the report an operator reads was still full of codes after the first fix. Found
+  by running a real command rather than by reasoning about the two call sites.
 - Closing a form or declining a confirmation no longer leaves `cancelled` on the
   border. It stated back a decision the operator had just made, and outlived the
   moment: nothing clears the status until the next thing sets it, so the word sat
