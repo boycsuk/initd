@@ -6,6 +6,7 @@
 //! its own because the command that answers it is not universal — `getent` is
 //! absent from busybox, which Alpine ships.
 
+use crate::backend::posix_accounts::RankedAccount;
 use crate::error::Result;
 use crate::exec::Executor;
 
@@ -30,6 +31,27 @@ pub trait AccountReader {
     /// the operator knows more than the file does.
     fn list(&self, executor: &dyn Executor) -> Result<Vec<String>> {
         crate::backend::posix_accounts::list_accounts(executor)
+    }
+
+    /// Every account on the host, each with the rank that ordered it.
+    ///
+    /// Separate from [`AccountReader::list`] rather than replacing it, because
+    /// the two answer different questions and only one of them is a contract.
+    /// `list` offers suggestions to a chooser and says so; this one is what a
+    /// caller uses when it has to *reason* about the accounts — today
+    /// `users.lock-root`, which asks every one of them whether it can still get
+    /// into the machine.
+    ///
+    /// The rank orders and never filters, which is the rule
+    /// [`crate::backend::posix_accounts::list_ranked_accounts`] states and this
+    /// inherits: a caller may consult the human accounts first, and must still
+    /// reach the rest.
+    ///
+    /// A default for the reason `list` gives above: the file is the same file
+    /// on every family, so answering it per-family would be answering it
+    /// identically.
+    fn list_ranked(&self, executor: &dyn Executor) -> Result<Vec<RankedAccount>> {
+        crate::backend::posix_accounts::list_ranked_accounts(executor)
     }
 
     /// The account's home directory, as the passwd database records it.
@@ -97,6 +119,52 @@ pub fn home_from_passwd_line(line: &str, user: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::posix_accounts::Rank;
+    use crate::backend::unix_accounts::UnixAccounts;
+    use crate::exec::mock::{MockExecutor, Reply};
+
+    /// A passwd file with one of each rank in it.
+    const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
+         www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n\
+         alice:x:1000:1000::/home/alice:/bin/sh\n";
+
+    #[test]
+    fn the_trait_offers_the_rank_alongside_the_name() {
+        // Reached through the trait rather than the free function, because what
+        // the caller holds is a `&dyn AccountReader` and a default that did not
+        // compile through it would be a method nobody can call.
+        let mock = MockExecutor::with_replies([Reply::ok(PASSWD)]);
+
+        let accounts = UnixAccounts
+            .list_ranked(&mock)
+            .expect("a readable file lists its accounts");
+
+        assert_eq!(
+            accounts
+                .iter()
+                .map(|account| (account.name.as_str(), account.rank))
+                .collect::<Vec<_>>(),
+            vec![
+                ("root", Rank::Root),
+                ("alice", Rank::Human),
+                ("www-data", Rank::System),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_chooser_contract_is_unchanged_by_the_ranked_list_existing() {
+        // `list` is what the form offers as suggestions, and its contract —
+        // suggestions, never the permitted set — is one this addition must not
+        // touch. Pinned here rather than assumed, since the two now share a
+        // parse.
+        let mock = MockExecutor::with_replies([Reply::ok(PASSWD)]);
+
+        assert_eq!(
+            UnixAccounts.list(&mock).expect("the names must list"),
+            vec!["root", "alice", "www-data"]
+        );
+    }
 
     #[test]
     fn the_home_is_the_sixth_field() {

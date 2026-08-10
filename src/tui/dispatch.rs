@@ -28,7 +28,7 @@ use super::search::Search;
 use super::status::State;
 use crate::i18n::{Msg, RevertReason};
 use crate::tasks::params::{ParamValues, Suggestions};
-use crate::tasks::users::{DeleteUser, LockRoot};
+use crate::tasks::users::{Credentials, DeleteUser, Examined, LockRoot, escalated_from};
 use crate::tasks::{Confirmation, Node};
 
 impl App {
@@ -806,13 +806,9 @@ impl App {
         // reaches the task that means it.
         self.confirm = Some(match task.confirmation() {
             Confirmation::Lockout => {
-                let warning = match self.pending_values.get(LockRoot::ADMIN) {
-                    Ok(admin) if task.id() == LockRoot::ID => {
-                        self.lang.render(&Msg::ConfirmRootLockout {
-                            admin: admin.to_owned(),
-                        })
-                    }
-                    _ if task.id() == DeleteUser::ID => self.deletion_warning(),
+                let warning = match task.id() {
+                    LockRoot::ID => self.lockout_warning(),
+                    DeleteUser::ID => self.deletion_warning(),
                     _ => self.lang.render(&Msg::ConfirmLockoutWarning),
                 };
 
@@ -820,6 +816,67 @@ impl App {
             }
             Confirmation::Change | Confirmation::None => confirm,
         });
+    }
+
+    /// Shows which accounts survive locking root, rather than asking for one.
+    ///
+    /// The second warning here that runs commands, and by far the more
+    /// expensive: it scans every account on the host — around twenty-five
+    /// privileged commands — where `deletion_warning` spends two. Paid at the
+    /// moment the dialog opens rather than in the path of a keystroke, which is
+    /// the rule that warning already follows, and paid at all because the
+    /// alternative was asking the operator to type a name the machine already
+    /// knew.
+    ///
+    /// Listing every account that passes rather than the first is what the
+    /// scan exists for: the operator's decision is whether *their* account is
+    /// among them, which a list of one cannot answer.
+    ///
+    /// A scan that cannot run falls back to the generic warning rather than to
+    /// silence or to a claim. The task runs the same scan again and refuses on
+    /// its own terms, which is a better place to fail than a dialog.
+    pub(super) fn lockout_warning(&self) -> String {
+        let Ok(examined) = LockRoot::verify_a_way_back_in(
+            self.executor.as_ref(),
+            self.backend.as_ref(),
+            &mut |_| {},
+        ) else {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        let keeping: Vec<&Examined> = examined
+            .iter()
+            .filter(|account| account.keeps_access())
+            .collect();
+
+        let mut lines = vec![self.lang.render(&Msg::ConfirmRootLockout {
+            keeping: keeping.len(),
+        })];
+
+        lines.extend(keeping.iter().filter_map(|account| {
+            let Ok(Credentials { key, password }) = account.verdict else {
+                return None;
+            };
+
+            Some(self.lang.render(&Msg::ConfirmKeepsAccess {
+                user: account.user.clone(),
+                key,
+                password,
+            }))
+        }));
+
+        // Only where nothing answers. `SUDO_USER` and `DOAS_USER` are the only
+        // things that say who escalated into this session — every command
+        // describes the process, which by then is root — and they are set by
+        // the subject itself, so this is a warning and never a refusal.
+        // Refusing on an unanswerable question would leave the provider's
+        // rescue console, which arrives as root directly, unable to run the one
+        // task it is there for.
+        if escalated_from().is_none() {
+            lines.push(self.lang.render(&Msg::ConfirmSessionAccountUnknown));
+        }
+
+        lines.join("\n")
     }
 
     /// States what deleting this account destroys, in the terms it destroys it.

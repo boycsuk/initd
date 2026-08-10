@@ -215,31 +215,18 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::GroupMembershipFailed { user, group } => {
             format!("{user} was not added to {group}, though the command reported success")
         }
-        // Names the group, since the usual cause is that this distribution
-        // calls it something else.
-        Msg::NotAnAdministrator { user, group } => {
-            format!("{user} is not in {group}, so it cannot escalate once root is locked")
-        }
-        // Deliberately not the message above: {user} *is* in {group}, and
-        // saying otherwise would send the operator to `usermod` for a problem
-        // that command cannot fix. The cause is the distribution's own sudoers,
-        // so the message names the file and the line to uncomment.
-        Msg::AdminGroupGrantsNothing { user, group } => {
+        // The count rather than a name, because there is no name to report: the
+        // host was scanned and none of what it holds can get back in. Says how
+        // many were looked at so the claim asserts no more than was measured —
+        // and points at the report, which carries the reason for each one.
+        Msg::NoWayBackIn { examined } => {
             format!(
-                "{user} is in {group}, but this distribution ships the rule granting it \
-                 commented out, so the account still cannot escalate — uncomment \
-                 \"%{group} ALL=(ALL:ALL) ALL\" in /etc/sudoers before locking root"
+                "no account on this host can log in and escalate once root is locked \
+                 — {examined} were examined, and the report above says why each was \
+                 set aside. Give one of them a key or a password, and membership of \
+                 the administrative group, before locking root"
             )
         }
-        Msg::NoWayBackIn { user } => {
-            format!(
-                "{user} has neither an authorised key nor a usable password, so it \
-                 cannot log in anywhere — give it one before locking root"
-            )
-        }
-        Msg::AdminCannotBeRoot => "root cannot be the account that stays usable: it is the \
-             one being locked"
-            .to_owned(),
         Msg::CannotDeleteRoot => "root cannot be deleted. Locking it is offered instead, \
              which refuses unless another account can still get in — a machine \
              with no root is not one this tool can put back"
@@ -645,12 +632,36 @@ pub(super) fn render(message: &Msg) -> String {
                  administering this machine as, this ends your access to it."
             )
         }
-        Msg::ConfirmRootLockout { admin } => {
+        // Heads a list rather than naming one account, because the host was
+        // scanned rather than asked about. The operator's decision is whether
+        // their own account is among what follows — which is a thing they can
+        // check, unlike the name they used to be asked to supply.
+        Msg::ConfirmRootLockout { keeping } => {
+            let accounts = if *keeping == 1 { "account" } else { "accounts" };
+
             format!(
                 "root will no longer log in by any route, including the provider's \
-                 rescue console. From here on this machine is administered as \
-                 {admin} — check that name is right."
+                 rescue console. {keeping} {accounts} can still get in and administer \
+                 this machine — check that yours is one of them:"
             )
+        }
+        // The credentials in one line, because this is a list the operator
+        // scans for their own name and an account spread over two rows is one
+        // that pushes another off the bottom.
+        Msg::ConfirmKeepsAccess {
+            user,
+            key,
+            password,
+        } => format!("  {user} — {}", credentials(*key, *password)),
+        // Said rather than left out. Nothing on the host answers which account
+        // escalated into this session — every command describes the process,
+        // which by then is root — so the dialog states the limit instead of
+        // marking a row it cannot justify.
+        Msg::ConfirmSessionAccountUnknown => {
+            "Which of these you are connected as could not be determined, so none \
+             is marked. If your account is not listed above, this will end your \
+             access to this machine."
+                .to_owned()
         }
 
         // --- Interface: terminal too small ---
@@ -756,7 +767,29 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::TaskNothingToDo { what } => format!("{what}; nothing to do"),
 
-        Msg::TaskUserExists { user } => format!("{user} exists"),
+        Msg::TaskScanningAccounts => "Scanning accounts for a way back in...".to_owned(),
+        Msg::TaskAccountKeepsAccess {
+            user,
+            key,
+            password,
+        } => format!(
+            "  {user} — {} -> KEEPS ACCESS",
+            credentials(*key, *password)
+        ),
+        Msg::TaskAccountNotAnAdministrator { user, group } => {
+            format!("  {user} — not in {group}")
+        }
+        // Deliberately not the line above: this account *is* in the group, and
+        // saying otherwise would send the operator to `usermod` for a problem
+        // that command cannot fix. The cause is the distribution's own sudoers,
+        // so it names the file and the line to uncomment.
+        Msg::TaskAccountGroupGrantsNothing { user, group } => format!(
+            "  {user} — in {group}, but {group} grants nothing here: uncomment \
+             \"%{group} ALL=(ALL:ALL) ALL\" in /etc/sudoers"
+        ),
+        Msg::TaskAccountCannotAuthenticate { user } => {
+            format!("  {user} — no authorised key and no usable password")
+        }
         Msg::TaskCreatingUser { user } => format!("Creating {user}..."),
         Msg::TaskUserCreated { user } => format!("{user} created"),
         Msg::TaskAddingToGroup { user, group } => format!("Adding {user} to {group}..."),
@@ -917,5 +950,26 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskWireguardInterface { interface, address } => {
             format!("{interface} is at {address}")
         }
+    }
+}
+
+/// What an account authenticates with, as one phrase.
+///
+/// Inside this module rather than in the catalogue because it *is* English: the
+/// conjunction joining two credentials is a word, and a language that joins
+/// them differently renders this its own way. Both are named when both hold
+/// rather than reporting the first found — "holds a key" and "has a password"
+/// send an operator to different places if locking root turns out to have been
+/// the wrong call.
+///
+/// Called only where at least one holds, which is what makes the last arm
+/// unreachable in practice; it answers anyway rather than panicking, since this
+/// runs as root on somebody's server.
+fn credentials(key: bool, password: bool) -> &'static str {
+    match (key, password) {
+        (true, true) => "key + password",
+        (true, false) => "key",
+        (false, true) => "password",
+        (false, false) => "no credential",
     }
 }
