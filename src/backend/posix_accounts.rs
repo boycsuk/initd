@@ -55,12 +55,36 @@ const FIRST_HUMAN_UID: u32 = 1000;
 /// Shells that mean "this account does not log in".
 ///
 /// Named rather than pattern-matched on `nologin`, because `/bin/false` shares
-/// none of its spelling and does the same job.
-const NON_LOGIN_SHELLS: [&str; 4] = [
+/// none of its spelling and does the same job — and neither do the three
+/// action shells below, which run something and exit.
+///
+/// Every entry was read out of an image's own `/etc/passwd` rather than
+/// reasoned about, and the list was short by five before anyone did that:
+///
+/// - **`/usr/bin/nologin`** is Arch's, which merged `/sbin` into `/usr/bin`.
+///   The costliest omission by far: it is what *every* system account on Arch
+///   carries, so the whole family ranked as `Human`. The paths resolve to one
+///   file there, and this compares the text `/etc/passwd` holds, so the symlink
+///   does not close it.
+/// - **`/bin/nologin`** for the same reason, since Arch answers to both.
+/// - **`/sbin/halt`** and **`/sbin/shutdown`** on Alpine and Rocky. An account
+///   whose shell powers the machine off is not one a person logs in as.
+/// - **`/bin/sync`** on Debian, Alpine and Rocky.
+///
+/// This orders and never filters — see [`FIRST_HUMAN_UID`] — so a name missing
+/// here has never hidden an account from `users.lock-root`. What it costs is
+/// the ordering: on Arch the scan consulted forty service accounts before the
+/// two that matter, and the chooser opened on them.
+const NON_LOGIN_SHELLS: [&str; 9] = [
     "/usr/sbin/nologin",
     "/sbin/nologin",
+    "/usr/bin/nologin",
+    "/bin/nologin",
     "/bin/false",
     "/usr/bin/false",
+    "/sbin/halt",
+    "/sbin/shutdown",
+    "/bin/sync",
 ];
 
 /// Every account on the host, the ones a person logs in as first.
@@ -464,6 +488,53 @@ mod tests {
             MockExecutor::with_replies([Reply::failure(1, "cat: /etc/passwd: No such file")]);
 
         assert!(list_accounts(&mock).is_err());
+    }
+
+    #[test]
+    fn every_non_login_shell_the_five_families_ship_is_recognised() {
+        // Read out of each image's own `/etc/passwd` rather than reasoned
+        // about, which is how the list turned out to be short by five. Each
+        // account here is above the human threshold, so the shell is the only
+        // thing that can rank it — a name this list does not know makes a
+        // service account look like a person's.
+        //
+        // Arch is the case that mattered: `/usr/bin/nologin` is what *every*
+        // system account there carries, so the whole family ranked as `Human`.
+        // The paths are one file on that distribution and this compares the
+        // text `/etc/passwd` holds, so the symlink does not close it.
+        const SERVICE_SHELLS: [(&str, &str); 7] = [
+            ("debian", "/usr/sbin/nologin"),
+            ("arch", "/usr/bin/nologin"),
+            ("arch-alt", "/bin/nologin"),
+            ("alpine", "/sbin/nologin"),
+            ("halt", "/sbin/halt"),
+            ("shutdown", "/sbin/shutdown"),
+            ("sync", "/bin/sync"),
+        ];
+
+        for (name, shell) in SERVICE_SHELLS {
+            let entry = format!("{name}:x:1500:1500::/nonexistent:{shell}");
+            let parsed = parse_passwd_entry(&entry).expect("the fixture is a whole entry");
+
+            assert_eq!(
+                parsed.rank,
+                Rank::System,
+                "{shell} does not log anybody in, so {name} must not rank as a person"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_login_shell_above_the_threshold_is_still_a_person() {
+        // The other direction, so the fix cannot be "call everything System":
+        // the list grew by five, and a name that swallowed a login shell would
+        // push a real administrator to the back of the scan and the chooser.
+        for shell in ["/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/fish"] {
+            let entry = format!("alice:x:1000:1000::/home/alice:{shell}");
+            let parsed = parse_passwd_entry(&entry).expect("the fixture is a whole entry");
+
+            assert_eq!(parsed.rank, Rank::Human, "{shell} is a shell a person uses");
+        }
     }
 
     #[test]

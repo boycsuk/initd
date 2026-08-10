@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `NON_LOGIN_SHELLS` was short by five names, so accounts that log nobody in
+  were ranked as people. Read out of each image's own `/etc/passwd` rather than
+  reasoned about, which is what the list had been. `/usr/bin/nologin` is the
+  costly one: Arch merged `/sbin` into `/usr/bin`, so that is what *every*
+  system account there carries, and the whole family ranked as `Human` — the
+  scan consulted forty service accounts before the two that matter, and the
+  account chooser opened on them. `/bin/nologin` answers on Arch too;
+  `/sbin/halt` and `/sbin/shutdown` are on Alpine and Rocky, `/bin/sync` on
+  Debian, Alpine and Rocky. The paths resolve to one file on Arch, which does
+  not close it: this compares the text `/etc/passwd` holds.
+
+  Ordering only. The rank orders and never filters, so no account was ever
+  hidden from `users.lock-root` by this — a property its own test already pins.
+  The fix was confirmed to fail against the previous list rather than assumed
+  to, and a second test asserts the reverse direction, since a list that grew
+  by five could as easily swallow a real login shell.
+
 ### Changed
 - `users.lock-root` no longer asks which account keeps access. It opened a form
   with a chooser offering every account on the host, and did exactly one thing
