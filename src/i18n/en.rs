@@ -1,6 +1,13 @@
 //! English message catalogue — the default and fallback language.
 
-use super::{Msg, RevertReason};
+use super::{ErrorField, Msg, RevertReason};
+
+/// Width the field labels are padded to, in columns.
+///
+/// The values line up in a column only if every label occupies the same width,
+/// and the widest English label is `architecture`. A locale with longer words
+/// sets its own: the padding belongs to the language, not to the caller.
+const FIELD_LABEL_WIDTH: usize = 12;
 
 /// Renders a message in English.
 ///
@@ -573,7 +580,6 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::StatusTaskNotSupported { task, family } => {
             format!("{task} is not supported on {family}")
         }
-        Msg::StatusTaskFailed { task } => format!("{task} — failed"),
         // Backticks around the command, as everywhere a command is named: it
         // is something to type rather than something to read.
         Msg::StatusStoppedBefore { task, before } => {
@@ -590,10 +596,57 @@ pub(super) fn render(message: &Msg) -> String {
 
             format!("{task} — {why}, previous configuration restored")
         }
-        Msg::StatusRevertFailed { task, error } => {
-            format!("{task} — could not restore: {error}")
-        }
+        Msg::StatusRevertFailed { task } => format!("{task} — could not restore"),
         Msg::OutputConsequencesHeading => "Consequences:".to_owned(),
+        // The task id is in the heading because the pane outlives the border:
+        // a transcript read back an hour later has to say which task the
+        // fields below belong to.
+        Msg::OutputFailedHeading { task } => format!("FAILED — {task}"),
+        Msg::OutputCancelledHeading { task } => format!("STOPPED — {task}"),
+        // "neither state" rather than "failed": the change was applied and
+        // putting it back did not work, which is worse than a task that did
+        // not run and is the one sentence the operator must not misread.
+        Msg::OutputRevertFailedHeading { task } => {
+            format!("COULD NOT RESTORE — {task} is in neither state")
+        }
+        // Padded to a common width so the values line up in a column. The
+        // labels are English words here and a locale with longer ones pads to
+        // its own width, which is why the padding is applied at render time
+        // rather than baked into the label.
+        Msg::OutputErrorField { label, value } => {
+            let name = match label {
+                ErrorField::Command => "command",
+                ErrorField::ExitCode => "exit code",
+                ErrorField::Stderr => "stderr",
+                ErrorField::Seconds => "waited",
+                ErrorField::Path => "path",
+                ErrorField::Expected => "expected",
+                ErrorField::Found => "found",
+                ErrorField::Repository => "repository",
+                ErrorField::Service => "service",
+                ErrorField::User => "user",
+                ErrorField::Group => "group",
+                ErrorField::Program => "program",
+                ErrorField::Version => "version",
+                ErrorField::Architecture => "architecture",
+                ErrorField::Cause => "cause",
+                ErrorField::Examined => "examined",
+                ErrorField::Count => "count",
+                ErrorField::Port => "port",
+                ErrorField::Address => "address",
+                ErrorField::Interface => "interface",
+                ErrorField::Task => "task",
+                ErrorField::Directive => "directive",
+                ErrorField::Value => "value",
+                ErrorField::Distribution => "distribution",
+                ErrorField::Kind => "kind",
+                ErrorField::Shell => "shell",
+                ErrorField::Digest => "digest",
+                ErrorField::Url => "url",
+            };
+
+            format!("{name:FIELD_LABEL_WIDTH$}  {value}")
+        }
 
         // --- Interface: confirmation warning ---
         //

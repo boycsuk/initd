@@ -66,17 +66,30 @@ pub enum State {
 impl State {
     /// Whether this state is worth naming on the border.
     ///
-    /// `Ready` is not. It is the state the tool is in whenever it is in no
-    /// other, so a border reading `READY` for most of a session says only that
-    /// the program is running — which the screen already says — and trains the
-    /// eye to skip the one place a failure will appear. Every other state
-    /// describes something the operator did not already know.
+    /// Three are not, for two different reasons.
     ///
-    /// Ready's *message* is still drawn when it has one: "cancelled" after a
-    /// stopped task is the state's own word for what happened, and dropping it
-    /// with the label would lose the report rather than a redundancy.
+    /// `Ready` is the state the tool is in whenever it is in no other, so a
+    /// border reading `READY` for most of a session says only that the program
+    /// is running — which the screen already says — and trains the eye to skip
+    /// the one place something might appear.
+    ///
+    /// `Failed` and `Cancelled` are excluded because they are *outcomes*, and
+    /// an outcome belongs in the transcript beside the commands that produced
+    /// it. The border is one line that ratatui truncates without an ellipsis,
+    /// so the report it could carry was a task id and a word — `docker.uninstall
+    /// — failed` — while the exit code and the stderr that say *why* were
+    /// either cut or never there. Naming the outcome twice also splits the
+    /// operator's attention between a corner and a pane at the moment the pane
+    /// is what has to be read. The pane now carries the whole failure in
+    /// labelled fields; see `App::report_failure`.
+    ///
+    /// The states that remain are the ones describing something *in progress*
+    /// or *awaited*: `Running`, `Verify`, `Confirm`, `Input` and `Unsupported`.
+    /// A border is the right place for those precisely because they are not a
+    /// report — they say what the tool is doing now, and none of them has a
+    /// transcript of its own to sit in.
     pub const fn is_worth_naming(self) -> bool {
-        !matches!(self, Self::Ready)
+        !matches!(self, Self::Ready | Self::Failed | Self::Cancelled)
     }
 
     /// The message naming this state, for the catalogue to render.

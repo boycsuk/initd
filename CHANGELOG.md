@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- A failed task is reported in the output pane, in labelled fields, and the
+  status border names no outcome at all. `FAILED` and `CANCELLED` leave the
+  border for the same reason `READY` was already off it: an outcome belongs
+  beside the commands that produced it. The border is one line that ratatui
+  truncates without an ellipsis, so what it could carry was a task id and a
+  word — `docker-rootless.uninstall — failed` — while the exit code and the
+  stderr that say *why* were either buried mid-sentence or cut. The states left
+  on the border are the ones describing something in progress or awaited, which
+  have no transcript of their own to sit in.
+
+  The structure was always there and was thrown away: `CommandFailed` carries
+  `command`, `code` and `stderr` as three values, and every failure was
+  flattened to one sentence before anything stored it. `Error::to_fields` is a
+  second seam to text beside `to_msg`, exhaustive rather than defaulted — a
+  variant added without deciding its labels fails to compile, since the
+  alternative is a new error rendering as an empty block at the moment somebody
+  needs it most. Errors whose whole content is a sentence with no value in it
+  keep that sentence: a heading over an empty column reports less than the line
+  it replaced.
+
+  Three headings, distinguished because they call for different actions:
+  `FAILED`, `STOPPED` (naming the command it stopped *before*, so what ran and
+  what did not is legible) and `COULD NOT RESTORE` (the machine is in neither
+  state, which is worse than a task that did not run).
+
 ### Fixed
+- Two paths reported a failure only on the border, and one of them is the worst
+  outcome this tool can reach. `revert_change` rendered the error into a status
+  message and wrote nothing to the pane, so the evidence that a machine is in
+  neither state was exactly what truncation took; `restore_recorded` had the
+  same shape, its own comment already saying the two digests *are* the evidence.
+  Both go through the field report now.
+- Wrapped field values hang under the value rather than returning to the left
+  margin, where a continuation read as another label in the column above it.
+  Found by rendering a frame rather than by a test: ratatui's `Wrap` knows
+  nothing about indents. Writing its test then found a second defect — a break
+  landing on a space carried it into the next row, moving that row one cell out
+  of the column, invisible until the third row of a long value.
 - `NON_LOGIN_SHELLS` was short by five names, so accounts that log nobody in
   were ranked as people. Read out of each image's own `/etc/passwd` rather than
   reasoned about, which is what the list had been. `/usr/bin/nologin` is the

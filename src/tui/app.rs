@@ -1521,16 +1521,21 @@ mod tests {
     }
 
     #[test]
-    fn the_status_row_states_the_outcome_of_the_last_task() {
-        // Success and failure are pills of their own, so the outcome is
-        // legible from the left edge without reading the message.
+    fn the_status_row_states_what_the_tool_is_waiting_for() {
+        // The state has a word of its own, so it is legible without reading the
+        // message beside it.
+        //
+        // Driven by `Verify` because an outcome no longer draws here at all —
+        // see `an_outcome_never_reaches_the_border`. What this pins is the
+        // border still carrying a state that *is* worth naming, on a terminal
+        // wide enough for both panes.
         let mut app = test_app(Family::Debian);
-        app.status.set(State::Failed, "ssh.harden — invalid config");
+        app.status.set(State::Verify, "not yet kept");
 
         let rows = render_to_rows(&mut app, 80, 24);
 
-        assert!(rows[22].contains("FAILED"), "got {:?}", rows[22]);
-        assert!(rows[22].contains("invalid config"), "got {:?}", rows[22]);
+        assert!(rows[22].contains("VERIFY"), "got {:?}", rows[22]);
+        assert!(rows[22].contains("not yet kept"), "got {:?}", rows[22]);
     }
 
     /// Renders the app into an off-screen buffer and returns it as text rows.
@@ -1785,39 +1790,65 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_reaches_the_border_of_whichever_pane_is_showing() {
+    fn a_state_reaches_the_border_of_whichever_pane_is_showing() {
         // The status rides the right pane's bottom border, and on a terminal
         // too narrow for two panes that pane may not be drawn at all — so the
-        // tree takes it. Without that, pressing Tab back to the tree after a
-        // task failed hides the only report of the failure, which is the one
-        // thing this line exists to prevent.
+        // tree takes it. Without that, pressing Tab back to the tree hides the
+        // only report of what the tool is doing.
+        //
+        // Driven by `Verify` rather than `Failed`: an outcome no longer draws
+        // on the border at all, and `Verify` is the state whose word the
+        // operator must least afford to miss — a change is applied and waiting
+        // to be confirmed.
         let mut app = test_app(Family::Debian);
         app.status
-            .set(State::Failed, "ssh.harden — sshd -t rejected the config");
+            .set(State::Verify, "ssh.harden — applied, not yet kept");
 
         let narrow = render_to_rows(&mut app, 60, 15).join("\n");
 
-        assert!(narrow.contains("FAILED"), "got {narrow}");
-        assert!(narrow.contains("sshd -t rejected"), "got {narrow}");
+        assert!(narrow.contains("VERIFY"), "got {narrow}");
+        assert!(narrow.contains("not yet kept"), "got {narrow}");
     }
 
     #[test]
-    fn the_census_yields_the_border_rather_than_colliding_with_a_failure() {
+    fn an_outcome_never_reaches_the_border() {
+        // A failure is read in the transcript, beside the commands that
+        // produced it and with the exit code and stderr a border cannot hold.
+        // Naming it in the corner as well splits the operator's attention at
+        // the moment the pane is what has to be read.
+        //
+        // Asserted for both outcomes and against the word rather than the
+        // message, since a label with no message still draws.
+        for state in [State::Failed, State::Cancelled] {
+            let mut app = test_app(Family::Debian);
+            app.status.set(state, "");
+
+            let rendered = render_to_rows(&mut app, 60, 15).join("\n");
+
+            assert!(
+                !rendered.contains("FAILED") && !rendered.contains("CANCELLED"),
+                "{state:?} must not name itself on the border: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_census_yields_the_border_rather_than_colliding_with_the_status() {
         // Both ride the tree's bottom border once the tree is the whole body,
         // and ratatui draws two overlapping titles rather than arbitrating
-        // between them — which rendered the census as "6 ca FAILED …". The
+        // between them — which rendered the census as "6 ca VERIFY …". The
         // census counts rows already on screen; the status may be the only
-        // report of a task that failed, so the census is what goes.
+        // report of what the tool is waiting for, so the census is what goes.
         let mut app = test_app(Family::Debian);
         app.status
-            .set(State::Failed, "ssh.harden — sshd -t rejected the config");
+            .set(State::Verify, "ssh.harden — applied, not yet kept");
 
         let rows = render_to_rows(&mut app, 60, 15);
         let border = rows.last().expect("the tree's bottom border").clone();
 
         assert!(
-            border.contains("sshd -t rejected the config"),
-            "the failure must survive whole: {border}"
+            border.contains("applied, not yet kept"),
+            "the status must survive whole: {border}"
         );
         assert!(
             !border.contains("categor"),
@@ -1830,13 +1861,13 @@ mod tests {
         // The census only yields where it must; a short message leaves room
         // for both, and dropping it there would trade one signal for nothing.
         let mut app = test_app(Family::Debian);
-        app.status.set(State::Failed, "failed");
+        app.status.set(State::Verify, "kept");
 
         let rows = render_to_rows(&mut app, 60, 15);
         let border = rows.last().expect("the tree's bottom border").clone();
 
         assert!(border.contains("categor"), "got {border}");
-        assert!(border.contains("FAILED"), "got {border}");
+        assert!(border.contains("VERIFY"), "got {border}");
     }
 
     #[test]
@@ -2962,13 +2993,20 @@ mod tests {
         );
 
         assert_eq!(app.status.state(), State::Cancelled);
+
+        // In the transcript rather than on the border. The property is
+        // unchanged — the command it stopped before is named — and only the
+        // place moved, so the assertion follows it rather than being dropped.
+        let transcript = app.output.transcript();
         assert!(
-            app.status
-                .message(Instant::now())
-                .contains("systemctl restart ssh.service"),
-            "got {:?}",
-            app.status.message(Instant::now())
+            transcript.contains("systemctl restart ssh.service"),
+            "got {transcript:?}"
         );
+
+        // And the border says nothing, which is the half that would otherwise
+        // regress silently: a status message reintroduced here still leaves
+        // this test passing on the assertion above.
+        assert_eq!(app.status.message(Instant::now()), "");
     }
 
     /// Types a query into an open search, one key at a time.
@@ -3527,6 +3565,111 @@ mod tests {
         assert!(
             output.contains("2222"),
             "the warning must name the new port: {output}"
+        );
+    }
+
+    #[test]
+    fn a_failure_reports_its_fields_separately_rather_than_as_one_sentence() {
+        // The whole reason the report moved to the pane. `CommandFailed` holds
+        // three values, and the border flattened them into a line it then
+        // truncated without an ellipsis — so the exit code sat mid-sentence and
+        // a package manager's stderr was cut. Each is on its own row now.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run(
+            "docker-rootless.uninstall",
+            Err(crate::error::Error::CommandFailed {
+                command: "systemctl --user disable docker.service".to_owned(),
+                code: 5,
+                stderr: "Failed to disable unit: Unit docker.service not loaded.".to_owned(),
+            }),
+            false,
+        );
+
+        let transcript = app.output.transcript();
+
+        assert!(
+            transcript.contains("FAILED — docker-rootless.uninstall"),
+            "the heading names the task, since the border no longer does: {transcript}"
+        );
+
+        // Each field on a line of its own, under its own label. Asserting the
+        // labels rather than only the values is what catches a field rendered
+        // without one, which reads as a stray value in the log.
+        for expected in [
+            "command       systemctl --user disable docker.service",
+            "exit code     5",
+            "stderr        Failed to disable unit: Unit docker.service not loaded.",
+        ] {
+            assert!(
+                transcript.contains(expected),
+                "missing {expected:?}: {transcript}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_with_nothing_to_label_keeps_its_sentence() {
+        // Several errors are a whole sentence with no value in them, and a
+        // heading over an empty column reports less than the line it replaced.
+        // `NoPrivilegeEscalator` is one: what it says is the remedy.
+        let mut app = test_app(Family::Debian);
+
+        app.finish_run(
+            "ssh.install",
+            Err(crate::error::Error::NoPrivilegeEscalator),
+            false,
+        );
+
+        let transcript = app.output.transcript();
+        let expected = app
+            .lang
+            .render(&crate::error::Error::NoPrivilegeEscalator.to_msg());
+
+        assert!(
+            transcript.contains(&expected),
+            "the rendered sentence must survive: {transcript}"
+        );
+    }
+
+    #[test]
+    fn a_failed_revert_reaches_the_pane_rather_than_only_the_border() {
+        // This path wrote nothing to the pane at all: the error was rendered
+        // into the status message and drawn on a one-line border, so the
+        // evidence for the worst outcome this tool reaches — the machine in
+        // neither state — was what truncation took. Both digests are the
+        // evidence, which is why the variant carries them.
+        let mut app = test_app(Family::Debian);
+
+        app.begin_verification(
+            "ssh.harden",
+            crate::tasks::revert::Revert::FromIndex {
+                record: BackupRecord {
+                    task: "ssh.harden",
+                    path: "/etc/ssh/sshd_config".to_owned(),
+                    copy: "/etc/ssh/sshd_config.initd.bak".to_owned(),
+                    at: "2026-08-10T12:00:00Z".to_owned(),
+                    sha256_before: "a3f1".to_owned(),
+                    sha256_after: "9c22".to_owned(),
+                    service: "ssh",
+                },
+            },
+        );
+
+        // The revert runs against a mock whose replies do not satisfy the hash
+        // check, standing in for a file edited by hand since this tool wrote it.
+        app.revert_change(crate::i18n::RevertReason::Requested);
+
+        let transcript = app.output.transcript();
+
+        assert!(
+            transcript.contains("COULD NOT RESTORE"),
+            "the failure must reach the transcript: {transcript}"
+        );
+        assert_eq!(
+            app.status.message(Instant::now()),
+            "",
+            "and must not also be named on the border"
         );
     }
 

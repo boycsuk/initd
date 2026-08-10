@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use crate::i18n::{Lang, Msg};
+use crate::i18n::{ErrorField, Lang, Msg};
 
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -552,6 +552,189 @@ impl Error {
             Self::Terminal { source } => Msg::Terminal {
                 source: source.to_string(),
             },
+        }
+    }
+
+    /// Breaks this error into labelled fields, for the output pane to draw.
+    ///
+    /// The second seam to text, beside [`Self::to_msg`], and the reason both
+    /// exist is that they answer different questions. `to_msg` renders one
+    /// sentence — the right shape for a status row, a log line, or `Display`.
+    /// This returns the same data as fields, which is what a `CommandFailed`
+    /// needs: `command`, `code` and `stderr` are three values, and flattening
+    /// them into a sentence puts a package manager's whole stderr on one line
+    /// with the exit code buried in the middle of it.
+    ///
+    /// Exhaustive rather than defaulted, deliberately. A variant added without
+    /// deciding what its fields are called fails to compile here, which is the
+    /// same protection `Task::support` gets from returning `Support` — the
+    /// alternative is a new error rendering as an empty block at the moment
+    /// somebody needs it most.
+    ///
+    /// Returns fields in reading order: what was attempted, then what came
+    /// back, then the underlying cause. A value whose meaning is the sentence
+    /// around it rather than a label above it returns nothing here — the
+    /// caller falls back to [`Self::to_msg`], which is why this may be empty.
+    pub fn to_fields(&self) -> Vec<(ErrorField, String)> {
+        match self {
+            // The three-field case this exists for. `stderr` last because it
+            // is the only one that wraps, so the two short values above it stay
+            // aligned with their labels.
+            Self::CommandFailed {
+                command,
+                code,
+                stderr,
+            } => vec![
+                (ErrorField::Command, command.clone()),
+                (ErrorField::ExitCode, code.to_string()),
+                (ErrorField::Stderr, stderr.clone()),
+            ],
+            Self::CommandSilent { command, seconds } => vec![
+                (ErrorField::Command, command.clone()),
+                (ErrorField::Seconds, seconds.to_string()),
+            ],
+            Self::CommandIo { command, source } => vec![
+                (ErrorField::Command, command.clone()),
+                (ErrorField::Cause, source.to_string()),
+            ],
+            Self::CommandTerminatedBySignal { command } | Self::Cancelled { before: command } => {
+                vec![(ErrorField::Command, command.clone())]
+            }
+
+            // Pairs where the difference is the evidence. Both halves always
+            // appear together: either alone says "something changed" without
+            // saying what, which is the report these variants were widened to
+            // avoid in the first place.
+            Self::FileChangedSinceBackup {
+                path,
+                expected,
+                found,
+            } => vec![
+                (ErrorField::Path, path.clone()),
+                (ErrorField::Expected, expected.clone()),
+                (ErrorField::Found, found.clone()),
+            ],
+            Self::RepositoryKeyMismatch {
+                repository,
+                expected,
+                found,
+            } => vec![
+                (ErrorField::Repository, repository.clone()),
+                (ErrorField::Expected, expected.clone()),
+                (ErrorField::Found, found.clone()),
+            ],
+            Self::UnknownRelease { version, known } => vec![
+                (ErrorField::Version, version.clone()),
+                (ErrorField::Expected, known.clone()),
+            ],
+
+            Self::OsReleaseUnreadable { path, source } => vec![
+                (ErrorField::Path, path.display().to_string()),
+                (ErrorField::Cause, source.to_string()),
+            ],
+            Self::OsReleaseMissingId { path } => {
+                vec![(ErrorField::Path, path.display().to_string())]
+            }
+            Self::UnsupportedDistro { id, id_like } => {
+                let mut fields = vec![(ErrorField::Distribution, id.clone())];
+
+                // Absent on a distribution that declares no lineage, and an
+                // empty row would read as one that declares an empty one.
+                if let Some(like) = id_like {
+                    fields.push((ErrorField::Kind, like.clone()));
+                }
+
+                fields
+            }
+            Self::UnsupportedArchitecture {
+                program,
+                version,
+                arch,
+            } => vec![
+                (ErrorField::Program, program.clone()),
+                (ErrorField::Version, version.clone()),
+                (ErrorField::Architecture, arch.clone()),
+            ],
+            Self::ChecksumMismatch { program, version } => vec![
+                (ErrorField::Program, program.clone()),
+                (ErrorField::Version, version.clone()),
+            ],
+            Self::ProgramNotFound { program } => {
+                vec![(ErrorField::Program, program.clone())]
+            }
+
+            Self::RepositoryKeyUnverifiable { repository } => {
+                vec![(ErrorField::Repository, repository.clone())]
+            }
+            Self::ServiceDidNotStart { service, user } => vec![
+                (ErrorField::Service, service.clone()),
+                (ErrorField::User, user.clone()),
+            ],
+            Self::GroupMembershipFailed { user, group } => vec![
+                (ErrorField::User, user.clone()),
+                (ErrorField::Group, group.clone()),
+            ],
+            Self::MissingGroup { group } => vec![(ErrorField::Group, group.clone())],
+            Self::AccountExists { user }
+            | Self::NoSuchAccount { user }
+            | Self::CannotDeleteOwnAccount { user }
+            | Self::NoSubordinateIds { user } => vec![(ErrorField::User, user.clone())],
+            Self::NoWayBackIn { examined } => {
+                vec![(ErrorField::Examined, examined.to_string())]
+            }
+
+            Self::BackupCorrupt { copy } => vec![(ErrorField::Path, copy.clone())],
+            Self::RevertUnverifiable { path }
+            | Self::UnsafeSymlink { path }
+            | Self::WireguardAlreadyConfigured { path } => {
+                vec![(ErrorField::Path, path.clone())]
+            }
+
+            Self::AuthenticationRefused { mechanism }
+            | Self::AuthenticationUnavailable { mechanism } => {
+                vec![(ErrorField::Program, mechanism.clone())]
+            }
+
+            // `details` is a tool's own diagnostic, which is the one thing on
+            // screen that says which line of the file is wrong.
+            Self::InvalidSshdConfig { details } | Self::InvalidCaddyfile { details } => {
+                vec![(ErrorField::Cause, details.clone())]
+            }
+            Self::InvalidPublicKey { reason }
+            | Self::InvalidAllowUsers { reason }
+            | Self::InvalidWireguardKey { reason } => {
+                vec![(ErrorField::Cause, reason.clone())]
+            }
+            Self::InvalidPort { port } => vec![(ErrorField::Port, port.to_string())],
+            Self::InvalidSubnet { subnet } => vec![(ErrorField::Address, subnet.clone())],
+            Self::WireguardAddressTaken { address } => {
+                vec![(ErrorField::Address, address.clone())]
+            }
+            Self::UnknownSysctl { key } => vec![(ErrorField::Directive, key.clone())],
+            Self::ShellNotListed { shell } => vec![(ErrorField::Shell, shell.clone())],
+            Self::TimerNotEnabled { timer } => vec![(ErrorField::Service, timer.clone())],
+            Self::MissingParameter { name } => vec![(ErrorField::Value, name.clone())],
+            Self::CapabilityUnavailable { capability } => {
+                vec![(ErrorField::Value, (*capability).to_owned())]
+            }
+            Self::TaskVanished { task } => vec![(ErrorField::Task, task.clone())],
+            Self::TaskUnsupported { task, family } => vec![
+                (ErrorField::Task, task.clone()),
+                (ErrorField::Distribution, family.clone()),
+            ],
+            Self::Terminal { source } => vec![(ErrorField::Cause, source.to_string())],
+
+            // Nothing to label. Each of these is a whole sentence with no value
+            // in it — a field block would be a heading over an empty column,
+            // and the caller renders `to_msg` instead. `LockoutRisk` belongs
+            // here rather than above: `Lockout` is a discriminant the
+            // catalogue turns into a paragraph naming a remedy, and `kind
+            // NoOtherAdmin` says less than the sentence it replaces.
+            Self::NoFirewallFrontEnd
+            | Self::NoPrivilegeEscalator
+            | Self::CannotDeleteRoot
+            | Self::WireguardNotConfigured
+            | Self::LockoutRisk { .. } => Vec::new(),
         }
     }
 }

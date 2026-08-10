@@ -662,9 +662,6 @@ pub enum Msg {
         task: String,
         family: String,
     },
-    StatusTaskFailed {
-        task: String,
-    },
     /// Reported from what the task actually did rather than from the operator
     /// having asked: the request arrives between two commands, so a task
     /// already on its last one runs to completion. Naming the command it
@@ -689,13 +686,52 @@ pub enum Msg {
     },
     /// A revert that itself failed, reported rather than swallowed: the
     /// administrator has to know the machine is in neither state.
+    ///
+    /// Carries the task alone. It used to carry the error pre-rendered into a
+    /// `String` and nested inside this message, which put a `CommandFailed`'s
+    /// whole stderr on a one-line border that truncates without an ellipsis —
+    /// so the evidence for the worst outcome the tool can reach was the part
+    /// that got cut. The error goes to the output pane now, in fields.
     StatusRevertFailed {
         task: String,
-        error: String,
     },
     /// Heads the consequences a finished task declared, written into the
     /// output pane where there is room to read them.
     OutputConsequencesHeading,
+    /// Heads the failure block in the output pane, naming the task that failed.
+    ///
+    /// The pane is where a failure is read, so the heading carries the task id
+    /// that used to sit on the border: a transcript scrolled back to hours
+    /// later has to say which task the block below it belongs to, and the
+    /// border says nothing about a task that is no longer the current one.
+    OutputFailedHeading {
+        task: String,
+    },
+    /// Heads the same block for a task that was stopped rather than one that
+    /// broke. Distinct from [`Msg::OutputFailedHeading`] because the two call
+    /// for different actions: a cancelled task is re-run, a failed one is
+    /// diagnosed first.
+    OutputCancelledHeading {
+        task: String,
+    },
+    /// Heads the block for a revert that itself failed.
+    ///
+    /// Distinct from a failed task because the machine is in neither state —
+    /// the change was applied and putting it back did not work — which is a
+    /// worse position than a task that simply did not run.
+    OutputRevertFailedHeading {
+        task: String,
+    },
+    /// One field of a structured error, as a label and its value.
+    ///
+    /// The label is a word from the catalogue and the value is data the error
+    /// carried, which is why they are rendered together here rather than
+    /// concatenated at the call site: a language that puts the label after the
+    /// value has nowhere else to say so.
+    OutputErrorField {
+        label: ErrorField,
+        value: String,
+    },
 
     // --- Interface: confirmation warning ---
     //
@@ -1149,6 +1185,84 @@ pub enum Msg {
         interface: String,
         address: String,
     },
+}
+
+/// The name of one field in a structured error.
+///
+/// A closed set rather than a string, for the reason the whole catalogue is
+/// one: a field label is a word in the operator's language, and a `&str` at
+/// the call site is a word that no locale can reach. It also keeps the labels
+/// consistent between variants — `Expected` reads the same above a digest as
+/// above a repository key, because it is the same variant both times.
+///
+/// Deliberately smaller than the set of fields the errors carry. Several
+/// variants hold a value whose meaning is the sentence around it rather than a
+/// label above it; those keep their rendered sentence and never reach here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorField {
+    /// The command as it was run, including its arguments.
+    Command,
+    /// The exit status a command answered with.
+    ExitCode,
+    /// What a command wrote to its standard error.
+    Stderr,
+    /// How long a silent command was waited on.
+    Seconds,
+    /// The file a failure is about.
+    Path,
+    /// What this tool recorded, in a comparison of two values.
+    ///
+    /// Paired with [`Self::Found`]: neither is worth showing alone, since the
+    /// difference between them is the evidence.
+    Expected,
+    /// What the host actually holds, against what was recorded.
+    Found,
+    /// The package repository a failure is about.
+    Repository,
+    /// The service or unit a failure is about.
+    Service,
+    /// The account a failure is about.
+    User,
+    /// The group a failure is about.
+    Group,
+    /// The program a failure is about.
+    Program,
+    /// A version string, of a program or a release.
+    Version,
+    /// A machine architecture.
+    Architecture,
+    /// The underlying cause, where the error carried one from the system.
+    ///
+    /// Rendered last wherever it appears: it is the most specific thing on
+    /// screen and the least likely to be understood without the fields above
+    /// it for context.
+    Cause,
+    /// How many accounts a scan examined.
+    Examined,
+    /// The count of something the error measured, where no field above names it.
+    Count,
+    /// A network port.
+    Port,
+    /// A network address.
+    Address,
+    /// A network interface.
+    Interface,
+    /// The task a failure names, where it is not the one that ran.
+    Task,
+    /// A configuration directive or key.
+    Directive,
+    /// A value that was rejected, where the error is about the value itself.
+    Value,
+    /// A distribution family or release.
+    Distribution,
+    /// The kind or category a failure falls into.
+    Kind,
+    /// A shell.
+    Shell,
+    /// A digest, where only one is carried rather than a pair.
+    Digest,
+    /// A URL a failure is about.
+    Url,
 }
 
 /// Why an applied change was put back.

@@ -20,7 +20,7 @@ use super::worker::{Running, Update};
 use crate::backend::backup_index::BackupRecord;
 use crate::error::{Error, Result};
 use crate::exec::{OutputLine, Stream};
-use crate::i18n::{Msg, RevertReason};
+use crate::i18n::{ErrorField, Msg, RevertReason};
 use crate::tasks;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::{Outcome, Revert};
@@ -155,13 +155,16 @@ impl App {
                     .set(State::Done, self.lang.render(&Msg::HistoryRestoredStatus));
             }
             Err(ref err) => {
-                // Into the pane as well as the row, the same as a failed task:
-                // the row is one line and a refusal naming two digests does not
-                // fit in it, and the digests are the evidence.
-                self.output.push(OutputLine {
-                    stream: Stream::Stderr,
-                    text: self.lang.render(&err.to_msg()),
-                });
+                // In fields rather than as one sentence, for the reason this
+                // path's own comment already gave: a refusal naming two digests
+                // does not fit on a row, and the digests are the evidence. The
+                // status keeps `HistoryNotRestored`, which says the file was
+                // left alone — that is a fact about the machine rather than a
+                // report of the failure, and the operator needs it while the
+                // history view is still open over the pane.
+                let heading = Msg::OutputRevertFailedHeading { task: path };
+
+                self.report_failure(&heading, err);
                 self.status
                     .set(State::Failed, self.lang.render(&Msg::HistoryNotRestored));
             }
@@ -248,13 +251,28 @@ impl App {
         // gets called half-configured when it is fully configured — and the
         // reverse, on the next run.
         if let Err(Error::Cancelled { ref before }) = outcome {
-            self.status.set(
-                State::Cancelled,
-                self.lang.render(&Msg::StatusStoppedBefore {
+            // Into the pane rather than onto the border, for the reason a
+            // failure goes there: an outcome is read in the transcript beside
+            // the commands that produced it, and the command this task stopped
+            // *before* is the whole content of the report.
+            self.output.push(OutputLine {
+                stream: Stream::Stdout,
+                text: String::new(),
+            });
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: self.lang.render(&Msg::OutputCancelledHeading {
                     task: id.to_owned(),
-                    before: before.clone(),
                 }),
-            );
+            });
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: self.lang.render(&Msg::OutputErrorField {
+                    label: ErrorField::Command,
+                    value: before.clone(),
+                }),
+            });
+            self.status.set(State::Cancelled, String::new());
             return;
         }
 
@@ -286,23 +304,22 @@ impl App {
                 }
             }
             Err(ref err) => {
-                // Into the pane as well as the status row. The row is one
-                // line and is not truncated with an ellipsis, so a package
-                // manager's stderr arriving through `CommandFailed` was cut
-                // mid-sentence with no way to see the rest — and the pane is
-                // the part an administrator can scroll and paste into a bug
-                // report. The row keeps the summary so the outcome is legible
-                // from the left edge without reading the pane.
-                self.output.push(OutputLine {
-                    stream: Stream::Stderr,
-                    text: self.lang.render(&err.to_msg()),
-                });
-                self.status.set(
-                    State::Failed,
-                    self.lang.render(&Msg::StatusTaskFailed {
+                // The pane and nothing else. The row is one line and is not
+                // truncated with an ellipsis, so a package manager's stderr
+                // arriving through `CommandFailed` was cut mid-sentence with no
+                // way to see the rest — and the pane is the part an
+                // administrator can scroll and paste into a bug report.
+                //
+                // The state is still `Failed`; what changed is that it no
+                // longer draws. See `State::is_worth_naming` for why an
+                // outcome belongs in the transcript and not on a border.
+                self.report_failure(
+                    &Msg::OutputFailedHeading {
                         task: id.to_owned(),
-                    }),
+                    },
+                    err,
                 );
+                self.status.set(State::Failed, String::new());
             }
         }
 
@@ -324,6 +341,54 @@ impl App {
             self.ran_with.forget_secrets(&task.params());
         }
     }
+    /// Writes a failure into the output pane, as a heading and its fields.
+    ///
+    /// The pane rather than the status row, and this is the whole reason the
+    /// row no longer names an outcome. A border is one line that ratatui
+    /// truncates without an ellipsis, so a `CommandFailed` carrying a package
+    /// manager's stderr lost most of it — and the transcript is both the place
+    /// with room and the place an administrator can scroll and copy.
+    ///
+    /// The fields come from [`Error::to_fields`], which returns nothing for a
+    /// variant that is a whole sentence with no value in it. Those fall back to
+    /// the rendered sentence: a heading over an empty column would report less
+    /// than the line it replaced.
+    ///
+    /// A blank line precedes the heading so the block reads as separate from
+    /// the command output above it. Every line is `Stream::Stderr`, which is
+    /// what colours it apart from the transcript, and what keeps it in
+    /// `transcript()` for the clipboard.
+    fn report_failure(&mut self, heading: &Msg, err: &Error) {
+        let lang = self.lang;
+
+        self.output.push(OutputLine {
+            stream: Stream::Stdout,
+            text: String::new(),
+        });
+        self.output.push(OutputLine {
+            stream: Stream::Stderr,
+            text: lang.render(heading),
+        });
+
+        let fields = err.to_fields();
+
+        if fields.is_empty() {
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: lang.render(&err.to_msg()),
+            });
+
+            return;
+        }
+
+        for (label, value) in fields {
+            self.output.push(OutputLine {
+                stream: Stream::Stderr,
+                text: lang.render(&Msg::OutputErrorField { label, value }),
+            });
+        }
+    }
+
     /// Writes what the finished task invalidated into the output pane.
     ///
     /// Reported, never acted on: the administrator decides what to do about
@@ -426,16 +491,20 @@ impl App {
                     reason,
                 }),
             ),
-            // The revert's own failure is rendered through the catalogue like
-            // any other error, and interpolated into the line naming the task:
-            // what failed is the restore, and the operator needs both halves.
-            Err(ref err) => self.status.set(
-                State::Failed,
-                self.lang.render(&Msg::StatusRevertFailed {
+            // Into the pane, which this path did not do at all: the error was
+            // pre-rendered into `StatusRevertFailed` and drawn on a one-line
+            // border, so the evidence for the worst outcome this tool can
+            // reach — the machine in neither state — was the part truncation
+            // took. It is the same report a failed task gets now, under a
+            // heading that says the restore is what failed.
+            Err(ref err) => {
+                let heading = Msg::OutputRevertFailedHeading {
                     task: window.task.clone(),
-                    error: self.lang.render(&err.to_msg()),
-                }),
-            ),
+                };
+
+                self.report_failure(&heading, err);
+                self.status.set(State::Failed, String::new());
+            }
         }
     }
     /// Puts an unconfirmed change back because the session is ending.

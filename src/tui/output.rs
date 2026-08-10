@@ -216,7 +216,21 @@ impl OutputPane {
             .saturating_sub(viewport)
             .saturating_sub(self.scroll_offset);
 
-        let mut text: Vec<Line> = self.lines.iter().map(render_line).collect();
+        // Wrapped here rather than by ratatui's `Wrap`, which returns every
+        // continuation to column zero. That is right for a command's output and
+        // wrong for a failure's fields: `stderr  Failed to disable unit:` broke
+        // to `docker.service not loaded.` at the left margin, where it read as
+        // another label in the column above it. The width only exists at draw
+        // time, which is why this cannot be done where the lines are pushed.
+        //
+        // Applied to indented lines alone, so a package manager's output is
+        // still wrapped by the widget as before.
+        let width = area.width.saturating_sub(2) as usize;
+        let mut text: Vec<Line> = self
+            .lines
+            .iter()
+            .flat_map(|line| wrap_indented(line, width))
+            .collect();
 
         // The cursor marks where the next line lands, so a quiet command is
         // distinguishable from a frozen screen.
@@ -263,6 +277,104 @@ impl OutputPane {
     }
 }
 
+/// Wraps a line, keeping continuations under where its text began.
+///
+/// Only a line whose text is a label and a value — two columns separated by
+/// more than one space, which is what `Msg::OutputErrorField` renders — is
+/// treated this way. Everything else is handed back whole for the widget's own
+/// `Wrap` to break at column zero, which is correct for a command's output.
+///
+/// The indent is measured from the text rather than agreed with the catalogue.
+/// A locale whose labels are wider pads them further, and a constant here would
+/// have to be kept in step with a number in another module — the kind of pair
+/// that stays right until somebody adds a language.
+///
+/// Wrapping on characters rather than words, deliberately: the values are
+/// paths, commands and digests, and breaking a path at a space it does not
+/// contain is not possible while breaking it mid-token is exactly what a
+/// terminal does. `chars` rather than bytes, so a multi-byte character is not
+/// split into invalid UTF-8.
+fn wrap_indented(line: &OutputLine, width: usize) -> Vec<Line<'static>> {
+    let Some(indent) = field_indent(&line.text) else {
+        return vec![render_line(line)];
+    };
+
+    // Below this the continuations have no room left to say anything, and a
+    // column two cells wide is worse than an unindented wrap.
+    const MIN_VALUE_WIDTH: usize = 8;
+
+    if width <= indent + MIN_VALUE_WIDTH {
+        return vec![render_line(line)];
+    }
+
+    let characters: Vec<char> = line.text.chars().collect();
+
+    if characters.len() <= width {
+        return vec![render_line(line)];
+    }
+
+    let mut rows = Vec::new();
+    let mut taken = 0;
+
+    while taken < characters.len() {
+        // A break that lands on a space would otherwise carry it into the next
+        // row, where it adds to the indent and moves that row one cell right of
+        // the column — visible from the third row of a long value onwards.
+        while !rows.is_empty() && characters.get(taken) == Some(&' ') {
+            taken += 1;
+        }
+
+        if taken >= characters.len() {
+            break;
+        }
+
+        // The first row carries the label, so it gets the full width; every
+        // continuation gives up `indent` cells to sit under the value.
+        let room = if rows.is_empty() {
+            width
+        } else {
+            width - indent
+        };
+        let end = (taken + room).min(characters.len());
+        let chunk: String = characters[taken..end].iter().collect();
+
+        rows.push(if rows.is_empty() {
+            chunk
+        } else {
+            format!("{:indent$}{chunk}", "")
+        });
+
+        taken = end;
+    }
+
+    rows.into_iter()
+        .map(|text| Line::styled(text, style_of(line.stream)))
+        .collect()
+}
+
+/// Where a label-and-value line's value starts, if it is one.
+///
+/// Two or more spaces are what separates the two columns, which no ordinary
+/// command output contains at the head of a line — and a line that is only
+/// indentation has no value to hang.
+fn field_indent(text: &str) -> Option<usize> {
+    let gap = text.find("  ")?;
+
+    // A leading gap means the line is already a continuation or a blank, not a
+    // label followed by a value.
+    if gap == 0 {
+        return None;
+    }
+
+    let value_at = text[gap..]
+        .find(|character: char| character != ' ')
+        .map(|offset| gap + offset)?;
+
+    // Measured in columns, and `find` answers in bytes: a label rendered in a
+    // locale with multi-byte characters would otherwise indent too far.
+    Some(text[..value_at].chars().count())
+}
+
 /// Styles one line according to the stream it came from.
 ///
 /// A command is prefixed with `$` and dimmed: it is the structure of the
@@ -270,11 +382,25 @@ impl OutputPane {
 /// a task did reads the commands, not every line each one printed.
 fn render_line(line: &OutputLine) -> Line<'static> {
     match line.stream {
-        Stream::Stdout => Line::styled(line.text.clone(), style::NORMAL),
+        Stream::Command => Line::styled(format!("$ {}", line.text), style::OUTPUT_COMMAND),
+        stream => Line::styled(line.text.clone(), style_of(stream)),
+    }
+}
+
+/// The style a stream's text is drawn in.
+///
+/// Split out of [`render_line`] so a wrapped continuation is drawn the same as
+/// the row it continues: two sources for one answer is how a continuation ends
+/// up a different colour from its own first line.
+const fn style_of(stream: Stream) -> ratatui::style::Style {
+    match stream {
+        Stream::Stdout => style::NORMAL,
         // stderr is highlighted so warnings stand out from progress. It is not
         // treated as an error: plenty of tools report progress on stderr.
-        Stream::Stderr => Line::styled(line.text.clone(), style::OUTPUT_WARN),
-        Stream::Command => Line::styled(format!("$ {}", line.text), style::OUTPUT_COMMAND),
+        Stream::Stderr => style::OUTPUT_WARN,
+        // The prefix belongs to the first row alone, so a wrapped command's
+        // continuations are styled without being prefixed again.
+        Stream::Command => style::OUTPUT_COMMAND,
     }
 }
 
@@ -384,6 +510,109 @@ mod tests {
             transcript,
             "$ usermod -s /usr/bin/fish cosmin\nusermod: no changes\n"
         );
+    }
+
+    #[test]
+    fn a_wrapped_field_keeps_its_continuations_under_the_value() {
+        // The defect this exists for was visible only on a rendered frame:
+        // ratatui's own `Wrap` returns every continuation to column zero, so
+        // `stderr  Failed to disable unit:` broke to `docker.service not
+        // loaded.` at the left margin, where it read as another label in the
+        // column above it — the alignment being the whole point of the block.
+        let line = OutputLine {
+            stream: Stream::Stderr,
+            text: "stderr        Failed to disable unit: Unit not loaded.".to_owned(),
+        };
+
+        let rows = wrap_indented(&line, 30);
+
+        assert!(rows.len() > 2, "must wrap more than once at 30: {rows:?}");
+
+        // Every continuation, not only the first. A break landing on a space
+        // carried it into the next row, where it added to the indent and moved
+        // that row one cell right of the column — invisible until the third row
+        // of a long value, which is why this asserts across all of them.
+        for (index, row) in rows.iter().enumerate().skip(1) {
+            let text = row
+                .spans
+                .first()
+                .expect("a continuation has content")
+                .content
+                .clone();
+
+            assert_eq!(
+                text.len() - text.trim_start().len(),
+                14,
+                "row {index} must hang in the value's column: {text:?}"
+            );
+            assert!(
+                !text.trim().is_empty(),
+                "row {index} must carry text rather than only padding: {text:?}"
+            );
+        }
+
+        // Nothing lost to the wrap: every word of the value survives, which a
+        // break that swallowed a character either side would fail.
+        let rejoined: String = rows
+            .iter()
+            .flat_map(|row| row.spans.iter())
+            .map(|span| span.content.trim().to_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            rejoined.contains("Unit not loaded."),
+            "the value must survive the wrap: {rejoined:?}"
+        );
+    }
+
+    #[test]
+    fn command_output_is_left_for_the_widget_to_wrap() {
+        // A package manager's line has no label to hang under, and indenting
+        // its continuations would misreport its output as structured.
+        let line = OutputLine {
+            stream: Stream::Stdout,
+            text: "Removed /home/cosmin/.config/systemd/user/docker.service.".to_owned(),
+        };
+
+        assert_eq!(
+            wrap_indented(&line, 20).len(),
+            1,
+            "one line, handed to the widget whole"
+        );
+    }
+
+    #[test]
+    fn a_field_narrower_than_its_own_indent_is_not_wrapped_here() {
+        // Below the minimum the continuations have no room to say anything, and
+        // a two-cell column is worse than an unindented wrap. Reached on a
+        // genuinely narrow terminal rather than hypothetically.
+        let line = OutputLine {
+            stream: Stream::Stderr,
+            text: "architecture  x86_64-unknown-linux-musl".to_owned(),
+        };
+
+        assert_eq!(
+            wrap_indented(&line, 16).len(),
+            1,
+            "hand it over rather than indenting into nothing"
+        );
+    }
+
+    #[test]
+    fn the_indent_is_measured_in_columns_rather_than_bytes() {
+        // A locale whose labels carry multi-byte characters would otherwise
+        // indent by their byte length and push the value off the column.
+        assert_eq!(field_indent("código        5"), Some(14));
+    }
+
+    #[test]
+    fn a_line_that_only_looks_indented_is_not_treated_as_a_field() {
+        // A continuation already written by something else, and a blank line,
+        // both have no label to measure from.
+        assert_eq!(field_indent("    already indented"), None);
+        assert_eq!(field_indent(""), None);
+        assert_eq!(field_indent("no double space here"), None);
     }
 
     #[test]

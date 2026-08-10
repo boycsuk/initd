@@ -175,9 +175,9 @@ exactly as it was, which is a different thing from a command that broke.
   The command is rendered as the task asked for it, without the `sudo`/`doas`
   wrapper this host resolved, and never carries what was fed on stdin (a
   WireGuard private key travels that way precisely to stay out of view).
-  A failed task's error is written here as well as into the status, since the
-  status is a single line on a border and a package manager's stderr does not
-  fit in it.
+  A failed task's error is written here and **only** here — the status border
+  names no outcome, since it is a single line and a package manager's stderr
+  does not fit in it. See *Failure reports*.
   Retains the most recent 5000 lines in a ring buffer, dropping the oldest. The bottom border states whether the view
   is pinned to the newest output (`follow`) or has been scrolled away
   (`detached`), and while following, a `▌` cursor marks where the next line
@@ -318,24 +318,29 @@ order — the liveness signals, the state's word, then its message — separated
 The word carries the meaning alone when colour is absent; the colour is
 redundant reinforcement rather than the signal.
 
-`READY` is the one state that is **not** named. It is the state the tool is in
-whenever it is in no other, so a border reading it for most of a session says
-only that the program is running — which the screen already says — and teaches
-the eye to skip the one place a failure will appear. Its *message* is still
-drawn when it has one (`cancelled` after a stopped task): that is a report, not
-a redundancy.
+Three states are **not** named on the border, for two different reasons.
 
-| State | Meaning |
-|------|---------|
-| — | Waiting for input; nothing is drawn |
-| `RUNNING` | A task is running |
-| `DONE` | The last task succeeded |
-| `FAILED` | The last task failed |
-| `CANCELLED` | The last task was interrupted before it finished |
-| `VERIFY` | A change is applied but not yet kept |
-| `CONFIRM` | A confirmation dialog is open |
-| `INPUT` | A parameter form is open, collecting input before the task runs |
-| `UNSUPPORTED` | The selected task cannot run on this host |
+`READY` is the state the tool is in whenever it is in no other, so a border
+reading it for most of a session says only that the program is running — which
+the screen already says.
+
+`FAILED` and `CANCELLED` are **outcomes**, and an outcome is reported in the
+output pane instead — beside the commands that produced it, with room for the
+exit code and the stderr a one-line border cannot hold. See *Failure reports*
+below. The border keeps only the states describing something in progress or
+awaited, which have no transcript of their own to sit in.
+
+| State | Border | Meaning |
+|------|--------|---------|
+| — | not drawn | Waiting for input |
+| `RUNNING` | drawn | A task is running |
+| `DONE` | drawn | The last task succeeded |
+| `FAILED` | not drawn | The last task failed — reported in the output pane |
+| `CANCELLED` | not drawn | The last task was interrupted — reported in the output pane |
+| `VERIFY` | drawn | A change is applied but not yet kept |
+| `CONFIRM` | drawn | A confirmation dialog is open |
+| `INPUT` | drawn | A parameter form is open, collecting input before the task runs |
+| `UNSUPPORTED` | drawn | The selected task cannot run on this host |
 
 **Every word in this document's tables is the English rendering.** All
 user-facing text — these state words, the key bar's labels, the help overlay, the
@@ -383,15 +388,49 @@ both protect the state's word:
   Neither is the only place its information appears: the census counts rows
   already on screen, and whether the view is pinned is also visible from the
   write cursor and from whether the log is moving. The status may be the only
-  report of a task that failed.
+  report of what the tool is waiting for.
 
   Opposite ends is not enough on its own. Ratatui draws two bottom titles that
   outgrow the border rather than arbitrating between them, which rendered the
-  census as `6 ca FAILED …` and `following` as `f`.
+  census as `6 ca VERIFY …` and `following` as `f`.
 
 Below 72 columns only one pane is drawn, and the status follows it: with focus
-on the tree it rides the tree's border, so pressing `Tab` back after a failure
-never hides the report of it.
+on the tree it rides the tree's border, so pressing `Tab` back never hides what
+the tool is doing.
+
+## Failure reports
+
+A failure is reported in the output pane, never on the status border. It is
+written as a heading naming the task, then one row per field of the error:
+
+```
+$ systemctl --user disable docker.service
+Failed to disable unit: Unit docker.service not loaded.
+
+FAILED — docker-rootless.uninstall
+command       systemctl --user disable docker.service
+exit code     5
+stderr        Failed to disable unit: Unit docker.service not
+              loaded.
+```
+
+Three headings, distinguished because they call for different actions:
+`FAILED` (the task broke — diagnose it), `STOPPED` (interrupted — naming the
+command it stopped *before*, so what ran and what did not is legible) and
+`COULD NOT RESTORE` (a revert failed, so the machine is in neither state).
+
+- **Fields, not a sentence.** An error carries structured values, and a
+  `command`/`exit code`/`stderr` flattened into one line buries the exit code
+  mid-sentence and loses the stderr to truncation. Errors whose whole content
+  is a sentence with no value in it keep that sentence: a heading over an empty
+  column would report less than the line it replaced.
+- **Continuations hang under the value**, not at the left margin, so a wrapped
+  path is not mistaken for another label. Below a readable minimum width the
+  indent is dropped rather than squeezing the value into a few cells.
+- **Copyable.** The block is part of the transcript `Ctrl-Y` copies, whole
+  lines rather than the truncated window on screen.
+- **A blank line precedes the heading**, so the report reads as separate from
+  the command output above it.
 
 ## Truncation
 
@@ -457,9 +496,9 @@ Two rules govern the table:
 | `choice_normal` | White + dim | The other answer |
 | `search_match` | Black on yellow | The matched substring in a filtered row |
 | `badge_busy` | Black on yellow + bold | The `VERIFY` badge in the verification banner |
-| `status_ready` | Green + bold | `READY` and `DONE` on the pane border |
+| `status_ready` | Green + bold | `DONE` on the pane border |
 | `status_busy` | Yellow + bold | `RUNNING` and `VERIFY` on the pane border |
-| `status_error` | Red + bold | `FAILED`, `CANCELLED` and `CONFIRM` on the pane border |
+| `status_error` | Red + bold | `CONFIRM` on the pane border |
 | `status_input` | Blue + bold | `INPUT` on the pane border |
 | `status_inert` | White + dim | `UNSUPPORTED` on the pane border |
 | `keybar_key` | Reset + bold | The key glyph in the key bar |
@@ -830,8 +869,9 @@ but nothing new may be started, and nothing already applied may be answered.
 stop between two commands rather than killing it mid-write — a half-written
 configuration file is how a machine ends up in a state nobody chose. Until the
 current step ends the status still reads `RUNNING`, with the message
-*stopping after the current step*; only once the task has actually stopped does
-it read `CANCELLED`, and it says where it got to.
+*stopping after the current step*; once the task has actually stopped the border
+clears and the output pane reports where it got to, under a `STOPPED` heading
+naming the command it stopped before.
 
 The status opens with two liveness signals while a task runs: a one-character
 ASCII spinner and a wall-clock timer, both driven by the clock rather than by

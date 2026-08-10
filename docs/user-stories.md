@@ -686,6 +686,27 @@ TUI or CLI:
     would make running two in a row cost an extra keystroke to undo.
   - Platform exception: the TUI shows it in a scrollable pane; the CLI prints
     it as it arrives.
+- As an **administrator**, I am told **why** a task failed and not only that it
+  did, so that I can act on it instead of guessing.
+  - Acceptance: I get the command that failed, the code it exited with, and what
+    it wrote to stderr — each on its own line, under its own label. One sentence
+    holding all three buries the exit code in the middle of it and loses the
+    stderr to the width of whatever was drawing it.
+  - Acceptance: the report is where the task's own output is, beside the
+    commands that led to it. I am not asked to read a corner of the screen and a
+    pane at the same time, and nothing has to be pressed to see it.
+  - Acceptance: an error whose whole content is one sentence keeps that
+    sentence. A label over an empty column would tell me less than the sentence
+    it replaced.
+  - Acceptance: a task I stopped is reported distinctly from one that broke, and
+    names the command it stopped *before* — what ran and what did not is the
+    thing I need before running it again.
+  - Acceptance: a **revert** that failed says so in its own words: the machine
+    is in neither state, which is worse than a task that did not run, and it is
+    not reported as though it were the same thing.
+  - Acceptance: the report goes with the transcript when I copy it.
+  - Platform exception: the TUI writes it into the output pane; the CLI prints
+    it to stderr and exits non-zero, where the exit code is the contract.
 - As an **administrator**, I can take a task's output away with me — into a bug
   report, a ticket, a message to whoever maintains the machine.
   - Acceptance: I get the lines whole, not the part that fitted on screen. A
