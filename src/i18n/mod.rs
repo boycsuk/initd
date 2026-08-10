@@ -638,7 +638,6 @@ pub enum Msg {
     /// Refused rather than ignored: an unanswered window is the one state
     /// where doing nothing has consequences.
     StatusVerifyKeysOnly,
-    StatusCancelled,
     /// How many lines were handed to the terminal to copy.
     ///
     /// Says what was sent rather than what was copied: OSC 52 has no reply,

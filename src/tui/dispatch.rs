@@ -452,8 +452,12 @@ impl App {
                     // The list belongs to a field of this form; leaving it set
                     // would reopen it over the next form that is opened.
                     self.options_at = None;
-                    self.status
-                        .set(State::Ready, self.lang.render(&Msg::StatusCancelled));
+                    // Nothing to report: the operator pressed `Esc`, nothing
+                    // ran, and the form leaving the screen is the answer to the
+                    // keystroke. A line saying `cancelled` states back a
+                    // decision they had just made, and it outlives the moment —
+                    // it sat on the border until the next thing set the status.
+                    self.status.set(State::Ready, "");
                 } else {
                     form.arm_cancel();
                     self.status.flash(
@@ -673,8 +677,10 @@ impl App {
         self.confirm = None;
         self.pending_restore = None;
         self.pending_values = ParamValues::new();
-        self.status
-            .set(State::Ready, self.lang.render(&Msg::StatusCancelled));
+        // Nothing to report, for the reason the form's own `Esc` reports
+        // nothing: the dialog closing is the answer, and declining to run a
+        // task changed nothing to tell anybody about.
+        self.status.set(State::Ready, "");
     }
     /// Acts on the selected row: descends into a category, or runs a task.
     fn activate(&mut self) -> Option<ParamValues> {

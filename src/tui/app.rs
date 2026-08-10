@@ -1214,6 +1214,42 @@ mod tests {
     }
 
     #[test]
+    fn closing_a_form_or_a_dialog_reports_nothing() {
+        // Both used to leave `cancelled` on the border, which states back a
+        // decision the operator had just made — and outlives the moment, since
+        // nothing clears the status until the next thing sets it. Pressing Esc
+        // is answered by the form leaving the screen.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.change-port");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.form.is_none(), "the form must close");
+        assert_eq!(
+            app.status.message(Instant::now()),
+            "",
+            "an untouched form closing has nothing to report"
+        );
+
+        // The confirmation dialog, declined. A second `App` because
+        // `select_task` walks from the level the cursor is on, and the one above
+        // has descended into a category by now.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.install");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.confirm.is_some(), "the dialog must open");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.confirm.is_none(), "and must close");
+
+        assert_eq!(
+            app.status.message(Instant::now()),
+            "",
+            "declining a task has nothing to report"
+        );
+    }
+
+    #[test]
     fn carrying_on_after_esc_disarms_the_discard() {
         // A stale "press Esc again" must not be answerable several actions
         // later by a keystroke aimed at something else.

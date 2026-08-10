@@ -562,7 +562,6 @@ pub(super) fn render(message: &Msg) -> String {
         // Names both keys rather than saying the key was wrong: this is the
         // one window where doing nothing has consequences.
         Msg::StatusVerifyKeysOnly => "K keeps this change, R puts it back".to_owned(),
-        Msg::StatusCancelled => "cancelled".to_owned(),
         // "sent to the terminal" rather than "copied": the tool cannot see
         // whether the terminal honoured it, and a claim it cannot check is one
         // the operator learns to disbelieve.

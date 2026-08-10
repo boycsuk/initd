@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state, which is worse than a task that did not run).
 
 ### Fixed
+- Closing a form or declining a confirmation no longer leaves `cancelled` on the
+  border. It stated back a decision the operator had just made, and outlived the
+  moment: nothing clears the status until the next thing sets it, so the word sat
+  there while they carried on navigating. Pressing `Esc` is answered by the form
+  leaving the screen. The other nine `State::Ready` sites already reported
+  nothing for the same situation, and `Msg::StatusCancelled` is gone — in a
+  closed catalogue rendered by an exhaustive `match`, an entry nothing reaches is
+  debt rather than flexibility. Nothing had pinned the border staying clear here,
+  which is why a test now does, confirmed against the previous behaviour rather
+  than assumed to catch it.
 - Two paths reported a failure only on the border, and one of them is the worst
   outcome this tool can reach. `revert_change` rendered the error into a status
   message and wrote nothing to the pane, so the evidence that a machine is in
