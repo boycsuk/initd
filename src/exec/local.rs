@@ -602,10 +602,27 @@ fn join_stdin_writer(
         source: std::io::Error::other("stdin writer thread failed"),
     })?;
 
-    joined.map_err(|source| Error::CommandIo {
-        command: command.to_string(),
-        source,
-    })
+    match joined {
+        Ok(()) => Ok(()),
+        // A child that exited before reading its stdin is not a failure to
+        // write — it is a child that had already decided. The owned-directory
+        // script is the case: it refuses a planted symlink and exits 9 without
+        // consuming anything, so the write lands on a closed pipe. Reporting
+        // that as `CommandIo` would replace the refusal the script exists to
+        // produce with a generic I/O error, and send the operator looking for
+        // a disk fault instead of the account racing them for the path.
+        //
+        // The exit code is the answer in that case, and the caller is about to
+        // read it. Every other write error is still surfaced: a pipe that broke
+        // for any other reason means the child did *not* receive what it was
+        // being given, which for a file write is the difference between the new
+        // contents and nothing.
+        Err(source) if source.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(Error::CommandIo {
+            command: command.to_string(),
+            source,
+        }),
+    }
 }
 
 /// Distinguishes "binary not in PATH" from other spawn failures.
@@ -1090,6 +1107,31 @@ mod tests {
 
         assert_eq!(out.stdout.trim(), "plain");
         assert_eq!(out.stderr.trim(), "loud");
+    }
+
+    #[test]
+    fn a_command_that_exits_before_reading_stdin_reports_its_own_exit_code() {
+        // The owned-directory write refuses a planted symlink by exiting 9
+        // *without* reading stdin, so the contents land on a pipe the child has
+        // already closed. Treating that broken pipe as an I/O failure replaced
+        // the refusal with `CommandIo`, which would send an operator looking
+        // for a disk fault instead of the account racing them for the path —
+        // the exit code being the whole answer in that case.
+        //
+        // A payload larger than the pipe buffer, so the write genuinely blocks
+        // and then fails rather than fitting into the buffer of a child that
+        // never reads it.
+        let executor = LocalExecutor::new(Box::new(NoEscalation));
+
+        let out = executor
+            .run(
+                &Command::new("sh")
+                    .args(["-c", "exit 9"])
+                    .stdin("x".repeat(256 * 1024)),
+            )
+            .expect("a child that ignores stdin is not an execution failure");
+
+        assert_eq!(out.code, 9, "the exit code must survive the broken pipe");
     }
 
     #[test]

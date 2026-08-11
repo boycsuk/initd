@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A child that exits before reading its stdin no longer reports a broken pipe
+  instead of its own refusal.** `join_stdin_writer` turned every write failure
+  into `CommandIo`, and the owned-directory script refuses a planted symlink by
+  exiting 9 *without* consuming stdin — so the write landed on a closed pipe and
+  the operator would have been handed a generic I/O error in place of
+  `UnsafeSymlink`, sent looking for a disk fault rather than for the account
+  racing them for the path. The exit code is the answer in that case and the
+  caller reads it a line later. Every other write error is still surfaced: a
+  pipe broken for any other reason means the child did not receive what it was
+  given, which for a file write is the difference between the new contents and
+  nothing.
+
+  Found by CI, which lost the race this machine kept winning — the same
+  `unix_files` test passed here ten times in a row and failed on a loaded
+  runner. Its own helper had the matching defect and panicked on the expected
+  broken pipe; the new `local.rs` test fails without the fix rather than
+  depending on who wins.
+
 - **The two-container harness waited for something openSUSE never produces.**
   `TwoHosts::start_server_daemon` polled `/run/sshd.pid` for thirty seconds and
   then continued as though the daemon were up. openSUSE's sshd does not write

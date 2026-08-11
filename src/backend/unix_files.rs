@@ -373,12 +373,27 @@ mod tests {
             .spawn()
             .expect("sh must spawn");
 
-        child
+        // A broken pipe is an expected outcome here, not a failure: the script
+        // refuses a planted symlink and exits *before* reading stdin, so the
+        // write lands on a pipe the child has already closed. Two of the cases
+        // below are that refusal. Panicking on it made those tests fail
+        // whenever the child won the race, which on a loaded CI runner it did
+        // and on this machine it did not.
+        //
+        // Any other write error is still fatal: it would mean the script did
+        // not receive the contents it was meant to write, and a scenario
+        // asserting on those contents would be asserting on nothing.
+        let written = child
             .stdin
             .take()
             .expect("stdin was piped")
-            .write_all(contents.as_bytes())
-            .expect("the contents must be written");
+            .write_all(contents.as_bytes());
+
+        if let Err(error) = written
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            panic!("the contents must be written: {error:?}");
+        }
 
         let output = child.wait_with_output().expect("sh must finish");
 
