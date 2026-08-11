@@ -19,6 +19,7 @@
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
+use super::rpm_packages;
 use super::shadow_accounts::ShadowAccounts;
 use super::systemd::{SystemdServices, run_checked};
 use super::systemd_user::SystemdUserServices;
@@ -492,13 +493,10 @@ impl PackageManager for ZypperPackages {
     }
 
     fn is_installed(&self, executor: &dyn Executor, package: &str) -> Result<bool> {
-        // `rpm -q` rather than `zypper se -i`, for the reason RHEL records:
-        // it reads the local database, so it neither touches the network nor
-        // depends on repository metadata being cached, and its exit code
-        // answers for one package without parsing a table.
-        let command = Command::new("rpm").args(["-q", package]);
-
-        Ok(executor.run(&command)?.success())
+        // Shared with RHEL: the question is about rpm's database rather than
+        // about zypper. This file used to answer it "for the reason RHEL
+        // records", which is the sentence that says a function was wanted.
+        rpm_packages::is_installed(executor, package)
     }
 
     fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {

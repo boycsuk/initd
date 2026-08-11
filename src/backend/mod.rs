@@ -17,6 +17,7 @@ pub mod posix_accounts;
 pub mod procfs_sysctl;
 pub mod release_installer;
 pub mod rhel;
+pub mod rpm_packages;
 pub mod rpm_repositories;
 pub mod semanage;
 pub mod shadow_accounts;

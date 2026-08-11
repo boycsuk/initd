@@ -17,6 +17,7 @@ use super::firewalld::Firewalld;
 use super::nftables::Nftables;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
+use super::rpm_packages;
 use super::rpm_repositories::RpmRepositories;
 use super::semanage::Semanage;
 use super::shadow_accounts::ShadowAccounts;
@@ -465,15 +466,10 @@ impl PackageManager for DnfPackages {
     }
 
     fn is_installed(&self, executor: &dyn Executor, package: &str) -> Result<bool> {
-        // `rpm -q` rather than `dnf list installed`: it reads the local
-        // database, so it neither touches the network nor depends on repository
-        // metadata being cached, and its exit code answers for one package
-        // without parsing. Red Hat also documents `dnf` reporting success for
-        // an install that did not happen, which makes querying the database
-        // afterwards the reliable answer rather than a redundant one.
-        let command = Command::new("rpm").args(["-q", package]);
-
-        Ok(executor.run(&command)?.success())
+        // Shared with SUSE: the question is about rpm's database rather than
+        // about dnf, and both families were answering it with the same command
+        // under the same reasoning, written out twice.
+        rpm_packages::is_installed(executor, package)
     }
 
     fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {

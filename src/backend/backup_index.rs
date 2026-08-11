@@ -31,9 +31,11 @@
 //!
 //! In the *copies*, by which tasks record at all. A record naming a copy full
 //! of private keys would keep the secret out of the line and put it in the file
-//! the line points at, which is not a distinction worth making. So
-//! `wireguard.add-peer` records nothing — `wg0.conf` holds the server's private
-//! key and every peer's preshared key — and neither does `ssh.authorize-key`,
+//! the line points at, which is not a distinction worth making. So every write
+//! to `wg0.conf` records nothing — in `wireguard.install` as much as in
+//! `wireguard.add-peer`, the rule being the path rather than the caller, since
+//! that file holds the server's private key and every peer's preshared key —
+//! and neither does `ssh.authorize-key`,
 //! for a different reason worth reading where it is written: restoring that
 //! file *removes* an authorised key.
 //!
@@ -69,9 +71,9 @@ pub const BACKUP_DIR: &str = "/var/lib/initd/backups";
 /// `wireguard.install` made once by chmodding after writing rather than
 /// before.
 ///
-/// It is not what keeps key material safe, because none is kept here:
-/// `wireguard.add-peer` writes the one file that holds private keys and
-/// deliberately records nothing, so this directory never holds a copy of them.
+/// It is not what keeps key material safe, because none is kept here: every
+/// write to `wg0.conf` — the one file holding private keys — deliberately
+/// records nothing, so this directory never holds a copy of them.
 /// A mode is a second line of defence; not having the secret is the first.
 pub const TREE_MODE: u32 = 0o700;
 

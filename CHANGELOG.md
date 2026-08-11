@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `rpm -q` is asked in one place. RHEL and SUSE both answered `is_installed`
+  with the same command under the same reasoning — SUSE's copy said "for the
+  reason RHEL records", which is the sentence that says a function was wanted —
+  so it moved to `backend/rpm_packages.rs`. `install` and `remove` stay where
+  they are: `dnf install -y` and `zypper --non-interactive install` differ in
+  more than spelling, and folding them together would hide that behind a
+  shared name.
+- `i18n/en.rs` carries the same fifteen section headers as `i18n/mod.rs`. The
+  two are coupled one-to-one — the enum and its rendering — and `en.rs` repeated
+  only the eight `Interface: *` ones, so its match ran unheaded until halfway
+  down.
+
 ### Fixed
+- Comments that had stopped being true. `Mode::Running` described reading a
+  spinner and a clock from `Running`, which has held neither since the status
+  line was removed; a test's comment said the status row "keeps the summary" in
+  the present tense, and its name still claimed the row existed;
+  `backup_index.rs` said in two places that `wireguard.add-peer` is what writes
+  `wg0.conf` without recording, when `wireguard.install` writes it twice the
+  same way — the rule is the path, not the caller, which is precisely the lesson
+  that finding cost; and `field_indent` claimed no ordinary command output has a
+  two-space gap "at the head of a line", when it looks for one anywhere past the
+  first column and so hangs `ls -l` output under a spurious label.
+- `docs/user-stories.md` promised, as an acceptance criterion, "a spinner and an
+  elapsed clock keep moving" — removed in the same commit that wrote the
+  contradiction into `docs/ui.md` four hundred lines away. It now describes the
+  write cursor and states the limit the cursor does not cover.
 - **The two kinds of consequence are drawn apart, as `docs/ui.md` already said
   they were.** `consequence` and `consequence_external` were declared, described
   in the role table, and justified in `style.rs` — the administrator has to be

@@ -533,8 +533,13 @@ TUI or CLI:
   - Acceptance: output appears as the task produces it, not once it ends.
   - Acceptance: the interface stays usable while a task runs — I can scroll,
     read and switch panes.
-  - Acceptance: a spinner and an elapsed clock keep moving even when the
-    command itself says nothing for a long time.
+  - Acceptance: a write cursor marks where the next line will land, so a quiet
+    command is distinguishable from a screen that has stopped updating.
+  - Known limit: the cursor neither moves nor counts. A spinner and an elapsed
+    clock went with the status line and have no replacement, so over a slow link
+    a long silence looks the same whether the command or the connection is the
+    one that stopped. The executor's own silence deadline is what eventually
+    answers it, not anything on screen.
   - Acceptance: I am asked for my password once, before the interface starts,
     rather than each time a task needs root.
   - TUI exception: the CLI prints output to the terminal as it arrives and has

@@ -89,9 +89,9 @@ pub(super) enum Mode<'a> {
     /// A task is running; nothing new may be started.
     ///
     /// Carries nothing: what the interface needs to draw about a running task
-    /// — its spinner, its clock — is read from `running` where the borrow can
-    /// be mutable, and every decision made from the mode is about *which*
-    /// state this is rather than what is in it.
+    /// — which one it is, whether a stop has been asked for — is read from
+    /// `running` where the borrow can be mutable, and every decision made from
+    /// the mode is about *which* state this is rather than what is in it.
     Running,
     /// A change is applied and waiting to be kept or put back.
     Verifying,
@@ -3011,11 +3011,13 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_is_readable_in_the_pane_rather_than_only_in_the_status_row() {
-        // The status row is one line and is not truncated with an ellipsis, so
+    fn a_failure_is_readable_in_the_pane() {
+        // Why the pane is where an outcome goes. The status row that used to
+        // carry one was a single line ratatui truncates without an ellipsis, so
         // a package manager's stderr arriving through `CommandFailed` was cut
         // mid-sentence with nowhere to read the rest. The pane can be scrolled
-        // and pasted into a bug report; the row keeps the summary.
+        // and pasted into a bug report — and since the row was removed it is
+        // the only place left, which is what this pins.
         let mut app = test_app(Family::Debian);
 
         app.finish_run(

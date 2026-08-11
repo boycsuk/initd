@@ -366,9 +366,16 @@ fn wrap_indented(line: &OutputLine, width: usize) -> Vec<Line<'static>> {
 
 /// Where a label-and-value line's value starts, if it is one.
 ///
-/// Two or more spaces are what separates the two columns, which no ordinary
-/// command output contains at the head of a line — and a line that is only
-/// indentation has no value to hang.
+/// Two or more spaces are what separates the two columns, and a line that is
+/// only indentation has no value to hang.
+///
+/// A heuristic, and known to be a loose one: the gap is looked for anywhere
+/// past the first column, not only where a label would end, so column-aligned
+/// command output — `ls -l`, `dpkg -l` — matches and is hung under a "label"
+/// that is really its first field. The cost is cosmetic and confined to a
+/// narrow terminal, where such a line wraps at all; tightening it would mean
+/// guessing at a label width, which is the thing this deliberately measures
+/// rather than assumes.
 fn field_indent(text: &str) -> Option<usize> {
     let gap = text.find("  ")?;
 

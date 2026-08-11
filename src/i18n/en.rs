@@ -15,6 +15,7 @@ const FIELD_LABEL_WIDTH: usize = 12;
 /// rather than falling through to a placeholder at runtime.
 pub(super) fn render(message: &Msg) -> String {
     match message {
+        // --- Distro detection ---
         Msg::OsReleaseUnreadable { path, source } => {
             format!("could not read {path}: {source}")
         }
@@ -48,6 +49,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NoFirewallFrontEnd => {
             "no inbound filtering front-end is installed on this host".to_owned()
         }
+        // --- Command execution ---
         Msg::ProgramNotFound { program } => {
             format!("executable {program} was not found in PATH")
         }
@@ -77,6 +79,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::Cancelled { before } => {
             format!("stopped at the operator's request, before running `{before}`")
         }
+        // --- Privileges ---
         Msg::NoPrivilegeEscalator => "this operation requires root privileges, but no escalation \
              mechanism (sudo, doas or run0) was found in PATH"
             .to_owned(),
@@ -90,6 +93,7 @@ pub(super) fn render(message: &Msg) -> String {
             format!("{mechanism} needs a password — the interface is standing aside for it")
         }
         Msg::AuthenticationGranted => "authenticated; carrying on".to_owned(),
+        // --- SSH ---
         Msg::InvalidSshdConfig { details } => {
             format!("the sshd configuration is invalid: {details}")
         }
@@ -124,6 +128,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskVanished { task } => {
             format!("{task} stopped without reporting what it did")
         }
+        // --- Tasks ---
         Msg::TaskUnsupported { task, family } => {
             format!("task {task} is not supported on {family}")
         }
@@ -273,6 +278,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::ShellNotListed { shell } => {
             format!("{shell} is not listed in /etc/shells, so the system will refuse it")
         }
+        // --- Consequences ---
         Msg::ConsequencePortChanged { task, from, to } => {
             format!("{task} still refers to port {from}, not {to}")
         }
@@ -308,6 +314,7 @@ pub(super) fn render(message: &Msg) -> String {
              issued — this tool cannot see it"
                 .to_owned()
         }
+        // --- Terminal ---
         Msg::Terminal { source } => {
             format!("terminal error: {source}")
         }
