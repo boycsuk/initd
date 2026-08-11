@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The bordered panel is built in one place. Nine call sites wrote
+  `Block::default().borders(Borders::ALL).border_style(…).title(…)` in full —
+  `search.rs` had resorted to a comment saying it was drawn "like every other
+  overlay", which is a function's job rather than a comment's — and now call
+  `layout::framed`. The horizontal rule two dialogs drew, one as a `Paragraph`
+  and one as a `Line`, is `layout::dialog_rule`. The confirmation dialog's
+  partly-bordered footer still builds its own `Block`: there is one of those and
+  no pattern to share.
+- The recorded-changes overlay's title is framed by spaces, like every other
+  pane title. `HelpTitle` and `SearchTitle` carry theirs in the catalogue and
+  `HistoryTitle` did not, so its words sat against the border's corner while the
+  panes beside it had air.
 - `rpm -q` is asked in one place. RHEL and SUSE both answered `is_installed`
   with the same command under the same reasoning — SUSE's copy said "for the
   reason RHEL records", which is the sentence that says a function was wanted —

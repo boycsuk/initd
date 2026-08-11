@@ -14,6 +14,37 @@
 #![allow(dead_code)]
 
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders};
+
+/// A fully bordered panel, titled.
+///
+/// Nine call sites wrote `Block::default().borders(Borders::ALL)
+/// .border_style(…).title(…)` out in full, which is the shape of thing that
+/// stays consistent until it does not: `search.rs` had already resorted to a
+/// comment saying it was "titled through the catalogue's roles like every other
+/// overlay", documenting in prose what a function can hold.
+///
+/// The border style stays a parameter because it is the thing that genuinely
+/// differs — focus, a dialog's input border, a dialog's danger border — while
+/// the borders themselves do not. Anything wanting partial borders builds its
+/// own `Block`, as the confirmation dialog's footer does: there is one of those
+/// and no pattern to share.
+pub fn framed(border: Style, title: Span<'static>) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(border)
+        .title(title)
+}
+
+/// The horizontal rule separating a dialog's body from its footer.
+///
+/// Two call sites drew this, one as a `Paragraph` and one as a `Line`, each
+/// with a comment pointing at the other. Same rule, same reason, one function.
+pub fn dialog_rule(width: u16, style: Style) -> Line<'static> {
+    Line::styled("─".repeat(width as usize), style)
+}
 
 /// Width every modal dialog is drawn at, before clamping to the terminal.
 ///

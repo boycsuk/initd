@@ -23,7 +23,7 @@
 
 use ratatui::Frame;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
+use ratatui::widgets::{Clear, List, ListItem, ListState};
 
 use super::{layout, style};
 use crate::backend::backup_index::BackupRecord;
@@ -119,15 +119,15 @@ pub fn render(frame: &mut Frame, history: &History, lang: Lang) {
 
     frame.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(style::border(true))
-        .title(Span::styled(
+    let block = layout::framed(
+        style::border(true),
+        Span::styled(
             lang.render(&Msg::HistoryTitle {
                 count: history.len(),
             }),
             style::PANE_TITLE,
-        ));
+        ),
+    );
 
     // Nothing recorded is a sentence rather than an empty list. An empty list
     // in a bordered box looks like a view that failed to load, and the two

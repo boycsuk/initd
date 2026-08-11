@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use super::{layout, style};
 use crate::i18n::{Lang, Msg};
@@ -180,14 +180,11 @@ pub fn render(frame: &mut Frame, lang: Lang, scroll: u16) {
         lang.render(&Msg::HelpAnyKeyCloses)
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(style::BORDER_FOCUSED)
-        .title(Span::styled(
-            lang.render(&Msg::HelpTitle),
-            style::PANE_TITLE,
-        ))
-        .title_bottom(Span::styled(footer, style::BLOCK_SUBTITLE));
+    let block = layout::framed(
+        style::BORDER_FOCUSED,
+        Span::styled(lang.render(&Msg::HelpTitle), style::PANE_TITLE),
+    )
+    .title_bottom(Span::styled(footer, style::BLOCK_SUBTITLE));
 
     // The gutter and inset every modal keeps, so the overlay reads like the
     // dialogs beside it rather than as a list pushed against its own frame.

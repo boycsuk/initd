@@ -16,9 +16,9 @@ use std::collections::VecDeque;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
-use super::style;
+use super::{layout, style};
 use crate::exec::{Emphasis, OutputLine, Stream};
 use crate::i18n::{Lang, Msg};
 
@@ -275,10 +275,10 @@ impl OutputPane {
             .saturating_sub(self.scroll_offset)
             + rows_above;
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(style::border(focused))
-            .title(Span::styled(format!(" {title} "), style::PANE_TITLE));
+        let block = layout::framed(
+            style::border(focused),
+            Span::styled(format!(" {title} "), style::PANE_TITLE),
+        );
 
         let paragraph = Paragraph::new(text)
             .block(block)

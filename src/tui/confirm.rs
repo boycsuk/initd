@@ -7,7 +7,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use super::{layout, style};
 use crate::i18n::{Lang, Msg};
@@ -172,15 +172,15 @@ impl Confirm {
             style::DIALOG_BORDER_INPUT
         };
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(border)
-            // Styled like the parameter form's title, and for the same reason:
-            // it names the task rather than the panel. It was the one title in
-            // the interface drawn with no role at all, which left the dialog
-            // that asks before a destructive change looking less deliberate
-            // than the form that asks for a port.
-            .title(Span::styled(format!(" {} ", self.title), style::EMPHASIS));
+        // Styled like the parameter form's title, and for the same reason: it
+        // names the task rather than the panel. It was the one title in the
+        // interface drawn with no role at all, which left the dialog that asks
+        // before a destructive change looking less deliberate than the form
+        // that asks for a port.
+        let block = layout::framed(
+            border,
+            Span::styled(format!(" {} ", self.title), style::EMPHASIS),
+        );
         // The gutter and the inset the parameter form uses, applied here so a
         // dialog reads the same whichever one it is: text a cell in from the
         // frame, a blank row at each end of the content. Without them the body
@@ -214,7 +214,7 @@ impl Confirm {
         };
 
         frame.render_widget(
-            Paragraph::new("─".repeat(rule.width as usize)).style(border),
+            Paragraph::new(layout::dialog_rule(rule.width, border)),
             rule,
         );
 

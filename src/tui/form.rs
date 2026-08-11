@@ -12,7 +12,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 
 use super::field::Field;
 use super::{layout, render, style};
@@ -257,22 +257,22 @@ impl Form {
         // Clear first, or the form underneath shows through.
         frame.render_widget(Clear, area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(style::DIALOG_BORDER_INPUT)
-            .title(Span::styled(
+        let block = layout::framed(
+            style::DIALOG_BORDER_INPUT,
+            Span::styled(
                 lang.render(&Msg::FormOptionsTitle { label }),
                 style::EMPHASIS,
-            ))
-            // The spaces framing it are what hold the border off the words;
-            // without them the footer reads as the frame having been drawn
-            // through it.
-            .title_bottom(Line::from(
-                style::key_hint("Enter", &lang.render(&Msg::FormOptionsChoose))
-                    .into_iter()
-                    .chain(style::key_hint("Esc", &lang.render(&Msg::FormKeyCancel)))
-                    .collect::<Vec<_>>(),
-            ));
+            ),
+        )
+        // The spaces framing it are what hold the border off the words;
+        // without them the footer reads as the frame having been drawn
+        // through it.
+        .title_bottom(Line::from(
+            style::key_hint("Enter", &lang.render(&Msg::FormOptionsChoose))
+                .into_iter()
+                .chain(style::key_hint("Esc", &lang.render(&Msg::FormKeyCancel)))
+                .collect::<Vec<_>>(),
+        ));
 
         let items: Vec<ListItem> = options
             .iter()
@@ -320,10 +320,10 @@ impl Form {
         // Clear first, or the interface underneath shows through the dialog.
         frame.render_widget(Clear, area);
 
-        let mut block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(style::DIALOG_BORDER_INPUT)
-            .title(Span::styled(format!(" {} ", self.title), style::EMPHASIS));
+        let mut block = layout::framed(
+            style::DIALOG_BORDER_INPUT,
+            Span::styled(format!(" {} ", self.title), style::EMPHASIS),
+        );
 
         // The counter belongs to the dialog rather than to a field: it says
         // where the operator is in the form, and drawing it on every row said
@@ -427,10 +427,7 @@ impl Form {
         // Drawn to the full inner width rather than to `width`, which reserves
         // a margin the text keeps off the border: a rule that stopped short of
         // the frame would read as a line somebody had left unfinished.
-        lines.push(Line::styled(
-            "─".repeat(area.width as usize),
-            style::DIALOG_BORDER_INPUT,
-        ));
+        lines.push(layout::dialog_rule(area.width, style::DIALOG_BORDER_INPUT));
 
         // The key glyphs stay literals for the reason `help.rs` states: `Tab`
         // and `Esc` name keys on a keyboard rather than words in a language.

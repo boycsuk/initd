@@ -217,14 +217,14 @@ fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect) {
 
     let tree_focused = app.focus == Pane::Tree;
 
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(style::border(tree_focused))
-        .title(Span::styled(
+    let mut block = layout::framed(
+        style::border(tree_focused),
+        Span::styled(
             // Two borders and the spaces framing the title.
             truncate_head(&app.breadcrumb(), tree_area.width.saturating_sub(4)),
             style::PANE_TITLE,
-        ));
+        ),
+    );
 
     // The census rides the bottom border, costing no rows, and has it to
     // itself.
@@ -352,13 +352,13 @@ fn detail(frame: &mut Frame, app: &App, area: Rect) {
         None => app.lang.render(&Msg::DetailTitle),
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(style::border(app.focus == Pane::Output))
-        .title(Span::styled(
+    let block = layout::framed(
+        style::border(app.focus == Pane::Output),
+        Span::styled(
             truncate_head(&title, area.width.saturating_sub(4)),
             style::PANE_TITLE,
-        ));
+        ),
+    );
 
     let paragraph = Paragraph::new(description)
         .block(block)

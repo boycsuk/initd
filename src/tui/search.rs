@@ -22,7 +22,7 @@
 
 use ratatui::Frame;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
+use ratatui::widgets::{Clear, List, ListItem, ListState};
 
 use super::{layout, style};
 use crate::i18n::{Lang, Msg};
@@ -219,16 +219,16 @@ pub fn render(frame: &mut Frame, search: &Search, lang: Lang) {
     // as a bare `String` inherits whatever the block's own style happens to be,
     // so this one modal rendered its chrome in the border's colour while the
     // six beside it did not.
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(style::BORDER_FOCUSED)
-        .title(Span::styled(
+    let block = layout::framed(
+        style::BORDER_FOCUSED,
+        Span::styled(
             lang.render(&Msg::SearchTitle {
                 query: search.query().to_owned(),
             }),
             style::PANE_TITLE,
-        ))
-        .title_bottom(Span::styled(footer, style::BLOCK_SUBTITLE));
+        ),
+    )
+    .title_bottom(Span::styled(footer, style::BLOCK_SUBTITLE));
 
     let mut state = ListState::default();
     state.select(Some(search.selected()));

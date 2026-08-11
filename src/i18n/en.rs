@@ -711,7 +711,10 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::TaskDisabling { unit } => format!("Stopping and disabling {unit}..."),
         Msg::TaskBinaryRemoved { path } => format!("Removed {path}"),
-        Msg::HistoryTitle { count } => format!("Recorded changes ({count})"),
+        // Framed by spaces like every other pane title — `HelpTitle` and
+        // `SearchTitle` carry theirs the same way. Without them the words sit
+        // against the border's corner while the panes beside it have air.
+        Msg::HistoryTitle { count } => format!(" Recorded changes ({count}) "),
         Msg::HistoryRestored { path } => {
             format!("{path} was put back to its recorded state and the service reloaded")
         }
