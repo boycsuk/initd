@@ -1990,6 +1990,35 @@ mod tests {
     }
 
     #[test]
+    fn a_password_is_not_printed_by_formatting_the_form() {
+        // The other way off the screen. Masking covers what is drawn; `{:?}`
+        // covers what is written to a log, put in a panic message, or added by
+        // somebody debugging an unrelated field — and the derive printed the
+        // buffer verbatim. A leak arriving that way would not look like a
+        // change to how passwords are handled, which is what makes it worth a
+        // test rather than a comment.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.create");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+
+        for character in "hunter2".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+
+        let formatted = format!("{:?}", app.form);
+
+        assert!(
+            !formatted.contains("hunter2"),
+            "the password must not survive formatting: {formatted}"
+        );
+        assert!(
+            formatted.contains("redacted"),
+            "and the field must say it is holding something: {formatted}"
+        );
+    }
+
+    #[test]
     fn the_zellij_form_opens_on_a_version_rather_than_on_an_empty_field() {
         // What the operator actually sees. The field used to open blank under
         // a hint reading "a version this build can verify" — which named none

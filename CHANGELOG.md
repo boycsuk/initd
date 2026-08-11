@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A password no longer survives being formatted.** `PasswordPolicy::Set` and
+  the TUI's `Field` both derived `Debug` while holding a plaintext secret — the
+  field's buffer being exactly what masking keeps off the screen. Nothing
+  printed either today, which is the argument for fixing it rather than against:
+  the leak would arrive with a `{:?}` somebody adds while debugging an unrelated
+  field, and would not look like a change to how passwords are handled. Both now
+  write `Debug` by hand; a secret field reports its length, which is already on
+  screen as one bullet per character.
 - **`ssh.authorize-key` no longer leaves a window for a link planted after its
   check.** The task asked whether `~/.ssh` and `authorized_keys` were symlinks,
   then ran up to eight further privileged commands — `install -d`, two `chown`s,

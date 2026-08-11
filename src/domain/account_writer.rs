@@ -18,7 +18,9 @@ use crate::exec::Executor;
 ///
 /// Not `Copy`, unlike its neighbours here: [`Self::Set`] carries a secret, and
 /// a type that copies itself implicitly is one whose copies nobody counted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is written out below rather than derived, for the same reason.
+#[derive(Clone, PartialEq, Eq)]
 pub enum PasswordPolicy {
     /// No password is set, so password authentication cannot succeed.
     ///
@@ -48,6 +50,23 @@ pub enum PasswordPolicy {
     /// output pane, and never appears in an error — `Command`'s `Display`
     /// omits stdin for exactly this reason.
     Set(String),
+}
+
+impl std::fmt::Debug for PasswordPolicy {
+    /// Names the variant and never the password.
+    ///
+    /// Written out rather than derived because the derive prints the `String`.
+    /// Nothing formats this type today, which is the argument for doing it now
+    /// rather than the argument against: the leak would arrive with an
+    /// unrelated `{:?}` in a panic message or a log line somebody adds while
+    /// debugging something else, and it would not look like a change to how
+    /// passwords are handled.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Locked => f.write_str("Locked"),
+            Self::Set(_) => f.write_str("Set(<redacted>)"),
+        }
+    }
 }
 
 /// How an account is barred from logging in.

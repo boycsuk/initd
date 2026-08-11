@@ -25,7 +25,10 @@ const SCROLLED_MARKER: char = '…';
 const MASK: char = '•';
 
 /// One editable value.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is written out below rather than derived: `buffer` holds what was
+/// typed, unmasked, including into a `Secret` field.
+#[derive(Clone)]
 pub struct Field {
     /// What this field collects.
     pub param: Param,
@@ -59,6 +62,39 @@ pub struct Field {
     /// host was never asked — the CLI, or a `/etc/passwd` that could not be
     /// read — and never that the host has no accounts.
     known_accounts: Vec<String>,
+}
+
+impl std::fmt::Debug for Field {
+    /// Shows the field's shape and, for a secret, its length rather than its
+    /// value.
+    ///
+    /// The derive printed `buffer` as the characters typed, which for a
+    /// `Secret` field is the password in plain text — undoing the masking
+    /// [`visible`](Self::visible) does two hundred lines below. Reachable
+    /// today: `Form` derives `Debug` and holds these.
+    ///
+    /// The length is kept for a secret because it is what makes the output
+    /// useful when debugging a field that will not accept input, and it is
+    /// already on screen as one bullet per character.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut shown = f.debug_struct("Field");
+
+        shown.field("param", &self.param);
+
+        if self.param.kind == ParamKind::Secret {
+            shown.field("buffer", &format_args!("<{} redacted>", self.buffer.len()));
+        } else {
+            shown.field("buffer", &self.buffer.iter().collect::<String>());
+        }
+
+        shown
+            .field("cursor", &self.cursor)
+            .field("scroll", &self.scroll)
+            .field("options", &self.options)
+            .field("at_option", &self.at_option)
+            .field("known_accounts", &self.known_accounts)
+            .finish()
+    }
 }
 
 impl Field {
