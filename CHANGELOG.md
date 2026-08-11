@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The two-container harness waited for something openSUSE never produces.**
+  `TwoHosts::start_server_daemon` polled `/run/sshd.pid` for thirty seconds and
+  then continued as though the daemon were up. openSUSE's sshd does not write
+  that file — measured on Tumbleweed, where the daemon answers immediately and
+  the file is still absent a minute later — so the wait always ran its full
+  length. Thirty seconds happened to cover it on a quiet machine; on CI it did
+  not, and `an_old_client_survives_the_safe_tier::tumbleweed` failed against a
+  daemon that had not finished starting, reporting it as `ssh.harden` locking
+  out an old client.
+
+  The wait now greps the daemon's own `Server listening on ...` line out of the
+  log the harness already captures, with a ninety-second ceiling: openSUSE takes
+  111s and 118s in the scenarios that install most, where the other four images
+  answer on the first try. `/dev/tcp` was tried first and rejected on
+  measurement — it is a bash extension, and Debian's `dash` and Alpine's busybox
+  `ash` report "not listening" forever. `ss`, `nc` and `netstat` are each in
+  exactly one image, and `ssh` is absent from Rocky.
+
+- **`client_version` and `server_version` always returned nothing.** OpenSSH
+  prints `-V` on stderr and both helpers read only stdout, so every scenario
+  that names the versions it compared printed `(client , server )`. That is how
+  the CI failure above was reported, and the blank is what sent the reader to
+  `ssh.harden` rather than to the harness. Both streams are read now, and a
+  container that answers nothing at all says so rather than rendering as empty.
+
 ### Changed
 - A multi-line `sh -c` script renders as `<n-line script>` rather than in full.
   `Command`'s `Display` is what the output pane announces before a command runs

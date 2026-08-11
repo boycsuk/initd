@@ -43,6 +43,18 @@ const OLD_CLIENT_INSTALL: &str = "apt-get update -qq >/dev/null 2>&1 && \
 /// The hostname the client reaches the server by.
 const SERVER_HOST: &str = "initd-server";
 
+/// Seconds to wait for the server's sshd to report itself listening.
+///
+/// Ninety rather than thirty, because thirty is what CI ran out of. The old
+/// wait polled for a pid file openSUSE never writes, so it always ran its full
+/// length and then continued regardless — thirty seconds happened to be enough
+/// on a quiet machine and was not on a loaded runner, where the login went to a
+/// daemon that had not finished starting.
+///
+/// Costs nothing when the daemon is quick: the loop returns on the first try
+/// that sees the line, which on every image measured here is the first.
+const DAEMON_WAIT_TRIES: u32 = 90;
+
 /// A server container, a client container and the network between them.
 pub struct TwoHosts {
     server: String,
@@ -110,28 +122,50 @@ impl TwoHosts {
 
     /// The client's OpenSSH version, so a scenario can report what it proved.
     pub fn client_version(&self) -> String {
-        let output = Command::new("docker")
-            .args(["exec", &self.client, "sh", "-c", "ssh -V 2>&1"])
-            .output()
-            .expect("docker exec must execute");
-
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        Self::version_reported_by(&self.client, "ssh -V")
     }
 
     /// The server's OpenSSH version.
     pub fn server_version(&self) -> String {
+        Self::version_reported_by(&self.server, "sshd -V || ssh -V")
+    }
+
+    /// What a container says its OpenSSH version is.
+    ///
+    /// Both streams are read and joined, because **OpenSSH prints `-V` on
+    /// stderr**. The `2>&1` inside the container redirects it into the shell's
+    /// stdout, but only for the process — and `sshd -V` exits non-zero, so on
+    /// the server the `||` fallback ran and its output landed wherever the
+    /// second command put it. Reading only `Output::stdout` here left both
+    /// versions empty, which is exactly how CI reported this scenario:
+    ///
+    /// ```text
+    /// ssh.harden must not lock out an old client (client , server ):
+    /// ```
+    ///
+    /// The whole point of naming the versions is that the scenario's claim is
+    /// about a version gap, so a message that omits both says nothing about
+    /// what was actually proved — and sent the reader to `ssh.harden` for a
+    /// defect that was in the wait above.
+    fn version_reported_by(container: &str, command: &str) -> String {
         let output = Command::new("docker")
-            .args([
-                "exec",
-                &self.server,
-                "sh",
-                "-c",
-                "sshd -V 2>&1 || ssh -V 2>&1",
-            ])
+            .args(["exec", container, "sh", "-c", command])
             .output()
             .expect("docker exec must execute");
 
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        let mut reported = String::from_utf8_lossy(&output.stdout).into_owned();
+        reported.push_str(&String::from_utf8_lossy(&output.stderr));
+
+        let reported = reported.trim();
+
+        if reported.is_empty() {
+            // Said out loud rather than left blank: an empty version is itself
+            // a finding — the container is not answering — and a scenario that
+            // prints nothing there reads as though it forgot to.
+            return format!("<{container} reported no version>");
+        }
+
+        reported.to_owned()
     }
 
     /// Boots the server, applies `configure`, and starts sshd.
@@ -294,19 +328,37 @@ impl TwoHosts {
             ])
             .output();
 
-        for _ in 0..30 {
-            // Its own pid file, not `pgrep`: procps is absent from Debian's
-            // base image, so a `pgrep` here never matches, the loop runs out,
-            // and the wait silently degrades into a fixed thirty-second sleep
-            // that happens to be long enough. sshd writes the file once it is
-            // listening, which is the condition being waited for anyway.
+        for _ in 0..DAEMON_WAIT_TRIES {
+            // The daemon's own words, which is the rule this harness keeps
+            // relearning: prefer a condition the program itself produces over a
+            // tool that may not be installed. Three probes have now been tried
+            // here and the first two degraded silently — `pgrep` is absent from
+            // Debian's base image so it never matched, and `/run/sshd.pid` is
+            // never written by openSUSE's sshd at all, measured on Tumbleweed
+            // where the daemon answers immediately and the file does not exist
+            // a minute later. Both turned this into a fixed thirty-second sleep
+            // that happened to be long enough locally and was not on a loaded
+            // CI runner, where the login then failed against a daemon still
+            // starting and the scenario blamed `ssh.harden` for it.
+            //
+            // `/dev/tcp` was the obvious third choice and is wrong for the same
+            // reason as the first two: it is a bash extension, and Debian's
+            // `dash` and Alpine's busybox `ash` do not implement it — measured,
+            // both report "not listening" forever. `ss`, `nc` and `netstat` are
+            // each present in exactly one image.
+            //
+            // `sshd -D -e` writes "Server listening on ..." at the moment it
+            // begins accepting, the harness already redirects that to
+            // `/tmp/sshd.log`, and `grep` is in all six. Verified in both
+            // directions on every image: `down` before the daemon starts, `up`
+            // after, with a real client agreeing.
             let listening = Command::new("docker")
                 .args([
                     "exec",
                     &self.server,
                     "sh",
                     "-c",
-                    "test -s /run/sshd.pid && echo up",
+                    "grep -q 'Server listening' /tmp/sshd.log 2>/dev/null && echo up",
                 ])
                 .output();
 
@@ -316,6 +368,19 @@ impl TwoHosts {
 
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
+
+        // Deliberately not a panic, and this is the one place in the harness
+        // where silence is the lesser evil. The two openSUSE images take over
+        // eighty seconds to answer under `-j4` and fifteen alone, which nobody
+        // has explained; failing here would turn that unexplained delay into a
+        // red suite. What the loop no longer does is give up on a condition
+        // that was never going to be met — so a scenario that fails after this
+        // fails because the daemon is genuinely not answering.
+        eprintln!(
+            "warning: {} did not answer on port 22 within {DAEMON_WAIT_TRIES}s; \
+             continuing, and the login below is what will report it",
+            self.server
+        );
     }
 
     fn tear_down(&self) {
