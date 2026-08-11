@@ -195,17 +195,26 @@ mod tests {
             .register(&mock, &DOCKER)
             .expect("registration must succeed");
 
-        let lines = mock.recorded_lines();
-        let checked = lines
+        // Found by looking at what the command *is* rather than at how it
+        // renders: the rendered line summarises a multi-line script rather than
+        // spelling it out, so searching it for `gpg` found the check only for
+        // as long as the script was printed in full.
+        let recorded = mock.recorded();
+        let checked = recorded
             .iter()
-            .position(|line| line.contains("gpg"))
+            .position(|command| {
+                command
+                    .args
+                    .iter()
+                    .any(|arg| arg.contains("gpg --show-keys"))
+            })
             .expect("the key must be checked");
-        let written = lines
+        let written = recorded
             .iter()
-            .position(|line| line.starts_with("tee"))
+            .position(|command| command.program == "tee")
             .expect("the definition must be written");
 
-        assert!(checked < written, "{lines:?}");
+        assert!(checked < written, "{:?}", mock.recorded_lines());
     }
 
     #[test]

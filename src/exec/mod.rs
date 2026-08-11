@@ -135,11 +135,42 @@ impl Command {
 
 impl fmt::Display for Command {
     /// Renders the command as a readable line, for logs and error messages.
+    ///
+    /// A `sh -c` script is summarised rather than printed. One of them is
+    /// fourteen lines, and this line is announced in the output pane before the
+    /// command runs and carried into `CommandFailed` if it does not — so
+    /// spelling it out would bury the transcript under a program the operator
+    /// did not write and put the same wall of text inside the error. The
+    /// arguments after it are the part that varies and the part worth reading.
+    ///
+    /// The same reasoning that keeps `stdin` out: this line is for somebody
+    /// working out what the tool did, and a faithful transcription that nobody
+    /// can read serves that worse than a summary.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.program)?;
-        for arg in &self.args {
+
+        let mut args = self.args.iter();
+
+        // `sh -c <script> <argv0> <args…>`: the script is one argument, and
+        // `-c` is what identifies it. A one-line script is printed as it is —
+        // `command -v fish` reads perfectly well and four call sites rely on
+        // being able to see it.
+        if self.program == "sh"
+            && self.args.first().is_some_and(|arg| arg == "-c")
+            && let Some(script) = self.args.get(1)
+            && script.contains('\n')
+        {
+            let lines = script.lines().count();
+            write!(f, " -c <{lines}-line script>")?;
+
+            // `argv0` is the conventional `sh` and says nothing.
+            args.nth(2);
+        }
+
+        for arg in args {
             write!(f, " {arg}")?;
         }
+
         Ok(())
     }
 }
@@ -370,6 +401,46 @@ mod tests {
 
         assert_eq!(command.to_string(), "wg pubkey");
         assert!(!command.to_string().contains("PRIVATE_KEY"));
+    }
+
+    #[test]
+    fn a_multi_line_script_is_summarised_rather_than_printed() {
+        // This line is announced in the output pane before the command runs and
+        // carried into `CommandFailed` if it fails. The owned-directory write is
+        // a fourteen-line script, so printing it would bury a transcript under a
+        // program the operator did not write, twice.
+        let script = "set -eu\nif [ -L \"$1\" ]; then exit 9; fi\nmv -f \"$2\" \"$1\"\n";
+        let command = Command::new("sh").args([
+            "-c",
+            script,
+            "sh",
+            "/root/.ssh",
+            "700",
+            "/root/.ssh/authorized_keys",
+        ]);
+
+        let rendered = command.to_string();
+
+        assert_eq!(
+            rendered,
+            "sh -c <3-line script> /root/.ssh 700 /root/.ssh/authorized_keys"
+        );
+        assert!(
+            !rendered.contains("exit 9"),
+            "the script body must not be spelled out: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_one_line_script_is_still_shown_in_full() {
+        // `Command::locating` builds `sh -c 'command -v fish'`, which reads
+        // perfectly well and is the thing worth seeing when a program is not
+        // found. Summarising by program name rather than by length would have
+        // hidden it.
+        assert_eq!(
+            Command::locating("fish").to_string(),
+            "sh -c command -v fish"
+        );
     }
 
     #[test]
