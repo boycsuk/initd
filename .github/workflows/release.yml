@@ -107,14 +107,35 @@ jobs:
       # every older server the project exists to reach — which is exactly the
       # failure musl is chosen to avoid, and one no test on this runner would
       # notice.
+      # Both spellings, because the two targets disagree and only one of them
+      # was ever run when this was written. x86_64 links static-pie and `file`
+      # says `static-pie linked`; aarch64 links non-PIE and it says
+      # `statically linked`. Matching only the first rejected a perfectly
+      # static aarch64 binary — the check describing one target's output and
+      # being applied to both.
+      #
+      # `dynamically linked` is the string that must never appear, so it is
+      # asserted directly as well: a future toolchain wording neither of the
+      # positive matches anticipates should fail loudly here rather than pass
+      # by accident.
       - name: Confirm the binary is static
         run: |
           binary="target/${{ matrix.target }}/release/initd"
-          file "$binary"
-          if ! file "$binary" | grep -q "static-pie linked"; then
-            echo "::error::$binary is not statically linked"
-            exit 1
-          fi
+          described=$(file "$binary")
+          echo "$described"
+
+          case "$described" in
+            *"dynamically linked"*)
+              echo "::error::$binary is dynamically linked"
+              exit 1
+              ;;
+            *"static-pie linked"* | *"statically linked"*)
+              ;;
+            *)
+              echo "::error::$binary: could not confirm static linking from: $described"
+              exit 1
+              ;;
+          esac
 
       - name: Package
         run: |
