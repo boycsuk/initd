@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A generated WireGuard key no longer reaches the output pane.** `wg genkey`
+  and `wg genpsk` print the secret on stdout, and every line of stdout is handed
+  to whatever is observing the executor — which under the interface is the
+  transcript an administrator scrolls, pastes into a bug report and copies to
+  the clipboard with OSC 52. The protection that existed covered the other
+  direction only: `Command::stdin` keeps a key out of `argv`, and `wg pubkey`
+  consumes one that way, so a key was safe while being *read* and published
+  while being *made*.
+
+  `Command::secret_output()` marks the command whose output is itself the
+  secret, and `LocalExecutor` takes the unobserved path for it even when the
+  interface is watching. The caller still receives the key in `Output`; what is
+  withheld is the audience. The command line is still announced, so the
+  transcript shows that a key was generated.
+
+  Neither of the two tests guarding this file could have caught it: both drive
+  `MockExecutor`, which has no observer to leak to. The new one attaches a real
+  observer and asserts the key never arrives.
+
+- **A task the operator stops now drops the password it was given.** The
+  cancellation branch of `finish_run` returned before the wipe, so a
+  `users.create` stopped between `chpasswd` and the admin-group work left the
+  plaintext password in `ran_with` for the rest of the session — the outcome an
+  operator reaches deliberately, by pressing a key, having decided something is
+  wrong. The same early return skipped the presence refresh, leaving the tree
+  claiming an installed state that a half-applied task had invalidated.
+
+  Both obligations moved into `finish_bookkeeping`, which every way a task can
+  end now reaches. The existing test only ever exercised `AccountExists`; the
+  new one exercises `Cancelled` and fails without the fix.
+
 ### Removed
 - The status line is gone, and with it `src/tui/status.rs`, the nine states, the
   twenty-eight messages they carried, and five style roles. Nothing is drawn on

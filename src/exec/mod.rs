@@ -33,6 +33,19 @@ pub struct Command {
     /// argument would have to be shell-escaped, and any mistake in that
     /// escaping is a command injection on a tool that runs as root.
     pub stdin: Option<String>,
+    /// Whether what the process prints is itself a secret.
+    ///
+    /// The output pane is a transcript an administrator scrolls, pastes into a
+    /// bug report and copies to the clipboard, so a command whose stdout *is*
+    /// the secret cannot be observed the way every other command is. `stdin`
+    /// above keeps a secret out of `argv`; this keeps one out of the pane, and
+    /// the two are needed together because `wg pubkey` reads a key the safe way
+    /// while `wg genkey` writes one the other way.
+    ///
+    /// Only the observer is withheld. `Output` still carries both streams, so
+    /// the caller that asked for the key still receives it — what changes is
+    /// that nobody is watching over its shoulder.
+    pub secret_output: bool,
 }
 
 impl Command {
@@ -43,6 +56,7 @@ impl Command {
             args: Vec::new(),
             needs_root: false,
             stdin: None,
+            secret_output: false,
         }
     }
 
@@ -78,6 +92,18 @@ impl Command {
     #[must_use]
     pub fn stdin(mut self, data: impl Into<String>) -> Self {
         self.stdin = Some(data.into());
+        self
+    }
+
+    /// Withholds the process's output from whoever is observing.
+    ///
+    /// For the command that *prints* a secret, as `wg genkey` prints a private
+    /// key. Its counterpart is [`Command::stdin`], which keeps a secret out of
+    /// `argv`; a key is generated one way and consumed the other, so a command
+    /// needs whichever half matches the direction its secret travels.
+    #[must_use]
+    pub const fn secret_output(mut self) -> Self {
+        self.secret_output = true;
         self
     }
 

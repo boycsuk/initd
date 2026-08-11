@@ -26,8 +26,15 @@ impl WgTools {
     }
 
     /// Runs a `wg` subcommand that prints a key, and checks what came back.
+    ///
+    /// `secret_output` because these two subcommands print the secret itself:
+    /// `genkey` a private key, `genpsk` a preshared one. Without it the key
+    /// travels to whatever is observing the executor, which under the interface
+    /// is the output pane — a transcript that is scrolled, pasted into bug
+    /// reports and copied to the clipboard. `public_key_of` below needs no such
+    /// marking: its secret goes *in* on stdin, and what it prints is public.
     fn generate(executor: &dyn Executor, subcommand: &str) -> Result<String> {
-        let command = Command::new("wg").arg(subcommand);
+        let command = Command::new("wg").arg(subcommand).secret_output();
         let output = executor.run(&command)?;
 
         if !output.success() {

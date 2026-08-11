@@ -405,7 +405,16 @@ impl Executor for LocalExecutor {
         // needs to have taken them first. The observed path is the interface's;
         // the other is the command line's, where the child's output already
         // reaches the terminal the operator is reading.
-        let (code, stdout, stderr) = match self.observer.as_ref() {
+        //
+        // A command whose output is itself a secret takes the unobserved path
+        // even when the interface is watching. `wg genkey` prints a private key
+        // on stdout, and the pane it would otherwise print into is a transcript
+        // that gets scrolled, pasted into a bug report and copied to the
+        // clipboard. The caller still receives the key in `Output` — what is
+        // withheld is the audience, not the answer.
+        let observer = self.observer.as_ref().filter(|_| !command.secret_output);
+
+        let (code, stdout, stderr) = match observer {
             Some(observer) => {
                 let (stdout, stderr) = self.stream_child(&mut child, command, observer)?;
 
@@ -1006,6 +1015,47 @@ mod tests {
         assert_eq!(out.code, 3);
         assert_eq!(out.stdout.trim(), "captured");
         assert_eq!(out.stderr.trim(), "failed");
+    }
+
+    #[test]
+    fn a_secret_printing_command_is_withheld_from_the_observer() {
+        // `wg genkey` prints a private key on stdout. Under the interface the
+        // observer is the output pane, which is scrolled, pasted into bug
+        // reports and copied to the clipboard, so the one command whose output
+        // *is* the secret must not travel there.
+        //
+        // The command line itself is still announced: the transcript has to
+        // show that a key was generated, and `Display` omits stdin already.
+        //
+        // The secret is produced by the program rather than named in its
+        // arguments, as `wg genkey` produces one: a script with the value
+        // written into `sh -c` would leak through the announced command line
+        // instead, which is a different hole and not the one under test.
+        let recorder = Arc::new(Recorder::default());
+        let executor = LocalExecutor::new(Box::new(NoEscalation))
+            .observed_by(Arc::clone(&recorder) as Arc<dyn OutputObserver>);
+
+        let out = executor
+            .run(
+                &Command::new("sh")
+                    .args(["-c", "printf 'SECRET_%s_MATERIAL\\n' KEY"])
+                    .secret_output(),
+            )
+            .expect("sh must run");
+
+        // The caller still receives it — what is withheld is the audience.
+        assert_eq!(out.stdout.trim(), "SECRET_KEY_MATERIAL");
+
+        let seen = recorder.seen();
+
+        assert!(
+            !seen.iter().any(|line| line.contains("SECRET_KEY_MATERIAL")),
+            "the generated key reached the observer: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|line| line.starts_with("cmd:")),
+            "the command itself must still be announced: {seen:?}"
+        );
     }
 
     #[test]

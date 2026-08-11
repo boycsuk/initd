@@ -257,6 +257,15 @@ impl App {
             self.report_failure(&heading, cancellation);
             self.output.scroll_to_tail();
 
+            // Falls through to the shared tail rather than returning here. A
+            // stopped task held the same password as one that ran to the end,
+            // and stopped partway through whatever it was applying — so both
+            // obligations below are *more* owed on this path, not less:
+            // `forget_secrets` because the value is still in `ran_with`, and
+            // `refresh_presence_after` because what the host holds is now
+            // exactly what nobody knows.
+            self.finish_bookkeeping(id);
+
             return;
         }
 
@@ -318,20 +327,29 @@ impl App {
         // pressed a key and are owed its answer.
         self.output.scroll_to_tail();
 
-        // Also after the match, and on the failure path deliberately: a task
-        // that failed halfway installed the package and then could not enable
-        // the unit, so what the host holds is exactly what nobody knows any
-        // more. Asking again is the only way to find out, and the alternative
-        // — keeping the answer from before it ran — describes a machine that
-        // may no longer exist.
+        self.finish_bookkeeping(id);
+    }
+
+    /// Re-reads what the host holds and drops the secrets the task was given.
+    ///
+    /// Extracted so every way a task can end reaches it. It used to be the tail
+    /// of `finish_run`, which the cancellation path returned before ever
+    /// reaching — so a task stopped between two commands left the password it
+    /// was handed in `ran_with` for the rest of the session, and left the tree
+    /// showing an installed state that its half-applied work had invalidated.
+    fn finish_bookkeeping(&mut self, id: &str) {
+        // On the failure path deliberately: a task that failed halfway
+        // installed the package and then could not enable the unit, so what the
+        // host holds is exactly what nobody knows any more. Asking again is the
+        // only way to find out, and the alternative — keeping the answer from
+        // before it ran — describes a machine that may no longer exist.
         self.refresh_presence_after(id);
 
-        // After the match rather than inside its successful arm, because a
-        // task that failed held the same password and reported nothing that
-        // needed it. `ran_with` is kept so the consequences above can name what
-        // the task invalidated; nothing reads it again until the next task
-        // replaces it, so on a host where one account is created and nothing
-        // else that is the rest of the session.
+        // Outside the successful arm, because a task that failed held the same
+        // password and reported nothing that needed it. `ran_with` is kept so
+        // the consequences can name what the task invalidated; nothing reads it
+        // again until the next task replaces it, so on a host where one account
+        // is created and nothing else that is the rest of the session.
         if let Some(task) = tasks::find(id) {
             self.ran_with.forget_secrets(&task.params());
         }

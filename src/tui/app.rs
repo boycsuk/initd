@@ -2048,6 +2048,43 @@ mod tests {
     }
 
     #[test]
+    fn a_password_does_not_survive_a_task_the_operator_stopped() {
+        // The sibling above covered the failure path and not this one, and the
+        // cancellation branch returned before ever reaching the wipe — so a
+        // password survived precisely the outcome an operator reaches on
+        // purpose, by pressing a key, having decided something is wrong.
+        //
+        // `users.create` runs several commands (`chpasswd`, then the admin
+        // group work), and a stop lands between two of them, so this is not a
+        // hypothetical arrangement of the state.
+        let mut app = app_with_host_answers();
+        let mut values = ParamValues::new();
+        values.set(CreateUser::USER, "deploy");
+        values.set(CreateUser::PASSWORD, "hunter2");
+
+        app.ran_with = values;
+
+        app.finish_run(
+            "users.create",
+            Err(Error::Cancelled {
+                before: "usermod -aG sudo deploy".to_owned(),
+            }),
+            true,
+        );
+
+        assert!(
+            app.ran_with.get(CreateUser::PASSWORD).is_err(),
+            "a stopped task holds the same secret as one that ran"
+        );
+
+        assert_eq!(
+            app.ran_with.get(CreateUser::USER).ok(),
+            Some("deploy"),
+            "and everything the consequences are reported from must survive"
+        );
+    }
+
+    #[test]
     fn the_cursor_lands_on_the_focused_field_s_value() {
         // Nothing else in the suite reads the cursor position, and a caret a
         // row out is invisible to a test that only reads drawn text: the
