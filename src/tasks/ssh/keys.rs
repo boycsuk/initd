@@ -12,6 +12,7 @@
 //! that were already working.
 
 use crate::backend::Backend;
+use crate::domain::files::OwnedDirWrite;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
 use crate::i18n::Msg;
@@ -86,17 +87,19 @@ impl Task for AuthorizeKey {
         let ssh_dir = format!("{home}/.ssh");
         let path = format!("{home}/{AUTHORIZED_KEYS_RELATIVE}");
 
-        // Refused before anything is created, because everything below follows
-        // links and this directory sits inside a home the account itself
-        // controls. Replacing `~/.ssh` with a link elsewhere has root apply the
+        // Refused before anything is read, because this directory sits inside a
+        // home the account itself controls and the tools that follow all follow
+        // links. Replacing `~/.ssh` with a link elsewhere has root apply the
         // mode, the ownership and the key to wherever it points — reproduced on
         // `debian:13`, where a directory owned by root came back owned by the
         // account that planted the link, with a file written inside it.
         //
-        // Checked rather than defended against with `mkdir` alone: `mkdir` does
-        // fail on a link, but `install -d` is what gives the directory its mode
-        // in one step, and the file write below would still follow a link put
-        // in place of `authorized_keys` itself.
+        // This check alone is not the defence, and used to be treated as one: a
+        // reply here is about the path as it was at this instant, and the
+        // account can plant a link immediately afterwards. It stays because
+        // refusing before anything is created gives the operator the honest
+        // error, rather than one raised from inside the write. What actually
+        // holds is `write_in_owned_dir`, which re-checks between its own steps.
         for candidate in [&ssh_dir, &path] {
             if files.is_symlink(executor, candidate)? {
                 return Err(Error::UnsafeSymlink {
@@ -104,12 +107,6 @@ impl Task for AuthorizeKey {
                 });
             }
         }
-
-        // sshd silently ignores authorized_keys when the directory or file is
-        // group- or world-accessible, so the modes are part of the operation
-        // rather than an afterthought.
-        files.create_dir(executor, &ssh_dir, SSH_DIR_MODE)?;
-        files.set_owner(executor, &ssh_dir, &user)?;
 
         let present = files.exists(executor, &path)?;
 
@@ -135,29 +132,30 @@ impl Task for AuthorizeKey {
         updated.push_str(key);
         updated.push('\n');
 
-        // A new file is created empty, restricted, and only then written. The
-        // other order leaves the file world-readable for as long as the two
-        // privileged commands take — brief, and long enough for any account on
-        // the box to read it or, worse, to hold it open and influence which
-        // keys sshd honours. An empty file discloses nothing, which is what
-        // makes the ordering possible. Same lesson as `wg0.conf`.
+        // The directory, both modes, both owners and the contents in one
+        // privileged invocation. It used to be up to eight of them, each
+        // resolving `~/.ssh` and `authorized_keys` afresh, with the symlink
+        // check having happened once at the top — so the account that owns this
+        // home could plant a link between any two and have root apply a mode,
+        // an ownership or a key somewhere it chose. `chown` and `chmod` follow
+        // links; the window was small and the attacker is the one process
+        // guaranteed to be watching for it.
         //
-        // An existing file keeps its own mode: it was created this way, and
-        // rewriting it is what the append below is for.
-        if !present {
-            files.write(executor, &path, "")?;
-            files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
-            files.set_owner(executor, &path, &user)?;
-        }
-
-        files.write(executor, &path, &updated)?;
-
-        // Re-stated for a file that already existed, since a file left by
-        // something else may carry a mode sshd refuses to read.
-        if present {
-            files.set_mode(executor, &path, AUTHORIZED_KEYS_MODE)?;
-            files.set_owner(executor, &path, &user)?;
-        }
+        // sshd silently ignores authorized_keys when the directory or file is
+        // group- or world-accessible, which is why the modes travel with the
+        // write rather than being applied after it: a file that is briefly
+        // readable is a key somebody else may have read.
+        files.write_in_owned_dir(
+            executor,
+            &OwnedDirWrite {
+                dir: &ssh_dir,
+                dir_mode: SSH_DIR_MODE,
+                path: &path,
+                file_mode: AUTHORIZED_KEYS_MODE,
+                owner: &user,
+                contents: &updated,
+            },
+        )?;
 
         report(progress, &Msg::TaskSshKeyAuthorised);
 
@@ -367,18 +365,61 @@ mod tests {
     }
 
     #[test]
+    fn a_link_planted_after_the_check_is_still_refused() {
+        // The window the two tests above cannot see. Both plant the link
+        // *before* the task looks, which is the easy case; the account owning
+        // this home can equally plant one immediately after the check answers,
+        // while the write is under way. That used to work: the check ran once
+        // and up to eight privileged commands followed, each resolving the path
+        // again, and `chown` and `chmod` both follow links.
+        //
+        // Now the write is one invocation that re-checks between its steps and
+        // exits 9 naming the path. Simulated by letting the up-front checks
+        // pass and having the write answer as the script does.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(ROOT_PASSWD),
+            Reply::failure(1, ""), // test -L: ~/.ssh is not a link, yet
+            Reply::failure(1, ""), // test -L: nor is authorized_keys, yet
+            Reply::failure(1, ""), // test -e: absent
+            // The script's own refusal. Built by hand rather than with
+            // `Reply::failure`, which puts its text on stderr: the path travels
+            // on stdout, so that a shell's own diagnostics cannot be mistaken
+            // for one.
+            Reply {
+                code: 9,
+                stdout: "/root/.ssh/authorized_keys".to_owned(),
+                stderr: String::new(),
+            },
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let err = AuthorizeKey
+            .run(
+                &mock,
+                backend.as_ref(),
+                &key_values("root", TEST_KEY),
+                &mut |_| {},
+            )
+            .expect_err("a link planted mid-write must be refused");
+
+        // Reported as the link it is, not as an anonymous command failure: the
+        // operator needs to know somebody is racing them for this path.
+        match err {
+            Error::UnsafeSymlink { path } => {
+                assert_eq!(path, "/root/.ssh/authorized_keys");
+            }
+            other => panic!("expected an unsafe-symlink refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn authorising_a_key_sets_the_permissions_sshd_requires() {
         let mock = MockExecutor::with_replies([
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
             Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
             Reply::failure(1, ""),  // test -L: nor is authorized_keys
-            Reply::ok(""),          // install -d
-            Reply::ok(""),          // chown dir
             Reply::failure(1, ""),  // authorized_keys absent
-            Reply::ok(""),          // test -e inside write
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // chown file
+            Reply::ok(""),          // the write, modes and owners in one
         ]);
         let backend = for_family(Family::Debian);
 
@@ -391,81 +432,70 @@ mod tests {
             )
             .expect("authorising must succeed");
 
-        let commands = mock.recorded_lines();
+        // Asserted on the arguments of the one invocation rather than on two
+        // separate commands: both modes now travel with the write, which is
+        // the whole point of it being one command.
+        let write = mock
+            .recorded()
+            .iter()
+            .find(|c| c.program == "sh")
+            .cloned()
+            .expect("the write must happen");
+
         assert!(
-            commands.iter().any(|c| c == "install -d -m 700 /root/.ssh"),
-            "~/.ssh must be 700: {commands:?}"
+            write.args.contains(&"700".to_owned()),
+            "~/.ssh must be 700: {:?}",
+            write.args
         );
         assert!(
-            commands
-                .iter()
-                .any(|c| c == "chmod 600 /root/.ssh/authorized_keys"),
-            "authorized_keys must be 600: {commands:?}"
+            write.args.contains(&"600".to_owned()),
+            "authorized_keys must be 600: {:?}",
+            write.args
+        );
+        assert!(
+            write
+                .args
+                .contains(&"/root/.ssh/authorized_keys".to_owned()),
+            "the key must land where sshd reads it: {:?}",
+            write.args
         );
     }
 
     #[test]
     fn a_new_authorized_keys_is_restricted_before_it_holds_a_key() {
         // The property, and the reason it is asserted on the order rather than
-        // on the final mode: `tee` creates a file with the shell's umask, so
-        // writing the key first leaves it world-readable until the chmod lands
-        // one privileged command later. A local account can read it in that
-        // window, or hold it open and influence which keys sshd honours. The
-        // fix is the one `wg0.conf` already carries — create empty, restrict,
-        // then write — and a test that only checks the mode at the end passes
-        // against both orders.
-        // Strict: the subject is the order, so a command appearing between the
-        // chmod and the write must fail this rather than answer success from
-        // nowhere.
-        let mock = MockExecutor::with_exact_replies([
-            Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
-            Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
-            Reply::failure(1, ""),  // test -L: nor is authorized_keys
-            Reply::ok(""),          // install -d
-            Reply::ok(""),          // chown dir
-            Reply::failure(1, ""),  // test -e: authorized_keys absent
-            Reply::failure(1, ""),  // test -e, opening the empty write
-            Reply::ok(""),          // tee: stage the empty file
-            Reply::ok(""),          // mv: publish it
-            Reply::ok(""),          // chmod 600, before any key exists
-            Reply::ok(""),          // chown file
-            Reply::ok(""),          // test -e, opening the real write
-            Reply::ok(""),          // cp -p: backup
-            Reply::ok(""),          // tee: stage the key
-            Reply::ok("600"),       // stat -c %a: the mode just set
-            Reply::ok(""),          // chmod: carry it onto the staging file
-            Reply::ok(""),          // mv: publish it
-        ]);
-        let backend = for_family(Family::Debian);
+        // on the final mode: a file created with the shell's umask and
+        // chmodded afterwards is world-readable in between. A local account can
+        // read it in that window, or hold it open and influence which keys sshd
+        // honours. A test that only checks the mode at the end passes against
+        // both orders.
+        //
+        // Asserted against the script rather than against a sequence of mocked
+        // commands, because the ordering is now inside one invocation: the
+        // staging file is created by `install` with its final mode already on
+        // it, and the contents arrive afterwards on stdin. There is no longer a
+        // moment when the file exists and the mode does not, which is a
+        // stronger guarantee than the ordering this test used to pin — and one
+        // no arrangement of mock replies can observe.
+        let script = crate::backend::unix_files::UnixFiles::owned_dir_script();
 
-        AuthorizeKey
-            .run(
-                &mock,
-                backend.as_ref(),
-                &key_values("root", TEST_KEY),
-                &mut |_| {},
-            )
-            .expect("authorising must succeed");
-
-        let commands = mock.recorded_lines();
-        let chmod = commands
-            .iter()
-            .position(|c| c == "chmod 600 /root/.ssh/authorized_keys")
-            .expect("the file must be restricted");
-        let wrote_key = mock
-            .recorded()
-            .iter()
-            .position(|c| {
-                c.program == "tee"
-                    && c.stdin
-                        .as_deref()
-                        .is_some_and(|data| data.contains(TEST_KEY))
-            })
-            .expect("the key must be written");
+        let creates = script
+            .find("install -m \"$file_mode\"")
+            .expect("the staging file must be created by install, with its mode");
+        let writes = script
+            .find("cat > \"$staged\"")
+            .expect("the contents must arrive after it");
 
         assert!(
-            chmod < wrote_key,
-            "the mode must be set before the key is written: {commands:?}"
+            creates < writes,
+            "the mode must be on the file before any content is: {script}"
+        );
+
+        // The other half: what `install` creates must be the file that is
+        // published, so the mode cannot be lost by the move.
+        assert!(
+            script.contains("mv -f \"$staged\" \"$file\""),
+            "the staged file must be the one published: {script}"
         );
     }
 
@@ -480,14 +510,9 @@ mod tests {
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
             Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
             Reply::failure(1, ""),  // test -L: nor is authorized_keys
-            Reply::ok(""),          // install -d
-            Reply::ok(""),          // chown dir
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(OTHER_KEY),   // holding somebody else's key
-            Reply::ok(""),          // test -e inside write
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // chown file
+            Reply::ok(""),          // the write
         ]);
         let backend = for_family(Family::Debian);
 
@@ -503,7 +528,7 @@ mod tests {
         let written = mock
             .recorded()
             .iter()
-            .find_map(|c| (c.program == "tee").then(|| c.stdin.clone()).flatten())
+            .find_map(|c| (c.program == "sh").then(|| c.stdin.clone()).flatten())
             .expect("the file must be written");
 
         assert!(written.contains(OTHER_KEY), "{written:?}");
@@ -521,20 +546,8 @@ mod tests {
             Reply::ok("deploy:x:1001:1001::/srv/deploy:/bin/sh"),
             Reply::failure(1, ""), // test -L: ~/.ssh is not a link
             Reply::failure(1, ""), // test -L: nor is authorized_keys
-            Reply::ok(""),         // install -d
-            Reply::ok(""),         // chown dir
             Reply::failure(1, ""), // test -e: authorized_keys absent
-            Reply::failure(1, ""), // test -e, opening the empty write
-            Reply::ok(""),         // tee: stage the empty file
-            Reply::ok(""),         // mv: publish it
-            Reply::ok(""),         // chmod
-            Reply::ok(""),         // chown file
-            Reply::ok(""),         // test -e, opening the real write
-            Reply::ok(""),         // cp -p: backup
-            Reply::ok(""),         // tee: stage the key
-            Reply::ok("600"),      // stat -c %a
-            Reply::ok(""),         // chmod: carry the mode over
-            Reply::ok(""),         // mv: publish it
+            Reply::ok(""),         // the write
         ]);
         let backend = for_family(Family::Debian);
 
@@ -567,8 +580,6 @@ mod tests {
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
             Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
             Reply::failure(1, ""),  // test -L: nor is authorized_keys
-            Reply::ok(""),          // install -d
-            Reply::ok(""),          // chown
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(TEST_KEY),    // and already holds the key
         ]);
@@ -584,7 +595,7 @@ mod tests {
             .expect("a duplicate key must be a no-op");
 
         assert!(
-            !mock.recorded_lines().iter().any(|c| c.starts_with("tee")),
+            !mock.recorded().iter().any(|c| c.program == "sh"),
             "an already-present key must not be written again"
         );
     }
@@ -596,15 +607,9 @@ mod tests {
             Reply::ok(ROOT_PASSWD), // getent passwd: where root's home is
             Reply::failure(1, ""),  // test -L: ~/.ssh is not a link
             Reply::failure(1, ""),  // test -L: nor is authorized_keys
-            Reply::ok(""),          // install -d
-            Reply::ok(""),          // chown dir
             Reply::ok(""),          // authorized_keys exists
             Reply::ok(existing),    // holding somebody else's key
-            Reply::ok(""),          // test -e, opening the write
-            Reply::ok(""),          // cp -p: backup
-            Reply::ok(""),          // tee
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // chown file
+            Reply::ok(""),          // the write
         ]);
         let backend = for_family(Family::Debian);
 
@@ -620,7 +625,7 @@ mod tests {
         let written = mock
             .recorded()
             .into_iter()
-            .find(|cmd| cmd.program == "tee")
+            .find(|cmd| cmd.program == "sh")
             .and_then(|cmd| cmd.stdin)
             .expect("the file must be written");
 

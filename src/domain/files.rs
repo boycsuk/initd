@@ -15,6 +15,28 @@ pub struct Backup {
     pub copy: String,
 }
 
+/// A write into a directory owned by an unprivileged account.
+///
+/// A struct rather than seven parameters because six of them are strings and
+/// two are modes: a call site that transposed `dir_mode` and `file_mode`, or
+/// `path` and `dir`, would compile and would silently write a key with the
+/// wrong permissions — which sshd answers by ignoring the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnedDirWrite<'a> {
+    /// The directory to create if missing, e.g. `~/.ssh`.
+    pub dir: &'a str,
+    /// Octal mode for the directory, e.g. `0o700`.
+    pub dir_mode: u32,
+    /// The file to write inside it.
+    pub path: &'a str,
+    /// Octal mode for the file, e.g. `0o600`.
+    pub file_mode: u32,
+    /// The account that must end up owning both.
+    pub owner: &'a str,
+    /// What to write.
+    pub contents: &'a str,
+}
+
 /// Reads and writes files on the administered system.
 ///
 /// Writing always takes a backup first: every file this tool touches can lock
@@ -77,6 +99,22 @@ pub trait FileEditor {
     /// Creates a directory and any missing parents, with the given mode.
     fn create_dir(&self, executor: &dyn Executor, path: &str, mode: u32) -> Result<()>;
 
-    /// Sets the owning user and group of a path.
-    fn set_owner(&self, executor: &dyn Executor, path: &str, owner: &str) -> Result<()>;
+    /// Writes a file inside a directory its owner controls, in one step.
+    ///
+    /// For the write whose destination sits in an unprivileged account's home.
+    /// [`is_symlink`](Self::is_symlink) answers the question once, and every
+    /// command after it is a fresh lookup of the same path: `chown` and `chmod`
+    /// follow links, so an account that replants one between two of those
+    /// commands has root apply ownership or a mode wherever it now points. The
+    /// check and the act have to be inseparable, and across several privileged
+    /// subprocesses they cannot be.
+    ///
+    /// So the directory, its mode and owner, the file, its mode and owner, and
+    /// the contents are one invocation that re-checks as it goes and refuses on
+    /// a link. Contents arrive on stdin; nothing interpolates into a script.
+    ///
+    /// The caller passes the whole file, having read and appended to it first:
+    /// this replaces rather than appends, so what a key is added to is decided
+    /// where the keys are understood rather than inside a shell script.
+    fn write_in_owned_dir(&self, executor: &dyn Executor, spec: &OwnedDirWrite<'_>) -> Result<()>;
 }

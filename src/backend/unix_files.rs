@@ -5,7 +5,7 @@
 //! `PATH` rather than by absolute location.
 
 use super::systemd::run_checked;
-use crate::domain::files::{Backup, FileEditor};
+use crate::domain::files::{Backup, FileEditor, OwnedDirWrite};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
@@ -31,6 +31,14 @@ const BACKUP_SUFFIX: &str = ".initd.bak";
 /// Distinct from [`BACKUP_SUFFIX`] so a staging file left behind by an
 /// interrupted write is never mistaken for the backup a revert would restore.
 const STAGING_SUFFIX: &str = ".initd.new";
+
+/// Exit code the owned-directory script uses for a link it would have followed.
+///
+/// Apart from the codes the utilities themselves produce, so "somebody planted
+/// a link" is distinguishable from "the disk is full". 9 is outside the range
+/// `install`, `chmod`, `chown` and `mv` use, and outside the 126-128 and 128+n
+/// ranges a shell reserves for "not executable" and "killed by a signal".
+const SYMLINK_REFUSED: i32 = 9;
 
 /// Edits files using standard POSIX utilities.
 #[derive(Debug, Clone, Copy, Default)]
@@ -154,16 +162,96 @@ impl FileEditor for UnixFiles {
         run_checked(executor, &command)
     }
 
-    fn set_owner(&self, executor: &dyn Executor, path: &str, owner: &str) -> Result<()> {
-        let command = Command::new("chown")
-            .args([&format!("{owner}:{owner}"), path])
-            .privileged();
+    fn write_in_owned_dir(&self, executor: &dyn Executor, spec: &OwnedDirWrite<'_>) -> Result<()> {
+        let script = Self::owned_dir_script();
 
-        run_checked(executor, &command)
+        // Every path is a positional parameter, never interpolated. A home
+        // directory comes from the passwd database and a user name is
+        // validated, but the guarantee here should not rest on either: `sh -c`
+        // reading a value carrying a backtick as more of the script is a root
+        // command injection, and `"$1"` cannot be.
+        let command = Command::new("sh")
+            .args([
+                "-c",
+                script,
+                "sh",
+                spec.dir,
+                &format!("{:o}", spec.dir_mode),
+                spec.path,
+                &format!("{:o}", spec.file_mode),
+                spec.owner,
+            ])
+            .privileged()
+            .stdin(spec.contents.to_owned());
+
+        let output = executor.run(&command)?;
+
+        if !output.success() {
+            // The script exits 9 on a link it refused to follow, apart from
+            // any other failure, so the operator is told which of the two
+            // happened. Any other code is an ordinary command failure.
+            if output.code == SYMLINK_REFUSED {
+                return Err(Error::UnsafeSymlink {
+                    path: output.stdout.trim().to_owned(),
+                });
+            }
+
+            return Err(Error::CommandFailed {
+                command: command.to_string(),
+                code: output.code,
+                stderr: output.stderr,
+            });
+        }
+
+        Ok(())
     }
 }
 
 impl UnixFiles {
+    /// The one-invocation write into a directory its owner controls.
+    ///
+    /// Held here as a `&'static str` rather than built per call: nothing about
+    /// it varies, and a script assembled from values is the thing this method
+    /// exists to avoid. The paths arrive as `"$1"`..`"$5"`.
+    ///
+    /// What each step is for, since a shell script inside Rust is the least
+    /// reviewable code in this tree:
+    ///
+    /// - `set -eu` so any failing step ends the sequence rather than carrying
+    ///   on to write a key into a directory whose mode was never applied.
+    /// - The directory is created with [`install -d`], which applies mode and
+    ///   owner as it creates. A missing directory is therefore never briefly
+    ///   world-readable, and never briefly owned by root.
+    /// - Each link test happens immediately before the command it guards, and
+    ///   the file is staged and moved rather than written in place. `mv` within
+    ///   one directory does not follow a link at the destination — it replaces
+    ///   it — so the contents cannot land somewhere else even if one appears
+    ///   between the test and the move.
+    /// - `chown -h` never dereferences, so the ownership of a link's target
+    ///   cannot be changed through it.
+    /// - The staging file is created by `install` with the final mode and owner
+    ///   already on it, so it is never readable by the account whose directory
+    ///   it sits in, not even for the moment before the move.
+    ///
+    /// [`install -d`]: https://www.gnu.org/software/coreutils/install
+    pub(crate) const fn owned_dir_script() -> &'static str {
+        // `$1` dir, `$2` dir mode, `$3` file, `$4` file mode, `$5` owner.
+        r#"set -eu
+dir=$1; dir_mode=$2; file=$3; file_mode=$4; owner=$5
+if [ -L "$dir" ]; then printf '%s' "$dir"; exit 9; fi
+install -d -m "$dir_mode" -o "$owner" -g "$owner" "$dir"
+if [ -L "$dir" ]; then printf '%s' "$dir"; exit 9; fi
+if [ -L "$file" ]; then printf '%s' "$file"; exit 9; fi
+staged=$file.initd.new
+rm -f "$staged"
+install -m "$file_mode" -o "$owner" -g "$owner" /dev/null "$staged"
+cat > "$staged"
+if [ -L "$file" ]; then rm -f "$staged"; printf '%s' "$file"; exit 9; fi
+mv -f "$staged" "$file"
+chown -h "$owner:$owner" "$file"
+"#
+    }
+
     /// Writes `contents` over `path` atomically, keeping the target's mode.
     ///
     /// The half of a write that [`FileEditor::write`] and
@@ -242,6 +330,207 @@ impl UnixFiles {
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    /// Runs the owned-directory script the way `LocalExecutor` invokes it.
+    ///
+    /// Against a real shell rather than a mock, because the mock records that a
+    /// command was issued and never runs it — so every property this script
+    /// exists for (the modes it applies, the links it refuses, the staging file
+    /// it must not leave behind) is invisible to the tests above. Written as a
+    /// helper rather than inline because five cases share the invocation, and
+    /// the invocation is the part that has to match production exactly.
+    ///
+    /// Returns the exit code and stdout, which is where the script names an
+    /// offending path.
+    fn run_owned_dir_script(
+        dir: &std::path::Path,
+        file: &std::path::Path,
+        contents: &str,
+    ) -> (i32, String) {
+        use std::io::Write as _;
+        use std::process::{Command as StdCommand, Stdio};
+
+        let owner = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .expect("id must run");
+        let owner = String::from_utf8_lossy(&owner.stdout).trim().to_owned();
+
+        let mut child = StdCommand::new("sh")
+            .args([
+                "-c",
+                UnixFiles::owned_dir_script(),
+                "sh",
+                &dir.to_string_lossy(),
+                "700",
+                &file.to_string_lossy(),
+                "600",
+                &owner,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sh must spawn");
+
+        child
+            .stdin
+            .take()
+            .expect("stdin was piped")
+            .write_all(contents.as_bytes())
+            .expect("the contents must be written");
+
+        let output = child.wait_with_output().expect("sh must finish");
+
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    }
+
+    /// A directory unique to one test, removed when it is dropped.
+    struct TempHome(std::path::PathBuf);
+
+    impl TempHome {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("initd-owned-dir-{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("the temp home must be created");
+            Self(dir)
+        }
+
+        fn path(&self, relative: &str) -> std::path::PathBuf {
+            self.0.join(relative)
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::metadata(path)
+            .expect("the path must exist")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn the_owned_dir_script_applies_both_modes_as_it_writes() {
+        let home = TempHome::new("modes");
+        let dir = home.path(".ssh");
+        let file = home.path(".ssh/authorized_keys");
+
+        let (code, _) = run_owned_dir_script(&dir, &file, "ssh-ed25519 AAAA test@host\n");
+
+        assert_eq!(code, 0, "a fresh write must succeed");
+        assert_eq!(mode_of(&dir), 0o700, "sshd ignores a group-readable ~/.ssh");
+        assert_eq!(mode_of(&file), 0o600, "and a group-readable key file");
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("the file must exist"),
+            "ssh-ed25519 AAAA test@host\n"
+        );
+    }
+
+    #[test]
+    fn the_owned_dir_script_leaves_no_staging_file_behind() {
+        // The staging file carries the key with its final mode, but it sits in
+        // a directory the account owns: one left behind is a second copy of
+        // authorized_keys under a name nothing manages.
+        let home = TempHome::new("staging");
+        let dir = home.path(".ssh");
+        let file = home.path(".ssh/authorized_keys");
+
+        run_owned_dir_script(&dir, &file, "ssh-ed25519 AAAA test@host\n");
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .expect("the directory must exist")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("initd.new"))
+            .collect();
+
+        assert!(
+            leftovers.is_empty(),
+            "staging file left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn the_owned_dir_script_refuses_a_link_in_place_of_the_file() {
+        // The TOCTOU case. The task checks for a link before it starts, and the
+        // account owning this home can plant one immediately afterwards — so
+        // the script checks again between its own steps, and `mv` replaces a
+        // link rather than following it.
+        let home = TempHome::new("file-link");
+        let dir = home.path(".ssh");
+        let file = home.path(".ssh/authorized_keys");
+        let target = home.path("elsewhere");
+
+        std::fs::create_dir_all(&dir).expect("the directory must exist");
+        std::os::unix::fs::symlink(&target, &file).expect("the link must be planted");
+
+        let (code, stdout) = run_owned_dir_script(&dir, &file, "ssh-ed25519 AAAA attacker\n");
+
+        assert_eq!(code, SYMLINK_REFUSED, "a planted link must be refused");
+        assert_eq!(
+            stdout.trim(),
+            file.to_string_lossy(),
+            "the refusal must name the path"
+        );
+        assert!(!target.exists(), "nothing may be written through the link");
+    }
+
+    #[test]
+    fn the_owned_dir_script_refuses_a_link_in_place_of_the_directory() {
+        // The same trick one level up: `install -d` and `chown` both follow a
+        // link, so a linked ~/.ssh has root apply a mode and an ownership
+        // wherever the account pointed it.
+        let home = TempHome::new("dir-link");
+        let dir = home.path(".ssh");
+        let file = home.path(".ssh/authorized_keys");
+        let target = home.path("real");
+
+        std::fs::create_dir_all(&target).expect("the target must exist");
+        std::os::unix::fs::symlink(&target, &dir).expect("the link must be planted");
+
+        let (code, stdout) = run_owned_dir_script(&dir, &file, "ssh-ed25519 AAAA attacker\n");
+
+        assert_eq!(code, SYMLINK_REFUSED, "a linked directory must be refused");
+        assert_eq!(stdout.trim(), dir.to_string_lossy());
+        assert_eq!(
+            std::fs::read_dir(&target)
+                .expect("the target must exist")
+                .count(),
+            0,
+            "nothing may be written through it"
+        );
+    }
+
+    #[test]
+    fn the_owned_dir_script_keeps_the_mode_when_rewriting() {
+        // A file that already exists is replaced, not appended to — the caller
+        // read it and appended before calling — and the replacement must carry
+        // the mode rather than inherit the umask.
+        let home = TempHome::new("rewrite");
+        let dir = home.path(".ssh");
+        let file = home.path(".ssh/authorized_keys");
+
+        run_owned_dir_script(&dir, &file, "first\n");
+        let (code, _) = run_owned_dir_script(&dir, &file, "first\nsecond\n");
+
+        assert_eq!(code, 0, "a rewrite must succeed");
+        assert_eq!(mode_of(&file), 0o600, "the mode must survive the rewrite");
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("the file must exist"),
+            "first\nsecond\n"
+        );
+    }
 
     const CONFIG: &str = "/etc/ssh/sshd_config";
 
@@ -545,7 +834,7 @@ mod tests {
         let files = UnixFiles::new();
 
         files.set_mode(&mock, CONFIG, 0o600).expect("runs");
-        files.set_owner(&mock, CONFIG, "root").expect("runs");
+        files.create_dir(&mock, "/etc/ssh", 0o755).expect("runs");
 
         assert!(mock.recorded().iter().all(|cmd| cmd.needs_root));
     }

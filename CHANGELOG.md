@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`ssh.authorize-key` no longer leaves a window for a link planted after its
+  check.** The task asked whether `~/.ssh` and `authorized_keys` were symlinks,
+  then ran up to eight further privileged commands — `install -d`, two `chown`s,
+  a `chmod`, the write — each resolving those paths afresh. `chown` and `chmod`
+  follow links, and the account that owns the home is the one process certain to
+  be watching for the gap, so a link planted after the check had root apply an
+  ownership or a mode wherever it pointed.
+
+  The whole sequence is now one privileged invocation that re-checks between its
+  own steps and exits 9 naming the path it refused. The staging file is created
+  by `install` with its final mode and owner already on it, so there is no
+  moment when the key exists and its mode does not — a stronger guarantee than
+  the create-empty-then-chmod ordering it replaces. Paths travel as positional
+  parameters, never interpolated into the script.
+
+  Verified against a real shell rather than a mock, which records commands
+  without running them: five tests cover the modes, the absent staging file,
+  a link planted in place of the file, one in place of the directory, and a
+  rewrite keeping its mode.
+
+  `FileEditor::set_owner` went with it, having lost its last caller.
 - **A generated WireGuard key no longer reaches the output pane.** `wg genkey`
   and `wg genpsk` print the secret on stdout, and every line of stdout is handed
   to whatever is observing the executor — which under the interface is the
