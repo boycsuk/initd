@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- A multi-line `sh -c` script renders as `<n-line script>` rather than in full.
+  `Command`'s `Display` is what the output pane announces before a command runs
+  and what `CommandFailed` carries when one fails, so the fourteen-line
+  owned-directory write would have buried every `ssh.authorize-key` transcript
+  under a program the operator did not write — and repeated it inside the error.
+  A one-line script is still shown as it is: `sh -c 'command -v fish'` is
+  exactly what somebody wants to see when a program is not found.
 - The bordered panel is built in one place. Nine call sites wrote
   `Block::default().borders(Borders::ALL).border_style(…).title(…)` in full —
   `search.rs` had resorted to a comment saying it was drawn "like every other
