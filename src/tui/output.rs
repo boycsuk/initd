@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::style;
-use crate::exec::{OutputLine, Stream};
+use crate::exec::{Emphasis, OutputLine, Stream};
 use crate::i18n::{Lang, Msg};
 
 /// Maximum lines retained.
@@ -360,7 +360,7 @@ fn wrap_indented(line: &OutputLine, width: usize) -> Vec<Line<'static>> {
     }
 
     rows.into_iter()
-        .map(|text| Line::styled(text, style_of(line.stream)))
+        .map(|text| Line::styled(text, style_of(line)))
         .collect()
 }
 
@@ -395,17 +395,28 @@ fn field_indent(text: &str) -> Option<usize> {
 fn render_line(line: &OutputLine) -> Line<'static> {
     match line.stream {
         Stream::Command => Line::styled(format!("$ {}", line.text), style::OUTPUT_COMMAND),
-        stream => Line::styled(line.text.clone(), style_of(stream)),
+        _ => Line::styled(line.text.clone(), style_of(line)),
     }
 }
 
-/// The style a stream's text is drawn in.
+/// The style a line is drawn in.
 ///
 /// Split out of [`render_line`] so a wrapped continuation is drawn the same as
 /// the row it continues: two sources for one answer is how a continuation ends
 /// up a different colour from its own first line.
-const fn style_of(stream: Stream) -> ratatui::style::Style {
-    match stream {
+///
+/// Emphasis wins over the stream where it is set. Only the interface's own
+/// lines carry it, and they are `Stdout` for want of anywhere better — a
+/// consequence is not something a process printed, so the stream says nothing
+/// useful about how it should read.
+const fn style_of(line: &OutputLine) -> ratatui::style::Style {
+    match line.emphasis {
+        Some(Emphasis::Consequence) => return style::CONSEQUENCE,
+        Some(Emphasis::ConsequenceExternal) => return style::CONSEQUENCE_EXTERNAL,
+        None => {}
+    }
+
+    match line.stream {
         Stream::Stdout => style::NORMAL,
         // stderr is highlighted so warnings stand out from progress. It is not
         // treated as an error: plenty of tools report progress on stderr.
@@ -421,10 +432,7 @@ mod tests {
     use super::*;
 
     fn line(text: &str) -> OutputLine {
-        OutputLine {
-            stream: Stream::Stdout,
-            text: text.to_owned(),
-        }
+        OutputLine::new(Stream::Stdout, text)
     }
 
     #[test]
@@ -514,6 +522,52 @@ mod tests {
                     .to_owned()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_two_kinds_of_consequence_are_drawn_apart() {
+        // `docs/ui.md` promises two roles here and `style.rs` explains why the
+        // difference matters: one warning the tool can settle, one the
+        // administrator has to chase elsewhere. Both were drawn in NORMAL, the
+        // distinction surviving only in the glyph, because a consequence rides
+        // an ordinary Stdout line and the style came from the stream.
+        let internal = line("  ! a consequence here").emphasised(Emphasis::Consequence);
+        let external =
+            line("  ⚠ a consequence elsewhere").emphasised(Emphasis::ConsequenceExternal);
+
+        assert_eq!(style_of(&internal), style::CONSEQUENCE);
+        assert_eq!(style_of(&external), style::CONSEQUENCE_EXTERNAL);
+        assert_ne!(
+            style_of(&internal),
+            style_of(&external),
+            "the two must not read alike"
+        );
+
+        // And an ordinary line is untouched by the new field.
+        assert_eq!(style_of(&line("just output")), style::NORMAL);
+    }
+
+    #[test]
+    fn a_wrapped_consequence_keeps_its_style_on_every_row() {
+        // The reason `style_of` takes the line rather than the stream: a
+        // continuation styled from the stream alone would return to NORMAL
+        // halfway through a warning.
+        let long = OutputLine::new(
+            Stream::Stdout,
+            format!("warn        {}", "detail ".repeat(20)),
+        )
+        .emphasised(Emphasis::ConsequenceExternal);
+
+        let rows = wrap_indented(&long, 60);
+
+        assert!(rows.len() > 1, "the line must actually wrap");
+        for row in &rows {
+            assert_eq!(
+                row.style,
+                style::CONSEQUENCE_EXTERNAL,
+                "every row of a wrapped consequence carries its style"
+            );
+        }
     }
 
     #[test]
@@ -630,10 +684,10 @@ mod tests {
         // would lose the error it is usually being copied for.
         let mut pane = OutputPane::new();
         pane.push(line("$ usermod -s /usr/bin/fish cosmin"));
-        pane.push(OutputLine {
-            stream: Stream::Stderr,
-            text: "usermod: no changes".to_owned(),
-        });
+        pane.push(OutputLine::new(
+            Stream::Stderr,
+            "usermod: no changes".to_owned(),
+        ));
 
         let transcript = pane.transcript();
 
@@ -650,10 +704,10 @@ mod tests {
         // `stderr  Failed to disable unit:` broke to `docker.service not
         // loaded.` at the left margin, where it read as another label in the
         // column above it — the alignment being the whole point of the block.
-        let line = OutputLine {
-            stream: Stream::Stderr,
-            text: "stderr        Failed to disable unit: Unit not loaded.".to_owned(),
-        };
+        let line = OutputLine::new(
+            Stream::Stderr,
+            "stderr        Failed to disable unit: Unit not loaded.".to_owned(),
+        );
 
         let rows = wrap_indented(&line, 30);
 
@@ -701,10 +755,10 @@ mod tests {
     fn command_output_is_left_for_the_widget_to_wrap() {
         // A package manager's line has no label to hang under, and indenting
         // its continuations would misreport its output as structured.
-        let line = OutputLine {
-            stream: Stream::Stdout,
-            text: "Removed /home/cosmin/.config/systemd/user/docker.service.".to_owned(),
-        };
+        let line = OutputLine::new(
+            Stream::Stdout,
+            "Removed /home/cosmin/.config/systemd/user/docker.service.".to_owned(),
+        );
 
         assert_eq!(
             wrap_indented(&line, 20).len(),
@@ -718,10 +772,10 @@ mod tests {
         // Below the minimum the continuations have no room to say anything, and
         // a two-cell column is worse than an unindented wrap. Reached on a
         // genuinely narrow terminal rather than hypothetically.
-        let line = OutputLine {
-            stream: Stream::Stderr,
-            text: "architecture  x86_64-unknown-linux-musl".to_owned(),
-        };
+        let line = OutputLine::new(
+            Stream::Stderr,
+            "architecture  x86_64-unknown-linux-musl".to_owned(),
+        );
 
         assert_eq!(
             wrap_indented(&line, 16).len(),

@@ -49,13 +49,13 @@ pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
 /// place every line already passes through: a `Lang` threaded into `Task::run`
 /// would be a parameter thirty-nine implementations carry and one forgets.
 pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        // Resolved per line, which is affordable here in a way it is not in the
-        // interface: a task reports a handful of steps over seconds, where a
-        // key bar is a dozen labels every frame.
-        text: Lang::from_env().render(message),
-    });
+    // Resolved per line, which is affordable here in a way it is not in the
+    // interface: a task reports a handful of steps over seconds, where a key
+    // bar is a dozen labels every frame.
+    progress(OutputLine::new(
+        Stream::Stdout,
+        Lang::from_env().render(message),
+    ));
 }
 
 /// Reports a line that is data rather than language.
@@ -67,10 +67,7 @@ pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
 /// visible at the call site rather than resting on which constructor somebody
 /// reached for.
 pub(crate) fn report_verbatim(progress: Progress<'_>, text: impl Into<String>) {
-    progress(OutputLine {
-        stream: Stream::Stdout,
-        text: text.into(),
-    });
+    progress(OutputLine::new(Stream::Stdout, text.into()));
 }
 
 /// What the operator is asked before a task runs.

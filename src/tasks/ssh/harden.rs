@@ -273,14 +273,14 @@ impl Task for HardenSshStrict {
                 // narrowed too far refuses clients for no gain. Reported so
                 // that a directive the administrator asked for is never
                 // silently absent.
-                None => progress(OutputLine {
-                    stream: Stream::Stderr,
-                    text: format!(
+                None => progress(OutputLine::new(
+                    Stream::Stderr,
+                    format!(
                         "warning: {} left at the system default — this OpenSSH supports too \
                          few of the hardened algorithms to narrow it safely",
                         class.directive()
                     ),
-                }),
+                )),
             }
         }
 
@@ -333,12 +333,12 @@ fn disable_keyboard_interactive(
     }
 
     if !applied {
-        progress(OutputLine {
-            stream: Stream::Stderr,
-            text: "warning: keyboard-interactive authentication left unchanged — this sshd \
+        progress(OutputLine::new(
+            Stream::Stderr,
+            "warning: keyboard-interactive authentication left unchanged — this sshd \
                    recognises neither keyword for it"
                 .to_owned(),
-        });
+        ));
     }
 
     Ok(updated)

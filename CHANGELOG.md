@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The two kinds of consequence are drawn apart, as `docs/ui.md` already said
+  they were.** `consequence` and `consequence_external` were declared, described
+  in the role table, and justified in `style.rs` — the administrator has to be
+  able to tell a warning the tool can settle from one that is theirs to chase —
+  and neither was ever applied. A consequence rides an ordinary `Stdout` line
+  and the pane took its colour from the stream, so both drew in `normal` and the
+  distinction survived only in the glyph. Unlike the three roles the document
+  admits are undrawn, these two were not on that list.
+
+  `OutputLine` now carries an optional `Emphasis` — what the line *is*, not what
+  colour it takes, so `exec` gains no opinion about presentation and the command
+  line ignores it. Resolving it in `style_of` rather than at the call site is
+  what keeps a wrapped consequence from returning to `normal` halfway through.
 - **A wrapped line no longer pushes the newest output off the screen.** The
   output pane hands its scroll offset to a widget that measures in *wrapped*
   rows, and computed it from the number of *source* lines. One long line

@@ -905,10 +905,10 @@ mod tests {
         // than bytes — `↑↓` is two of each and would agree by accident.
         let mut app = test_app(Family::Debian);
         enter_first_category(&mut app);
-        app.output.push(crate::exec::OutputLine {
-            stream: crate::exec::Stream::Stdout,
-            text: "a line, so Tab is offered".to_owned(),
-        });
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Stdout,
+            "a line, so Tab is offered",
+        ));
 
         let mut keys = tree_keys(&app);
         keys.push(("q", Msg::KeyBarQuit));
@@ -937,10 +937,10 @@ mod tests {
         // strand somebody on a narrow terminal with no visible way out.
         let mut app = test_app(Family::Debian);
         enter_first_category(&mut app);
-        app.output.push(crate::exec::OutputLine {
-            stream: crate::exec::Stream::Stdout,
-            text: "a line, so Tab is offered".to_owned(),
-        });
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Stdout,
+            "a line, so Tab is offered",
+        ));
 
         let mut keys = tree_keys(&app);
         keys.push(("q", Msg::KeyBarQuit));
@@ -961,10 +961,10 @@ mod tests {
         // two tests above.
         let mut app = test_app(Family::Debian);
         enter_first_category(&mut app);
-        app.output.push(crate::exec::OutputLine {
-            stream: crate::exec::Stream::Stdout,
-            text: "a line, so Tab is offered".to_owned(),
-        });
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Stdout,
+            "a line, so Tab is offered",
+        ));
 
         let mut keys = tree_keys(&app);
         keys.push(("q", Msg::KeyBarQuit));

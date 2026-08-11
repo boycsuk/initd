@@ -207,14 +207,14 @@ fn warn_if_socket_activated(
     let state = backend.services().state(executor, SSH_SOCKET)?;
 
     if state.active || state.enabled {
-        progress(OutputLine {
-            stream: Stream::Stderr,
-            text: format!(
+        progress(OutputLine::new(
+            Stream::Stderr,
+            format!(
                 "warning: {SSH_SOCKET} is active and defines the listening port \
                  itself. The port in sshd_config will not take effect until the \
                  socket unit is reconfigured or disabled."
             ),
-        });
+        ));
     }
 
     Ok(())

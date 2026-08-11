@@ -138,14 +138,14 @@ impl Task for RestrictUsers {
         // where the administrator can still recognise a name they did not
         // intend. Which accounts hold a key is the part that decides whether
         // the list is reachable at all.
-        progress(OutputLine {
-            stream: Stream::Stderr,
-            text: format!(
+        progress(OutputLine::new(
+            Stream::Stderr,
+            format!(
                 "After this change only these accounts may log in over SSH: {users}. \
                  Of those, {} already hold an authorised key.",
                 with_keys.join(", ")
             ),
-        });
+        ));
 
         report(
             progress,

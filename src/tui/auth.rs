@@ -75,17 +75,17 @@ impl App {
         let _ = request.reply.send(granted);
 
         if granted {
-            self.output.push(OutputLine {
-                stream: Stream::Stdout,
-                text: self.lang.render(&Msg::AuthenticationGranted),
-            });
+            self.output.push(OutputLine::new(
+                Stream::Stdout,
+                self.lang.render(&Msg::AuthenticationGranted),
+            ));
         } else {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::AuthenticationRefused {
+            self.output.push(OutputLine::new(
+                Stream::Stderr,
+                self.lang.render(&Msg::AuthenticationRefused {
                     mechanism: request.mechanism.clone(),
                 }),
-            });
+            ));
         }
 
         outcome.map(|_| ())

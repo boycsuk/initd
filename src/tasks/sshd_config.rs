@@ -221,15 +221,15 @@ fn warn_if_overridden(
         };
 
         if *actual != wanted.to_ascii_lowercase() {
-            progress(OutputLine {
-                stream: Stream::Stderr,
-                text: format!(
+            progress(OutputLine::new(
+                Stream::Stderr,
+                format!(
                     "warning: {directive} was written as {wanted}, but this daemon \
                      reports {actual}. Something read earlier wins — most often a \
                      file in /etc/ssh/sshd_config.d/, which the Include at the top \
                      of sshd_config reads before anything below it."
                 ),
-            });
+            ));
         }
     }
 

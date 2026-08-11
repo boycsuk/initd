@@ -211,13 +211,13 @@ impl LocalExecutor {
                     // slow package manager and a stalled one look identical
                     // from here, and the operator is the one who can tell them
                     // apart.
-                    observer.line(OutputLine {
-                        stream: Stream::Stderr,
-                        text: format!(
+                    observer.line(OutputLine::new(
+                        Stream::Stderr,
+                        format!(
                             "no output for {} seconds",
                             self.silence.as_secs() * u64::from(silent_stretches)
                         ),
-                    });
+                    ));
 
                     if silent_stretches >= SILENT_STRETCHES_ALLOWED {
                         return Err(Error::CommandSilent {
@@ -381,10 +381,7 @@ impl Executor for LocalExecutor {
         // in whichever helper this host resolved — and `Display` omits stdin,
         // which is what keeps a WireGuard private key out of the pane.
         if let Some(observer) = self.observer.as_ref() {
-            observer.line(OutputLine {
-                stream: Stream::Command,
-                text: command.to_string(),
-            });
+            observer.line(OutputLine::new(Stream::Command, command.to_string()));
         }
 
         let (program, args) = self.resolve(command)?;
@@ -486,10 +483,7 @@ fn spawn_reader(
             // A send failure means the drain has gone; nothing would read
             // anything sent after it.
             if sender
-                .send(OutputLine {
-                    stream,
-                    text: without_escapes(&text),
-                })
+                .send(OutputLine::new(stream, without_escapes(&text)))
                 .is_err()
             {
                 break;

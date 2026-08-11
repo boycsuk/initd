@@ -477,6 +477,15 @@ design question behind it, since a task's command count is not known before it
 runs. `tree_guide` and `result_fail` are small, and waiting on a place to put
 them rather than on a decision.
 
+`consequence` and `consequence_external` were a fourth case, and a worse one:
+this table described them and nothing drew them. A consequence rides an ordinary
+`Stdout` line, and the pane took its colour from the stream, so both were drawn
+in `normal` and the distinction survived only in the glyph — the one thing the
+role exists to reinforce. A line now carries an optional *emphasis* saying what
+it is, which the pane resolves to a role; the enum lives beside `Stream` in
+`exec` and names the kind of line rather than a colour, so the command line
+keeps ignoring it. They are drawn as described above.
+
 A role that is declared and never drawn is a promise this document has not yet
 kept, so the list is deliberately explicit rather than left to be discovered by
 grepping for unused constants. The reverse also has to be maintained by hand:

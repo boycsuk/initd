@@ -18,7 +18,7 @@ use super::verify::Verification;
 use super::worker::{Running, Update};
 use crate::backend::backup_index::BackupRecord;
 use crate::error::{Error, Result};
-use crate::exec::{OutputLine, Stream};
+use crate::exec::{Emphasis, OutputLine, Stream};
 use crate::i18n::Msg;
 use crate::tasks;
 use crate::tasks::params::ParamValues;
@@ -108,12 +108,12 @@ impl App {
         let id = running.task_id;
 
         for request in requests {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::AuthenticationRequested {
+            self.output.push(OutputLine::new(
+                Stream::Stderr,
+                self.lang.render(&Msg::AuthenticationRequested {
                     mechanism: request.mechanism.clone(),
                 }),
-            });
+            ));
 
             self.supersede_pending_auth(request);
         }
@@ -143,12 +143,11 @@ impl App {
 
         match (Revert::FromIndex { record }).apply(self.executor.as_ref(), self.backend.as_ref()) {
             Ok(()) => {
-                self.output.push(OutputLine {
-                    stream: Stream::Stdout,
-                    text: self
-                        .lang
+                self.output.push(OutputLine::new(
+                    Stream::Stdout,
+                    self.lang
                         .render(&Msg::HistoryRestored { path: path.clone() }),
-                });
+                ));
             }
             Err(ref err) => {
                 // In fields rather than as one sentence, for the reason this
@@ -273,10 +272,10 @@ impl App {
         // actually was, with the near miss said out loud rather than silently
         // dropped: the operator pressed a key and is owed an answer.
         if cancelled {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: self.lang.render(&Msg::StatusFinishedBeforeItCouldStop),
-            });
+            self.output.push(OutputLine::new(
+                Stream::Stderr,
+                self.lang.render(&Msg::StatusFinishedBeforeItCouldStop),
+            ));
         }
 
         // A change that can sever this session is not reported as done: it is
@@ -374,31 +373,25 @@ impl App {
     fn report_failure(&mut self, heading: &Msg, err: &Error) {
         let lang = self.lang;
 
-        self.output.push(OutputLine {
-            stream: Stream::Stdout,
-            text: String::new(),
-        });
-        self.output.push(OutputLine {
-            stream: Stream::Stderr,
-            text: lang.render(heading),
-        });
+        self.output
+            .push(OutputLine::new(Stream::Stdout, String::new()));
+        self.output
+            .push(OutputLine::new(Stream::Stderr, lang.render(heading)));
 
         let fields = err.to_fields();
 
         if fields.is_empty() {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: lang.render(&err.to_msg()),
-            });
+            self.output
+                .push(OutputLine::new(Stream::Stderr, lang.render(&err.to_msg())));
 
             return;
         }
 
         for (label, value) in fields {
-            self.output.push(OutputLine {
-                stream: Stream::Stderr,
-                text: lang.render(&Msg::OutputErrorField { label, value }),
-            });
+            self.output.push(OutputLine::new(
+                Stream::Stderr,
+                lang.render(&Msg::OutputErrorField { label, value }),
+            ));
         }
     }
 
@@ -421,26 +414,31 @@ impl App {
 
         let lang = self.lang;
 
-        self.output.push(OutputLine {
-            stream: Stream::Stdout,
-            text: String::new(),
-        });
-        self.output.push(OutputLine {
-            stream: Stream::Stdout,
-            text: lang.render(&Msg::OutputConsequencesHeading),
-        });
+        self.output
+            .push(OutputLine::new(Stream::Stdout, String::new()));
+        self.output.push(OutputLine::new(
+            Stream::Stdout,
+            lang.render(&Msg::OutputConsequencesHeading),
+        ));
 
         for consequence in consequences {
-            let marker = if consequence.is_external() {
-                "⚠"
+            // The marker and the colour say the same thing, deliberately. A
+            // terminal without colour still distinguishes the two, and a reader
+            // scanning a long transcript for what is theirs to chase sees the
+            // colour before they read the glyph.
+            let (marker, emphasis) = if consequence.is_external() {
+                ("⚠", Emphasis::ConsequenceExternal)
             } else {
-                "!"
+                ("!", Emphasis::Consequence)
             };
 
-            self.output.push(OutputLine {
-                stream: Stream::Stdout,
-                text: format!("  {marker} {}", lang.render(&consequence.message())),
-            });
+            self.output.push(
+                OutputLine::new(
+                    Stream::Stdout,
+                    format!("  {marker} {}", lang.render(&consequence.message())),
+                )
+                .emphasised(emphasis),
+            );
         }
     }
     /// Opens the window in which an applied change can still be undone.

@@ -704,10 +704,10 @@ mod tests {
         enter_first_category(&mut app);
 
         for i in 0..5 {
-            app.output.push(crate::exec::OutputLine {
-                stream: crate::exec::Stream::Stdout,
-                text: format!("line {i}"),
-            });
+            app.output.push(crate::exec::OutputLine::new(
+                crate::exec::Stream::Stdout,
+                format!("line {i}"),
+            ));
         }
 
         let before = app.cursor.selected();
@@ -874,10 +874,10 @@ mod tests {
         let empty = render_to_rows(&mut app, 80, 24)[23].clone();
         assert!(!empty.contains("output"), "got {empty}");
 
-        app.output.push(crate::exec::OutputLine {
-            stream: crate::exec::Stream::Stdout,
-            text: "installing".to_owned(),
-        });
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Stdout,
+            "installing".to_owned(),
+        ));
 
         let with_output = render_to_rows(&mut app, 80, 24)[23].clone();
         assert!(with_output.contains("output"), "got {with_output}");
@@ -1405,10 +1405,10 @@ mod tests {
         // The log of what just happened is the evidence for the decision.
         let mut app = test_app(Family::Debian);
         for i in 0..10 {
-            app.output.push(crate::exec::OutputLine {
-                stream: crate::exec::Stream::Stdout,
-                text: format!("line {i}"),
-            });
+            app.output.push(crate::exec::OutputLine::new(
+                crate::exec::Stream::Stdout,
+                format!("line {i}"),
+            ));
         }
         open_verification(&mut app);
 
@@ -1630,10 +1630,10 @@ mod tests {
             "  openssh-server openssh-sftp-server",
             "Setting up openssh-server (1:9.2p1-2) ...",
         ] {
-            running.output.push(crate::exec::OutputLine {
-                stream: crate::exec::Stream::Stdout,
-                text: text.to_owned(),
-            });
+            running.output.push(crate::exec::OutputLine::new(
+                crate::exec::Stream::Stdout,
+                text.to_owned(),
+            ));
         }
 
         println!();
@@ -1672,10 +1672,10 @@ mod tests {
             "$ systemctl reload ssh.service",
             "ok reloaded, pid 812 kept — no restart",
         ] {
-            verifying.output.push(crate::exec::OutputLine {
-                stream: crate::exec::Stream::Stdout,
-                text: text.to_owned(),
-            });
+            verifying.output.push(crate::exec::OutputLine::new(
+                crate::exec::Stream::Stdout,
+                text.to_owned(),
+            ));
         }
 
         open_verification(&mut verifying);
@@ -2601,10 +2601,10 @@ mod tests {
         // Below the split threshold both panes are handed the whole area, so
         // drawing both would overwrite one with the other.
         let mut app = test_app(Family::Debian);
-        app.output.push(crate::exec::OutputLine {
-            stream: crate::exec::Stream::Stdout,
-            text: "installing openssh-server".to_owned(),
-        });
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Stdout,
+            "installing openssh-server".to_owned(),
+        ));
 
         let on_tree = render_to_rows(&mut app, 64, 20).join("\n");
         assert!(
@@ -2672,10 +2672,10 @@ mod tests {
         // the one an operator has to be told about.
         let mut app = test_app(Family::Debian);
         app.focus = Pane::Output;
-        app.output.push(crate::exec::OutputLine {
-            stream: crate::exec::Stream::Stdout,
-            text: "a line".to_owned(),
-        });
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Stdout,
+            "a line".to_owned(),
+        ));
 
         let screen = render_to_rows(&mut app, 80, 24).join("\n");
 
@@ -2691,10 +2691,10 @@ mod tests {
         let mut app = test_app(Family::Debian);
         app.focus = Pane::Output;
         for i in 0..5 {
-            app.output.push(crate::exec::OutputLine {
-                stream: crate::exec::Stream::Stdout,
-                text: format!("line {i}"),
-            });
+            app.output.push(crate::exec::OutputLine::new(
+                crate::exec::Stream::Stdout,
+                format!("line {i}"),
+            ));
         }
 
         press(&mut app, KeyCode::Char('w'));
@@ -2777,10 +2777,10 @@ mod tests {
         // The log of what is happening is the reason to be watching.
         let mut app = test_app(Family::Debian);
         for i in 0..10 {
-            app.output.push(crate::exec::OutputLine {
-                stream: crate::exec::Stream::Stdout,
-                text: format!("line {i}"),
-            });
+            app.output.push(crate::exec::OutputLine::new(
+                crate::exec::Stream::Stdout,
+                format!("line {i}"),
+            ));
         }
         pretend_running(&mut app);
 

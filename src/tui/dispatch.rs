@@ -214,10 +214,10 @@ impl App {
             return;
         }
 
-        self.output.push(OutputLine {
-            stream: Stream::Stderr,
-            text: self.lang.render(&Msg::StatusCopyFailed),
-        });
+        self.output.push(OutputLine::new(
+            Stream::Stderr,
+            self.lang.render(&Msg::StatusCopyFailed),
+        ));
     }
     /// Handles a key press while a task is running.
     ///

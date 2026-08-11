@@ -162,11 +162,55 @@ pub enum Stream {
     Command,
 }
 
+/// Why a line stands out, where its stream does not say so.
+///
+/// Not a style: `exec` has no opinion about colour, and the command line
+/// renders these as plain text. It names *what a line is*, and the interface
+/// decides what that looks like — the same split the catalogue makes between a
+/// message and its wording.
+///
+/// Its one use today is the consequences a finished task reports, where the
+/// distinction is load-bearing rather than decorative: a warning the tool can
+/// verify and one the administrator has to chase elsewhere must not read alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emphasis {
+    /// A consequence on this machine, which the tool can inspect.
+    Consequence,
+    /// A consequence beyond it, which nothing here can check.
+    ConsequenceExternal,
+}
+
 /// A single line of output, tagged with its origin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputLine {
     pub stream: Stream,
     pub text: String,
+    /// Why the line stands out, where its stream does not already say.
+    ///
+    /// `None` for everything a process prints: the stream is the answer there.
+    /// Set only by the interface's own lines, which is why this is an `Option`
+    /// rather than a variant of [`Stream`] — a process has no way to produce
+    /// one, and `main.rs` matches `Stream` exhaustively to decide between
+    /// stdout and stderr, a question emphasis has no bearing on.
+    pub emphasis: Option<Emphasis>,
+}
+
+impl OutputLine {
+    /// A line of a process's output.
+    pub fn new(stream: Stream, text: impl Into<String>) -> Self {
+        Self {
+            stream,
+            text: text.into(),
+            emphasis: None,
+        }
+    }
+
+    /// The same line, marked for why it stands out.
+    #[must_use]
+    pub const fn emphasised(mut self, emphasis: Emphasis) -> Self {
+        self.emphasis = Some(emphasis);
+        self
+    }
 }
 
 /// The result of a finished command.
