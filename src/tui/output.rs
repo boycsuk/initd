@@ -179,6 +179,41 @@ impl OutputPane {
         self.follow = true;
     }
 
+    /// Wraps lines from the newest backwards until `wanted` rows are covered.
+    ///
+    /// Returns them in reading order, together with how many rows of the
+    /// topmost line fall above the window — a line is wrapped as a unit, so the
+    /// last one taken usually contributes more rows than were still needed, and
+    /// the caller scrolls past the excess rather than this dropping it.
+    ///
+    /// Walking backwards is what bounds the work to the viewport. Wrapping
+    /// depends on the width, which only exists at draw time, so the row a given
+    /// line starts on cannot be known without wrapping everything before it —
+    /// but nothing *before* the window needs to be known at all if the walk
+    /// starts at the end.
+    fn take_rows_from_tail(&self, wanted: usize, width: usize) -> (Vec<Line<'static>>, usize) {
+        let mut gathered: Vec<Line<'static>> = Vec::new();
+        let mut rows = 0;
+
+        for line in self.lines.iter().rev() {
+            let wrapped = wrap_indented(line, width);
+
+            rows += wrapped.len();
+
+            // Pushed reversed so one `reverse` at the end puts the whole run
+            // back into reading order.
+            gathered.extend(wrapped.into_iter().rev());
+
+            if rows >= wanted {
+                break;
+            }
+        }
+
+        gathered.reverse();
+
+        (gathered, rows.saturating_sub(wanted))
+    }
+
     /// Renders the pane, following the newest output unless scrolled away.
     ///
     /// The title is resolved here rather than passed in. It named the one pane
@@ -196,13 +231,6 @@ impl OutputPane {
         // The visible height excludes the block's top and bottom borders.
         let viewport = area.height.saturating_sub(2) as usize;
 
-        // The cursor occupies a row of its own, so it counts towards the total
-        // the scroll offset is measured against.
-        let total = self.lines.len() + usize::from(self.follow);
-        let scroll = total
-            .saturating_sub(viewport)
-            .saturating_sub(self.scroll_offset);
-
         // Wrapped here rather than by ratatui's `Wrap`, which returns every
         // continuation to column zero. That is right for a command's output and
         // wrong for a failure's fields: `stderr  Failed to disable unit:` broke
@@ -213,17 +241,39 @@ impl OutputPane {
         // Applied to indented lines alone, so a package manager's output is
         // still wrapped by the widget as before.
         let width = area.width.saturating_sub(2) as usize;
-        let mut text: Vec<Line> = self
-            .lines
-            .iter()
-            .flat_map(|line| wrap_indented(line, width))
-            .collect();
+
+        // Only what the viewport can show is built, rather than all of
+        // `self.lines`. The buffer holds up to `MAX_LINES` — a package
+        // installation reaches thousands — and this runs every frame while a
+        // task is running, so wrapping the whole of it meant a `String` clone
+        // per retained line, ten times a second, to draw a few dozen rows.
+        //
+        // `take_rows_from_tail` counts *rows*, not lines, which is the other
+        // half of the same problem: the offset below is handed to a widget that
+        // measures in wrapped rows, and computing it from `self.lines.len()`
+        // scrolled past the tail by however many rows the wrapping had added.
+        // A long line near the bottom pushed the newest output off the screen
+        // while the pane still reported itself as following.
+        let wanted = viewport + self.scroll_offset;
+        let (mut text, rows_above) = self.take_rows_from_tail(wanted, width);
 
         // The cursor marks where the next line lands, so a quiet command is
         // distinguishable from a frozen screen.
         if self.follow {
             text.push(Line::from(Span::styled(WRITE_CURSOR, style::OUTPUT_CURSOR)));
         }
+
+        // What was gathered is the tail plus whatever the offset asked for
+        // above it, so the widget scrolls only past the part of that which the
+        // offset put out of view. `rows_above` is what a partially-shown line
+        // at the top contributes: a line wrapping to three rows, of which the
+        // viewport has room for one, is included whole and scrolled past by
+        // two rather than dropped.
+        let gathered = text.len();
+        let scroll = gathered
+            .saturating_sub(viewport)
+            .saturating_sub(self.scroll_offset)
+            + rows_above;
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -434,6 +484,125 @@ mod tests {
         assert!(pane.is_empty());
         assert_eq!(pane.scroll_offset, 0);
         assert!(pane.is_following());
+    }
+
+    /// Draws the pane and returns its rows, borders included.
+    ///
+    /// The properties below are about what reaches the screen, and the pane
+    /// computes its scroll from a width it only learns at draw time — so
+    /// asserting on anything short of a rendered frame would assert on
+    /// arithmetic rather than on output.
+    fn rendered_rows(pane: &OutputPane, width: u16, height: u16) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("the test backend must build");
+
+        terminal
+            .draw(|frame| pane.render(frame, frame.area(), Lang::En, true))
+            .expect("drawing must succeed");
+
+        let buffer = terminal.backend().buffer().clone();
+
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_wrapped_line_does_not_push_the_newest_output_off_the_screen() {
+        // The scroll offset is handed to a widget that measures in wrapped
+        // rows, and it used to be computed from the number of *source* lines.
+        // A line long enough to wrap therefore scrolled the view further than
+        // there was content for, and the newest output — the whole reason the
+        // pane follows the tail — went off the bottom while the pane still
+        // reported itself as following.
+        //
+        // Reproduced with one 200-character line among short ones: at width 40
+        // it wraps to five rows, and the four extra rows are exactly what was
+        // lost off the end.
+        let mut pane = OutputPane::new();
+        pane.push(line("FIRST"));
+        pane.push(line(&"W".repeat(200)));
+        for n in 0..6 {
+            pane.push(line(&format!("LINE{n}")));
+        }
+
+        let rows = rendered_rows(&pane, 40, 8);
+        let screen = rows.join("\n");
+
+        assert!(
+            screen.contains("LINE5"),
+            "the newest line must be on screen while following: {screen}"
+        );
+        assert!(
+            screen.contains(WRITE_CURSOR),
+            "and so must the cursor that says where the next one lands: {screen}"
+        );
+    }
+
+    #[test]
+    fn only_the_visible_tail_is_wrapped() {
+        // `render` runs every frame while a task is running, and the buffer
+        // holds up to MAX_LINES — a package installation reaches thousands.
+        // Wrapping all of them to draw a few dozen rows cost a String clone per
+        // retained line, ten times a second.
+        //
+        // Asserted on the work rather than on the output, since the drawn
+        // frame looks identical either way: `take_rows_from_tail` is what
+        // render calls, and it must return the viewport rather than the
+        // buffer.
+        let mut pane = OutputPane::new();
+        for n in 0..5_000 {
+            pane.push(line(&format!("line {n}")));
+        }
+
+        let (gathered, above) = pane.take_rows_from_tail(20, 40);
+
+        assert!(
+            gathered.len() <= 21,
+            "only the asked-for rows may be built, got {}",
+            gathered.len()
+        );
+        assert_eq!(above, 0, "no partial line at the top of an unwrapped run");
+
+        // And what it returns must still be the newest, in reading order.
+        let last = format!("{:?}", gathered.last().expect("rows were gathered"));
+        assert!(
+            last.contains("line 4999"),
+            "the tail must come last: {last}"
+        );
+    }
+
+    #[test]
+    fn a_line_wrapping_across_the_top_edge_is_kept_whole() {
+        // The remainder `take_rows_from_tail` reports. A line whose wrapping
+        // straddles the top of the viewport is gathered in full — a wrap is not
+        // divisible — and the rows that fall above are scrolled past instead of
+        // dropped. Reporting zero here would show them, pushing the tail off
+        // the bottom again.
+        //
+        // A label-and-value line, because those are the ones this module wraps
+        // itself: an ordinary line without a two-space gap is handed to the
+        // widget whole, so it contributes one row here however long it is.
+        let mut pane = OutputPane::new();
+        pane.push(line(&format!("stderr        {}", "W".repeat(200))));
+        pane.push(line("TAIL"));
+
+        let (gathered, above) = pane.take_rows_from_tail(3, 40);
+
+        assert!(above > 0, "the straddling line must report its excess");
+        assert!(
+            gathered.len() > 3,
+            "and be gathered whole rather than truncated"
+        );
     }
 
     #[test]

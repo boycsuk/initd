@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A wrapped line no longer pushes the newest output off the screen.** The
+  output pane hands its scroll offset to a widget that measures in *wrapped*
+  rows, and computed it from the number of *source* lines. One long line
+  therefore scrolled the view further than there was content for: at 40 columns
+  a 200-character line wraps to five rows, and four rows of the newest output
+  went off the bottom while the pane still reported itself as following. Found
+  while making the pane cheaper to draw, not by a test — nothing rendered a
+  wrapped line and then looked for the tail.
+
+- **The output pane wraps only what it draws.** `render` rebuilt every retained
+  line each frame — up to `MAX_LINES`, which a package installation reaches —
+  to draw a few dozen rows, at ten frames a second, with a `String` clone per
+  line. It now walks back from the newest until the viewport is covered, which
+  is also what makes the row count above correct: the walk counts rows, so the
+  offset is measured in the same unit the widget uses. A line straddling the top
+  edge is gathered whole and scrolled past rather than dropped.
 - **A password no longer survives being formatted.** `PasswordPolicy::Set` and
   the TUI's `Field` both derived `Debug` while holding a plaintext secret — the
   field's buffer being exactly what masking keeps off the screen. Nothing
