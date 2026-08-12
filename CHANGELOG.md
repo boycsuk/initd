@@ -143,6 +143,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spelling. Taking it globally broke that list silently, and the test that
   presses it to open one is what caught it.
 
+### Changed
+- **`devtools.rs` became `devtools/`, one file per tool, and git and GitHub got
+  a category of their own.** The file had reached 2145 lines holding six tools
+  and twelve tasks; `ssh/` set the precedent for what to do about that. Nothing
+  about any task changed — the split is by `pub struct`, the bodies were moved
+  rather than retyped, and the suite runs the same 1064 tests it did before.
+
+  The grouping is about the screen rather than the code. Flat, git's five rows
+  and gh's two crowded out the four tools beside them, and "set a git identity"
+  read as a peer of "install the fish shell". Nested, the area is five rows
+  again. Task ids are untouched by the move: where a task sits in the tree is a
+  matter for the interface, and a script naming `git.identity` keeps working
+  wherever it is drawn.
+
+  Two things the split surfaced rather than caused: `InstallZellij::latest` was
+  private to a file that no longer holds its only caller, and the test module
+  had been relying on imports its neighbours brought in.
+
 ### Fixed
 - **The two-container harness gave up on openSUSE's sshd before it answered.**
   `DAEMON_WAIT_TRIES` was ninety seconds, chosen in the same commit whose own

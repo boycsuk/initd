@@ -313,6 +313,17 @@ command line, running the subcommand *is* the confirmation.
 | `mise.uninstall` | `run <id> name=value` | no | Removes mise. Toolchains it installed under each account's own directory stay — this tool did not write them. |
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
 | `rust.uninstall` | `run <id> name=value` | no | Removes rustup. Where the distribution packages it, an account's own `~/.rustup` and `~/.cargo` stay. Where it was installed for one account, rustup's own uninstaller takes those directories with it and offers no way to keep them. |
+
+### Developer environment — Git and GitHub
+
+A category of its own inside the one above, for the reason the SSH and
+WireGuard split exists: seven rows, three of which configure rather than
+install, crowded out the four tools beside them. The task ids are unchanged by
+the grouping — where a task sits in the tree is a matter for the interface, and
+a script naming `git.identity` keeps working wherever it is drawn.
+
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `git.install` | `run <id>` | no | Installs git. It refuses to commit until an account has a name and an email — set those with `git.identity`. |
 | `git.uninstall` | `run <id> name=value` | no | Removes git. Repositories on this host stay where they are. |
 | `git.identity` | `run <id> name=value` | no | Writes `user.name` and `user.email` into one account's own `~/.gitconfig`. Takes `user`, `name` and `email`. |
