@@ -51,9 +51,19 @@ const SERVER_HOST: &str = "initd-server";
 /// on a quiet machine and was not on a loaded runner, where the login went to a
 /// daemon that had not finished starting.
 ///
+/// Then a hundred and eighty, because ninety is what `-j8` ran out of. The
+/// note below predicted this in the shape of its own numbers — "over eighty
+/// seconds under `-j4`" leaves no headroom at twice the parallelism — and
+/// `an_old_client_survives_the_safe_tier::tumbleweed` collected on it twice in
+/// two full runs, at 111s and 122s. Measured beside those: the same scenario
+/// alone takes **14.9s**, a seven-fold spread that is contention rather than
+/// anything about the daemon or the tier under test. Since the wait continues
+/// rather than failing, the cost of being short is not a slow test but a
+/// scenario that blames `ssh.harden` for a daemon still starting.
+///
 /// Costs nothing when the daemon is quick: the loop returns on the first try
 /// that sees the line, which on every image measured here is the first.
-const DAEMON_WAIT_TRIES: u32 = 90;
+const DAEMON_WAIT_TRIES: u32 = 180;
 
 /// A server container, a client container and the network between them.
 pub struct TwoHosts {
@@ -371,11 +381,17 @@ impl TwoHosts {
 
         // Deliberately not a panic, and this is the one place in the harness
         // where silence is the lesser evil. The two openSUSE images take over
-        // eighty seconds to answer under `-j4` and fifteen alone, which nobody
-        // has explained; failing here would turn that unexplained delay into a
-        // red suite. What the loop no longer does is give up on a condition
-        // that was never going to be met — so a scenario that fails after this
-        // fails because the daemon is genuinely not answering.
+        // eighty seconds to answer under `-j4` and 111 to 122 under `-j8`,
+        // against 14.9 alone — a seven-fold spread nobody has explained;
+        // failing here would turn that unexplained delay into a red suite.
+        // What the loop no longer does is give up on a condition that was
+        // never going to be met — so a scenario that fails after this fails
+        // because the daemon is genuinely not answering.
+        //
+        // The warning is the part that matters, and it is why this is not
+        // simply silence: a scenario failing *after* it reports the tier under
+        // test rather than the wait, so the line below is what tells a reader
+        // which of the two to believe. Twice now it has been the wait.
         eprintln!(
             "warning: {} did not answer on port 22 within {DAEMON_WAIT_TRIES}s; \
              continuing, and the login below is what will report it",

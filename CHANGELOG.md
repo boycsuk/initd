@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   presses it to open one is what caught it.
 
 ### Fixed
+- **The two-container harness gave up on openSUSE's sshd before it answered.**
+  `DAEMON_WAIT_TRIES` was ninety seconds, chosen in the same commit whose own
+  note recorded openSUSE taking "111s and 118s" — a ceiling set below a number
+  already measured beside it. Because the wait continues rather than failing,
+  running out does not produce a slow test: it sends the login to a daemon that
+  has not finished starting, and the scenario reports `ssh.harden` locking out
+  an old client. Two full runs at `-j8` collected on it, at 111s and 122s.
+
+  Now a hundred and eighty. Measured beside those failures: the same scenario
+  alone takes **14.9s**, a seven-fold spread that is contention rather than
+  anything about the daemon or the tier under test. The ceiling costs nothing
+  when the daemon is quick — the loop returns on the first try that sees the
+  line.
+
 - **`docker-rootless.install` failed on Debian with "no installation
   candidate".** The backend named `docker-ce-rootless-extras`, which is correct
   — Debian's own `docker.io` carries no `dockerd-rootless-setuptool.sh`, so
