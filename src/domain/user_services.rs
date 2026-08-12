@@ -17,6 +17,32 @@ use crate::exec::Executor;
 
 /// Manages services belonging to one account.
 pub trait UserServiceManager {
+    /// Whether the account's own service manager can be reached at all.
+    ///
+    /// Asked because the mechanism that makes it reachable is allowed to fail
+    /// silently. `runuser -l` is relied on to establish a login session, and it
+    /// is `pam_systemd` inside that session which sets `XDG_RUNTIME_DIR` and
+    /// `DBUS_SESSION_BUS_ADDRESS` — but Debian lists it in `/etc/pam.d/runuser-l`
+    /// as `-session optional pam_systemd.so`, where the leading `-` means a
+    /// failure is not even logged. The shell then starts perfectly, with an
+    /// empty environment, and every `systemctl --user` after it addresses
+    /// nothing.
+    ///
+    /// Reported from a Debian 13 host and reproduced under systemd as PID 1:
+    /// with the session established the variables are populated even without
+    /// lingering, and with `systemd-logind` unable to create one the command
+    /// fails with `Failed to connect to user scope bus via local transport:
+    /// $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined`. That text
+    /// names two variables and no cause, and points at `--machine=<user>@.host`,
+    /// which is advice for a different problem.
+    ///
+    /// **Exporting the variables was measured and rejected.** The bus socket
+    /// lives *inside* `/run/user/<uid>`, which `logind` creates; pointing at a
+    /// directory nothing created answers `No such file or directory`, so the
+    /// value would be a spelling of the same failure. What this returns is
+    /// therefore a fact to refuse on, not a thing to repair.
+    fn session_is_reachable(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
+
     /// Whether the account may keep services running with no session open.
     fn is_lingering(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
 

@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Rootless Docker blamed the engine for a session that was never
+  established.** Reported from a Debian 13 host:
+  `runuser -l deploy -c 'systemctl --user disable --now docker.service'`
+  answered `Failed to connect to user scope bus via local transport:
+  $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using
+  --machine=<user>@.host …)`. That names two variables, no cause, and suggests
+  a flag for reaching another host's bus.
+
+  Both user-service tasks rely on `runuser -l` to open a login session, and on
+  `pam_systemd` inside it to set those variables. Debian lists that module in
+  `/etc/pam.d/runuser-l` as `-session optional pam_systemd.so`, where the
+  leading `-` means a failure is **not even logged**: the shell starts
+  perfectly with an empty environment, and every `systemctl --user` after it
+  addresses nothing. Reproduced under systemd as PID 1 by preventing
+  `systemd-logind` from creating a session.
+
+  Both tasks now ask whether the session is reachable and refuse with an error
+  naming `systemd-logind`. The install asks beside its existing subordinate-id
+  check, for the same stated reason — discovering it at `enable --now` wastes
+  the install. The uninstall asks again rather than trusting the install, since
+  the two run at different times, and refuses rather than skipping: a teardown
+  that ran on regardless would remove the engine's files while leaving a unit
+  nothing stopped, and report success over a half-removed install.
+
+  **Exporting the variables was measured and rejected**, which is worth
+  recording because it was the obvious fix and it does not work: the bus socket
+  lives *inside* `/run/user/<uid>`, which `logind` creates, so pointing at a
+  directory nothing created answers `No such file or directory` — the same
+  failure with a different spelling. With the session healthy `runuser -l`
+  populates both variables unaided, even without lingering, so there is nothing
+  to repair and the honest response is to refuse.
+
+  A second defect surfaced while verifying the first:
+  `docker-rootless.uninstall` never checked that the account exists, so
+  `user=noexiste` reported the service manager unreachable — true of an account
+  that is not there, and it sends the reader to `systemd-logind` over a typo.
+  The install had always made that check; its inverse had not.
+
 - **`sysctl` was assumed present on every host, and is packaged separately on
   four of the five families.** Reported from a Debian 13 host, where both
   kernel-parameter tasks answered `FAILED — program sysctl`.

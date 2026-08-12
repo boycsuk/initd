@@ -177,6 +177,18 @@ pub(super) fn render(message: &Msg) -> String {
                  so rootless containers cannot map their users"
             )
         }
+        // Names systemd-logind, because that is what has to be working and
+        // systemd's own message names neither it nor any cause — it reports two
+        // unset variables and suggests `--machine=<user>@.host`, which is advice
+        // for reaching another host's bus rather than for a session that was
+        // never created.
+        Msg::NoUserSession { user } => {
+            format!(
+                "{user}'s own service manager cannot be reached: no session was \
+                 established, so XDG_RUNTIME_DIR is unset and systemctl --user has \
+                 no bus to address. Check that systemd-logind is running"
+            )
+        }
         // Stated as tampering rather than as a download problem, because that
         // is what a mismatch means once the digest is pinned in this binary.
         Msg::ChecksumMismatch { program, version } => {

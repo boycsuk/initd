@@ -194,6 +194,9 @@ pub enum Msg {
     NoSubordinateIds {
         user: String,
     },
+    NoUserSession {
+        user: String,
+    },
     InvalidCaddyfile {
         details: String,
     },

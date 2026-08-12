@@ -303,6 +303,21 @@ pub enum Error {
     /// rather than after, since the install would otherwise be wasted.
     NoSubordinateIds { user: String },
 
+    /// An account's own service manager cannot be reached.
+    ///
+    /// `systemctl --user` finds its bus through `XDG_RUNTIME_DIR`, which
+    /// `pam_systemd` sets while establishing the session `runuser -l` opens.
+    /// Debian lists that module as `-session optional`, so when it cannot
+    /// create a session it fails without even logging: the shell starts, the
+    /// environment is empty, and every user-service command after it addresses
+    /// nothing.
+    ///
+    /// Distinct from [`ServiceDidNotStart`](Self::ServiceDidNotStart), which
+    /// reports a service that was reached and did not come up. Here nothing was
+    /// reached, and the two call for different actions — one is about the
+    /// engine, the other about `systemd-logind`.
+    NoUserSession { user: String },
+
     /// A user service was enabled and is not running.
     ///
     /// `enable --now` exiting zero says the command ran, not that the service
@@ -502,6 +517,7 @@ impl Error {
             }
             Self::WireguardNotConfigured => Msg::WireguardNotConfigured,
             Self::NoSubordinateIds { user } => Msg::NoSubordinateIds { user: user.clone() },
+            Self::NoUserSession { user } => Msg::NoUserSession { user: user.clone() },
             Self::ChecksumMismatch { program, version } => Msg::ChecksumMismatch {
                 program: program.clone(),
                 version: version.clone(),
@@ -704,7 +720,8 @@ impl Error {
             Self::AccountExists { user }
             | Self::NoSuchAccount { user }
             | Self::CannotDeleteOwnAccount { user }
-            | Self::NoSubordinateIds { user } => vec![(ErrorField::User, user.clone())],
+            | Self::NoSubordinateIds { user }
+            | Self::NoUserSession { user } => vec![(ErrorField::User, user.clone())],
             Self::NoWayBackIn { examined } => {
                 vec![(ErrorField::Examined, examined.to_string())]
             }
