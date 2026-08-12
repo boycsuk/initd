@@ -18,17 +18,22 @@ set -eu
 
 REPO="boycsuk/initd"
 
-# Where the binary lands, when nobody says otherwise.
+# Where the binary lands. There is one answer, and that is deliberate.
 #
-# The first whenever it can be reached — as root, or as an account that can
-# become root without being asked for a password, which is what an
-# administrator with sudo actually is. The second only when neither holds.
+# `initd` administers the machine: 138 of the commands it runs are privileged,
+# and every task that installs a package, writes to `/etc` or touches a unit is
+# among them. An account that cannot become root cannot run those, so a copy of
+# the binary in that account's home is a program that starts, draws its
+# interface, and fails at the first thing anybody asks it to do.
 #
-# `INITD_INSTALL_DIR` overrides both, and setting it is no longer the price of
-# not being root. That is what makes `curl … | sh` work as whoever happens to
-# be logged in, which is how this script is actually run.
+# So this refuses rather than installing somewhere it would not work. A
+# `~/.local/bin` fallback was written, measured and removed for that reason: it
+# turned "you cannot install this" into "you have installed this and it does
+# not work", which is the worse of the two by some distance.
+#
+# `INITD_INSTALL_DIR` is still honoured, and is now the whole of the escape
+# hatch: packaging, inspecting the binary, a host whose root path is elsewhere.
 SYSTEM_DIR="/usr/local/bin"
-USER_DIR="${HOME:-/root}/.local/bin"
 
 fail() {
     echo "install: $*" >&2
@@ -116,8 +121,9 @@ main() {
     # — and the second would have been lost, leaving the script trying to write
     # to a root-owned directory unprivileged. Measured rather than reasoned
     # about: the assignment does not survive, in `sh` and in `bash` alike.
-    choose_install_dir \
-        || fail "could not write to $SYSTEM_DIR or $USER_DIR — set INITD_INSTALL_DIR to somewhere writable"
+    # Refuses on its own terms rather than returning: the two ways this can be
+    # impossible call for different advice, and it is the one that knows which.
+    choose_install_dir
 
     # `escalate` is empty unless the directory needs root *and* this account can
     # reach it without being asked for a password. Unquoted on purpose: it is
@@ -172,20 +178,16 @@ escalator() {
     return 1
 }
 
-# Picks where the binary goes, and how it gets there.
+# Decides where the binary goes and how it gets there, or refuses.
 #
-# The order is the point. A system-wide install is what an administrator wants
-# whenever they can have one — including when they are not root but can become
-# root without being asked, which is the ordinary shape of an account with
-# sudo. Only when neither holds does this fall to the account's own directory,
-# where `~/.local/bin` is what the XDG Base Directory Specification names. It
-# is created if missing, since Debian's `.profile` adds it to PATH *only when
-# it already exists*.
+# Sets `install_dir` and `escalate` rather than printing either, which is why
+# it must not be called in a subshell.
 #
-# An explicit `INITD_INSTALL_DIR` skips the search: somebody who named a
-# directory meant that one, and silently installing somewhere else would be
-# worse than failing.
-# Sets `install_dir` and `escalate`, rather than printing either.
+# The refusal is the interesting path, and it distinguishes two cases that look
+# alike and are not. An account with *no* route to root cannot use this tool at
+# all. An account whose `sudo` would ask for a password can — just not from a
+# script that has already spent stdin on itself. The first is told to find an
+# administrator; the second is told to run one command.
 choose_install_dir() {
     if [ -n "${INITD_INSTALL_DIR:-}" ]; then
         install_dir="$INITD_INSTALL_DIR"
@@ -193,15 +195,13 @@ choose_install_dir() {
         mkdir -p "$install_dir" 2>/dev/null || true
         [ -w "$install_dir" ] && return 0
 
-        # A named directory is worth escalating for too: the operator asked for
-        # that path, not for whichever one this script could reach unaided.
         if escalate=$(escalator); then
             $escalate mkdir -p "$install_dir" 2>/dev/null || true
             return 0
         fi
 
         escalate=""
-        return 1
+        fail "cannot write to $INITD_INSTALL_DIR, and cannot become root to try"
     fi
 
     if [ -w "$SYSTEM_DIR" ]; then
@@ -209,9 +209,6 @@ choose_install_dir() {
         return 0
     fi
 
-    # Not root, but able to become root unprompted: the binary belongs on the
-    # system rather than in one account's home, where a second administrator
-    # would not find it and `sudo initd` would not resolve it.
     if escalate=$(escalator); then
         install_dir="$SYSTEM_DIR"
         $escalate mkdir -p "$install_dir" 2>/dev/null || true
@@ -219,28 +216,47 @@ choose_install_dir() {
     fi
 
     escalate=""
+    refuse_without_root
+}
 
-    mkdir -p "$USER_DIR" 2>/dev/null || true
-    if [ -w "$USER_DIR" ]; then
-        install_dir="$USER_DIR"
-        return 0
+# Explains why there is nothing useful to install, and how to get one.
+#
+# Two messages, because there are two situations. Telling somebody with sudo to
+# "ask an administrator" would be telling them to ask themselves.
+refuse_without_root() {
+    if command -v sudo >/dev/null 2>&1 || command -v doas >/dev/null 2>&1; then
+        echo "install: initd administers this machine, so it needs root — and" >&2
+        echo "         your sudo would ask for a password, which a script piped" >&2
+        echo "         into a shell cannot answer." >&2
+        echo >&2
+        echo "         run it with sudo instead:" >&2
+        echo >&2
+        echo "             curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sudo sh" >&2
+        echo >&2
+        echo "         or authenticate first, so the next command needs no password:" >&2
+        echo >&2
+        echo "             sudo -v" >&2
+        exit 1
     fi
 
-    return 1
+    echo "install: initd administers this machine — installing packages, editing" >&2
+    echo "         /etc, enabling units — and this account has no route to root." >&2
+    echo >&2
+    echo "         Nothing useful would be installed, so nothing was. Ask an" >&2
+    echo "         administrator to run this, or run it as root." >&2
+    exit 1
 }
 
 # Says so when the shell will not find what was just installed.
 #
-# Measured rather than assumed, because it differs per distribution: Debian's
-# `.profile` adds `~/.local/bin` and only if the directory already existed,
-# Rocky adds it from `.bashrc` — which a `sh` login never reads — and Alpine
-# adds it nowhere. So on two of those three an install into that directory
-# succeeds and `initd` is still not found.
+# `/usr/local/bin` is on every PATH this project has measured, so in the
+# ordinary case this prints nothing. It is here for `INITD_INSTALL_DIR`, which
+# can name anywhere at all — and a report of success that leaves the operator
+# unable to run the thing is worse than the refusal it replaced.
 #
-# A report of success that leaves the operator unable to run the thing is the
-# failure this exists to prevent. It names the line to add rather than saying
-# "adjust your PATH", because the reader is being told this precisely because
-# their shell did not do it for them.
+# It names the line to add rather than saying "adjust your PATH", because the
+# reader is being told this precisely because their shell did not do it for
+# them.
 warn_if_unreachable() {
     case ":${PATH}:" in
         *":$1:"*) return 0 ;;

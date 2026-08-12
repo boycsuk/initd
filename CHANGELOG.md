@@ -7,40 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-12
+
+One change, and it reverses a decision made hours earlier in the same day —
+which is worth saying plainly rather than presenting the second answer as if
+it had always been the plan.
+
+
 ### Fixed
-- **The installer no longer needs root or an environment variable.** Reported
-  from a real host: `curl … | sh` as `deploy` answered
+- **The installer no longer demands root, but it does demand a route to it.**
+  Reported from a real host: `curl … | sh` as `deploy` answered
   `could not write to /usr/local/bin — run as root, or set INITD_INSTALL_DIR`.
-  An account that cannot write there is the ordinary case for a script piped
-  into a shell, not an error. It now falls back to `~/.local/bin`, which is
-  where a user-level binary belongs, and `INITD_INSTALL_DIR` still overrides
-  both.
+  Asking for an environment variable was the wrong answer, and so was the first
+  replacement: falling back to `~/.local/bin`, which shipped in 0.2.0.
 
-  **An account that can escalate installs system-wide rather than into its own
-  home.** Falling back whenever the caller is not root would hide the binary in
-  one account's directory on the ordinary case — an administrator with sudo —
-  where a second administrator would not find it and `sudo initd` would not
-  resolve it either. So the script asks whether it can become root *without
-  being asked for a password*, with `sudo -n`, `doas -n` or
-  `run0 --no-ask-password`, and uses it when the answer is yes.
-  
-  Sudo that would prompt is deliberately not used. A script piped into a shell
-  has already spent stdin on the script, so a password prompt has nowhere to
-  read from: it hangs, or fails in a way that reads as the installer being
-  broken. That is the same reasoning `LocalExecutor` follows before every
-  privileged command — ask before a helper asks — arrived at here for the same
-  reason. Verified on all four cases in a container, with the prompting one run
-  under `timeout` and stdin closed so hanging fails the test rather than
-  stalling it.
+  **An account that can escalate installs system-wide.** The script asks
+  whether it can become root *without being asked for a password* — `sudo -n`,
+  `doas -n`, `run0 --no-ask-password`, each of which answers rather than
+  prompting — and uses it when the answer is yes. That is the same reasoning
+  `LocalExecutor` follows before every privileged command: ask before a helper
+  asks.
 
-  **And it says so when the shell will not find what it just installed**, which
-  is the half that makes the fallback honest rather than merely quieter.
-  Measured across the images: Debian adds `~/.local/bin` to `PATH` from
-  `.profile` and only once the directory exists, Rocky adds it from `.bashrc` —
-  which a `sh` login never reads — and Alpine adds it nowhere. So on two of
-  three, installing there succeeds and `initd` is still not found. The note
-  prints the exact line to add rather than saying "adjust your PATH"; the
-  profile is not edited, which is not a change this tool was asked to make.
+  **And an account with no route to root is refused rather than served a binary
+  that cannot work.** A `~/.local/bin` fallback was written, measured and
+  removed. `initd` administers the machine — **138** of the commands it runs
+  are privileged — so a copy in an account that cannot escalate is a program
+  that starts, draws its interface and fails at the first thing anybody asks of
+  it. The fallback turned "you cannot install this" into "you have installed
+  this and it does not work", which is the worse of the two.
+
+  The refusal distinguishes two situations that look alike. An account with no
+  `sudo` at all is told to find an administrator; an account whose `sudo` would
+  prompt is told to run `curl … | sudo sh` or `sudo -v` first — telling *that*
+  reader to find an administrator would be telling them to find themselves.
+  Verified on all four cases in a container, with the prompting one run under
+  `timeout` and stdin closed so hanging fails the test rather than stalling it.
 
 - **The installer never worked on Alpine, which is how this was found.** Its
   `sha256sum` is a busybox applet, and busybox knows neither `--ignore-missing`
@@ -56,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the substring trap this project already recorded for `is-active`, where
   `inactive` contains `active`. All three assertions now compare whole lines,
   and the new test was checked by deleting the fallback and confirming it fails.
+
+## [0.2.0] — 2026-08-12
 
 ### Changed
 - **The container suite runs in half the time: 1044s to 564s, measured with the
@@ -112,7 +115,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nextest's setup scripts are the idiomatic answer and were declined: they are
   still experimental, and a release path is the wrong place to depend on that.
 
-## [0.2.0] — 2026-08-12
 
 Nine tasks, three fixes for failures reported from a running server, and a key
 for the console those failures were seen on. Nothing a script depended on

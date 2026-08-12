@@ -68,19 +68,18 @@ Environment variables the script accepts:
 | `INITD_INSTALL_DIR` | see below | Where to put the binary |
 | `INITD_VERSION` | `latest` | A release tag to install instead of the newest |
 
-**You do not need to be root, and you do not need to set anything.** With no
-`INITD_INSTALL_DIR`, the script installs to `/usr/local/bin` whenever it can
-reach it — as root, or as an account that can `sudo` without being asked for a
-password, which is what an administrator's account usually is. Only when
-neither holds does it fall back to `~/.local/bin`, so `curl … | sh` works as
-whoever happens to be logged in.
+**You do not need to be root, but you do need a route to it.** The binary goes
+to `/usr/local/bin` — as root, or as an account that can `sudo` without being
+asked for a password, which is what an administrator's account usually is.
 
-Sudo that *would* ask for a password is deliberately not used: a script piped
-into a shell has already spent stdin on the script, so a prompt has nowhere to
-read from and would hang. The install goes to your home directory instead. If
-that directory is not on your `PATH`, the script says so and prints the line to
-add; it does not edit your shell profile, which is not a change this tool was
-asked to make.
+There is no user-level fallback, and that is deliberate. `initd` administers the
+machine: installing packages, editing `/etc`, enabling units. An account that
+cannot become root cannot do any of it, so a copy in that account's home would
+be a program that starts, draws its interface, and fails at the first thing you
+ask of it. The script refuses instead, and says which of the two problems you
+have — no route to root at all, or a `sudo` that would prompt, which a script
+piped into a shell cannot answer because stdin is already carrying the script.
+For the second, `curl … | sudo sh` or a preceding `sudo -v` is all it takes.
 
 To uninstall, remove the binary — `rm "$(command -v initd)"` finds it wherever
 the script put it. Note that this

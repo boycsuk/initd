@@ -71,10 +71,15 @@ fn run_installer(tamper: bool) -> String {
     )
 }
 
-/// Runs the installer as an unprivileged account, naming no directory.
+/// Runs the installer as an account with no route to root at all.
 ///
-/// The scenario the reported failure came from. `INITD_INSTALL_DIR` is
-/// deliberately *not* set: needing it is the thing under test.
+/// `python:3-alpine` ships neither `sudo` nor `doas`, which is what makes this
+/// the "cannot escalate by any means" case rather than the "could, but would be
+/// asked for a password" one its neighbour covers. The two call for different
+/// advice and the script gives different advice, so they are tested apart.
+///
+/// `INITD_INSTALL_DIR` is deliberately not set: needing it was the original
+/// complaint, and it is still not the answer.
 ///
 /// `python:3-alpine` like its neighbour, which also makes this the image where
 /// `sha256sum` is busybox's applet — the one that knows neither
@@ -118,7 +123,8 @@ fn run_installer_as_user() -> String {
          chmod go-w /usr/local/bin\n\
          su deploy -s /bin/sh -c 'sh /install.sh' 2>&1 || true\n\
          echo \"--- installed? ---\"\n\
-         test -x /home/deploy/.local/bin/initd && echo INSTALLED || echo NOT_INSTALLED\n"
+         if test -x /home/deploy/.local/bin/initd || test -x /usr/local/bin/initd; \\\n\
+         then echo INSTALLED; else echo NOT_INSTALLED; fi\n"
     );
 
     let output = Command::new("docker")
@@ -143,6 +149,14 @@ fn run_installer_as_user() -> String {
 /// The run is wrapped in `timeout` with stdin closed. That is the assertion as
 /// much as the output is: a script piped into a shell cannot answer a password
 /// prompt, so one that waits for an answer must fail this rather than stall it.
+///
+/// `TIMED_OUT` is reported on exit **124** specifically, which is what
+/// `timeout` returns when it kills its child. A bare `|| echo TIMED_OUT` was
+/// there first and was wrong: the script exits 1 when it refuses, so the label
+/// appeared on a run that never hung — a harness saying "it hung" about a
+/// deliberate, immediate refusal. The same shape of lie this project has
+/// recorded before, where a helper reported a number the assertion then
+/// interpreted.
 fn run_installer_with_sudo(passwordless: bool) -> String {
     let script = fs::read_to_string("install.sh").expect("the install script must be readable");
 
@@ -174,7 +188,10 @@ fn run_installer_with_sudo(passwordless: bool) -> String {
          {script}\n\
          INSTALLER_EOF\n\
          chmod 0644 /install.sh\n\
-         timeout 60 su deploy -s /bin/sh -c 'sh /install.sh </dev/null' 2>&1 || echo TIMED_OUT\n"
+         timeout 60 su deploy -s /bin/sh -c 'sh /install.sh </dev/null' 2>&1; \\\n\
+         status=$?; \\\n\
+         if test $status -eq 124; then echo TIMED_OUT; fi; \\\n\
+         echo \"exit status: $status\"\n"
     );
 
     let output = Command::new("docker")
@@ -206,26 +223,30 @@ fn an_intact_release_installs() {
 
 #[test]
 #[ignore = "requires docker"]
-fn an_ordinary_account_installs_without_being_told_where() {
+fn an_account_with_no_route_to_root_is_refused() {
     require_docker!();
 
-    // The case reported from a real host: `curl … | sh` as `deploy`, answered
-    // with "run as root, or set INITD_INSTALL_DIR". Neither should be needed —
-    // an account that cannot write to `/usr/local/bin` is the ordinary case
-    // for a script piped into a shell, not an error.
+    // `initd` administers the machine: 138 of the commands it runs are
+    // privileged. An account that cannot become root cannot run any of them,
+    // so a copy of the binary in that account's home is a program that starts,
+    // draws its interface and fails at the first thing anybody asks of it.
+    //
+    // A `~/.local/bin` fallback was written and removed for that reason. It
+    // turned "you cannot install this" into "you have installed this and it
+    // does not work", which is the worse of the two.
     let observed = run_installer_as_user();
 
     assert!(
-        common::has_line(&observed, "INSTALLED"),
-        "an unprivileged account must get a working install: {observed}"
+        common::has_line(&observed, "NOT_INSTALLED"),
+        "an account that cannot escalate must not get a binary: {observed}"
     );
     assert!(
-        observed.contains(".local/bin"),
-        "it must land in the account's own bin directory: {observed}"
+        observed.contains("no route to root"),
+        "the refusal must say why rather than naming a permission: {observed}"
     );
     assert!(
-        !observed.contains("run as root"),
-        "and must not ask for root: {observed}"
+        observed.contains("Ask an administrator") || observed.contains("run it as root"),
+        "and must say what would work instead: {observed}"
     );
 }
 
@@ -255,19 +276,28 @@ fn sudo_that_would_ask_for_a_password_is_not_used() {
     // stdin on the script, so a password prompt has nowhere to read from: it
     // hangs, or fails in a way that reads as the installer being broken. So
     // "can I escalate" is asked with `sudo -n`, which refuses rather than
-    // prompting, and a refusal means the home directory instead.
+    // prompting.
+    //
+    // This account *can* administer the machine — it just cannot do so from a
+    // script with no stdin — so the refusal tells it to run one command rather
+    // than to find an administrator. Telling somebody with sudo to ask an
+    // administrator would be telling them to ask themselves.
     //
     // The scenario runs under `timeout` with stdin closed: hanging fails it
     // rather than stalling the suite.
     let observed = run_installer_with_sudo(false);
 
     assert!(
-        observed.contains(".local/bin/initd"),
-        "sudo that would prompt must not be used: {observed}"
+        !observed.contains("TIMED_OUT"),
+        "asking must never block on a prompt nobody can answer: {observed}"
     );
     assert!(
-        !observed.contains("TIMED_OUT"),
-        "and asking must never block on a prompt nobody can answer: {observed}"
+        observed.contains("| sudo sh"),
+        "the refusal must name the command that would work: {observed}"
+    );
+    assert!(
+        !observed.contains("Ask an administrator"),
+        "and must not send an administrator looking for one: {observed}"
     );
 }
 
@@ -276,16 +306,19 @@ fn sudo_that_would_ask_for_a_password_is_not_used() {
 fn an_install_the_shell_cannot_reach_says_so() {
     require_docker!();
 
-    // A report of success the operator cannot act on is worse than the refusal
-    // it replaced. Measured across the images: Debian adds `~/.local/bin` to
-    // PATH only once it exists, Rocky adds it from `.bashrc` — which a `sh`
-    // login never reads — and Alpine adds it nowhere. So on most of them the
-    // install succeeds and `initd` is still not found.
-    let observed = run_installer_as_user();
+    // `/usr/local/bin` is on every PATH this project has measured, so the note
+    // is for `INITD_INSTALL_DIR` — which can name anywhere at all. A report of
+    // success that leaves the operator unable to run the thing is worse than a
+    // refusal, so the one case that can still produce it is pinned.
+    let observed = run_installer(false);
 
     assert!(
+        common::has_line(&observed, "INSTALLED"),
+        "the control must still install: {observed}"
+    );
+    assert!(
         observed.contains("not on your PATH"),
-        "the note must be printed when the shell will not find it: {observed}"
+        "/tmp/bin is not on PATH, so the note must be printed: {observed}"
     );
     assert!(
         observed.contains("export PATH="),
