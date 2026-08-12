@@ -71,6 +71,68 @@ fn run_installer(tamper: bool) -> String {
     )
 }
 
+/// Runs the installer as an unprivileged account, naming no directory.
+///
+/// The scenario the reported failure came from. `INITD_INSTALL_DIR` is
+/// deliberately *not* set: needing it is the thing under test.
+///
+/// `python:3-alpine` like its neighbour, which also makes this the image where
+/// `sha256sum` is busybox's applet — the one that knows neither
+/// `--ignore-missing` nor `--check`, and refused a genuine release until the
+/// verification stopped depending on them.
+///
+/// `/usr/local/bin` is made root-owned first, so `deploy` genuinely cannot
+/// write there and the fallback is genuinely exercised.
+///
+/// The assertions use `has_line` rather than `contains`, and that is not a
+/// stylistic preference: `NOT_INSTALLED` **contains** `INSTALLED`, so the
+/// obvious spelling passes when the install failed. Found by deleting the
+/// fallback and watching the test pass anyway — the same substring trap this
+/// project already recorded for `is-active`, where `inactive` contains
+/// `active`. A test that cannot fail proves nothing, so this one was checked
+/// against a deliberately broken script rather than assumed to work.
+fn run_installer_as_user() -> String {
+    let script = fs::read_to_string("install.sh").expect("the install script must be readable");
+
+    let script = script.replace("--proto '=https' --tlsv1.2", "").replace(
+        "https://github.com/$REPO/releases/latest/download",
+        "http://127.0.0.1:8000",
+    );
+
+    let scenario = format!(
+        "set -e\n\
+         apk add --no-cache curl shadow >/dev/null 2>&1\n\
+         adduser -D -s /bin/sh deploy\n\
+         mkdir -p release\n\
+         printf '#!/bin/sh\\necho genuine\\n' > release/initd-x86_64-unknown-linux-musl\n\
+         printf '#!/bin/sh\\necho genuine\\n' > release/initd-aarch64-unknown-linux-musl\n\
+         (cd release && sha256sum initd-* > SHA256SUMS)\n\
+         (cd release && python3 -m http.server 8000 >/dev/null 2>&1 &)\n\
+         sleep 2\n\
+         cat > /install.sh <<'INSTALLER_EOF'\n\
+         {script}\n\
+         INSTALLER_EOF\n\
+         chmod 0644 /install.sh\n\
+         chmod 0755 /usr/local/bin\n\
+         chown root:root /usr/local/bin\n\
+         chmod go-w /usr/local/bin\n\
+         su deploy -s /bin/sh -c 'sh /install.sh' 2>&1 || true\n\
+         echo \"--- installed? ---\"\n\
+         test -x /home/deploy/.local/bin/initd && echo INSTALLED || echo NOT_INSTALLED\n"
+    );
+
+    let output = Command::new("docker")
+        .args(["run", "--rm", "python:3-alpine", "sh", "-c", &scenario])
+        .output()
+        .expect("docker run must execute");
+
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
 #[test]
 #[ignore = "requires docker"]
 fn an_intact_release_installs() {
@@ -81,8 +143,55 @@ fn an_intact_release_installs() {
     let observed = run_installer(false);
 
     assert!(
-        observed.contains("INSTALLED"),
+        common::has_line(&observed, "INSTALLED"),
         "a release matching its checksum must install: {observed}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn an_ordinary_account_installs_without_being_told_where() {
+    require_docker!();
+
+    // The case reported from a real host: `curl … | sh` as `deploy`, answered
+    // with "run as root, or set INITD_INSTALL_DIR". Neither should be needed —
+    // an account that cannot write to `/usr/local/bin` is the ordinary case
+    // for a script piped into a shell, not an error.
+    let observed = run_installer_as_user();
+
+    assert!(
+        common::has_line(&observed, "INSTALLED"),
+        "an unprivileged account must get a working install: {observed}"
+    );
+    assert!(
+        observed.contains(".local/bin"),
+        "it must land in the account's own bin directory: {observed}"
+    );
+    assert!(
+        !observed.contains("run as root"),
+        "and must not ask for root: {observed}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn an_install_the_shell_cannot_reach_says_so() {
+    require_docker!();
+
+    // A report of success the operator cannot act on is worse than the refusal
+    // it replaced. Measured across the images: Debian adds `~/.local/bin` to
+    // PATH only once it exists, Rocky adds it from `.bashrc` — which a `sh`
+    // login never reads — and Alpine adds it nowhere. So on most of them the
+    // install succeeds and `initd` is still not found.
+    let observed = run_installer_as_user();
+
+    assert!(
+        observed.contains("not on your PATH"),
+        "the note must be printed when the shell will not find it: {observed}"
+    );
+    assert!(
+        observed.contains("export PATH="),
+        "and must name the line to add rather than saying 'adjust your PATH': {observed}"
     );
 }
 
@@ -96,7 +205,7 @@ fn a_tampered_binary_is_refused() {
     let observed = run_installer(true);
 
     assert!(
-        observed.contains("NOT_INSTALLED"),
+        common::has_line(&observed, "NOT_INSTALLED"),
         "a binary that does not match its checksum must not be installed: {observed}"
     );
     assert!(

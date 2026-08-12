@@ -65,10 +65,18 @@ Environment variables the script accepts:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `INITD_INSTALL_DIR` | `/usr/local/bin` | Where to put the binary |
+| `INITD_INSTALL_DIR` | see below | Where to put the binary |
 | `INITD_VERSION` | `latest` | A release tag to install instead of the newest |
 
-To uninstall, remove the binary: `rm /usr/local/bin/initd`. Note that this
+**You do not need to be root, and you do not need to set anything.** With no
+`INITD_INSTALL_DIR`, the script installs to `/usr/local/bin` when it can write
+there and to `~/.local/bin` when it cannot — so `curl … | sh` works as whoever
+happens to be logged in. If that directory is not on your `PATH`, the script
+says so and prints the line to add; it does not edit your shell profile, which
+is not a change this tool was asked to make.
+
+To uninstall, remove the binary — `rm "$(command -v initd)"` finds it wherever
+the script put it. Note that this
 removes the tool, not the changes it made — those live in the system's own
 configuration, by design.
 

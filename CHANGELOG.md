@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The installer no longer needs root or an environment variable.** Reported
+  from a real host: `curl … | sh` as `deploy` answered
+  `could not write to /usr/local/bin — run as root, or set INITD_INSTALL_DIR`.
+  An account that cannot write there is the ordinary case for a script piped
+  into a shell, not an error. It now falls back to `~/.local/bin`, which is
+  where a user-level binary belongs, and `INITD_INSTALL_DIR` still overrides
+  both.
+
+  **And it says so when the shell will not find what it just installed**, which
+  is the half that makes the fallback honest rather than merely quieter.
+  Measured across the images: Debian adds `~/.local/bin` to `PATH` from
+  `.profile` and only once the directory exists, Rocky adds it from `.bashrc` —
+  which a `sh` login never reads — and Alpine adds it nowhere. So on two of
+  three, installing there succeeds and `initd` is still not found. The note
+  prints the exact line to add rather than saying "adjust your PATH"; the
+  profile is not edited, which is not a change this tool was asked to make.
+
+- **The installer never worked on Alpine, which is how this was found.** Its
+  `sha256sum` is a busybox applet, and busybox knows neither `--ignore-missing`
+  nor `--check` — both answered `unrecognized option`, so verification failed
+  on a *genuine* release and the script refused to install, reporting tampering
+  where there was none. Measured against busybox 1.37.0, and against GNU
+  coreutils 8.32 and 9.7. The digest is now compared as two strings, which
+  every one of the three accepts.
+
+  The existing tests could not have caught it: they set `INITD_INSTALL_DIR` and
+  so never reached the fallback, and — worse — they asserted
+  `observed.contains("INSTALLED")`, which **`NOT_INSTALLED` satisfies**. That is
+  the substring trap this project already recorded for `is-active`, where
+  `inactive` contains `active`. All three assertions now compare whole lines,
+  and the new test was checked by deleting the fallback and confirming it fails.
+
 ### Changed
 - **The container suite runs in half the time: 1044s to 564s, measured with the
   cached images deleted first so the figure includes building them.**
