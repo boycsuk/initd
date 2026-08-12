@@ -494,6 +494,97 @@ pub fn binary_for(image: &Image) -> Option<String> {
 /// Returns the base image name where anything goes wrong. A committed cache is
 /// a speed-up, and a test run that fails because a speed-up failed would be
 /// worse than a slow one.
+/// What the cached image has done before any scenario runs on it.
+///
+/// The refresh, and then every package the scenarios go on to install. Baking
+/// them is worth far more than it looks, and the reason is dnf: measured on
+/// `rockylinux:9`, `/var/cache/dnf` is 4 KB on the bare image and **69 MB**
+/// after one `dnf install` — a solv cache built once and then reused, with the
+/// file's mtime unchanged on the second call. The three costs, per scenario:
+///
+/// | on the bare image             | 6551 ms |
+/// | on a metadata-only cache      | 2199 ms |
+/// | with the packages baked in    |  313 ms |
+///
+/// So the harness was already recovering two thirds by committing the refresh;
+/// this recovers the rest. Twenty-one times on the image the suite is slowest
+/// on, and the whole of it paid once per image rather than once per scenario.
+///
+/// Failures are ignored on purpose. A package absent from a family — firewalld
+/// outside RHEL, systemd on Alpine — leaves the image without it, and the
+/// scenario that needs it installs it as it always did. Baking is an
+/// optimisation, and an optimisation that could fail a run would be a worse
+/// trade than the time it saves.
+fn preparation(image: &Image) -> String {
+    let steps = [
+        image.refresh,
+        image.install_ssh,
+        image.install_ssh_client,
+        image.install_useradd,
+        image.install_nftables,
+        image.install_wireguard,
+        image.install_sysctl,
+        image.install_tmux,
+    ];
+
+    // `;` rather than `&&`: one absent package must not stop the rest.
+    steps
+        .iter()
+        .map(|step| format!("{step} >/dev/null 2>&1"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Serialises building one image's cache across every test process.
+///
+/// nextest runs each test in its own process, so a `Mutex` reaches none of the
+/// others. A lock file does — and the failure it prevents is not subtle: at
+/// `-j8`, eight scenarios finding no cache all build one, each downloading the
+/// same metadata, and the seven that lose the race have spent minutes on work
+/// the winner also did.
+fn build_lock(image: &Image) -> std::fs::File {
+    let path = std::env::temp_dir().join(format!("initd-cache-{}.lock", image.family_tag()));
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|error| panic!("the build lock at {} must open: {error}", path.display()));
+
+    // `flock` through the raw fd rather than a crate: this is a test harness,
+    // and a dependency here would be one more thing to audit for a lock held
+    // for seconds.
+    //
+    // Safety: the fd is owned by `file`, which outlives the call and is
+    // returned to the caller so the lock is held for as long as it lives.
+    let locked = unsafe { libc_flock(std::os::fd::AsRawFd::as_raw_fd(&file)) };
+
+    assert!(
+        locked,
+        "the build lock at {} must be acquirable",
+        path.display()
+    );
+
+    file
+}
+
+/// `flock(fd, LOCK_EX)`, declared here rather than pulling in a crate.
+///
+/// # Safety
+///
+/// `fd` must be a valid, open file descriptor for the duration of the call.
+unsafe fn libc_flock(fd: std::os::fd::RawFd) -> bool {
+    unsafe extern "C" {
+        fn flock(fd: std::os::fd::RawFd, operation: i32) -> i32;
+    }
+
+    /// `LOCK_EX` on Linux.
+    const LOCK_EX: i32 = 2;
+
+    unsafe { flock(fd, LOCK_EX) == 0 }
+}
+
 fn cached_image(image: &Image) -> String {
     let tag = format!("initd-cache-{}:test", image.family_tag());
 
@@ -502,6 +593,22 @@ fn cached_image(image: &Image) -> String {
         .output();
 
     if existing.is_ok_and(|out| out.status.success()) {
+        return tag;
+    }
+
+    // One builder at a time per image. Without this every scenario that
+    // reaches a missing cache builds it — eight of them at `-j8`, each
+    // downloading the same metadata, and the one that commits last wins. The
+    // lock is held across the whole build rather than around the `commit`,
+    // since the download is what costs.
+    let _guard = build_lock(image);
+
+    // Another thread may have built it while this one waited.
+    if Command::new("docker")
+        .args(["image", "inspect", &tag])
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
         return tag;
     }
 
@@ -516,7 +623,7 @@ fn cached_image(image: &Image) -> String {
             image.name,
             "sh",
             "-c",
-            image.refresh,
+            &preparation(image),
         ])
         .output();
 
@@ -548,14 +655,14 @@ pub fn run_in_container(image: &Image, script: &str) -> std::process::Output {
 
     let mount = format!("{binary}:/usr/local/bin/initd:ro");
 
-    // The refresh step runs first so package installation works, offline-ish
-    // caches aside; joining it here keeps each test to a single container.
-    let full_script = format!("{} >/dev/null 2>&1; {script}", image.refresh);
-
+    // No refresh here: `cached_image` ran it before committing, and the index
+    // it produced is in the image. Repeating it cost a second per scenario for
+    // metadata the container already had — small next to the package installs,
+    // and paid roughly 170 times a run.
     let base = cached_image(image);
 
     let output = Command::new("docker")
-        .args(["run", "--rm", "-v", &mount, &base, "sh", "-c", &full_script])
+        .args(["run", "--rm", "-v", &mount, &base, "sh", "-c", script])
         .output()
         .expect("docker run must execute");
 

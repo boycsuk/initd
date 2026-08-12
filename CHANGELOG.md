@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The container suite runs in half the time: 1044s to 564s, measured with the
+  cached images deleted first so the figure includes building them.**
+
+  The cost was dnf, and the mechanism was worth measuring rather than guessing
+  at. On `rockylinux:9`, `/var/cache/dnf` is 4 KB on the bare image and **69 MB**
+  after a single `dnf install` — a solv cache built once and then reused, with
+  the file's mtime unchanged on the second call. Per scenario: 6551 ms on the
+  bare image, 2199 ms on the metadata-only cache the harness already built, and
+  **313 ms** with the packages baked in. `cached_image` was already the right
+  shape and already committed an image; it stopped at the refresh.
+
+  Three "obvious" dnf mitigations were measured and dropped. `fastestmirror` is
+  already off by default; `install_weak_deps=False` installs the same eleven
+  packages; and `max_parallel_downloads=10` makes it **worse** — 37.3s against
+  6.0s. One claim that circulated during the investigation was wrong and is
+  recorded here so nobody re-derives it: Rocky does **not** ship
+  `tsflags=nodocs`, which is Fedora's default. Its `dnf.conf` has five lines and
+  `tsflags` is not among them.
+
+  `.config/nextest.toml` bounds what `--test-threads` never did. That flag
+  limits test *processes*; the expensive thing is a container, and eight test
+  binaries were each free to start one. A `containers` test group makes the
+  eight mean eight containers. The filter deliberately excludes the harness's
+  own unit tests, which live in the same binaries and start nothing.
+
+  `slow-timeout` reports at a minute and `terminate-after` kills at five. The
+  ceiling is generous on purpose: openSUSE's sshd takes 111-122s to start under
+  load, so a tighter one would kill scenarios that were going to pass. Retries
+  are deliberately **not** configured — nextest would mark a recovered test
+  FLAKY and count it as a pass, and this suite's flakiness has twice turned out
+  to be a real defect.
+
+  A lock file serialises building one image's cache. nextest runs each test in
+  its own process, so a `Mutex` reaches none of the others: at `-j8`, eight
+  scenarios finding no cache all built one, each downloading the same metadata.
+
 ## [0.2.0] — 2026-08-12
 
 Nine tasks, three fixes for failures reported from a running server, and a key

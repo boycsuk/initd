@@ -1,0 +1,51 @@
+# How the container scenarios are allowed to run.
+#
+# `--test-threads` bounds test *processes*, and the expensive thing here is not
+# a process: it is a container, with a package manager inside it competing for
+# the same network and the same disk as seven others. Measured, the difference
+# is not marginal — `authorising_the_same_key_twice::rhel` takes 7.4s alone and
+# has been seen past 300s in a full run, a forty-fold spread that is contention
+# rather than work.
+
+# Container scenarios, limited as a group.
+#
+# Eight is the number the project already runs with, and this makes it mean
+# what it was assumed to mean: eight containers, not eight test binaries each
+# free to start one. Unit tests are unaffected and keep the full thread count —
+# there are a thousand of them and they cost microseconds.
+[test-groups]
+containers = { max-threads = 8 }
+
+[[profile.default.overrides]]
+# The scenarios that reach for Docker, which is not the same as everything in
+# an `integration_*` binary: those binaries also hold the harness's own unit
+# tests — `common::tests::a_container_that_never_started_is_a_panic_rather_than_an_answer`
+# and its neighbours — which assert on helper logic and start nothing. They
+# cost microseconds, and giving one a container slot would idle it.
+#
+# The Docker-using ones are exactly the `#[ignore]`d ones, which is what
+# `test(/::/)` catches here: every scenario is generated per image and so
+# carries a `::<image>` suffix, while the harness's own tests do not.
+filter = 'binary(/^integration_/) and test(/::(alpine|arch|debian|leap|rhel|tumbleweed)$/)'
+test-group = 'containers'
+
+# Reported slow at a minute, killed at five.
+#
+# `slow-timeout` alone only prints SLOW; `terminate-after` is what ends a
+# runaway. The multiplier is deliberately generous: openSUSE's sshd takes
+# 111-122s to start under load — measured, and the reason the two-host harness
+# waits 180s — so a ceiling tight enough to catch a hang would kill a scenario
+# that was going to pass.
+#
+# What this bounds is the case where something is genuinely stuck: a container
+# that never starts, a daemon that never listens. Five minutes of one scenario
+# is not a slow test, it is a test nobody is learning anything from.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# Retries are deliberately *not* set here.
+#
+# nextest would mark a recovered test FLAKY and count it as a pass, and this
+# suite's flakiness has twice turned out to be a real defect: a wait that gave
+# up before openSUSE's sshd answered, and a harness that read a container's
+# stdout as an exit code. Both were found because a test failed and stayed
+# failed. A retry would have hidden the first and made the second intermittent.
