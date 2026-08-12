@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ssh.install` reports which OpenSSH the host runs.** Asked for because
+  `openssh-server is already installed` says nothing about *what* is installed,
+  and the version is what decides which hardening tier is safe —
+  `ssh.harden-strict` insists on algorithms an older client may never have
+  learned.
+
+  Read from `sshd -V` rather than `ssh -V`: Rocky's `openssh-server` package
+  installs no client at all, so asking the client answers `command not found`
+  on a host with a working daemon. And read from **stderr**, which is where all
+  three implementations print it while leaving stdout empty and exiting 0 —
+  measured on `debian:13`, `alpine:3.23` and `rockylinux:9`. This project had
+  already paid for that once: two helpers in the container suite read `ssh -V`
+  from stdout, so the versions a scenario existed to compare were always blank.
+
+  Only the OpenSSH field is kept. The rest of the banner names the
+  distribution's patch level and OpenSSL's version, which answer a different
+  question. A version that cannot be read is left out rather than failing the
+  task: it is one line of narration after the daemon is already installed and
+  running.
+
 - **The description and the output now share the right-hand pane, and `o` folds
   the output away.** The pane used to show one or the other, chosen by whether
   any output existed — so once a task had run, every task selected afterwards

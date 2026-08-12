@@ -264,7 +264,7 @@ command line, running the subcommand *is* the confirmation.
 
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
-| `ssh.install` | `run ssh.install` | no | Installs the OpenSSH server and enables it at boot. |
+| `ssh.install` | `run ssh.install` | no | Installs the OpenSSH server and enables it at boot, then reports which OpenSSH the host runs — read from `sshd -V`, whether the package was just installed or was already there. |
 | `ssh.harden` | `run ssh.harden` | yes | Disables root login, password authentication, agent and X11 forwarding, tunnelling and user environments; limits authentication attempts and the login grace period; enables verbose logging. Refuses when no authorised key exists. |
 | `ssh.harden-strict` | `run ssh.harden-strict` | yes | Restricts key exchange, cipher, MAC and host key algorithms to a modern set, requires 3072-bit RSA keys, and disables TCP forwarding. Refuses when no authorised key exists. |
 | `ssh.authorize-key` | `authorize-key <user> <key>` | no | Adds a public key to a user's `authorized_keys`. |

@@ -790,6 +790,10 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskHomeDeleted { path } => format!("{path} was deleted"),
         Msg::TaskEnabling { unit } => format!("Enabling {unit}..."),
         Msg::TaskUnitEnabled { unit } => format!("{unit} is enabled"),
+        // The daemon's own word for itself, `OpenSSH_10.0p2`, passed through
+        // rather than reformatted: it is what `sshd -V` prints and what an
+        // operator will match against a release note.
+        Msg::TaskSshVersion { version } => format!("running {version}"),
         Msg::TaskUnitState {
             unit,
             active,

@@ -4,8 +4,8 @@
 //! it adds a daemon rather than changing how an existing one admits people.
 
 use crate::backend::{Backend, Capability};
-use crate::error::Result;
-use crate::exec::Executor;
+use crate::error::{Error, Result};
+use crate::exec::{Command, Executor};
 use crate::i18n::Msg;
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
@@ -76,10 +76,58 @@ impl Task for InstallSsh {
             },
         );
 
+        // Which OpenSSH this host runs, reported whether it was just installed
+        // or was already here — the second is the case that asked for it, since
+        // "already installed" says nothing about *what* is installed, and the
+        // version decides which hardening tier is safe: `ssh.harden-strict`
+        // insists on algorithms an older client may never have learned.
+        if let Some(version) = sshd_version(executor)? {
+            report(progress, &Msg::TaskSshVersion { version });
+        }
+
         // Installing and enabling a service cannot cost the administrator
         // their way in, so there is nothing worth offering to undo.
         Ok(Outcome::Done)
     }
+}
+
+/// What OpenSSH this host runs, as its own daemon reports it.
+///
+/// `sshd -V` rather than `ssh -V`: Rocky's `openssh-server` package installs no
+/// client at all, so asking the client answers `command not found` on a host
+/// with a perfectly good daemon — measured on `rockylinux:9`.
+///
+/// Read from **stderr**, which is where all three implementations print it
+/// while leaving stdout empty and exiting 0 — measured on `debian:13`,
+/// `alpine:3.23` and `rockylinux:9`. This project has already paid for that
+/// once: two helpers in the container suite read `ssh -V` from stdout, so the
+/// two versions a scenario existed to compare were always blank.
+///
+/// A version that cannot be read is `None` rather than an error. This is a line
+/// of narration at the end of a task that has already installed and started the
+/// daemon; failing there would report a failure over work that succeeded.
+fn sshd_version(executor: &dyn Executor) -> Result<Option<String>> {
+    let command = Command::new("sshd").arg("-V");
+
+    let output = match executor.run(&command) {
+        Ok(output) => output,
+        // An absent binary is not a failure of this task: the package installed
+        // and the unit is running, and the daemon may simply not be on `PATH`
+        // for an unprivileged lookup.
+        Err(Error::ProgramNotFound { .. }) => return Ok(None),
+        Err(other) => return Err(other),
+    };
+
+    // The banner is `OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.6 ...`. Only
+    // the first field is kept: the rest names the distribution's patch level
+    // and a second library's version, neither of which answers "which OpenSSH
+    // is this".
+    Ok(output
+        .stderr
+        .split_whitespace()
+        .next()
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned))
 }
 
 #[cfg(test)]
@@ -100,6 +148,106 @@ mod tests {
             .expect("install must succeed");
 
         mock.recorded_lines()
+    }
+
+    /// Runs the task and returns what it said, rather than what it ran.
+    fn narration_of(family: Family, replies: Vec<Reply>) -> String {
+        let mock = MockExecutor::with_replies(replies);
+        let backend = for_family(family);
+        let mut lines = Vec::new();
+
+        InstallSsh
+            .run(&mock, backend.as_ref(), &no_values(), &mut |line| {
+                lines.push(line.text)
+            })
+            .expect("install must succeed");
+
+        lines.join("\n")
+    }
+
+    #[test]
+    fn the_version_running_here_is_reported() {
+        // Asked for because "already installed" says nothing about *what* is
+        // installed, and the version decides which hardening tier is safe:
+        // `ssh.harden-strict` insists on algorithms an older client may never
+        // have learned.
+        let said = narration_of(
+            Family::Debian,
+            vec![
+                Reply::ok("install ok installed"), // already installed
+                Reply::ok(""),                     // enable --now
+                Reply::ok("active"),
+                Reply::ok("enabled"),
+                // `sshd -V` prints to stderr and leaves stdout empty.
+                Reply::failure(
+                    0,
+                    "OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.6 7 Apr 2026",
+                ),
+            ],
+        );
+
+        assert!(
+            said.contains("OpenSSH_10.0p2"),
+            "the version must be reported: {said}"
+        );
+        // The distribution's patch level and OpenSSL's version answer a
+        // different question, and a line carrying all three is one nobody reads.
+        assert!(
+            !said.contains("OpenSSL"),
+            "only the OpenSSH field belongs on that line: {said}"
+        );
+    }
+
+    #[test]
+    fn the_version_is_read_from_stderr_where_sshd_prints_it() {
+        // The defect this is written against, which this project has already
+        // paid for once: two helpers in the container suite read `ssh -V` from
+        // stdout, so the two versions a scenario existed to compare were always
+        // blank. Measured on debian:13, alpine:3.23 and rockylinux:9 — all
+        // three print to stderr, leave stdout empty, and exit 0.
+        let said = narration_of(
+            Family::Debian,
+            vec![
+                Reply::ok("install ok installed"),
+                Reply::ok(""),
+                Reply::ok("active"),
+                Reply::ok("enabled"),
+                // Everything on stdout, nothing on stderr: a reader looking at
+                // the wrong stream would find this and report it.
+                Reply::ok("OpenSSH_9.9p1, OpenSSL 3.5.5"),
+            ],
+        );
+
+        assert!(
+            !said.contains("OpenSSH_9.9p1"),
+            "stdout is not where sshd prints its version: {said}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_version_is_left_out_rather_than_failing_the_task() {
+        // A line of narration at the end of a task that has already installed
+        // and started the daemon. Failing there would report a failure over
+        // work that succeeded.
+        let said = narration_of(
+            Family::Debian,
+            vec![
+                Reply::ok("install ok installed"),
+                Reply::ok(""),
+                Reply::ok("active"),
+                Reply::ok("enabled"),
+                Reply::NotFound, // no `sshd` on PATH for this lookup
+            ],
+        );
+
+        assert!(
+            said.contains("ssh.service"),
+            "the rest of the report must survive: {said}"
+        );
+        assert!(
+            !said.contains("running"),
+            "and must not claim a version it could not read: {said}"
+        );
     }
 
     #[test]

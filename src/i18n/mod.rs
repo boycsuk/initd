@@ -828,6 +828,9 @@ pub enum Msg {
         unit: String,
     },
     /// A unit's state, as the host reports it.
+    TaskSshVersion {
+        version: String,
+    },
     TaskUnitState {
         unit: String,
         active: bool,
