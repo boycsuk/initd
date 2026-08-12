@@ -16,6 +16,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where a user-level binary belongs, and `INITD_INSTALL_DIR` still overrides
   both.
 
+  **An account that can escalate installs system-wide rather than into its own
+  home.** Falling back whenever the caller is not root would hide the binary in
+  one account's directory on the ordinary case — an administrator with sudo —
+  where a second administrator would not find it and `sudo initd` would not
+  resolve it either. So the script asks whether it can become root *without
+  being asked for a password*, with `sudo -n`, `doas -n` or
+  `run0 --no-ask-password`, and uses it when the answer is yes.
+  
+  Sudo that would prompt is deliberately not used. A script piped into a shell
+  has already spent stdin on the script, so a password prompt has nowhere to
+  read from: it hangs, or fails in a way that reads as the installer being
+  broken. That is the same reasoning `LocalExecutor` follows before every
+  privileged command — ask before a helper asks — arrived at here for the same
+  reason. Verified on all four cases in a container, with the prompting one run
+  under `timeout` and stdin closed so hanging fails the test rather than
+  stalling it.
+
   **And it says so when the shell will not find what it just installed**, which
   is the half that makes the fallback honest rather than merely quieter.
   Measured across the images: Debian adds `~/.local/bin` to `PATH` from

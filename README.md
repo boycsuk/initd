@@ -69,11 +69,18 @@ Environment variables the script accepts:
 | `INITD_VERSION` | `latest` | A release tag to install instead of the newest |
 
 **You do not need to be root, and you do not need to set anything.** With no
-`INITD_INSTALL_DIR`, the script installs to `/usr/local/bin` when it can write
-there and to `~/.local/bin` when it cannot — so `curl … | sh` works as whoever
-happens to be logged in. If that directory is not on your `PATH`, the script
-says so and prints the line to add; it does not edit your shell profile, which
-is not a change this tool was asked to make.
+`INITD_INSTALL_DIR`, the script installs to `/usr/local/bin` whenever it can
+reach it — as root, or as an account that can `sudo` without being asked for a
+password, which is what an administrator's account usually is. Only when
+neither holds does it fall back to `~/.local/bin`, so `curl … | sh` works as
+whoever happens to be logged in.
+
+Sudo that *would* ask for a password is deliberately not used: a script piped
+into a shell has already spent stdin on the script, so a prompt has nowhere to
+read from and would hang. The install goes to your home directory instead. If
+that directory is not on your `PATH`, the script says so and prints the line to
+add; it does not edit your shell profile, which is not a change this tool was
+asked to make.
 
 To uninstall, remove the binary — `rm "$(command -v initd)"` finds it wherever
 the script put it. Note that this
