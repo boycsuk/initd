@@ -392,6 +392,11 @@ TUI or CLI:
     a reboot.
   - Acceptance: an account with no subordinate id range is refused before
     anything is installed, since no container could start.
+  - Acceptance: an account whose own service manager cannot be reached is
+    refused, and told so in words that name the cause. The engine runs under
+    that manager, so there is nothing to install it into — and the underlying
+    message, about two unset environment variables, names no cause and suggests
+    a flag for a different problem.
   - Acceptance: the engine is confirmed running rather than assumed. Enabling a
     service reports that the command ran, not that the service came up.
   - Acceptance: where my distribution packages no Docker, the engine comes from
@@ -432,6 +437,13 @@ TUI or CLI:
     containers, images and volumes alone: they are that account's data, not
     this tool's. The engine package also stays, since another account may be
     running its own from it.
+  - Acceptance: removal stops rather than half-completing when the account's
+    service manager cannot be reached, and says which account and why. Running
+    on regardless would remove the engine's files while leaving a unit nothing
+    stopped, and report that as success.
+  - Acceptance: naming an account that does not exist says exactly that, rather
+    than reporting its service manager unreachable — true of an account that is
+    not there, and it sends the reader after the wrong thing over a typo.
 
 ### WireGuard
 
@@ -484,6 +496,11 @@ TUI or CLI:
     kernel — so a host filtering perfectly now can return from a reboot with
     every port open, and a status that stopped at "denied by default" would be
     true and misleading in the same sentence.
+  - Acceptance: a host with no firewall front-end installed is told which ones
+    were looked for, rather than being shown the front-end's own command
+    failing. "nft --version — FAILED" reads as a broken tool; "none of these is
+    installed: firewalld, nftables" is the answer to the question that was
+    asked.
 - As an **administrator**, I can turn on default-deny inbound filtering without
   losing the session I am running it from.
   - Acceptance: the SSH port is admitted by the same ruleset that installs the
@@ -497,6 +514,10 @@ TUI or CLI:
   - Acceptance: where the host has nothing to replay the rules at boot — a
     container, a chroot — the rules are still applied and saved, and the task
     says that is what happened rather than claiming they will return.
+  - Acceptance: the front-end is installed if it is not there. `nft` is
+    packaged separately on every family, so going straight to enabling fails
+    with a missing binary over a host whose only problem is a package nobody
+    installed yet.
 - As an **administrator**, I can open a port, naming its protocol.
   - Acceptance: a rule for TCP does not admit UDP. WireGuard is UDP, and a
     TCP rule for its port admits none of its traffic.
@@ -509,6 +530,15 @@ TUI or CLI:
     success over a system that does not behave as described.
   - Acceptance: a parameter already holding the value says so rather than
     silently doing nothing.
+  - Acceptance: a host with no `sysctl` gets it installed rather than being told
+    the program is missing. It is a separate package on four of the five
+    families and absent from a freshly provisioned RHEL, so "program sysctl"
+    reads as a broken tool rather than a package nobody installed. Where the
+    tool cannot be missing — Alpine, where it is a busybox applet — nothing is
+    installed and the refusal says so instead.
+  - Acceptance: the directory holding the persistent setting is created if the
+    distribution does not ship it, rather than the write failing over a
+    temporary filename.
 
 ### SSH server
 
@@ -520,6 +550,11 @@ TUI or CLI:
     script where there are no units at all.
   - Acceptance: running it again on a machine that already has SSH does not
     reinstall the package.
+  - Acceptance: the version of OpenSSH the host runs is reported, whether it
+    was just installed or was already there. "already installed" says nothing
+    about *what* is installed, and the version is what decides which hardening
+    tier is safe to apply — the strict tier insists on algorithms an older
+    client may never have learned.
   - Acceptance: **there is no way to uninstall it from here**, deliberately and
     permanently, unlike everything else the tool installs. Removing the SSH
     server over an SSH connection ends the session that asked for it, and the
@@ -642,6 +677,16 @@ TUI or CLI:
     shown which field is standing in the way.
   - Acceptance: where a task already has a value on this host — the current SSH
     port — the field starts on it, so confirming needs no retyping.
+  - Acceptance: a field that needs explaining carries its explanation beside the
+    label. Enabling the firewall asks for an "SSH port" for a reason only the
+    hint gives — that port is kept open so the session asking survives the
+    default-deny policy — and without it the question reads as arbitrary.
+    Others resolve an ambiguity the label cannot: whether removing an account
+    keeps or deletes its files, that a shell must appear in `/etc/shells`.
+  - Acceptance: where the row is too narrow for the hint it is dropped whole
+    rather than cut, and the field's verdict keeps its place. Half a sentence
+    reads as a defect, and the verdict is the part of the row I cannot work
+    without.
   - Acceptance: cancelling a form I have typed into asks before discarding it.
   - TUI exception: the CLI supplies these values as arguments instead, and
     refuses `initd run` for such a task, naming the values it needs.
@@ -758,6 +803,17 @@ TUI or CLI:
     has stopped answering look the same.
   - Platform exception: the TUI shows it in a scrollable pane; the CLI prints
     it as it arrives.
+- As an **administrator**, I can install a task's dependencies on a host whose
+  package index has never been fetched, so that a freshly provisioned machine
+  is not refused over a package name that is correct.
+  - Acceptance: the index is refreshed before a name is resolved against it, on
+    the families whose package manager does not do it itself. Otherwise the
+    failure is `Unable to locate package` or `target not found` — which reads
+    as the tool naming the package wrong, when what is empty is the index.
+  - Acceptance: installing one package does not upgrade the system. A tool
+    asked for a firewall front-end has no business deciding that this is the
+    moment to replace the kernel: a full upgrade has its own reboot and its own
+    timing, and neither belongs to the task that was run.
 - Known limit, across the interface: **a refused keystroke produces no
   message.** Pressing `Enter` on a task this host cannot run, or `q` while a
   task is running, is declined silently — the screen does not change, which is
@@ -794,6 +850,20 @@ TUI or CLI:
   - Acceptance: the report goes with the transcript when I copy it.
   - Platform exception: the TUI writes it into the output pane; the CLI prints
     it to stderr and exits non-zero, where the exit code is the contract.
+- As an **administrator**, I can read what a task *does* while a previous task's
+  output is still on screen, so that choosing the next one does not mean losing
+  the record of the last.
+  - Acceptance: the description and the transcript are both visible. The pane
+    used to show one or the other, so after the first task ran, every task
+    selected afterwards had its description displaced by output from a task I
+    had already finished with.
+  - Acceptance: I can fold the output away when a long transcript is worth the
+    whole pane, and unfold it with the same key. Folding keeps the transcript —
+    a key pressed to make room must not discard what a finished task said.
+  - Acceptance: folding does not leave the arrow keys addressing a pane that is
+    no longer drawn.
+  - Platform exception: the TUI only. The CLI prints a task's output as it runs
+    and its description is `run --help`.
 - As an **administrator**, I can take a task's output away with me — into a bug
   report, a ticket, a message to whoever maintains the machine.
   - Acceptance: I get the lines whole, not the part that fitted on screen. A
