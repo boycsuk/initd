@@ -45,7 +45,13 @@ const VALID_KEY_PREFIXES: [&str; 5] = [
 ];
 
 /// Default port offered when none is given.
-const DEFAULT_SSH_PORT: u32 = 22;
+///
+/// The last resort rather than the first: `sshd_config::effective_port` asks
+/// the daemon what it is actually listening on, and this is what answers when
+/// neither the daemon nor its file can say. Offering it unconditionally is how
+/// a firewall admits 22 on a host whose SSH moved to 2222 — and that firewall
+/// ends the session it was run from.
+pub(crate) const DEFAULT_SSH_PORT: u32 = 22;
 
 /// Builds the SSH category, subdivided by what each task acts on.
 ///

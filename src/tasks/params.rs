@@ -151,6 +151,23 @@ const CONFIG_UNSAFE: [char; 3] = ['\n', '\r', '#'];
 ///   the host has nothing to say about it.
 ///
 /// Both are `ParamKind::Username`, and neither wants what the third one does.
+/// A value read from this host, which a field opens on.
+///
+/// One value rather than a list, which is what separates it from
+/// [`Suggestions`]: nothing is being offered to choose between, the field
+/// simply starts on what is true here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveDefault {
+    /// The port the SSH daemon is actually listening on.
+    ///
+    /// Read rather than assumed because both fields that ask for it are
+    /// dangerous when wrong in the same direction: `firewall.enable` admits
+    /// this port through a default-deny policy, so a stale `22` closes the port
+    /// the operator is connected on, and `ssh.change-port` uses it to say what
+    /// is changing.
+    SshPort,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Suggestions {
     /// The accounts defined on this host.
@@ -647,6 +664,21 @@ pub struct Param {
     /// `wireguard.add-peer` validates a label by the username rules and the
     /// host has no opinion about it at all.
     pub existence: Option<Existence>,
+    /// Whether the field should open on a value read from this host.
+    ///
+    /// Separate from `initial`, which is a constant the task compiles in, and
+    /// from `suggestions`, which offers a list to pick from. This is one value
+    /// the host alone knows, and the field opens on it.
+    ///
+    /// It exists because a compiled-in default can be actively dangerous.
+    /// `firewall.enable` offered `22` unconditionally, and its whole purpose is
+    /// to keep the operator's own session alive through a default-deny policy —
+    /// so on a host whose SSH had been moved, accepting the default admitted a
+    /// port nothing was listening on and closed the one that was. The field
+    /// meant to prevent a lockout was the thing causing it.
+    ///
+    /// Opt-in like its neighbours: a parameter says so or keeps its constant.
+    pub live_default: Option<LiveDefault>,
     /// Whether the task runs without a value for this.
     ///
     /// Distinct from having an initial value, which is what the command line
@@ -673,6 +705,7 @@ impl Param {
             hint: None,
             suggestions: None,
             existence: None,
+            live_default: None,
             optional: false,
         }
     }
@@ -710,6 +743,17 @@ impl Param {
     #[must_use]
     pub const fn suggesting_accounts(mut self) -> Self {
         self.suggestions = Some(Suggestions::Accounts);
+        self
+    }
+
+    /// Opens the field on a value read from this host rather than on a
+    /// compiled-in one.
+    ///
+    /// The constant passed to `with_initial` stays as the fallback, for the
+    /// host that cannot answer.
+    #[must_use]
+    pub const fn defaulting_to_live(mut self, source: LiveDefault) -> Self {
+        self.live_default = Some(source);
         self
     }
 

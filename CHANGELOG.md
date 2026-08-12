@@ -54,6 +54,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned from both sides.
 
 ### Fixed
+- **`firewall.enable` offered a hardcoded `22` for the port keeping the session
+  alive.** Reported as a question that made no sense — *"why do I have to give a
+  port when I just want to turn the firewall on?"* — which turned out to be two
+  defects wearing one face.
+
+  **The dangerous one:** the port field admits one port through a default-deny
+  policy so the operator's own connection survives, and it proposed `22`
+  regardless of what the host was serving. On a machine whose SSH had been
+  moved, taking the default admitted a port nothing listens on and closed the
+  one carrying the session. The field that exists to prevent a lockout was the
+  most reliable way to cause one. It now opens on whatever `sshd -T` reports,
+  falling back to the file and only then to 22 — measured on `debian:13`, where
+  a host with no `Port` line at all still serves 22, so parsing only the file
+  would have found nothing in the commonest case. **The CLI had the same hole**
+  and now shares the fix: `initd run firewall.enable` with no arguments reads
+  the host too.
+
+  **The one that prompted the report:** nothing on screen explained why the
+  question was being asked. The description said "denies inbound traffic by
+  default" and the field said "SSH port", which reads as an unrelated question
+  in a task whose name is a verb with no object. The description now leads with
+  what *closes*, names the connection being read over as one of the things at
+  risk, and the field is labelled "Port to keep open" — the question it is
+  actually asking. The lockout warning says what stops answering before it
+  mentions the hosting provider's firewall.
+
+  `ssh.change-port` had the same stale default, and `docs/user-stories.md` has
+  promised since before it was true that the field "starts on the current
+  port". It does now.
+
 - **Opening a port on a host with no firewall policy blamed the rule.**
   Reported from a Debian 13 host where `nft` was installed and working:
   `firewall.allow-port` answered `Error: Could not process rule: No such file

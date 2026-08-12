@@ -341,10 +341,18 @@ pub(super) fn render(message: &Msg) -> String {
         // Says plainly that this one cannot be checked from here. An
         // administrator who opens a port locally and still cannot reach it has
         // usually hit exactly this, and the tool has no way to see it.
+        // Says what closes before it says what to check. The warning named only
+        // the provider's firewall, which is the second thing an operator needs
+        // to know — the first is that everything except this port is about to
+        // stop answering, and that a wrong number here is what ends the session
+        // running the task.
         Msg::ConsequenceProviderFirewall { port, protocol } => {
             format!(
-                "check your hosting provider's firewall allows {port}/{protocol} \
-                 — this tool cannot see it"
+                "every inbound port except {port}/{protocol} stops answering, \
+                 including anything else this host serves — and if that is not \
+                 the port your session is on, this ends it. Your hosting \
+                 provider's firewall is a separate layer, and this tool cannot \
+                 see it"
             )
         }
         Msg::ConsequenceDnsMustResolve => {

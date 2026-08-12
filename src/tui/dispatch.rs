@@ -25,7 +25,7 @@ use super::history::History;
 use super::search::Search;
 use crate::exec::{OutputLine, Stream};
 use crate::i18n::Msg;
-use crate::tasks::params::{ParamValues, Suggestions};
+use crate::tasks::params::{LiveDefault, ParamValues, Suggestions};
 use crate::tasks::users::{Credentials, DeleteUser, Examined, LockRoot, escalated_from};
 use crate::tasks::{Confirmation, Node};
 
@@ -699,7 +699,32 @@ impl App {
         // that asked `params` — a task whose only field is filtered out here
         // needs no form at all, and an empty one would put a dialog with
         // nothing in it between the operator and the confirmation.
-        let asked = task.params_here(self.backend.as_ref());
+        let mut asked = task.params_here(self.backend.as_ref());
+
+        // Before the form is built rather than after: a field takes its value
+        // from `param.initial` when it is constructed, so replacing it here is
+        // what makes the field *open* on the host's answer instead of being
+        // overwritten a moment later.
+        //
+        // `firewall.enable` is why this exists. Its port field keeps the
+        // operator's own session alive through a default-deny policy, and it
+        // offered a compiled-in `22` to do that — so on a host whose SSH had
+        // been moved, accepting the default admitted a port nothing listens on
+        // and closed the one carrying the session. The field meant to prevent a
+        // lockout was the thing causing it.
+        for param in &mut asked {
+            let Some(live) = param.live_default else {
+                continue;
+            };
+
+            param.initial = match live {
+                LiveDefault::SshPort => crate::tasks::sshd_config::effective_port(
+                    self.executor.as_ref(),
+                    self.backend.path_for(crate::backend::Capability::Ssh),
+                )
+                .to_string(),
+            };
+        }
 
         if !asked.is_empty() {
             let mut form = Form::new(task.title(), asked);

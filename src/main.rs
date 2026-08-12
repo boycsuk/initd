@@ -100,6 +100,14 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
     let backend = backend::for_distro(&distro);
     let executor = exec::local::LocalExecutor::new(exec::privilege::detect());
 
+    // Here rather than in `collect_values`, which has no executor: a default
+    // the host decides can only be read once there is something to read it
+    // with. Anything given on the command line has already been set and is
+    // left alone.
+    let mut values = values.clone();
+    apply_live_defaults(task, backend.as_ref(), &executor, &mut values);
+    let values = &values;
+
     let outcome = task.run(
         &executor,
         backend.as_ref(),
@@ -342,13 +350,60 @@ fn collect_values(task: &dyn tasks::Task, arguments: &[String]) -> ParamValues {
 
     // Defaults fill in last, so an explicit value always wins over one the
     // task merely suggests.
+    //
+    // The compiled-in one only. A parameter whose default the *host* decides is
+    // left unset here and filled in by [`apply_live_defaults`] once there is an
+    // executor to ask with — a distinction that matters most for the one
+    // parameter that has both: `firewall.enable`'s port is `22` in this file
+    // and whatever `sshd -T` reports on the machine.
     for param in &declared {
-        if !param.initial.is_empty() && values.get(param.name).is_err() {
+        if param.live_default.is_none()
+            && !param.initial.is_empty()
+            && values.get(param.name).is_err()
+        {
             values.set(param.name, param.initial.clone());
         }
     }
 
     values
+}
+
+/// Fills in the defaults only the host can answer for.
+///
+/// Separate from [`collect_values`] because it needs an executor, and separate
+/// from the task because a value supplied on the command line must win over one
+/// read from the machine.
+///
+/// The TUI does this when it opens the form; without it here the two interfaces
+/// would disagree about the same field. That disagreement is not cosmetic:
+/// `initd run firewall.enable` with no arguments would admit `22` on a host
+/// whose SSH had moved, closing the port carrying the session — the lockout the
+/// parameter exists to prevent, arrived at by taking the default.
+fn apply_live_defaults(
+    task: &dyn tasks::Task,
+    backend: &dyn backend::Backend,
+    executor: &dyn exec::Executor,
+    values: &mut ParamValues,
+) {
+    for param in task.params() {
+        let Some(live) = param.live_default else {
+            continue;
+        };
+
+        if values.get(param.name).is_ok() {
+            continue;
+        }
+
+        let resolved = match live {
+            tasks::params::LiveDefault::SshPort => tasks::sshd_config::effective_port(
+                executor,
+                backend.path_for(backend::Capability::Ssh),
+            )
+            .to_string(),
+        };
+
+        values.set(param.name, resolved);
+    }
 }
 
 /// Prints what a task accepts, with its hints.

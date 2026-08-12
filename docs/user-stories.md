@@ -505,6 +505,16 @@ TUI or CLI:
   losing the session I am running it from.
   - Acceptance: the SSH port is admitted by the same ruleset that installs the
     policy, not by a second command afterwards.
+  - Acceptance: the port defaults to the one the daemon is **actually** serving,
+    read from the host rather than assumed to be 22, in both interfaces. A
+    compiled-in default is not a neutral guess here: on a host whose SSH was
+    moved it admits a port nothing listens on and closes the one carrying the
+    session, so the field meant to prevent a lockout would be the thing causing
+    one. A value given explicitly still wins.
+  - Acceptance: the task says what it *closes* before it says what it opens, and
+    the port field says why it is being asked. "Enable the firewall" reads as
+    an operation that needs no argument, so a field labelled only "SSH port"
+    invites skipping past the one value keeping the session alive.
   - Acceptance: established connections and loopback keep working, so the host
     can still reach its own package mirror and talk to itself.
   - Acceptance: applied *and* kept, on the same terms the kernel parameters

@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::exec::Executor;
 use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
-use crate::tasks::params::{Param, ParamKind, ParamValues};
+use crate::tasks::params::{LiveDefault, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
 
@@ -170,9 +170,12 @@ impl Task for EnableFirewall {
     }
 
     fn description(&self) -> &'static str {
-        "Denies inbound traffic by default, admitting established connections, \
-         loopback, and the port SSH is listening on. Open anything else with \
-         firewall.allow-port."
+        "Closes every inbound port except the ones named here. Nothing is being \
+         opened: a default-deny policy means anything not admitted is dropped, \
+         including the connection you are reading this over — which is why the \
+         port your SSH listens on is asked for and admitted in the same step. \
+         Established connections and loopback keep working. Open anything else \
+         afterwards with firewall.allow-port."
     }
 
     /// A default-deny policy applied without admitting the current session is
@@ -184,9 +187,17 @@ impl Task for EnableFirewall {
 
     fn params(&self) -> Vec<Param> {
         vec![
-            Param::new(Self::SSH_PORT, "SSH port", ParamKind::Port)
+            // "Port to keep open" rather than "SSH port": the field is not
+            // asking which port SSH uses as a piece of trivia, it is asking
+            // which one must survive the policy about to be applied. An
+            // operator who only wants to "turn the firewall on" reads the
+            // second label as an unrelated question — reported as exactly that
+            // — and the answer they skip past is the one keeping their session
+            // alive.
+            Param::new(Self::SSH_PORT, "Port to keep open", ParamKind::Port)
                 .with_initial(DEFAULT_SSH_PORT.to_string())
-                .with_hint("kept open, so this session survives"),
+                .defaulting_to_live(LiveDefault::SshPort)
+                .with_hint("your SSH port — everything else is closed"),
         ]
     }
 
