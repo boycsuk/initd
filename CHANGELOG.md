@@ -152,10 +152,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The grouping is about the screen rather than the code. Flat, git's five rows
   and gh's two crowded out the four tools beside them, and "set a git identity"
-  read as a peer of "install the fish shell". Nested, the area is five rows
-  again. Task ids are untouched by the move: where a task sits in the tree is a
-  matter for the interface, and a script naming `git.identity` keeps working
-  wherever it is drawn.
+  read as a peer of "install the fish shell". Nested, the area is six rows
+  again.
+
+  **Two categories rather than one**, because they are two tools: git runs on
+  this machine and needs configuring before it will commit, `gh` is a client for
+  somebody else's service and needs a token. Grouping them would be grouping by
+  the word they share — and somebody installing git on a build server has no
+  business being shown GitHub. GitHub holds one row today, which is a category
+  with room in it rather than a category that earned its keep.
+
+  Task ids are untouched by the move: where a task sits in the tree is a matter
+  for the interface, and a script naming `git.identity` keeps working wherever
+  it is drawn.
 
   Two things the split surfaced rather than caused: `InstallZellij::latest` was
   private to a file that no longer holds its only caller, and the test module

@@ -314,13 +314,13 @@ command line, running the subcommand *is* the confirmation.
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
 | `rust.uninstall` | `run <id> name=value` | no | Removes rustup. Where the distribution packages it, an account's own `~/.rustup` and `~/.cargo` stay. Where it was installed for one account, rustup's own uninstaller takes those directories with it and offers no way to keep them. |
 
-### Developer environment — Git and GitHub
+### Developer environment — Git
 
-A category of its own inside the one above, for the reason the SSH and
-WireGuard split exists: seven rows, three of which configure rather than
-install, crowded out the four tools beside them. The task ids are unchanged by
-the grouping — where a task sits in the tree is a matter for the interface, and
-a script naming `git.identity` keeps working wherever it is drawn.
+Two categories rather than one shared with GitHub, because they are two tools:
+git runs on this machine and needs configuring before it will commit, while
+`gh` is a client for somebody else's service. The task ids are unchanged by the
+grouping — where a task sits in the tree is a matter for the interface, and a
+script naming `git.identity` keeps working wherever it is drawn.
 
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
@@ -329,6 +329,15 @@ a script naming `git.identity` keeps working wherever it is drawn.
 | `git.identity` | `run <id> name=value` | no | Writes `user.name` and `user.email` into one account's own `~/.gitconfig`. Takes `user`, `name` and `email`. |
 | `git.default-branch` | `run <id> name=value` | no | Sets `init.defaultBranch` system-wide. Takes `branch`, checked against `git check-ref-format`'s rules. |
 | `git.safe-directory` | `run <id> name=value` | no | Adds a path to `safe.directory` system-wide, for a checkout owned by another account. Takes `path`, which must be absolute — git matches this setting literally. Multi-valued: a second path is added rather than replacing the first. |
+
+### Developer environment — GitHub
+
+One row today, and a category rather than a loose entry beside git for the same
+reason the two are separate: `gh` talks to a service, git does not. Somebody
+installing git on a build server has no business being shown GitHub.
+
+| Task id | Invocation | Lockout | Summary |
+|---------|-----------|---------|---------|
 | `gh.install` | `run <id>` | no | Installs the GitHub CLI. Packaged as `gh` on Debian, Ubuntu and openSUSE and as `github-cli` on Arch and Alpine; on RHEL it comes from a checksum-verified release. Authenticating is separate and, on a server, headless: `gh auth login --with-token`, or `GH_TOKEN`. |
 | `gh.uninstall` | `run <id> name=value` | no | Removes gh. Any token an account authenticated with stays where gh put it. |
 

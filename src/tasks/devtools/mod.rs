@@ -48,21 +48,24 @@ pub fn category() -> Category {
                 forward: Box::new(InstallRust),
                 inverse: Box::new(UninstallRust),
             },
-            // A category of its own, and the reason is the screen rather than
-            // the code: git alone contributes five rows, three of which set
-            // configuration rather than installing anything. Flat, they
-            // crowded out the four tools beside them and read as though
-            // "set a git identity" were a peer of "install the fish shell".
+            // Two categories rather than one, because they are two tools.
+            // Grouping them together would be grouping by the word they share:
+            // git is a program that runs on this machine and needs configuring
+            // before it will commit, and `gh` is a client for somebody else's
+            // service that needs a token. An operator installing git on a
+            // build server has no business being shown GitHub.
+            //
+            // Each is a category rather than five flat rows for the reason the
+            // SSH and WireGuard split exists: git alone contributes five, three
+            // of which configure rather than install, and flat they crowded out
+            // the four tools above and read as though "set a git identity" were
+            // a peer of "install the fish shell".
             Node::Category(Category::new(
-                "Git and GitHub",
+                "Git",
                 vec![
                     Node::Reversible {
                         forward: Box::new(InstallGit),
                         inverse: Box::new(UninstallGit),
-                    },
-                    Node::Reversible {
-                        forward: Box::new(InstallGithubCli),
-                        inverse: Box::new(UninstallGithubCli),
                     },
                     // Configuration rather than installation, so no inverse:
                     // undoing "this account commits as Ada" is not removing
@@ -72,6 +75,13 @@ pub fn category() -> Category {
                     Node::Task(Box::new(SetGitDefaultBranch)),
                     Node::Task(Box::new(SetGitSafeDirectory)),
                 ],
+            )),
+            Node::Category(Category::new(
+                "GitHub",
+                vec![Node::Reversible {
+                    forward: Box::new(InstallGithubCli),
+                    inverse: Box::new(UninstallGithubCli),
+                }],
             )),
         ],
     )
