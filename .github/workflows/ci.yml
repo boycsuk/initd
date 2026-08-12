@@ -122,6 +122,14 @@ jobs:
       # The systemd and old-client binaries are excluded because they have
       # their own job: they need capabilities a runner may refuse, and they are
       # slow enough to dominate this one.
+      # Baked once here rather than by whichever scenario reaches a missing
+      # image first. That cost is real — over 300s per image on a two-core
+      # runner — and inside the suite it lands on a single test, where the
+      # ceiling meant to catch a stuck scenario killed it and stranded every
+      # other scenario waiting for the same image.
+      - name: Prepare the container images
+        run: cargo nextest run --run-ignored all -E 'test(=prepare_the_images)'
+
       - name: Container tests (everything but the rolling image)
         run: |
           cargo nextest run --run-ignored all \
@@ -149,6 +157,14 @@ jobs:
 
       # Excludes the systemd and old-client binaries for the same reason the
       # gate does: those run in their own job, Arch expansions included.
+      # Baked once here rather than by whichever scenario reaches a missing
+      # image first. That cost is real — over 300s per image on a two-core
+      # runner — and inside the suite it lands on a single test, where the
+      # ceiling meant to catch a stuck scenario killed it and stranded every
+      # other scenario waiting for the same image.
+      - name: Prepare the container images
+        run: cargo nextest run --run-ignored all -E 'test(=prepare_the_images)'
+
       - name: Container tests (Arch only)
         run: |
           cargo nextest run --run-ignored all \
@@ -180,6 +196,12 @@ jobs:
         run: |
           cargo build
           cargo build --target x86_64-unknown-linux-musl
+
+      # Baked once here rather than by whichever scenario reaches a missing
+      # image first — the same reason the other two jobs do it. Needs no
+      # binary: preparing an image installs its packages and mounts nothing.
+      - name: Prepare the container images
+        run: cargo nextest run --run-ignored all -E 'test(=prepare_the_images)'
 
       # Two containers each, an init system booted per test, and package
       # installs inside both — far slower than the ephemeral scenarios, and

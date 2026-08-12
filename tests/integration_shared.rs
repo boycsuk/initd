@@ -27,6 +27,28 @@ use common::{
     DEBIAN, has_line, run_in_container, run_with_os_release, run_with_ssh_ready, stdout_of,
 };
 
+/// Builds every image before the scenarios need one.
+///
+/// Not an assertion — it asserts nothing, and cannot fail the run. It exists so
+/// that the cost of preparing an image is paid *here*, in a step that is
+/// allowed to take as long as it takes, rather than inside whichever scenario
+/// happened to reach a missing image first.
+///
+/// That distinction broke a release. Baking Rocky's packages takes 25s on 32
+/// cores and over 300s on a 2-core CI runner, where the two scenarios that
+/// were building it hit the harness's own five-minute ceiling and were killed
+/// — which left every other Rocky scenario with no image either. Preparation
+/// is not a test, and the timeout written to catch a stuck *test* should never
+/// have been able to reach it.
+///
+/// `#[ignore]` like every scenario here, so an ordinary `cargo nextest run`
+/// starts no containers.
+#[test]
+#[ignore]
+fn prepare_the_images() {
+    common::prepare_every_image();
+}
+
 for_each_image! {
     /// Detection must resolve the family the image actually is.
     ///

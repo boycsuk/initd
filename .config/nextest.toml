@@ -42,6 +42,25 @@ test-group = 'containers'
 # is not a slow test, it is a test nobody is learning anything from.
 slow-timeout = { period = "60s", terminate-after = 5 }
 
+[[profile.default.overrides]]
+# Preparing the images is exempt, and learning why cost a release.
+#
+# `prepare_the_images` builds all six, and building one means installing its
+# packages: 25s on 32 cores, **over 300s on the 2-core runner CI uses**. Under
+# the ceiling above it was killed at five minutes — and because it is what
+# every other scenario's image depends on, killing it stranded them too. The
+# run stopped after 16 of 1628 tests.
+#
+# The ceiling was right and its reach was wrong. It exists to catch a *test*
+# that is stuck; this is preparation, which is allowed to take as long as the
+# slowest package manager on the slowest machine needs. Half an hour is not a
+# figure anyone should hit — it is far enough above the worst measurement that
+# reaching it means something is broken rather than slow.
+filter = 'test(=prepare_the_images)'
+slow-timeout = { period = "120s", terminate-after = 15 }
+# Not in the `containers` group either: it would hold one of the eight slots
+# for the whole build while starting containers of its own.
+
 # Retries are deliberately *not* set here.
 #
 # nextest would mark a recovered test FLAKY and count it as a pass, and this

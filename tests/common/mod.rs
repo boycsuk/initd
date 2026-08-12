@@ -535,6 +535,29 @@ fn preparation(image: &Image) -> String {
         .join("; ")
 }
 
+/// Builds every image's cache, so no scenario has to.
+///
+/// Exposed for the one test that calls it — `prepare_the_images` in
+/// `integration_shared` — which exists to move this work out of the scenarios
+/// rather than to assert anything. The distinction matters: preparation is not
+/// a test, and giving it a test's timeout is what broke CI. Baking Rocky's
+/// packages takes 25s on 32 cores and **over 300s on a 2-core runner**, where
+/// it tripped the five-minute ceiling and killed the two scenarios that
+/// happened to be building it — leaving every other Rocky scenario with no
+/// image either.
+///
+/// Idempotent, and cheap when the images exist: each is skipped on a hit, the
+/// same check `cached_image` makes.
+pub fn prepare_every_image() {
+    for image in IMAGES {
+        // The return value is the tag or, on failure, the bare image name.
+        // Either is a usable answer — a preparation that could fail the run
+        // would be a worse trade than the time it saves — so nothing is
+        // asserted here.
+        let _ = cached_image(image);
+    }
+}
+
 /// Serialises building one image's cache across every test process.
 ///
 /// nextest runs each test in its own process, so a `Mutex` reaches none of the

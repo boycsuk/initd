@@ -44,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own process, so a `Mutex` reaches none of the others: at `-j8`, eight
   scenarios finding no cache all built one, each downloading the same metadata.
 
+  **The ceiling above killed a release, and the fix is where preparation
+  happens rather than how long it is given.** `terminate-after` was written to
+  bound a stuck scenario, and it reached something else: the first scenario to
+  touch an image also *builds* it. On this machine that is 25s; on the
+  two-core runner CI uses it is over 300s, so the two Rocky scenarios that
+  happened to be building it were killed at five minutes — and since every
+  other Rocky scenario was waiting for that image, the run stopped after 16 of
+  1628 tests. Nothing was published, because `Build` needs `verify`.
+
+  Raising the ceiling would have treated the symptom and left the same failure
+  waiting on a slower machine. Instead `prepare_the_images` builds all six and
+  asserts nothing, and each CI job runs it as its own step before the suite,
+  where no test's timeout can reach it. Measured: 138s for six images here, and
+  the suite then runs in 559s.
+
+  nextest's setup scripts are the idiomatic answer and were declined: they are
+  still experimental, and a release path is the wrong place to depend on that.
+
 ## [0.2.0] — 2026-08-12
 
 Nine tasks, three fixes for failures reported from a running server, and a key

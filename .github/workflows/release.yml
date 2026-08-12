@@ -62,6 +62,20 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Built here rather than inside a scenario, and the difference is not
+      # cosmetic. Each image bakes its packages once so the scenarios do not
+      # install them 170 times over — 25s per image on 32 cores, and **over
+      # 300s on this runner**, which has two. Left inside the suite, that cost
+      # lands on whichever scenario reaches a missing image first, and a
+      # release died exactly there: two Rocky scenarios hit the harness's
+      # five-minute ceiling while building the image every other Rocky
+      # scenario was waiting for, and the run stopped after 16 of 1628 tests.
+      #
+      # As its own step it is allowed to take as long as it takes, and it
+      # reports its own duration rather than hiding inside a test's.
+      - name: Prepare the container images
+        run: cargo nextest run --run-ignored all -E 'test(=prepare_the_images)'
+
       # `--run-ignored all` rather than two invocations: `cargo test --
       # --ignored` runs *only* the ignored tests, so a release verified that
       # way would have skipped every unit test.
