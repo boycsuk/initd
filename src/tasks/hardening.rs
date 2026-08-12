@@ -661,6 +661,7 @@ mod tests {
         // whatever sshd is actually listening on — a jail watching a port
         // nobody knocks on.
         let mock = MockExecutor::with_replies([
+            Reply::ok(""), // apt-get update, before the install
             Reply::ok(""), // install
             Reply::ok(""), // write the jail
             Reply::ok(""), // enable
@@ -745,6 +746,7 @@ mod tests {
         // A tool that reboots a server on its own schedule is one nobody can
         // plan around. The consequence says a reboot is needed instead.
         let mock = MockExecutor::with_replies([
+            Reply::ok(""),        // apt-get update, before the install
             Reply::ok(""),        // install
             Reply::ok(""),        // the policy file exists?
             Reply::ok(""),        // back it up

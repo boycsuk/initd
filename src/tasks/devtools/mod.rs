@@ -634,6 +634,7 @@ mod tests {
         // fish is at /usr/bin/fish on Arch and either path on Debian depending
         // on the release. A guessed path produces a login shell nobody can use.
         let mock = MockExecutor::with_replies([
+            Reply::ok(""),                     // apt-get update, before the install
             Reply::ok(""),                     // install
             Reply::ok("/usr/bin/fish\n"),      // command -v
             Reply::ok("/bin/sh\n/bin/bash\n"), // read /etc/shells
@@ -660,9 +661,10 @@ mod tests {
         // `/bin/fish` is a substring of `/usr/bin/fish`, so the comparison is
         // line by line rather than by substring.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),
-            Reply::ok("/usr/bin/fish\n"),
-            Reply::ok("/bin/sh\n/usr/bin/fish\n"),
+            Reply::ok(""),                         // apt-get update
+            Reply::ok(""),                         // install
+            Reply::ok("/usr/bin/fish\n"),          // command -v
+            Reply::ok("/bin/sh\n/usr/bin/fish\n"), // read /etc/shells
         ]);
         let backend = for_family(Family::Debian);
 

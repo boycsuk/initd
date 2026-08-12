@@ -276,8 +276,28 @@ impl PackageManager for PacmanPackages {
         // `--needed` skips reinstalling an up-to-date package, making the
         // operation idempotent; `--noconfirm` avoids a prompt that would hang
         // the TUI.
+        //
+        // `-Sy` rather than `-S`, because pacman resolves a name against a
+        // local database it never refreshes on its own: on a host whose
+        // databases have not been synced it warns `database file for 'core'
+        // does not exist (use '-Sy' to download)` and then fails with `target
+        // not found`, which reads as this backend having the package name
+        // wrong. Measured on `archlinux:latest`, where the databases ship
+        // empty; a sync with them already fresh costs 274 ms.
+        //
+        // The known objection is that `-Sy` without `-u` is a partial upgrade,
+        // which Arch documents as unsupported: a package pulled from a newer
+        // database can link against a library the installed system has not
+        // updated to. This accepts that narrowly rather than dismissing it. The
+        // alternative is `-Syu`, and a tool asked to install `nftables` must
+        // not decide on its own to upgrade the kernel and every library on a
+        // production server — a full upgrade is an operation with its own
+        // reboot, its own timing, and its own confirmation, none of which this
+        // task has. Between refusing to install at all and a sync scoped to one
+        // package, the sync is the smaller risk, and the packages this backend
+        // names are base-repository ones that rarely move independently.
         let command = Command::new("pacman")
-            .args(["-S", "--needed", "--noconfirm", package])
+            .args(["-Sy", "--needed", "--noconfirm", package])
             .privileged();
 
         run_checked(executor, &command)
@@ -324,6 +344,34 @@ mod tests {
     use crate::exec::mock::{MockExecutor, Reply};
 
     #[test]
+    fn the_databases_are_synced_in_the_same_operation() {
+        // Measured on `archlinux:latest`, whose image ships its databases
+        // empty: `pacman -S --needed --noconfirm procps-ng` warns `database
+        // file for 'core' does not exist (use '-Sy' to download)` and then
+        // fails with `target not found` over a name that is perfectly correct.
+        //
+        // One command rather than the two Debian needs, because pacman syncs
+        // and installs together — and `-Syu` is deliberately not used: a task
+        // asked to install one package must not upgrade the whole system on a
+        // production server.
+        let mock = MockExecutor::new();
+
+        PacmanPackages.install(&mock, "procps-ng").expect("runs");
+
+        let commands = mock.recorded_lines();
+
+        assert_eq!(commands.len(), 1, "one operation: {commands:?}");
+        assert!(
+            commands[0].starts_with("pacman -Sy "),
+            "the databases must be synced with it: {commands:?}"
+        );
+        assert!(
+            !commands[0].contains("-Syu"),
+            "and a full system upgrade is not this task's to make: {commands:?}"
+        );
+    }
+
+    #[test]
     fn installs_the_arch_ssh_package_name() {
         let mock = MockExecutor::new();
 
@@ -331,9 +379,14 @@ mod tests {
             .install(&mock, ArchBackend::new().package_for(Capability::Ssh))
             .expect("install must succeed");
 
+        // `-Sy`, not `-S`: pacman never refreshes its databases on its own, so
+        // on a host whose databases have not been synced the install fails with
+        // `target not found` over a package name that is perfectly correct.
+        // One command rather than two, since pacman syncs and installs in the
+        // same operation.
         assert_eq!(
             mock.recorded_lines(),
-            ["pacman -S --needed --noconfirm openssh"]
+            ["pacman -Sy --needed --noconfirm openssh"]
         );
         assert!(mock.any_privileged());
     }

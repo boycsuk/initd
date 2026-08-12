@@ -54,6 +54,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned from both sides.
 
 ### Fixed
+- **Two package managers resolved names against an index nobody had
+  refreshed.** Found while verifying the sysctl fix on a clean `debian:13`:
+  `apt-get install -y procps` answers `E: Unable to locate package procps` and
+  exits 100. The package exists and the name is right — nothing had told apt
+  where to look. That reads as this backend naming the package wrong, which is
+  the one thing a per-family backend exists to get right.
+
+  **Arch had the same defect and a louder symptom.** `pacman -S` never
+  refreshes its databases, so on `archlinux:latest`, whose image ships them
+  empty, it warns `database file for 'core' does not exist (use '-Sy' to
+  download)` and fails with `target not found`. It is now `-Sy`, which syncs
+  and installs in one operation.
+
+  Measured before deciding, rather than assumed to be free: on Debian a refresh
+  with the lists already fresh costs **342 ms** against 1019 ms cold, on an
+  install that itself takes 1567 ms. Cheap enough to pay every time, and far
+  cheaper than a name resolved against a stale index. On Arch the sync costs
+  274 ms.
+
+  **The other three families were checked and need nothing**: Alpine's `apk
+  add --no-cache` fetches the index as part of the operation, and dnf and
+  zypper refresh on their own. Verified on `alpine:3.23`, `rockylinux:9` and
+  `opensuse/tumbleweed`, each installing successfully from a clean image.
+
+  `-Syu` was considered and rejected for Arch. It would remove the
+  partial-upgrade risk that `-Sy` carries, and it would do so by letting a task
+  asked to install `nftables` upgrade the kernel and every library on a
+  production server. A full upgrade has its own reboot, its own timing and its
+  own confirmation, none of which this task has.
+
+  Verified end to end on both families from a clean image, in the exact
+  condition that failed: Debian now reports `Installing procps...` and Arch
+  `installing nftables` where both previously refused.
+
 - **Thirty field hints were written, compiled, and never drawn.** Reported
   against `firewall.enable`, whose dialog asks for an "SSH port" and gave no
   reason to — the hint answering that question, `kept open, so this session

@@ -856,7 +856,8 @@ mod tests {
                 Reply::ok(""),         // install -d the keyring directory
                 Reply::ok(""),         // fetch the key
                 Reply::ok(""),         // write the source
-                Reply::ok(""),         // apt-get update
+                Reply::ok(""),         // apt-get update, for the new source
+                Reply::ok(""),         // apt-get update, the one every install now runs
                 Reply::ok(""),         // install
                 Reply::ok("Linger=no"), // not lingering yet
                 Reply::ok(""),         // enable-linger
@@ -994,6 +995,7 @@ mod tests {
                 Reply::ok(""),               // subuid
                 Reply::ok(""),               // subgid
                 Reply::ok("/run/user/1001"), // the session is reachable
+                Reply::ok(""),               // apt-get update, before the install
                 Reply::ok(""),               // install
                 Reply::ok("Linger=yes"),     // already lingering
                 Reply::ok(""),               // setuptool

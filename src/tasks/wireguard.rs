@@ -827,6 +827,7 @@ mod tests {
         // drifted onto the wrong commands without anything noticing.
         let mock = MockExecutor::with_exact_replies([
             Reply::failure(1, ""), // test -e: no existing configuration
+            Reply::ok(""),         // apt-get update, before the install
             Reply::ok(""),         // apt-get install
             Reply::ok(""),         // install -d: the directory
             Reply::ok(KEY),        // wg genkey

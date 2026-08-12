@@ -468,6 +468,27 @@ pub struct AptPackages;
 
 impl PackageManager for AptPackages {
     fn install(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+        // The index before the install, because `apt-get install` resolves a
+        // name against whatever `/var/lib/apt/lists` happens to hold and says
+        // nothing about how old that is. On a host whose lists have never been
+        // fetched it answers `E: Unable to locate package procps` — which reads
+        // as the name being wrong rather than as the index being empty, and
+        // this backend's package names are the one thing it exists to get
+        // right.
+        //
+        // Measured rather than assumed to be free: a refresh with lists already
+        // fresh costs 342 ms against 1019 ms cold, on an install that itself
+        // takes 1567 ms. Cheap enough to pay every time, and far cheaper than
+        // a name that resolves against a stale index.
+        //
+        // Not `-qq`: its output goes to the pane, and an operator watching a
+        // task stall wants to see which mirror it is waiting on.
+        let refresh = Command::new("env")
+            .args(["DEBIAN_FRONTEND=noninteractive", "apt-get", "update"])
+            .privileged();
+
+        run_checked(executor, &refresh)?;
+
         // DEBIAN_FRONTEND is set through `env` rather than the executor so the
         // variable applies to this call only: an interactive debconf prompt
         // would hang a TUI that has handed the terminal over.
@@ -629,9 +650,16 @@ mod tests {
             .install(&mock, DebianBackend::new().package_for(Capability::Ssh))
             .expect("install must succeed");
 
+        // Both commands, in this order: `apt-get install` resolves a name
+        // against whatever the local lists hold, and on a host that has never
+        // fetched them it answers `E: Unable to locate package` — which reads
+        // as this backend naming the package wrong.
         assert_eq!(
             mock.recorded_lines(),
-            ["env DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server"]
+            [
+                "env DEBIAN_FRONTEND=noninteractive apt-get update",
+                "env DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server"
+            ]
         );
         assert!(mock.any_privileged());
     }
@@ -678,16 +706,53 @@ mod tests {
     }
 
     #[test]
+    fn the_index_is_refreshed_before_a_name_is_resolved_against_it() {
+        // Measured on `debian:13`, whose image ships `/var/lib/apt/lists`
+        // empty: `apt-get install -y procps` answers `E: Unable to locate
+        // package procps` and exits 100. The package exists and the name is
+        // right; nothing had told apt where to look. Reported as an install
+        // failing over a package name this backend exists to get right.
+        //
+        // The order is the whole assertion. A refresh after the install is a
+        // refresh for the next task, which is not what the failure needs.
+        let mock = MockExecutor::new();
+
+        AptPackages.install(&mock, "procps").expect("runs");
+
+        let commands = mock.recorded_lines();
+
+        assert_eq!(commands.len(), 2, "a refresh and an install: {commands:?}");
+        assert!(
+            commands[0].contains("apt-get update"),
+            "the refresh must come first: {commands:?}"
+        );
+        assert!(
+            commands[1].contains("apt-get install -y procps"),
+            "and the install second: {commands:?}"
+        );
+    }
+
+    #[test]
     fn install_runs_noninteractively() {
         // An interactive debconf prompt would hang the TUI.
         let mock = MockExecutor::new();
 
         AptPackages.install(&mock, "openssh-server").expect("runs");
 
+        // Every command, not just the install: the refresh added in front of it
+        // reaches the same `apt-get` and can raise the same prompt, and a check
+        // that only covered the second would pass over a first that hangs.
+        let commands = mock.recorded_lines();
+
         assert!(
-            mock.single_command()
-                .args
-                .contains(&"DEBIAN_FRONTEND=noninteractive".to_owned())
+            commands.len() == 2,
+            "the refresh and the install: {commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.contains("DEBIAN_FRONTEND=noninteractive")),
+            "neither may prompt: {commands:?}"
         );
     }
 
