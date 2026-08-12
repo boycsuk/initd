@@ -8,7 +8,7 @@
 //! by a container image missing a tool it assumed, where the missing tool made
 //! a test lie rather than fail.
 
-use crate::domain::binaries::{BinaryInstaller, Release};
+use crate::domain::binaries::{BinaryInstaller, Payload, Release};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
@@ -21,6 +21,25 @@ pub const INSTALL_DIR: &str = "/usr/local/bin";
 
 /// Mode for an installed binary.
 const BINARY_MODE: &str = "0755";
+
+/// What the download is called inside the temporary directory.
+///
+/// One name for both payloads, so the fetch and the verification can be shared
+/// between them: what differs is what happens *after* the digest matches, and
+/// naming the file differently per payload would fork the half that must not
+/// vary.
+const DOWNLOAD: &str = "download";
+
+/// Who removes the temporary directory a download landed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sweep {
+    /// The script itself, through a `trap` — right when one shell does all of
+    /// it.
+    OnExit,
+    /// The caller, afterwards — required when the directory has to outlive the
+    /// shell that made it.
+    Caller,
+}
 
 /// Installs binaries from checksum-verified release archives.
 #[derive(Debug, Clone, Copy, Default)]
@@ -156,28 +175,93 @@ impl BinaryInstaller for ReleaseInstaller {
         // The digest is checked before `tar` runs. An archive extracted and
         // then verified has already written whatever it contained, which makes
         // the check a report rather than a defence.
+        let place = match release.payload {
+            Payload::Member(member) => format!(
+                "tar -xf \"$dir/{DOWNLOAD}\" -C \"$dir\" '{member}'\n\
+                 install -m {BINARY_MODE} \"$dir/{member}\" '{INSTALL_DIR}/{program}'\n"
+            ),
+            // Nothing to open: the download is the binary. It is still placed
+            // with `install` rather than moved, so the mode is set as it lands
+            // rather than afterwards.
+            Payload::Bare(_) => {
+                format!("install -m {BINARY_MODE} \"$dir/{DOWNLOAD}\" '{INSTALL_DIR}/{program}'\n")
+            }
+        };
+
         let script = format!(
-            "set -eu\n\
-             dir=$(mktemp -d)\n\
-             trap 'rm -rf \"$dir\"' EXIT\n\
-             curl -fsSL --proto '=https' --tlsv1.2 -o \"$dir/archive\" '{url}'\n\
-             {verify}\n\
-             tar -xf \"$dir/archive\" -C \"$dir\" '{member}'\n\
-             install -m {mode} \"$dir/{member}\" '{install_dir}/{program}'\n",
-            url = artefact.url,
-            verify = Self::verification_line(artefact.sha256, "$dir/archive"),
-            member = release.archive_member,
-            mode = BINARY_MODE,
-            install_dir = INSTALL_DIR,
+            "{fetch}{place}",
+            fetch = Self::fetch_and_verify(artefact.url, artefact.sha256, Sweep::OnExit),
         );
 
-        let command = Command::new("sh").args(["-c", &script]).privileged();
-        let output = executor.run(&command)?;
+        Self::run_script(executor, &script, program, release)
+    }
+
+    fn run_installer(
+        &self,
+        executor: &dyn Executor,
+        program: &str,
+        release: &Release,
+        user: &str,
+        args: &str,
+    ) -> Result<()> {
+        let arch = machine_architecture(executor)?;
+
+        let artefact =
+            release
+                .artefact_for(&arch)
+                .ok_or_else(|| Error::UnsupportedArchitecture {
+                    program: program.to_owned(),
+                    version: release.version.to_owned(),
+                    arch: arch.clone(),
+                })?;
+
+        // The filename is load-bearing rather than cosmetic: `rustup-init`
+        // decides which of `cargo`, `rustc` and eleven others to be from the
+        // name it was invoked under, so a copy left at the shared `download`
+        // name exits with `unknown proxy name` instead of installing. Measured
+        // on the real binary before this shipped.
+        let filename = match release.payload {
+            Payload::Bare(filename) => filename,
+            // An archive could be supported here, and nothing needs it. A
+            // mechanism with no caller is one nobody has checked.
+            Payload::Member(_) => {
+                return Err(Error::CommandFailed {
+                    command: format!("run {program} {}", release.version),
+                    code: 1,
+                    stderr: "an archived payload cannot be run as an installer".to_owned(),
+                });
+            }
+        };
+
+        // The whole invocation is built here and the account is *not*
+        // interpolated into the inner script: `runuser -l <user> -c '<fixed
+        // text>'` passes the name as an argument, where a shell never parses
+        // it. Splicing it into the `-c` string is what would let a username
+        // carry a quote — this tool runs as root, so that is a command
+        // injection rather than a formatting bug.
+        //
+        // The directory is made readable before the drop, because a `mktemp -d`
+        // is 0700 and owned by root: the account about to run the installer
+        // could not otherwise traverse it.
+        // `>&2` on the fetch, and it is load-bearing rather than tidy: this
+        // script's stdout is a return channel carrying one value, and
+        // `sha256sum -c` writes `download: OK` to stdout when it succeeds. Left
+        // alone the two ran together, the caller read `…/download: OK…` as a
+        // path, and the installer failed with exit 127 — a real failure
+        // reported as a missing file. Found in a container; no mock could show
+        // it, since a mock's stdout is whatever the test says it is.
+        let stage = format!(
+            "{{\n{fetch}}} >&2\n\
+             mv \"$dir/{DOWNLOAD}\" \"$dir/{filename}\"\n\
+             chmod 0755 \"$dir\" \"$dir/{filename}\"\n\
+             printf '%s' \"$dir/{filename}\"\n",
+            fetch = Self::fetch_and_verify(artefact.url, artefact.sha256, Sweep::Caller),
+        );
+
+        let staged = Command::new("sh").args(["-c", &stage]).privileged();
+        let output = executor.run(&staged)?;
 
         if !output.success() {
-            // A checksum mismatch is named for what it is rather than reported
-            // as a shell failure: it is the one outcome here that means the
-            // artefact was not what this build expects.
             if output.stderr.contains("sha256sum") || output.stdout.contains("FAILED") {
                 return Err(Error::ChecksumMismatch {
                     program: program.to_owned(),
@@ -186,13 +270,116 @@ impl BinaryInstaller for ReleaseInstaller {
             }
 
             return Err(Error::CommandFailed {
-                command: format!("install {program} {}", release.version),
+                command: format!("stage {program} {}", release.version),
                 code: output.code,
                 stderr: output.stderr,
             });
         }
 
-        Ok(())
+        // The staged path comes back from the shell rather than being guessed,
+        // since `mktemp -d` chooses it. It is this process's own construction —
+        // no part of it came from the operator — so it is safe to place in the
+        // inner script where the username is not.
+        let staged_path = output.stdout.trim().to_owned();
+
+        let run = Command::new("runuser")
+            .args(["-l", user, "-c", &format!("'{staged_path}' {args}")])
+            .privileged();
+
+        let outcome = Self::run_script_command(executor, &run, program, release);
+
+        // The *directory*, not just the binary in it. The staging script's
+        // `trap` fires when that shell exits, which is before the installer has
+        // run, so the trap has to be dropped there — and this is what replaces
+        // it. Removing only the file would leave an empty `mktemp -d` behind on
+        // every install.
+        //
+        // Best effort, and deliberately so: a temporary directory that outlives
+        // its use is untidy, while failing the task over it would report a
+        // toolchain as uninstalled when it is installed and working.
+        if let Some(staged_dir) = staged_path.rsplit_once('/').map(|(dir, _)| dir) {
+            let _ = executor.run(&Command::new("rm").args(["-rf", staged_dir]).privileged());
+        }
+
+        outcome
+    }
+}
+
+impl ReleaseInstaller {
+    /// The opening of every script here: download, then verify, then nothing.
+    ///
+    /// Shared so that the verification cannot be present in one path and
+    /// missing from another — the ordering is the whole defence, and a second
+    /// copy of it is a second chance to write it in the wrong order.
+    /// `sweep` decides who removes the temporary directory.
+    ///
+    /// [`install`](BinaryInstaller::install) does everything in one shell, so a
+    /// `trap` is exactly right there: it fires however the script ends, and by
+    /// then the binary has been placed.
+    ///
+    /// [`run_installer`](BinaryInstaller::run_installer) cannot use one, and
+    /// finding that out cost a container. Its staging shell exits *before* the
+    /// installer is run, so an EXIT trap deletes the very binary the next
+    /// command was about to execute — reproduced against a real shell, where
+    /// the staged path came back naming a file that no longer existed. No mock
+    /// could show it: a mock answers both commands successfully whether or not
+    /// a file is there. So that path sweeps up in Rust code afterwards instead.
+    fn fetch_and_verify(url: &str, sha256: &str, sweep: Sweep) -> String {
+        let trap = match sweep {
+            Sweep::OnExit => "trap 'rm -rf \"$dir\"' EXIT\n",
+            Sweep::Caller => "",
+        };
+
+        format!(
+            "set -eu\n\
+             dir=$(mktemp -d)\n\
+             {trap}\
+             curl -fsSL --proto '=https' --tlsv1.2 -o \"$dir/{DOWNLOAD}\" '{url}'\n\
+             {verify}\n",
+            verify = Self::verification_line(sha256, &format!("$dir/{DOWNLOAD}")),
+        )
+    }
+
+    /// Runs one of this module's scripts and classifies what went wrong.
+    fn run_script(
+        executor: &dyn Executor,
+        script: &str,
+        program: &str,
+        release: &Release,
+    ) -> Result<()> {
+        let command = Command::new("sh").args(["-c", script]).privileged();
+
+        Self::run_script_command(executor, &command, program, release)
+    }
+
+    /// The same classification, for a command this module built by hand.
+    fn run_script_command(
+        executor: &dyn Executor,
+        command: &Command,
+        program: &str,
+        release: &Release,
+    ) -> Result<()> {
+        let output = executor.run(command)?;
+
+        if output.success() {
+            return Ok(());
+        }
+
+        // A checksum mismatch is named for what it is rather than reported
+        // as a shell failure: it is the one outcome here that means the
+        // artefact was not what this build expects.
+        if output.stderr.contains("sha256sum") || output.stdout.contains("FAILED") {
+            return Err(Error::ChecksumMismatch {
+                program: program.to_owned(),
+                version: release.version.to_owned(),
+            });
+        }
+
+        Err(Error::CommandFailed {
+            command: format!("install {program} {}", release.version),
+            code: output.code,
+            stderr: output.stderr,
+        })
     }
 }
 
@@ -243,7 +430,7 @@ mod tests {
     const RELEASES: &[Release] = &[
         Release {
             version: "0.44.0",
-            archive_member: "zellij",
+            payload: Payload::Member("zellij"),
             artefacts: &[
                 Artefact {
                     arch: "x86_64",
@@ -259,7 +446,7 @@ mod tests {
         },
         Release {
             version: "0.43.1",
-            archive_member: "zellij",
+            payload: Payload::Member("zellij"),
             artefacts: &[Artefact {
                 arch: "x86_64",
                 url: "https://example.invalid/zellij-0.43.1-x86_64.tar.gz",
@@ -334,6 +521,269 @@ mod tests {
         assert!(
             stderr.contains("did NOT match") || output.status.success(),
             "sha256sum must have compared something: {stderr}"
+        );
+    }
+
+    /// rustup's, as the task declares it.
+    const BARE: &[Release] = &[Release {
+        version: "1.29.0",
+        payload: Payload::Bare("rustup-init"),
+        artefacts: &[Artefact {
+            arch: "x86_64",
+            url: "https://example.invalid/rustup-init",
+            sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+        }],
+    }];
+
+    #[test]
+    fn a_bare_payload_is_not_handed_to_tar() {
+        // `tar -xf` against an ELF fails, so the branch is the difference
+        // between installing rustup and reporting a corrupt archive.
+        let mock = MockExecutor::with_replies([Reply::ok("x86_64"), Reply::ok("")]);
+
+        ReleaseInstaller::new()
+            .install(&mock, "rustup-init", &BARE[0])
+            .expect("a bare payload must install");
+
+        let script = mock.recorded()[1].args.join(" ");
+
+        assert!(!script.contains("tar -xf"), "{script}");
+        assert!(script.contains("sha256sum"), "{script}");
+    }
+
+    #[test]
+    fn a_bare_payload_is_still_verified_before_it_is_placed() {
+        // The property every path here shares, and the one a second copy of
+        // the fetch could quietly lose.
+        let mock = MockExecutor::with_replies([Reply::ok("x86_64"), Reply::ok("")]);
+
+        ReleaseInstaller::new()
+            .install(&mock, "rustup-init", &BARE[0])
+            .expect("the install must succeed");
+
+        let script = mock.recorded()[1].args.join(" ");
+        let checked = script
+            .find("sha256sum")
+            .expect("the digest must be checked");
+        let placed = script
+            .find("install -m")
+            .expect("the binary must be placed");
+
+        assert!(checked < placed, "verify before placing: {script}");
+    }
+
+    #[test]
+    fn an_installer_is_verified_before_it_is_executed() {
+        // The worse half of the same mistake: `install` extracts an unverified
+        // archive, this one would *run* an unverified binary as root.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("x86_64"),
+            Reply::ok("/tmp/tmp.abc/rustup-init"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        ReleaseInstaller::new()
+            .run_installer(&mock, "rustup-init", &BARE[0], "deploy", "-y")
+            .expect("the installer must run");
+
+        let recorded = mock.recorded();
+        let checked = recorded
+            .iter()
+            .position(|command| command.args.iter().any(|arg| arg.contains("sha256sum")))
+            .expect("the digest must be checked");
+        let ran = recorded
+            .iter()
+            .position(|command| command.program == "runuser")
+            .expect("the installer must be run");
+
+        assert!(checked < ran, "{:?}", mock.recorded_lines());
+    }
+
+    #[test]
+    fn the_installer_runs_as_the_account_rather_than_as_root() {
+        // The whole reason this method takes a user. rustup resolves its home
+        // from the environment at run time, so root running it installs root's
+        // toolchain and reports success.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("x86_64"),
+            Reply::ok("/tmp/tmp.abc/rustup-init"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        ReleaseInstaller::new()
+            .run_installer(&mock, "rustup-init", &BARE[0], "deploy", "-y")
+            .expect("the installer must run");
+
+        let run = mock
+            .recorded()
+            .into_iter()
+            .find(|command| command.program == "runuser")
+            .expect("the installer must be run through runuser");
+
+        assert_eq!(run.args.first().map(String::as_str), Some("-l"));
+        assert_eq!(run.args.get(1).map(String::as_str), Some("deploy"));
+    }
+
+    #[test]
+    fn the_account_never_reaches_the_inner_script() {
+        // A username carrying a quote would be a command injection on a tool
+        // running as root, so it travels as an argument to `runuser` and the
+        // `-c` string is built from this process's own values.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("x86_64"),
+            Reply::ok("/tmp/tmp.abc/rustup-init"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        ReleaseInstaller::new()
+            .run_installer(&mock, "rustup-init", &BARE[0], "de'ploy", "-y")
+            .expect("the installer must run");
+
+        let run = mock
+            .recorded()
+            .into_iter()
+            .find(|command| command.program == "runuser")
+            .expect("the installer must be run");
+
+        let script = run.args.get(3).expect("the -c script").clone();
+
+        assert!(
+            !script.contains("de'ploy"),
+            "the account must not be spliced into a shell: {script}"
+        );
+    }
+
+    #[test]
+    fn the_staged_installer_keeps_the_name_it_dispatches_on() {
+        // `rustup-init` decides which of `cargo`, `rustc` and eleven others to
+        // be from `argv[0]`. Staged under the shared download name it exits
+        // with `unknown proxy name` instead of installing — measured on the
+        // real binary.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("x86_64"),
+            Reply::ok("/tmp/tmp.abc/rustup-init"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        ReleaseInstaller::new()
+            .run_installer(&mock, "rustup-init", &BARE[0], "deploy", "-y")
+            .expect("the installer must run");
+
+        let stage = mock.recorded()[1].args.join(" ");
+
+        assert!(stage.contains("rustup-init"), "{stage}");
+    }
+
+    #[test]
+    fn the_staging_script_does_not_delete_what_it_staged() {
+        // The bug this closes, and the one no mock could have found: the
+        // staging shell exits before the installer runs, so an EXIT trap takes
+        // the binary with it. Reproduced against a real shell, where the staged
+        // path came back naming a file that no longer existed.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("x86_64"),
+            Reply::ok("/tmp/tmp.abc/rustup-init"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        ReleaseInstaller::new()
+            .run_installer(&mock, "rustup-init", &BARE[0], "deploy", "-y")
+            .expect("the installer must run");
+
+        let stage = mock.recorded()[1].args.join(" ");
+
+        assert!(
+            !stage.contains("trap"),
+            "the staged binary must outlive this shell: {stage}"
+        );
+
+        // And the caller sweeps instead, or every install leaks a directory.
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line.starts_with("rm -rf /tmp/tmp.abc")),
+            "{:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn the_staging_script_survives_a_real_shell() {
+        // The text assertions above would pass against a script that no shell
+        // can run. This one runs it, with a local file standing in for the
+        // download, and checks the staged binary is still there afterwards —
+        // which is exactly what the trap broke.
+        let dir = std::env::temp_dir().join(format!("initd-stage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let source = dir.join("source");
+        std::fs::write(&source, b"#!/bin/sh\necho staged\n").expect("write");
+
+        // The real script's shape, with `curl` replaced by a copy so nothing
+        // touches the network. Everything after the fetch is verbatim.
+        let script = format!(
+            "set -eu\n\
+             dir=$(mktemp -d)\n\
+             cp '{source}' \"$dir/{DOWNLOAD}\"\n\
+             mv \"$dir/{DOWNLOAD}\" \"$dir/rustup-init\"\n\
+             chmod 0755 \"$dir\" \"$dir/rustup-init\"\n\
+             printf '%s' \"$dir/rustup-init\"\n",
+            source = source.to_string_lossy(),
+        );
+
+        let output = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .expect("sh must run");
+
+        let staged = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+
+        let survived = !staged.is_empty() && std::path::Path::new(&staged).exists();
+
+        // Cleaned up the way `run_installer` does — but only when the script
+        // actually returned a staged path under `mktemp`'s directory. An empty
+        // or unexpected value would otherwise send `remove_dir_all` at whatever
+        // `parent()` resolved to, and this test deletes directories: a cleanup
+        // that fires on a value it did not verify is how one test removes
+        // another's fixture. Which is what happened — the sibling shell test
+        // failed with `FAILED open or read` while passing in isolation.
+        if let Some(parent) = std::path::Path::new(&staged).parent()
+            && staged.starts_with("/tmp/")
+        {
+            std::fs::remove_dir_all(parent).ok();
+        }
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            survived,
+            "the staged installer must still exist when the shell returns: \
+             stdout={staged:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn an_archived_payload_is_not_run_as_an_installer() {
+        // A mechanism with no caller is one nobody has checked, so the
+        // combination is refused rather than quietly doing something plausible.
+        let mock = MockExecutor::with_replies([Reply::ok("x86_64")]);
+
+        let result =
+            ReleaseInstaller::new().run_installer(&mock, "zellij", &RELEASES[0], "deploy", "-y");
+
+        assert!(matches!(result, Err(Error::CommandFailed { .. })));
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|line| line.starts_with("runuser")),
+            "{:?}",
+            mock.recorded_lines()
         );
     }
 

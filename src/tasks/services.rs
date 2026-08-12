@@ -8,7 +8,7 @@
 
 use crate::backend::{Backend, Capability};
 use crate::distro::Family;
-use crate::domain::binaries::{Artefact, Release};
+use crate::domain::binaries::{Artefact, Payload, Release};
 use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
@@ -237,7 +237,7 @@ impl InstallCaddy {
     /// security level. The tarball is the route that can be verified.
     pub const RELEASES: &[Release] = &[Release {
         version: "2.11.4",
-        archive_member: "caddy",
+        payload: Payload::Member("caddy"),
         artefacts: &[
             Artefact {
                 arch: "x86_64",

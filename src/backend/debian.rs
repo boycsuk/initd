@@ -145,12 +145,22 @@ const ZELLIJ_PACKAGE: &str = "";
 /// for — so this resolves to the release installer, as RHEL and openSUSE do.
 const MISE_PACKAGE: &str = "";
 
-/// The Rust toolchain installer on Debian.
+/// The Rust toolchain installer, on the suites that carry it.
 ///
 /// `rustup` rather than `rustc`: the distribution package pins whatever version
 /// the release froze, and a toolchain that cannot be updated is not one a build
 /// can rely on.
-const RUST_PACKAGE: &str = "rustup";
+///
+/// **Trixie has it and bookworm does not** — `1.27.1-3+b1` in trixie, absent
+/// from bookworm, verified per suite and reproduced in a container. Bookworm is
+/// still oldstable, so an unconditional name here fails there exactly as `mise`
+/// failed on trixie: `apt-get` sent after a package the suite has never
+/// carried. The second name in this family that varies *within* it, after
+/// Docker's repository, which is why [`DebianBackend::for_distribution`]
+/// resolves it. Ubuntu carries `rustup` from noble onward, though in `universe`
+/// rather than `main` — so a minimal cloud image with universe disabled falls
+/// to the release installer, which is the right answer rather than a failure.
+const RUST_PACKAGE_TRIXIE: &str = "rustup";
 
 /// The nftables front-end on Debian.
 const NFTABLES_PACKAGE: &str = "nftables";
@@ -190,6 +200,15 @@ pub struct DebianBackend {
     docker_repo_path: &'static str,
     /// Where that path serves its signing key.
     docker_key_path: &'static str,
+    /// Whether this suite packages `rustup`.
+    ///
+    /// The second name that varies within this family. Resolved from the
+    /// codename rather than from `VERSION_ID`, because the codename is what
+    /// Debian and Ubuntu both have and what names a suite — Ubuntu declares a
+    /// `VERSION_ID` of `24.04` where Debian declares `13`, and comparing those
+    /// as numbers would need to know which family's scale it was reading.
+    rust_package: &'static str,
+
     /// The suite Docker's repository is asked for.
     ///
     /// A fact about the host rather than about this build, and the reason this
@@ -223,10 +242,23 @@ impl DebianBackend {
             _ => (DOCKER_REPO_DEBIAN, DOCKER_KEY_DEBIAN),
         };
 
+        // Named rather than compared: the suites that carry `rustup` are a list
+        // this build knows, and a host declaring a codename none of them names
+        // falls to the verified installer. That is the safe direction — a
+        // future suite installs a checksummed artefact rather than failing on a
+        // package nobody has confirmed it has.
+        let rust = match codename.map(str::to_ascii_lowercase).as_deref() {
+            Some("trixie" | "forky" | "sid" | "noble" | "questing" | "resolute") => {
+                RUST_PACKAGE_TRIXIE
+            }
+            _ => "",
+        };
+
         Self {
             docker_repo_path: repo,
             docker_key_path: key,
             codename: codename.map(str::to_owned),
+            rust_package: rust,
             ..Self::new()
         }
     }
@@ -238,6 +270,10 @@ impl DebianBackend {
             docker_repo_path: DOCKER_REPO_DEBIAN,
             docker_key_path: DOCKER_KEY_DEBIAN,
             codename: None,
+            // Empty until a distribution is resolved, which routes to the
+            // verified installer. A backend built without one knows of no suite
+            // and must not claim a package on its behalf.
+            rust_package: "",
             repositories: AptRepositories::new(),
             packages: AptPackages,
             services: SystemdServices::new(),
@@ -267,7 +303,7 @@ impl Backend for DebianBackend {
             Capability::Fish => FISH_PACKAGE,
             Capability::Zellij => ZELLIJ_PACKAGE,
             Capability::Mise => MISE_PACKAGE,
-            Capability::Rust => RUST_PACKAGE,
+            Capability::Rust => self.rust_package,
             Capability::Nftables => NFTABLES_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,

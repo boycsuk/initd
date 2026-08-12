@@ -1028,6 +1028,12 @@ pub enum Msg {
     },
     TaskFishNotForRoot,
     TaskMiseUseShims,
+    TaskRustPathHint {
+        home: String,
+    },
+    TaskRustManagerRemoved {
+        user: String,
+    },
     TaskRustAvailableTo {
         user: String,
     },

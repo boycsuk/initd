@@ -312,7 +312,7 @@ command line, running the subcommand *is* the confirmation.
 | `mise.install` | `run mise.install` | no | Installs mise. From the distribution where one packages it, otherwise from a checksum-verified release. |
 | `mise.uninstall` | `run <id> name=value` | no | Removes mise. Toolchains it installed under each account's own directory stay — this tool did not write them. |
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
-| `rust.uninstall` | `run <id> name=value` | no | Removes rustup. An account's own `~/.rustup` and `~/.cargo` stay: this tool installed the manager, not what was built with it. |
+| `rust.uninstall` | `run <id> name=value` | no | Removes rustup. Where the distribution packages it, an account's own `~/.rustup` and `~/.cargo` stay. Where it was installed for one account, rustup's own uninstaller takes those directories with it and offers no way to keep them. |
 
 ### Hardening
 

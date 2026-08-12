@@ -915,6 +915,24 @@ pub(super) fn render(message: &Msg) -> String {
              shell activation"
                 .to_owned()
         }
+        // The home is read from passwd rather than assumed: `/home/<user>` is a
+        // convention this project already refuses to rely on elsewhere, and a
+        // hint naming the wrong directory is worse than none.
+        Msg::TaskRustPathHint { home } => format!(
+            "the toolchain is in {home}/.cargo/bin, which no shell has been \
+             told about — add it to PATH in that account's own profile, or run \
+             `. \"{home}/.cargo/env\"`"
+        ),
+        // Says what went with it, because it is more than the operator asked
+        // for and they should hear it from the tool rather than discover it.
+        // `rustup self uninstall` prints "removing rustup home" and "removing
+        // cargo home" and means both — measured on `debian:13`, where the two
+        // directories are gone afterwards. There is no flag that spares them.
+        Msg::TaskRustManagerRemoved { user } => format!(
+            "removed rustup for {user}, and with it that account's ~/.rustup \
+             and ~/.cargo — rustup's own uninstaller takes the toolchains it \
+             installed, and offers no way to keep them"
+        ),
         Msg::TaskRustAvailableTo { user } => format!("rust is available to {user}"),
         Msg::TaskToolchainInstalled { tool, user } => format!("{tool} is installed for {user}"),
 

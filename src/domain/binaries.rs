@@ -15,13 +15,34 @@
 use crate::error::Result;
 use crate::exec::Executor;
 
+/// What a downloaded artefact turns out to be.
+///
+/// Three of the four tools here publish a tar archive with the binary inside
+/// it; `rustup-init` publishes the binary itself. The difference cannot be
+/// papered over, because `tar -xf` against an ELF fails — so the shape is named
+/// here rather than guessed at from the URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Payload {
+    /// The path of the binary inside a tar archive.
+    Member(&'static str),
+
+    /// The download *is* the binary, under the name it must carry.
+    ///
+    /// The name is not decoration. `rustup-init` dispatches on `argv[0]` — it
+    /// is the same executable as `cargo` and `rustc`, deciding which of them to
+    /// be from the name it was invoked under — so a copy left at a `mktemp`
+    /// path exits with `unknown proxy name: 'tmp'` rather than installing
+    /// anything. Measured before this shipped, not after.
+    Bare(&'static str),
+}
+
 /// A release this build knows how to verify.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Release {
     /// Upstream version, as the operator selects it.
     pub version: &'static str,
-    /// Path of the binary inside the archive.
-    pub archive_member: &'static str,
+    /// Whether the download is an archive to open or a binary to place.
+    pub payload: Payload,
     /// One artefact per architecture this project ships for.
     ///
     /// Separate because the digest is a property of the *artefact*, not of the
@@ -68,6 +89,33 @@ pub trait BinaryInstaller {
     /// then checked has already written whatever it contained, and the check
     /// becomes a report rather than a defence.
     fn install(&self, executor: &dyn Executor, program: &str, release: &Release) -> Result<()>;
+
+    /// Downloads and verifies an installer, then runs it once as an account.
+    ///
+    /// Distinct from [`install`](Self::install) because the artefact is not the
+    /// tool: `rustup-init` installs `rustup` and thirteen symlinks into the
+    /// account's own `~/.cargo/bin` and then has no further purpose, so leaving
+    /// it in `/usr/local/bin` would put a spent installer on `PATH` for
+    /// everybody. It is fetched, checked, executed and discarded.
+    ///
+    /// Run as `user` rather than as root, and that is the whole reason this
+    /// takes an account at all. rustup resolves `~/.cargo` and `~/.rustup` from
+    /// the environment *at run time*, so an installer run as root writes root's
+    /// toolchain however the invocation is dressed up — measured, and its own
+    /// anti-root guard does not fire on a genuine root login. Where a toolchain
+    /// lands has to be decided here rather than left to the artefact.
+    ///
+    /// Implementations must verify before executing, for the reason
+    /// [`install`](Self::install) must verify before extracting — running an
+    /// unverified binary as root is the worse half of the same mistake.
+    fn run_installer(
+        &self,
+        executor: &dyn Executor,
+        program: &str,
+        release: &Release,
+        user: &str,
+        args: &str,
+    ) -> Result<()>;
 
     /// Whether *this tool's* copy of the binary is in place.
     ///

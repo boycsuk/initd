@@ -322,8 +322,14 @@ TUI or CLI:
   - Acceptance: what is offered is what the tool will accept. A version
     published upstream after this binary was built has no compiled-in digest,
     so suggesting it would be proposing the refusal.
-  - Acceptance: the archive is verified before it is extracted.
+  - Acceptance: the archive is verified before it is extracted — and where the
+    artefact is an installer rather than the tool, before it is *run*. Running
+    an unverified binary as root is the worse half of the same mistake.
   - Acceptance: a host that already has the binary downloads nothing.
+  - Acceptance: where the tool belongs to an account rather than to the machine,
+    it is installed as that account. A toolchain manager resolves its home from
+    the environment at run time, so one installed by root belongs to root
+    however the request was phrased.
 - As an **administrator**, I can remove a tool I installed, so that a box I use
   for one thing does not accumulate the tools I tried for another.
   - Acceptance: I choose whether its configuration goes with it. The default
@@ -335,8 +341,13 @@ TUI or CLI:
     elsewhere — from `cargo install`, or a vendor script — is named and left
     where it is.
   - Acceptance: toolchains and versions the tool managed under an account's own
-    directory stay. This tool installed the manager, not what was built with
-    it.
+    directory stay, where the distribution packaged the manager. This tool
+    installed the manager, not what was built with it.
+  - Acceptance: where the manager was installed for one account instead, it is
+    removed by its own uninstaller, which takes those directories with it — and
+    the tool says so rather than repeating a promise that holds on the other
+    route. An uninstaller that deletes somebody's work while reporting that it
+    kept it is worse than one that warns.
 
 ### Containers and web server
 

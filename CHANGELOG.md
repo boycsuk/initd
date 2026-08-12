@@ -8,6 +8,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`rust.install` runs on RHEL, and on the Debian suites that package no
+  `rustup`.** RHEL's refusal named the condition it was waiting for —
+  `rustup-init` is checksummed per architecture, and only the archive path pins
+  a version, so a digest compiled into this build does not invalidate itself on
+  the next rustup release. That path exists, so the refusal is lifted. Alpine
+  keeps its own: it has no `runuser` (measured across all five images), and
+  busybox's `su` has different session semantics.
+
+  Debian gains the same route where it needs it. `RUST_PACKAGE` was
+  unconditional while `rustup` is in trixie and **not in bookworm**, so
+  `rust.install` failed on oldstable exactly as `mise.install` failed on trixie.
+  Resolved per suite by `DebianBackend::for_distribution`, from the codename
+  rather than `VERSION_ID` — Ubuntu declares `24.04` where Debian declares `13`,
+  and comparing those as numbers means knowing which family's scale is being
+  read. A codename this build does not know falls to the verified installer,
+  which is the safe direction.
+
+  **The toolchain is installed for an account, not for the machine**, which is
+  what the task's description has always promised and what rustup requires:
+  measured in a container, `rustup-init` writes `rustup` plus **thirteen
+  symlinks** — `cargo`, `rustc`, `rustdoc` and ten more — that dispatch on
+  `argv[0]`, and the binary resolves `~/.cargo` and `~/.rustup` from the
+  environment at run time. Installed under `/usr/local` and run with
+  `HOME=/root` it answers `no installed toolchains`, so a system-wide copy would
+  not have been one. Its own anti-root guard does not fire on a genuine root
+  login and `-y` makes that path exit zero, so where the toolchain lands had to
+  be decided here rather than left to the artefact.
+
+  `Release` gained a `Payload`, because `rustup-init` is a bare ELF and the
+  installer ran `tar -xf` unconditionally. `BinaryInstaller` gained
+  `run_installer`, because the artefact is not the tool: it installs into the
+  account's own directory and then has no purpose, so leaving it in
+  `/usr/local/bin` would put a spent installer on `PATH` for everybody.
+
+  rustup signs nothing here — the toolchain is signed, `rustup-init` is not, and
+  the request has been open since 2016 with a second closed as not planned. What
+  the compiled-in digest claims is therefore narrower than Docker's
+  independently-published fingerprint: that the artefact is byte-identical to
+  the one this project inspected. It is stated that way in the table rather than
+  implied. `curl https://sh.rustup.rs | sh` was declined for the reason CrowdSec
+  is declared absent on RHEL — its 910 lines verify nothing, and its only
+  mention of `sha256` is the name of a TLS ciphersuite.
+
+  **Two defects surfaced only in containers, and neither could have been found
+  by a mock.** The staging script's `trap` fired when *its* shell exited, which
+  is before the installer runs — deleting the binary the next command was about
+  to execute, and reporting it as a missing file. And `sha256sum -c` writes
+  `download: OK` to **stdout**, which ran together with the staged path the same
+  script returns, so the caller read `…/download: OK…` as a path and the
+  installer failed with exit 127. A mock answers whatever it is asked and has no
+  opinion about either. Verified end to end afterwards on `rockylinux:9` and
+  `debian:12` — `rustup` and `cargo` present in the account's own `~/.cargo/bin`
+  with `cargo` a symlink, nothing written to `/usr/local/bin`, no staging
+  directory left behind — and on `debian:13`, which takes the package route and
+  downloads nothing.
+
+  `rust.uninstall` stopped promising something it cannot keep on the new route.
+  `rustup self uninstall` prints "removing rustup home" and "removing cargo
+  home" and means both — measured, the two directories are gone afterwards, and
+  there is no flag that spares them. The task said toolchains stay where they
+  are; it now says that where the distribution packaged the manager, and says
+  what goes with it where it did not.
 - **`Ctrl-L` repaints the screen.** Drawing writes only the cells that changed,
   so anything else writing to the same terminal leaves damage no later frame
   repairs. On a server that "anything else" is the kernel — `printk` goes
