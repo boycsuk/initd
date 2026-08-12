@@ -338,6 +338,10 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpSectionConfirmation => "Confirmation".to_owned(),
         Msg::HelpSectionLockout => "After a change that could lock you out".to_owned(),
         Msg::HelpMoveFocus => "move focus between the tree and the output".to_owned(),
+        // Named for the problem rather than the mechanism: somebody reaching
+        // for this is looking at a screen the kernel has written over, and
+        // "redraw" is what the program does about it rather than what they see.
+        Msg::HelpRedraw => "repaint the screen (after console messages)".to_owned(),
         Msg::HelpThisHelp => "this help".to_owned(),
         Msg::HelpQuit => "quit".to_owned(),
         Msg::HelpPreviousRow => "previous row".to_owned(),

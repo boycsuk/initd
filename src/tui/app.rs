@@ -219,6 +219,21 @@ pub struct App {
     /// path for an answer that cannot change while the process runs.
     pub(super) lang: Lang,
     pub(super) should_quit: bool,
+    /// Whether the next frame must repaint every cell rather than the diff.
+    ///
+    /// Raised by Ctrl+L and lowered once served. Drawing only writes the cells
+    /// ratatui believes changed, so anything else writing to this terminal
+    /// leaves damage no later frame repairs — and on a server that "anything
+    /// else" is the kernel, whose console messages go straight to the device,
+    /// around the escape-sequence processing the alternate screen relies on.
+    /// Verified rather than assumed: the alternate screen does not isolate a
+    /// program from `printk`, which lands on whichever screen is active.
+    ///
+    /// A flag rather than a call at the key site, for the reason the hangup
+    /// handler is one: the terminal belongs to the event loop, and reaching it
+    /// from key dispatch would put it in the one path deliberately kept
+    /// testable without a terminal at all.
+    pub(super) needs_full_redraw: bool,
 }
 
 impl App {
@@ -274,6 +289,7 @@ impl App {
             hangup: Hangup::default(),
             lang: Lang::from_env(),
             should_quit: false,
+            needs_full_redraw: false,
         }
     }
 
@@ -412,6 +428,20 @@ impl App {
             // Before drawing, not after: the frame this loop is about to paint
             // would land on top of the helper's prompt.
             self.serve_pending_auth(terminal)?;
+
+            // `clear` both blanks the screen and resets the back buffer, so the
+            // draw below writes every cell rather than the ones that changed.
+            // That second half is the point: something else wrote to this
+            // terminal, so ratatui's idea of what is on screen is wrong, and a
+            // diffed frame repairs only what the program itself has changed
+            // since. It flickers, which is why it is a key rather than a timer
+            // — the damage is occasional and the operator is the one who can
+            // see it.
+            if std::mem::take(&mut self.needs_full_redraw) {
+                terminal
+                    .clear()
+                    .map_err(|source| crate::error::Error::Terminal { source })?;
+            }
 
             terminal
                 .draw(|frame| render::all(frame, self))
@@ -1765,6 +1795,103 @@ mod tests {
             KeyCode::Char(character),
             crossterm::event::KeyModifiers::CONTROL,
         ));
+    }
+
+    #[test]
+    fn ctrl_l_asks_for_a_full_repaint() {
+        // The kernel writes to the console device around the terminal's own
+        // escape processing, so the alternate screen does not isolate the
+        // interface from it and a diffed frame repairs only what this program
+        // changed since. On the console a VPS panel offers — which is where an
+        // unconfigured server is administered from — that damage stays until
+        // something repaints every cell.
+        let mut app = test_app(Family::Debian);
+        assert!(!app.needs_full_redraw);
+
+        press_ctrl(&mut app, 'l');
+
+        assert!(app.needs_full_redraw, "Ctrl+L must ask for a repaint");
+    }
+
+    #[test]
+    fn a_bare_l_is_not_a_repaint() {
+        // `l` is a navigation key. Only the control chord may mean this, or
+        // moving right through the tree would blank the screen.
+        let mut app = test_app(Family::Debian);
+
+        press(&mut app, KeyCode::Char('l'));
+
+        assert!(!app.needs_full_redraw);
+    }
+
+    #[test]
+    fn a_repaint_can_be_asked_for_from_every_mode() {
+        // The reason this key sits ahead of the mode match: the modal states
+        // swallow every character they are given, and a form is no easier to
+        // read through kernel output than the tree is.
+        //
+        // The states are stacked in the order `mode` ranks them, as the
+        // precedence test above does, so each assertion names the mode that
+        // actually owns the keyboard at that point.
+        let mut app = test_app(Family::Debian);
+
+        for expected in [
+            "Browsing",
+            "Searching",
+            "Confirming",
+            "Verifying",
+            "Running",
+            "Help",
+        ] {
+            match expected {
+                "Searching" => app.search = Some(Search::new(app.cursor.tree())),
+                "Confirming" => app.confirm = Some(Confirm::new("Harden", "dangerous")),
+                // The one that matters most: this window is where an operator
+                // decides whether to keep a change that may have locked them
+                // out, and it is unreadable through kernel output.
+                "Verifying" => open_verification(&mut app),
+                "Running" => {
+                    app.running = Some(Running::start(
+                        "ssh.install",
+                        test_distro(Family::Debian),
+                        ParamValues::new(),
+                    ));
+                }
+                "Help" => app.help = Some(0),
+                _ => {}
+            }
+
+            app.needs_full_redraw = false;
+            press_ctrl(&mut app, 'l');
+
+            assert!(
+                app.needs_full_redraw,
+                "{expected} must not swallow the repaint key"
+            );
+        }
+    }
+
+    #[test]
+    fn the_form_keeps_ctrl_l_for_its_own_list() {
+        // The one exception, and the reason it is one: inside a form Ctrl-L
+        // opens the values the host offers — documented in `docs/ui.md`, and
+        // the natural spelling beside the readline keys that dialog already
+        // answers to. Taking the chord globally broke that list silently, so
+        // the exception is pinned rather than left to the comment.
+        let mut app = app_with_host_answers();
+        select_task(&mut app, "users.set-shell");
+        press(&mut app, KeyCode::Enter);
+
+        press_ctrl(&mut app, 'l');
+
+        assert!(
+            !app.needs_full_redraw,
+            "a form must keep the chord for its own list"
+        );
+        assert!(
+            app.options_at.is_some(),
+            "and must still open that list with it"
+        );
     }
 
     #[test]

@@ -500,12 +500,29 @@ by name, and a grep for the constant found nothing.
 | Key | Action |
 |-----|--------|
 | `Tab` | Move focus between the tree and the output |
+| `Ctrl-L` | Repaint every cell — except in a form, where it opens the field's list |
 | `?` | Open the help overlay |
 | `q` | Quit, from any level and either pane |
 
 The arrows mean "next" and "previous" in both panes, so something has to say
 which one they address. That something is `Tab` and **nothing else**:
 overloading a movement key with focus is how keys start leaking between panes.
+
+**`Ctrl-L` exists because this interface is not the only thing writing to the
+terminal.** Drawing writes only the cells that changed, so anything else
+writing to the same device leaves damage no later frame repairs. On a server
+that "anything else" is the kernel: console messages go straight to the device,
+around the escape-sequence processing the alternate screen relies on, so the
+alternate screen does not isolate the interface from them. That makes the
+console a VPS panel offers — the one an unconfigured server is administered
+from, before SSH is reachable — the place this is seen. It repaints rather than
+suppressing anything: silencing kernel messages is machine-global state, and it
+would blind the operator during exactly the changes worth watching.
+
+The form is the one exception, and it is deliberate rather than an oversight:
+`Ctrl-L` there opens the list of values the host offers, beside the readline
+keys that dialog already answers to. A form also covers the screen it is drawn
+over, which makes it the state least in need of a repaint.
 
 The focused pane is drawn with a cyan border; the other is dim. The tree's
 selected row stays visible when focus leaves it, drawn underlined rather than
@@ -649,7 +666,7 @@ themselves rather than acting as commands. Only the keys below stay commands.
 |-----|--------|
 | `Tab` / `Shift-Tab` | Next or previous field, always |
 | `↓` / `↑` | Step through what the host offers, where it offers any; move between fields where it does not |
-| `Ctrl-L` | Open the full list of what the host offers, where it offers any |
+| `Ctrl-L` | Open the full list of what the host offers, where it offers any — this dialog keeps the chord that repaints elsewhere |
 | `Enter` | Next field, or submit on the last one |
 | `←` / `→` | Move the cursor |
 | `Home` / `End` / `Ctrl-A` / `Ctrl-E` | Jump to the start or end of the value |

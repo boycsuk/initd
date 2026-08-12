@@ -46,6 +46,27 @@ impl App {
     /// `Some` means the key was the one that starts the work; everything else
     /// is resolved in place.
     pub(super) fn dispatch(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        // Ahead of the modes because a corrupted screen is not a state this
+        // program is in: the modal states swallow every character they are
+        // given, and a verification window is no easier to read through kernel
+        // output than the tree is. Ctrl+L is the convention htop and nvtop
+        // already answer to.
+        //
+        // The form is the one exception, and it is a real one rather than an
+        // oversight: Ctrl+L there opens the list of values the host offers,
+        // which `docs/ui.md` documents and which readline's neighbours in that
+        // dialog (Ctrl-A, Ctrl-E, Ctrl-U, Ctrl-K, Ctrl-W) make the natural
+        // spelling. Taking it globally silently broke that list — caught by
+        // the test that presses it to open one. A form also covers the screen
+        // it is drawn over, so it is the state least in need of this.
+        if key.code == KeyCode::Char('l')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && !matches!(self.mode(), Mode::Filling)
+        {
+            self.needs_full_redraw = true;
+            return None;
+        }
+
         // The one place precedence is decided is `mode`; this only says what
         // each state does with a key. A state added there fails to compile
         // here until it is answered for, which is the point of deriving it.

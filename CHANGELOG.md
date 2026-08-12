@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`Ctrl-L` repaints the screen.** Drawing writes only the cells that changed,
+  so anything else writing to the same terminal leaves damage no later frame
+  repairs. On a server that "anything else" is the kernel — `printk` goes
+  straight to the console device, around the escape-sequence processing the
+  alternate screen relies on, so the alternate screen does not isolate the
+  interface from it. Reported from a VPS panel's web console, where
+  `systemd-ssh-generator` failing to query an `AF_VSOCK` CID was drawn through
+  the panels; that console is also where an unconfigured server is administered
+  from, before SSH is reachable.
+
+  Suppressing the messages instead was rejected: `/proc/sys/kernel/printk` and
+  `setterm -msg off` are machine-global, they blind anyone on another console,
+  and they would silence the kernel during exactly the changes — hardening SSH,
+  filtering a port — worth watching. The key follows htop and nvtop; k9s has
+  declined the same request twice and leaves users restarting.
+
+  A form keeps the chord for its own list of host-offered values, which
+  `docs/ui.md` documents and which the readline keys beside it make the natural
+  spelling. Taking it globally broke that list silently, and the test that
+  presses it to open one is what caught it.
+
 ### Fixed
 - **`docker-rootless.install` failed on Debian with "no installation
   candidate".** The backend named `docker-ce-rootless-extras`, which is correct

@@ -63,6 +63,7 @@ const SECTIONS: &[Section] = &[
         title: Msg::HelpSectionAnywhere,
         keys: &[
             ("Tab", Msg::HelpMoveFocus),
+            ("Ctrl-L", Msg::HelpRedraw),
             ("?", Msg::HelpThisHelp),
             ("q", Msg::HelpQuit),
         ],

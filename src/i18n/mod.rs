@@ -316,6 +316,7 @@ pub enum Msg {
     HelpSectionConfirmation,
     HelpSectionLockout,
     HelpMoveFocus,
+    HelpRedraw,
     HelpThisHelp,
     HelpQuit,
     HelpPreviousRow,

@@ -94,6 +94,19 @@ TUI or CLI:
   - Platform exception: TUI only. The CLI measures nothing and lists both the
     install and the uninstall, since it is a catalogue of what can be run rather
     than a report on this host.
+- As an **administrator**, I can restore the display after something else has
+  written over it, so that kernel console messages do not leave me reading a
+  broken screen on the console my provider gives me.
+  - Acceptance: one key repaints every cell, from any state — including the
+    verification window, where an unreadable screen would be worst.
+  - Acceptance: nothing machine-global is changed to achieve it. Kernel
+    messages are not suppressed: they are what an administrator wants to see
+    while hardening SSH or changing a firewall, and silencing them would
+    outlive the session that did it.
+  - Acceptance: the tool states that it cannot prevent the damage, only repair
+    it — messages arriving between two repaints are still drawn over.
+  - Platform exception: TUI only. The CLI writes a line at a time and needs no
+    repair.
 - As an **administrator**, I can browse the tasks grouped by area rather than
   as one flat list, so that I can find what I need as the tool grows.
   - Acceptance: tasks are organised into categories that may themselves contain
