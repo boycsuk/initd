@@ -54,6 +54,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned from both sides.
 
 ### Fixed
+- **Opening a port on a host with no firewall policy blamed the rule.**
+  Reported from a Debian 13 host where `nft` was installed and working:
+  `firewall.allow-port` answered `Error: Could not process rule: No such file
+  or directory`, naming a file for a table nobody had created. `firewall.enable`
+  had never run there, so the table the rule targets did not exist.
+
+  The task *did* carry a note for this condition — "nothing is being filtered
+  yet" — and it ran **after** the rule was added, twenty-five lines further
+  down. On a host with no table the rule cannot be added at all, so the note
+  was unreachable in exactly the case it was written for. It is now a refusal,
+  before anything is written, naming the task that fixes it.
+
+  Refused rather than repaired, and the alternatives are worth recording.
+  Creating the table here would leave an `accept` rule in a ruleset with no
+  default-deny policy — a firewall that filters nothing while looking
+  configured, which is worse than the error. Enabling the policy is not this
+  task's to do: it can end the session that asked for it, which is why
+  `firewall.enable` carries a lockout confirmation and this one does not.
+
+- **`ssh.install` never reported an SSH server that was already installed.** It
+  detected it correctly when run, but the tree asked the host nothing, so the
+  row read the same whether or not the package was there.
+
+  The probe measured only reversible pairs, reasoning that a lone task has no
+  verb to choose. It has none — and it can still say whether the thing is
+  present. `ssh.install` is deliberately inverse-less, since removing the SSH
+  server over SSH is the one operation this tool refuses to offer, so it could
+  never be measured. Lone tasks are now measured when they declare a subject,
+  which keeps the cost to one query per task that has something to report.
+
+  A reversible row says "already there" by switching verbs; a one-verb row
+  carries a flag instead — a new one rather than the existing `✓`, which
+  already means *this session installed it*.
+
 - **Two package managers resolved names against an index nobody had
   refreshed.** Found while verifying the sysctl fix on a clean `debian:13`:
   `apt-get install -y procps` answers `E: Unable to locate package procps` and

@@ -111,6 +111,7 @@ pub enum Msg {
     },
 
     NoFirewallFrontEnd,
+    FirewallNotEnabled,
 
     // --- Command execution ---
     ProgramNotFound {

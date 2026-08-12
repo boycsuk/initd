@@ -364,6 +364,25 @@ impl Task for AllowPort {
         // that stays closed, so this resolves rather than assuming.
         let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
 
+        // Before the rule, not after it. This check existed at the end of the
+        // task, where it reported "nothing is being filtered yet" over a rule
+        // that had just been added — and on a host where `firewall.enable` had
+        // never run, it was never reached at all: there is no table to add a
+        // rule to, so `nft` fails first. Reported from a Debian 13 host as
+        // `Error: Could not process rule: No such file or directory`, which
+        // names a file for a table that was never created and reads as a
+        // defect in the rule.
+        //
+        // Refused rather than repaired. Creating the table here would leave an
+        // `accept` rule in a ruleset with no default-deny policy — a firewall
+        // that filters nothing while looking configured, which is worse than
+        // the error. And enabling the policy is not this task's to do: it can
+        // end the session that asked for it, which is why `firewall.enable`
+        // carries a lockout confirmation and this one does not.
+        if !firewall.state(executor)?.active {
+            return Err(Error::FirewallNotEnabled);
+        }
+
         firewall.allow(executor, port, protocol)?;
 
         // Kept, for the same reason enabling is: a rule that only exists in the
@@ -385,14 +404,12 @@ impl Task for AllowPort {
             },
         );
 
-        // "Open" means something different depending on whether anything is
-        // closed. With no default-deny policy in place every port is already
-        // reachable, and a message reporting this one as opened would read as
-        // "only this is admitted" — the opposite of what the host does.
-        if !firewall.state(executor)?.active {
-            report(progress, &Msg::TaskFirewallNotFilteringYet);
-        }
-
+        // The "nothing is being filtered yet" note that used to live here is
+        // gone, and its absence is the fix rather than an omission. It reported
+        // the condition *after* adding a rule, which on a host with no policy
+        // is a rule that cannot be added at all — so the note was either
+        // unreachable or printed over work that had already happened. The
+        // condition is now refused before anything is written, above.
         Ok(Outcome::Done)
     }
 }
@@ -788,6 +805,51 @@ mod tests {
     }
 
     #[test]
+    fn a_port_is_not_opened_against_a_policy_that_does_not_exist() {
+        // Reported from a Debian 13 host with `nft` installed and working:
+        // `nft add rule inet initd input tcp dport 22 accept` answered
+        // `Error: Could not process rule: No such file or directory`, naming a
+        // file for a table nobody had created — `firewall.enable` had never
+        // run. That reads as a defect in the rule.
+        //
+        // The task did carry a note for this condition, and it was written to
+        // run *after* the rule: on a host with no table the rule cannot be
+        // added at all, so the note was unreachable in exactly the case it
+        // described.
+        let mut values = ParamValues::new();
+        values.set(AllowPort::PORT, "443".to_owned());
+        values.set(AllowPort::PROTOCOL, "tcp".to_owned());
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"),                   // `nft` is here
+            Reply::failure(1, "No such file or directory"), // and no table is
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let error = AllowPort
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect_err("a port must not be opened against no policy");
+
+        assert!(
+            matches!(error, Error::FirewallNotEnabled),
+            "the refusal must name the missing policy, not the missing file: {error:?}"
+        );
+
+        // The point of refusing rather than repairing: nothing may be written.
+        // Creating the table here would leave an `accept` rule in a ruleset
+        // with no default-deny policy — a firewall that filters nothing while
+        // looking configured.
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|command| command.contains("add rule") || command.contains("add table")),
+            "the host's ruleset must be untouched: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
     fn opening_a_port_keeps_it_across_a_reboot() {
         // Same reasoning as enabling: a rule only in the kernel is a rule that
         // ends at the next restart.
@@ -797,13 +859,13 @@ mod tests {
 
         let mock = MockExecutor::with_replies([
             Reply::ok("nftables v1.0.9"),       // available
+            Reply::ok("table inet initd {\n}"), // state: a policy is in place
             Reply::failure(1, ""),              // not already allowed
             Reply::ok(""),                      // add rule
             Reply::ok("table inet initd {\n}"), // list ruleset
             Reply::ok("systemd 257"),           // which init
             Reply::ok(""),                      // tee
             Reply::ok(""),                      // enable
-            Reply::ok("table inet initd {\n}"), // state: active
         ]);
         let backend = for_family(Family::Debian);
 
@@ -832,8 +894,11 @@ mod tests {
             &AllowPort,
             vec![
                 Reply::ok("nftables v1.0.9"),
-                Reply::failure(1, "no such table"),
-                Reply::ok(""),
+                // The policy is in place: a port is only opened against one,
+                // since against no policy every port is already reachable.
+                Reply::ok("table inet initd {\n}"),
+                Reply::failure(1, "no such table"), // is_allowed: not yet
+                Reply::ok(""),                      // add rule
             ],
             &values,
         );
@@ -860,8 +925,11 @@ mod tests {
                 // The front-end is resolved before anything is written: a port
                 // opened on one that is not filtering stays closed.
                 Reply::ok("nftables v1.0.9"),
-                Reply::failure(1, "no such table"),
-                Reply::ok(""),
+                // The policy is in place: a port is only opened against one,
+                // since against no policy every port is already reachable.
+                Reply::ok("table inet initd {\n}"),
+                Reply::failure(1, "no such table"), // is_allowed: not yet
+                Reply::ok(""),                      // add rule
             ],
             &values,
         );

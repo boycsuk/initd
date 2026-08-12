@@ -64,6 +64,17 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NoFirewallFrontEnd => {
             "no inbound filtering front-end is installed on this host".to_owned()
         }
+        // Names the task that fixes it, because this refusal is one step short
+        // of an operation the operator plainly wants and the step is not
+        // guessable from "the firewall is not enabled". Says why rather than
+        // only what: against no default-deny policy every port is already
+        // reachable, so a rule admitting one would filter nothing while looking
+        // like a firewall that had been configured.
+        Msg::FirewallNotEnabled => {
+            "nothing is being filtered, so opening a port would admit nothing it \
+             does not already admit — run firewall.enable first"
+                .to_owned()
+        }
         // --- Command execution ---
         Msg::ProgramNotFound { program } => {
             format!("executable {program} was not found in PATH")

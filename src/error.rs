@@ -318,6 +318,16 @@ pub enum Error {
     /// engine, the other about `systemd-logind`.
     NoUserSession { user: String },
 
+    /// A port was opened on a host that is not filtering anything.
+    ///
+    /// Distinct from [`NoFirewallFrontEnd`](Self::NoFirewallFrontEnd), which is
+    /// about the tool being absent: here `nft` is installed and working, and
+    /// what is missing is the default-deny policy that gives an `accept` rule
+    /// its meaning. Without it there is no table to add the rule to, and `nft`
+    /// answers `No such file or directory` — naming a file for a table nobody
+    /// created, which reads as a defect in the rule.
+    FirewallNotEnabled,
+
     /// A user service was enabled and is not running.
     ///
     /// `enable --now` exiting zero says the command ran, not that the service
@@ -454,6 +464,7 @@ impl Error {
             },
             Self::PathNotAbsolute { path } => Msg::PathNotAbsolute { path: path.clone() },
             Self::NoFirewallFrontEnd => Msg::NoFirewallFrontEnd,
+            Self::FirewallNotEnabled => Msg::FirewallNotEnabled,
             Self::ProgramNotFound { program } => Msg::ProgramNotFound {
                 program: program.clone(),
             },
@@ -774,6 +785,7 @@ impl Error {
             // catalogue turns into a paragraph naming a remedy, and `kind
             // NoOtherAdmin` says less than the sentence it replaces.
             Self::NoFirewallFrontEnd
+            | Self::FirewallNotEnabled
             | Self::NoPrivilegeEscalator
             | Self::CannotDeleteRoot
             | Self::WireguardNotConfigured
