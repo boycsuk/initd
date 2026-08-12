@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`docker-rootless.install` failed on Debian with "no installation
+  candidate".** The backend named `docker-ce-rootless-extras`, which is correct
+  — Debian's own `docker.io` carries no `dockerd-rootless-setuptool.sh`, so
+  there would be nothing for the task to run — but that package is served by
+  Docker's repository and nothing registered it. The task has asked
+  `repository_for` since RHEL needed it; Debian answered `None`, so the step was
+  skipped and `apt-get` was sent looking for a package no Debian suite has ever
+  carried. It reads as a wrong package name rather than as a missing source.
+
+  `AptRepositories` is the deb822 counterpart to `RpmRepositories`, in the same
+  order for the same reason: the key is fetched, its fingerprint derived on the
+  host, and only a match writes anything. Two things differ, both measured.
+
+  APT expands `$(ARCH)` and nothing else, so unlike dnf's `$releasever` the
+  suite cannot be deferred to the package manager — `Repository` carries one,
+  read from the host's `VERSION_CODENAME`, and a repository reaching the
+  registrar without one is refused rather than guessed at. `$(ARCH)` is also
+  **not** expanded in the `Architectures:` field, which the first attempt
+  assumed by extrapolating from the path: measured on `debian:13`, that source
+  registers, updates without complaint, and resolves the package to
+  `Candidate: (none)` — the symptom of having no repository, reached through a
+  repository that is there. The field is omitted so APT uses the host's own.
+
+  The key is placed in `/etc/apt/keyrings` and named by `Signed-By` rather than
+  dropped in `trusted.gpg.d`, where it would vouch for every source on the
+  machine including Debian's.
+
+  The fingerprint is `9DC858229FC7DD38854AE2D88D81803C0EBFCD88`, and it is not
+  the RPM one already in the tree — different keys, different UIDs, and using
+  either where the other belongs refuses every legitimate key. Docker's own
+  pages no longer print it, so it was taken from `keys.openpgp.org` and
+  `keyserver.ubuntu.com`, derived from raw packet bytes rather than read off a
+  page. It pins the *primary* key: Docker signs its `InRelease` with a subkey,
+  so a check comparing a signature's issuer against this value would refuse a
+  correct key.
+
+  Verified end to end on `debian:13` rather than against a mock: the fingerprint
+  matches, the package goes from `Candidate: (none)` to
+  `5:29.7.2-1~debian.13~trixie`, `/usr/bin/dockerd-rootless-setuptool.sh` is
+  present afterwards, and nothing lands in `trusted.gpg.d`.
+
 - **A child that exits before reading its stdin no longer reports a broken pipe
   instead of its own refusal.** `join_stdin_writer` turned every write failure
   into `CommandIo`, and the owned-directory script refuses a planted symlink by

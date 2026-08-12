@@ -5,6 +5,7 @@
 //! changing the port — see the SSH port task.
 
 use super::apt_periodic::AptPeriodic;
+use super::apt_repositories::AptRepositories;
 use super::procfs_sysctl::ProcfsSysctl;
 use super::release_installer::ReleaseInstaller;
 use super::shadow_accounts::ShadowAccounts;
@@ -17,7 +18,8 @@ use super::{Backend, Capability};
 use crate::distro::Family;
 use crate::domain::{
     AccountReader, AccountWriter, AutomaticUpdates, BinaryInstaller, FileEditor, PackageManager,
-    ServiceManager, SysctlManager, UserServiceManager, WireguardTools,
+    Repository, RepositoryManager, ServiceManager, SysctlManager, UserServiceManager,
+    WireguardTools,
 };
 use crate::error::Result;
 use crate::exec::{Command, Executor};
@@ -51,8 +53,55 @@ const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 ///
 /// `docker-ce-rootless-extras` rather than `docker.io`: the distribution
 /// package does not carry `dockerd-rootless-setuptool.sh` at all, so the
-/// rootless install has nothing to run.
+/// rootless install has nothing to run. Verified by unpacking the `.deb`
+/// rather than by reading documentation — it carries
+/// `/usr/bin/dockerd-rootless-setuptool.sh`, `dockerd-rootless.sh` and
+/// `rootlesskit`.
+///
+/// Like RHEL's, this name is *not* in a repository the host already has —
+/// Debian packages `docker.io` and nothing named `docker-ce-*` in any suite —
+/// so [`Backend::repository_for`] is what tells the task to register one
+/// first. That was missing for as long as the name was here: `apt-get install`
+/// reported the package as having "no installation candidate", which reads as
+/// the name being wrong rather than as the repository being absent.
 const DOCKER_ROOTLESS_PACKAGE: &str = "docker-ce-rootless-extras";
+
+/// Where Docker serves packages for Debian.
+///
+/// Ubuntu is served from a sibling path and by the same key: the two archives
+/// are byte-identical, so one fingerprint below covers both. Which path a host
+/// uses follows its `ID`, since a derivative fetching Debian's suites would ask
+/// for a codename that path does not serve.
+const DOCKER_REPO_DEBIAN: &str = "https://download.docker.com/linux/debian";
+
+/// Where it serves packages for Ubuntu and its derivatives.
+const DOCKER_REPO_UBUNTU: &str = "https://download.docker.com/linux/ubuntu";
+
+/// Where each path serves its signing key.
+const DOCKER_KEY_DEBIAN: &str = "https://download.docker.com/linux/debian/gpg";
+const DOCKER_KEY_UBUNTU: &str = "https://download.docker.com/linux/ubuntu/gpg";
+
+/// The fingerprint of the key Docker signs its `.deb` packages with.
+///
+/// **Not** the RPM fingerprint in [`super::rhel`]. The two archives are signed
+/// by different keys with different UIDs — `Docker Release (CE deb)` against
+/// `Docker Release (CE rpm)` — and using either where the other belongs would
+/// refuse every legitimate key.
+///
+/// Docker's own installation pages no longer print this value; they only fetch
+/// the key. It was therefore taken from `keys.openpgp.org` and
+/// `keyserver.ubuntu.com` — two hosts with different operators, neither of them
+/// the one serving the key — and in both cases derived from the raw packet
+/// bytes rather than read off a rendered page. That independence is what makes
+/// compiling it in worth anything: whoever can replace the key on the CDN
+/// cannot also replace this constant.
+///
+/// This is the *primary* key. Docker signs its `InRelease` with a subkey
+/// (`D3306A018370199E527AE7997EA0A9C3F273FCD8`), so a check comparing a
+/// signature's issuer against this value would fail on a correct key. The
+/// verification asks `gpg` for the first `fpr`, which is the primary's, and
+/// lets it walk the binding signature.
+const DOCKER_DEB_FINGERPRINT: &str = "9DC858229FC7DD38854AE2D88D81803C0EBFCD88";
 
 /// The rootless engine's user unit.
 const DOCKER_USER_UNIT: &str = "docker.service";
@@ -124,11 +173,60 @@ pub struct DebianBackend {
     user_services: SystemdUserServices,
     binaries: ReleaseInstaller,
     automatic_updates: AptPeriodic,
+    repositories: AptRepositories,
+    /// Which of Docker's per-distribution paths serves this host.
+    docker_repo_path: &'static str,
+    /// Where that path serves its signing key.
+    docker_key_path: &'static str,
+    /// The suite Docker's repository is asked for.
+    ///
+    /// A fact about the host rather than about this build, and the reason this
+    /// backend resolves a distribution at all: APT expands `$(ARCH)` and
+    /// nothing else, so unlike dnf's `$releasever` the codename cannot be
+    /// deferred to the package manager. `None` where the host declares none,
+    /// which refuses the registration rather than guessing a suite.
+    codename: Option<String>,
 }
 
 impl DebianBackend {
+    /// Builds a backend for a named distribution in this family.
+    ///
+    /// Two things vary within this family rather than between families, and
+    /// both concern the one repository this tool registers. The `ID` decides
+    /// which of Docker's paths serves the host — Ubuntu's suites are not
+    /// Debian's, so a derivative pointed at the Debian path would ask for a
+    /// codename it does not carry. The codename itself is read from the host,
+    /// since there is no variable APT would expand for it.
+    ///
+    /// The mechanism is the one [`super::rhel::RhelBackend`] already used for
+    /// the same repository, reached here for a second reason.
+    pub fn for_distribution(id: &str, codename: Option<&str>) -> Self {
+        let (repo, key) = match id.to_ascii_lowercase().as_str() {
+            // Ubuntu, Linux Mint, Pop!_OS and anything else reaching this
+            // family through `ID_LIKE`. Docker builds one set of packages for
+            // Debian's suites and another for Ubuntu's.
+            "ubuntu" | "linuxmint" | "pop" | "elementary" | "zorin" | "neon" => {
+                (DOCKER_REPO_UBUNTU, DOCKER_KEY_UBUNTU)
+            }
+            _ => (DOCKER_REPO_DEBIAN, DOCKER_KEY_DEBIAN),
+        };
+
+        Self {
+            docker_repo_path: repo,
+            docker_key_path: key,
+            codename: codename.map(str::to_owned),
+            ..Self::new()
+        }
+    }
+
     pub const fn new() -> Self {
         Self {
+            // Debian's paths are the default; `for_distribution` narrows to
+            // Ubuntu's when the `ID` says so.
+            docker_repo_path: DOCKER_REPO_DEBIAN,
+            docker_key_path: DOCKER_KEY_DEBIAN,
+            codename: None,
+            repositories: AptRepositories::new(),
             packages: AptPackages,
             services: SystemdServices::new(),
             files: UnixFiles::new(),
@@ -204,6 +302,31 @@ impl Backend for DebianBackend {
 
     fn packages(&self) -> &dyn PackageManager {
         &self.packages
+    }
+
+    fn repositories(&self) -> Option<&dyn RepositoryManager> {
+        Some(&self.repositories)
+    }
+
+    fn repository_for(&self, capability: Capability) -> Option<Repository> {
+        match capability {
+            // The one capability Debian's own repositories do not carry:
+            // `docker.io` is the distribution's Docker and it ships no
+            // rootless setup script, so the engine comes from Docker's own
+            // repository or not at all. Registered only after the key that
+            // arrives matches a fingerprint this build took from two
+            // keyservers, neither of them the host serving the packages.
+            Capability::DockerRootless => Some(Repository {
+                name: "docker",
+                base_url: self.docker_repo_path,
+                key_url: self.docker_key_path,
+                fingerprint: DOCKER_DEB_FINGERPRINT,
+                // Read from the host: there is no `$releasever` here, and a
+                // suite named wrongly registers a repository serving nothing.
+                suite: self.codename.clone(),
+            }),
+            _ => None,
+        }
     }
 
     fn services(&self) -> &dyn ServiceManager {
@@ -324,6 +447,74 @@ impl PackageManager for AptPackages {
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn the_rootless_engine_comes_from_a_repository_the_host_does_not_have() {
+        // The failure this closes: `docker-ce-rootless-extras` is not in any
+        // Debian suite, so naming it while declaring no repository produced
+        // "Package has no installation candidate" on a stock host — which
+        // reads as a wrong package name rather than a missing source.
+        let backend = DebianBackend::for_distribution("debian", Some("trixie"));
+
+        assert!(backend.repositories().is_some());
+
+        let repository = backend
+            .repository_for(Capability::DockerRootless)
+            .expect("the engine's repository must be declared");
+
+        assert_eq!(repository.suite.as_deref(), Some("trixie"));
+        assert!(
+            repository.base_url.contains("/linux/debian"),
+            "{repository:?}"
+        );
+    }
+
+    #[test]
+    fn the_deb_key_is_not_the_rpm_one() {
+        // The two archives are signed by different keys with different UIDs,
+        // so using either where the other belongs refuses every legitimate
+        // key. Pinned in both directions, here and in the RHEL backend.
+        assert_ne!(
+            DOCKER_DEB_FINGERPRINT, "060A61C51B558A7F742B77AAC52FEB6B621E9F35",
+            "that is the .rpm key; the .debs are signed by another"
+        );
+    }
+
+    #[test]
+    fn ubuntu_is_served_by_its_own_path() {
+        // Docker builds one set of packages for Debian's suites and another
+        // for Ubuntu's, so a derivative pointed at the Debian path would ask
+        // for a codename that path does not carry.
+        let ubuntu = DebianBackend::for_distribution("ubuntu", Some("noble"));
+        let debian = DebianBackend::for_distribution("debian", Some("trixie"));
+
+        let path_of = |backend: &DebianBackend| {
+            backend
+                .repository_for(Capability::DockerRootless)
+                .expect("declared")
+                .base_url
+        };
+
+        assert!(path_of(&ubuntu).contains("/linux/ubuntu"));
+        assert!(path_of(&debian).contains("/linux/debian"));
+    }
+
+    #[test]
+    fn a_host_declaring_no_codename_carries_no_suite() {
+        // Not defaulted to `stable`, which is a moving target, nor to a
+        // codename this build happens to know: either registers a repository
+        // that serves nothing, and the install then reports the package as
+        // missing rather than the suite as wrong.
+        let backend = DebianBackend::for_distribution("debian", None);
+
+        assert!(
+            backend
+                .repository_for(Capability::DockerRootless)
+                .expect("declared")
+                .suite
+                .is_none()
+        );
+    }
 
     #[test]
     fn installs_the_debian_ssh_package_name() {

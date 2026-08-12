@@ -130,12 +130,18 @@ mod tests {
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// Docker's, as the task declares it.
-    const DOCKER: Repository = Repository {
-        name: "docker-ce",
-        base_url: "https://download.docker.com/linux/rhel/9/x86_64/stable",
-        key_url: "https://download.docker.com/linux/rhel/gpg",
-        fingerprint: "060A61C51B558A7F742B77AAC52FEB6B621E9F35",
-    };
+    ///
+    /// A function rather than a `const` since the suite is owned: rpm has none,
+    /// because `dnf` expands `$releasever` from the running system.
+    fn docker() -> Repository {
+        Repository {
+            name: "docker-ce",
+            base_url: "https://download.docker.com/linux/rhel/9/x86_64/stable",
+            key_url: "https://download.docker.com/linux/rhel/gpg",
+            fingerprint: "060A61C51B558A7F742B77AAC52FEB6B621E9F35",
+            suite: None,
+        }
+    }
 
     #[test]
     fn a_matching_fingerprint_registers_the_repository() {
@@ -146,7 +152,7 @@ mod tests {
         ]);
 
         RpmRepositories::new()
-            .register(&mock, &DOCKER)
+            .register(&mock, &docker())
             .expect("a verified key must register");
 
         let written = mock
@@ -157,7 +163,7 @@ mod tests {
             .expect("the definition must be written");
 
         assert!(written.contains("gpgcheck=1"), "{written}");
-        assert!(written.contains(DOCKER.base_url), "{written}");
+        assert!(written.contains(docker().base_url), "{written}");
     }
 
     #[test]
@@ -167,7 +173,7 @@ mod tests {
         let mock =
             MockExecutor::with_replies([Reply::ok("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF\n")]);
 
-        let result = RpmRepositories::new().register(&mock, &DOCKER);
+        let result = RpmRepositories::new().register(&mock, &docker());
 
         assert!(matches!(result, Err(Error::RepositoryKeyMismatch { .. })));
         assert!(
@@ -192,7 +198,7 @@ mod tests {
         ]);
 
         RpmRepositories::new()
-            .register(&mock, &DOCKER)
+            .register(&mock, &docker())
             .expect("registration must succeed");
 
         // Found by looking at what the command *is* rather than at how it
@@ -221,7 +227,7 @@ mod tests {
     fn a_key_that_cannot_be_fetched_is_an_error_not_a_registration() {
         let mock = MockExecutor::with_replies([Reply::failure(1, "curl: (6) could not resolve")]);
 
-        let result = RpmRepositories::new().register(&mock, &DOCKER);
+        let result = RpmRepositories::new().register(&mock, &docker());
 
         assert!(matches!(
             result,
@@ -240,7 +246,7 @@ mod tests {
         ]);
 
         RpmRepositories::new()
-            .register(&mock, &DOCKER)
+            .register(&mock, &docker())
             .expect("case must not decide whether a key is trusted");
     }
 
@@ -254,7 +260,7 @@ mod tests {
         ]);
 
         RpmRepositories::new()
-            .register(&mock, &DOCKER)
+            .register(&mock, &docker())
             .expect("registration must succeed");
 
         let script = mock
@@ -276,7 +282,7 @@ mod tests {
 
         assert!(
             !RpmRepositories::new()
-                .is_registered(&mock, &DOCKER)
+                .is_registered(&mock, &docker())
                 .expect("the query must succeed")
         );
     }

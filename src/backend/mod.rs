@@ -6,6 +6,7 @@
 
 pub mod alpine;
 pub mod apt_periodic;
+pub mod apt_repositories;
 pub mod arch;
 pub mod backup_index;
 pub mod busybox_accounts;
@@ -407,6 +408,14 @@ pub fn for_distro(distro: &Distro) -> Box<dyn Backend> {
     match distro.family {
         Family::Rhel => Box::new(rhel::RhelBackend::for_distribution(&distro.id)),
         Family::Suse => Box::new(suse::SuseBackend::for_distribution(&distro.id)),
+        // Debian resolves two things rather than one, and the second is not a
+        // name at all: Docker's repository is keyed by suite, and APT expands
+        // no variable for it, so the codename is carried in from the detected
+        // distribution rather than deferred to the package manager.
+        Family::Debian => Box::new(debian::DebianBackend::for_distribution(
+            &distro.id,
+            distro.codename.as_deref(),
+        )),
         family => for_family(family),
     }
 }

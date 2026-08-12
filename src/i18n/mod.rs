@@ -103,6 +103,9 @@ pub enum Msg {
     RepositoryKeyUnverifiable {
         repository: String,
     },
+    RepositoryUnknownSuite {
+        repository: String,
+    },
 
     NoFirewallFrontEnd,
 

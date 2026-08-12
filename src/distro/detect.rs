@@ -64,6 +64,15 @@ pub fn parse(contents: &str, path: &Path) -> Result<Distro> {
     Ok(Distro {
         id,
         version_id: fields.get("VERSION_ID").cloned(),
+        // Ubuntu derivatives declare their own `VERSION_CODENAME` and carry
+        // the Ubuntu one in `UBUNTU_CODENAME`; Docker's repository is keyed by
+        // the latter, since a derivative's own name is a suite Docker does not
+        // serve. Docker's Debian and Ubuntu instructions differ in exactly this
+        // way, which is why the fallback runs in that direction.
+        codename: fields
+            .get("UBUNTU_CODENAME")
+            .or_else(|| fields.get("VERSION_CODENAME"))
+            .cloned(),
         pretty_name: fields.get("PRETTY_NAME").cloned(),
         family,
     })

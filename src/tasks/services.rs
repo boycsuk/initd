@@ -734,10 +734,27 @@ mod tests {
         values: &ParamValues,
     ) -> (Result<Outcome>, Vec<String>) {
         let mock = MockExecutor::with_replies(replies);
-        let backend = for_family(family);
+        let backend = backend_for(family);
         let outcome = task.run(&mock, backend.as_ref(), values, &mut |_| {});
 
         (outcome, mock.recorded_lines())
+    }
+
+    /// A backend built the way [`crate::backend::for_distro`] builds one.
+    ///
+    /// `for_family` cannot serve here: Debian's Docker repository is keyed by
+    /// suite, and a backend built without one refuses to register rather than
+    /// guessing a codename. That refusal is correct on a host declaring no
+    /// `VERSION_CODENAME` and wrong in a test meaning to exercise the install,
+    /// so the scenarios state a distribution as a real one would.
+    fn backend_for(family: Family) -> Box<dyn Backend> {
+        match family {
+            Family::Debian => Box::new(crate::backend::debian::DebianBackend::for_distribution(
+                "debian",
+                Some("trixie"),
+            )),
+            other => for_family(other),
+        }
     }
 
     #[test]
@@ -789,14 +806,23 @@ mod tests {
             Family::Debian,
             vec![
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
-                Reply::ok(""),          // subuid
-                Reply::ok(""),          // subgid
-                Reply::ok(""),          // install
+                Reply::ok(""), // subuid
+                Reply::ok(""), // subgid
+                // Debian reaches the engine through Docker's own repository,
+                // as RHEL does: the distribution packages `docker.io`, which
+                // carries no rootless setup script.
+                Reply::failure(1, ""), // the source is not registered yet
+                Reply::ok("9DC858229FC7DD38854AE2D88D81803C0EBFCD88\n"), // the key checks out
+                Reply::ok(""),         // install -d the keyring directory
+                Reply::ok(""),         // fetch the key
+                Reply::ok(""),         // write the source
+                Reply::ok(""),         // apt-get update
+                Reply::ok(""),         // install
                 Reply::ok("Linger=no"), // not lingering yet
-                Reply::ok(""),          // enable-linger
-                Reply::ok(""),          // setuptool
-                Reply::ok(""),          // enable --now
-                Reply::ok("active"),    // is-active
+                Reply::ok(""),         // enable-linger
+                Reply::ok(""),         // setuptool
+                Reply::ok(""),         // enable --now
+                Reply::ok("active"),   // is-active
             ],
             &user_values("deploy"),
         );

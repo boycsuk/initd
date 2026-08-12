@@ -22,6 +22,7 @@ pub fn test_distro(family: Family) -> Distro {
     Distro {
         id: "debian".to_owned(),
         version_id: Some("13".to_owned()),
+        codename: Some("trixie".to_owned()),
         pretty_name: Some("Debian GNU/Linux 13".to_owned()),
         family,
     }

@@ -27,13 +27,27 @@ use crate::error::Result;
 use crate::exec::Executor;
 
 /// A repository this build knows how to register, and can prove it registered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy`, because [`Repository::suite`] is a fact about the host rather
+/// than about this build: the others are values compiled in, and that one is
+/// read from `/etc/os-release` at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
     /// Short identifier, used in the file name and in messages.
     pub name: &'static str,
 
     /// Where the repository's metadata lives.
     pub base_url: &'static str,
+
+    /// The suite to fetch, where the packaging names one.
+    ///
+    /// `None` on rpm, whose `$releasever` dnf expands from the running system.
+    /// APT has no equivalent — it expands `$(ARCH)` and nothing else, measured
+    /// against `sources.list(5)` rather than assumed — so the codename reaches
+    /// the definition from the detected distribution. A repository that named
+    /// the wrong suite would register successfully and serve nothing, which is
+    /// the failure this field exists to make impossible to write by accident.
+    pub suite: Option<String>,
 
     /// Where its signing key is served.
     pub key_url: &'static str,

@@ -73,6 +73,16 @@ pub enum Error {
     /// repository is not registered and nothing is claimed about it.
     RepositoryKeyUnverifiable { repository: String },
 
+    /// An APT repository was reached without knowing which suite to fetch.
+    ///
+    /// Distinct from either key failure: the key may be perfectly good. APT
+    /// expands `$(ARCH)` and nothing else, so unlike dnf's `$releasever` the
+    /// suite cannot be deferred to the package manager — and a guessed one
+    /// registers a repository that serves nothing, which then surfaces as the
+    /// package being missing rather than as the suite being wrong. Raised when
+    /// the host declares no `VERSION_CODENAME`.
+    RepositoryUnknownSuite { repository: String },
+
     /// No inbound filtering front-end is present on this host.
     ///
     /// Carries nothing: which front-ends were tried is a property of the
@@ -416,6 +426,9 @@ impl Error {
             Self::RepositoryKeyUnverifiable { repository } => Msg::RepositoryKeyUnverifiable {
                 repository: repository.clone(),
             },
+            Self::RepositoryUnknownSuite { repository } => Msg::RepositoryUnknownSuite {
+                repository: repository.clone(),
+            },
             Self::NoFirewallFrontEnd => Msg::NoFirewallFrontEnd,
             Self::ProgramNotFound { program } => Msg::ProgramNotFound {
                 program: program.clone(),
@@ -664,6 +677,9 @@ impl Error {
             }
 
             Self::RepositoryKeyUnverifiable { repository } => {
+                vec![(ErrorField::Repository, repository.clone())]
+            }
+            Self::RepositoryUnknownSuite { repository } => {
                 vec![(ErrorField::Repository, repository.clone())]
             }
             Self::ServiceDidNotStart { service, user } => vec![

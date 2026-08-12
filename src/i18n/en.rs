@@ -46,6 +46,14 @@ pub(super) fn render(message: &Msg) -> String {
                  so the repository was not registered"
             )
         }
+        Msg::RepositoryUnknownSuite { repository } => {
+            format!(
+                "this host declares no VERSION_CODENAME in /etc/os-release, so \
+                 there is no suite to fetch from {repository} and it was not \
+                 registered. APT expands no variable for the suite, and a \
+                 guessed one would register a repository serving nothing"
+            )
+        }
         Msg::NoFirewallFrontEnd => {
             "no inbound filtering front-end is installed on this host".to_owned()
         }

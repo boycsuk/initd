@@ -92,6 +92,16 @@ pub struct Distro {
     pub id: String,
     /// The `VERSION_ID` field, absent on rolling releases such as Arch.
     pub version_id: Option<String>,
+    /// The `VERSION_CODENAME` field — `trixie`, `bookworm`, `noble`.
+    ///
+    /// Unlike `id` and `version_id` this one drives behaviour, which is why it
+    /// is read rather than merely displayed: an APT repository names the suite
+    /// it serves, and APT expands only `$(ARCH)` — never the suite. dnf's
+    /// `$releasever` has no equivalent here, so the codename has to reach the
+    /// definition from the host. Absent on rolling releases and on the RPM
+    /// families, which is why it is optional rather than defaulted: a guessed
+    /// suite names a repository that serves nothing.
+    pub codename: Option<String>,
     /// The `PRETTY_NAME` field, for display.
     pub pretty_name: Option<String>,
     /// The family whose backend handles this distribution.

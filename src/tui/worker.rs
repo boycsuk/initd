@@ -276,6 +276,7 @@ mod tests {
         Distro {
             id: "debian".to_owned(),
             version_id: None,
+            codename: None,
             pretty_name: None,
             family: crate::distro::Family::Debian,
         }

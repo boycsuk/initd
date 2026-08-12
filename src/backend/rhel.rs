@@ -423,6 +423,10 @@ impl Backend for RhelBackend {
                 // repository rather than deciding which key is expected.
                 key_url: self.docker_key_path,
                 fingerprint: DOCKER_RPM_FINGERPRINT,
+                // dnf expands `$releasever` from the running system, so the
+                // release never has to reach this layer. APT has no equivalent
+                // and Debian's entry carries a codename for that reason.
+                suite: None,
             }),
             _ => None,
         }
@@ -719,10 +723,16 @@ mod tests {
 
     #[test]
     fn a_family_with_no_third_party_repository_offers_no_manager() {
-        // The default: nothing this tool installs on Debian, Arch or Alpine
-        // comes from outside the distribution, so none of them can register
-        // anything at all.
-        for family in [Family::Debian, Family::Arch, Family::Alpine] {
+        // The default: nothing this tool installs on Arch or Alpine comes from
+        // outside the distribution, so neither can register anything at all.
+        //
+        // Debian was in this list and no longer is. It packages `docker.io`,
+        // which carries no rootless setup script, so the engine comes from
+        // Docker's own repository exactly as it does on RHEL — and while this
+        // test asserted otherwise, the Debian backend named a package no
+        // Debian suite serves and the install failed on a host with no
+        // repository to fetch it from.
+        for family in [Family::Arch, Family::Alpine] {
             assert!(
                 super::super::for_family(family).repositories().is_none(),
                 "{family} must not be able to register repositories"
