@@ -67,6 +67,18 @@ pub enum Capability {
     Mise,
     /// The Rust toolchain.
     Rust,
+    /// Git.
+    ///
+    /// The one capability every family packages under the same name, which is
+    /// worth stating rather than leaving as a coincidence: it is the shape the
+    /// rest of this enum exists because most capabilities do *not* have.
+    Git,
+    /// The GitHub CLI.
+    ///
+    /// And immediately the counter-example: `gh` on Debian, Ubuntu and
+    /// openSUSE, `github-cli` on Arch and Alpine, and nothing at all in Red
+    /// Hat's repositories.
+    GithubCli,
     /// The fail2ban log-parsing banner.
     Fail2ban,
     /// The CrowdSec reputation-network banner.

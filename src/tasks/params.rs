@@ -39,6 +39,27 @@ pub enum ParamKind {
     Endpoint,
     /// A release version, as `0.44.0`.
     Version,
+    /// A git branch name.
+    ///
+    /// Constrained by `git check-ref-format`, whose rules are git's rather than
+    /// this project's: no space, no `..`, no leading `-`, and none of
+    /// `~^:?*[\`. A name breaking them is one `git init` refuses, so accepting
+    /// it here would write a configuration that fails at the moment somebody
+    /// creates a repository rather than at the moment they typed it.
+    BranchName,
+    /// A person's name, as git attributes a commit to.
+    ///
+    /// Deliberately permissive: names carry accents, apostrophes, spaces and
+    /// scripts this project has no business enumerating. What it refuses is the
+    /// two characters that would break the file it lands in — a newline, which
+    /// would forge a second config entry, and a control character.
+    PersonName,
+    /// An email address, as git attributes a commit to.
+    ///
+    /// Checked for shape rather than for deliverability. A tool that refused
+    /// `ada@localhost` or an address with a `+` would be wrong about addresses
+    /// that work, and nothing here can tell whether one receives mail.
+    Email,
     /// A transport protocol: `tcp` or `udp`.
     ///
     /// A closed choice rather than free text, because the two are not
@@ -202,9 +223,18 @@ impl ParamKind {
             // here would refuse one their password manager had already stored
             // — a field that silently drops characters is worse than one that
             // accepts a value the system later rejects.
-            Self::Username | Self::UsernameList | Self::PublicKey | Self::Path | Self::Secret => {
-                !character.is_control()
-            }
+            // A name is whoever's it is: accents, apostrophes, spaces and
+            // scripts this project has no standing to enumerate. Refusing a
+            // control character is refusing the one thing that would forge a
+            // second entry in the file it is written into.
+            Self::Username
+            | Self::UsernameList
+            | Self::PublicKey
+            | Self::Path
+            | Self::PersonName
+            | Self::Secret => !character.is_control(),
+            Self::Email => !character.is_control() && !character.is_whitespace(),
+            Self::BranchName => !character.is_control() && !character.is_whitespace(),
             Self::Protocol | Self::Removal | Self::HomeDirectory => character.is_ascii_alphabetic(),
             Self::Version => character.is_ascii_digit() || character == '.',
             // Hostnames are admitted in an endpoint, so letters and `-` too.
@@ -234,6 +264,9 @@ impl ParamKind {
             // would refuse passwords the host would have accepted.
             Self::Secret => Ok(()),
             Self::Version => validate_version(value),
+            Self::PersonName => validate_person_name(value),
+            Self::Email => validate_email(value),
+            Self::BranchName => validate_branch_name(value),
             Self::Cidr => validate_cidr(value),
             Self::Ip => validate_ip(value),
             Self::Endpoint => validate_endpoint(value),
@@ -321,6 +354,90 @@ fn validate_endpoint(value: &str) -> std::result::Result<(), String> {
 }
 
 /// Rejects anything that could not name a release.
+/// Rejects a branch name `git init` would refuse.
+///
+/// The rules are `git check-ref-format`'s rather than this project's, which is
+/// what makes checking them here worth anything: a name git refuses, written
+/// into `init.defaultBranch`, produces a configuration that fails at the moment
+/// somebody creates a repository — far from the form where it was typed.
+fn validate_branch_name(value: &str) -> std::result::Result<(), String> {
+    if value.is_empty() {
+        return Err("a branch name is required".to_owned());
+    }
+
+    if value.starts_with('-') {
+        return Err("a branch name cannot start with a dash".to_owned());
+    }
+
+    if value.starts_with('/') || value.ends_with('/') || value.contains("//") {
+        return Err("a branch name cannot start, end or double up on /".to_owned());
+    }
+
+    if value.ends_with(".lock") || value.ends_with('.') {
+        return Err("a branch name cannot end with a dot or .lock".to_owned());
+    }
+
+    if value.contains("..") || value.contains("@{") {
+        return Err("a branch name cannot contain .. or @{".to_owned());
+    }
+
+    // The set `git check-ref-format` names outright.
+    if let Some(bad) = value.chars().find(|c| "~^:?*[\\".contains(*c)) {
+        return Err(format!("a branch name cannot contain {bad}"));
+    }
+
+    Ok(())
+}
+
+/// Rejects a name that would not survive the file it is written into.
+///
+/// Deliberately almost everything is allowed. `git` accepts any name, and this
+/// project has no standing to decide which of the world's names are real — a
+/// validator that refused an accent, an apostrophe or a script it did not
+/// recognise would be wrong about people rather than about data.
+///
+/// What it does refuse is the two shapes that break the target: a newline,
+/// which would forge a second line in `~/.gitconfig`, and a value that is only
+/// whitespace, which git records and then attributes commits to nobody.
+fn validate_person_name(value: &str) -> std::result::Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("a name is required — git will not commit without one".to_owned());
+    }
+
+    if value.contains(['\n', '\r']) {
+        return Err("a name cannot span lines".to_owned());
+    }
+
+    Ok(())
+}
+
+/// Rejects a value that is not shaped like an email address.
+///
+/// Shape rather than deliverability, and the difference matters: `ada@localhost`
+/// is valid and common on a server, addresses carry `+` and dots, and nothing
+/// here can tell whether one receives mail. A stricter rule would refuse
+/// addresses that work — the failure this project already recorded for package
+/// names, arrived at from the other direction.
+fn validate_email(value: &str) -> std::result::Result<(), String> {
+    if value.is_empty() {
+        return Err("an email is required — git will not commit without one".to_owned());
+    }
+
+    let Some((local, domain)) = value.split_once('@') else {
+        return Err("an email needs an @, as ada@example.com".to_owned());
+    };
+
+    if local.is_empty() || domain.is_empty() {
+        return Err("an email needs something either side of the @".to_owned());
+    }
+
+    if value.matches('@').count() > 1 {
+        return Err("an email has one @".to_owned());
+    }
+
+    Ok(())
+}
+
 fn validate_version(value: &str) -> std::result::Result<(), String> {
     if value.is_empty() {
         return Err("a version is required".to_owned());

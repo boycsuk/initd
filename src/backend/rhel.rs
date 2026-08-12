@@ -181,6 +181,34 @@ const MISE_PACKAGE: &str = "";
 /// break itself. Until a version is pinned, the capability is absent.
 const RUST_PACKAGE: &str = "";
 
+/// Git, in AppStream rather than BaseOS.
+const GIT_PACKAGE: &str = "git";
+
+/// The GitHub CLI is in no Red Hat repository.
+///
+/// Absent from BaseOS, AppStream and Extras alike — measured against Rocky 9's
+/// package listings, where `Extras` has no `g/` directory at all. The one
+/// family of the five that packages it nowhere.
+///
+/// EPEL carries `gh` 2.97.0, and that is declined for the reason fail2ban and
+/// CrowdSec are: EPEL is a third-party repository, and this project reaches for
+/// one only when the alternative is nothing. Here the alternative is better
+/// than the package — GitHub publishes per-architecture tarballs with a
+/// checksums file, so the release installer answers with an artefact this build
+/// verified rather than one a repository vouches for.
+///
+/// **GitHub's own RPM repository was considered and declined**, and the reason
+/// is timing rather than principle. Its signing key was rotated: the
+/// certificate this project would have pinned
+/// (`2C6106201985B60E6C7AC87323F3D4EA75716059`) **expires 2026-09-05**, and its
+/// replacement (`7F38BBB59D064DBCB3D84D725612B36462313325`) appears on
+/// `keyserver.ubuntu.com` and *not* on `keys.openpgp.org` — and that keyserver
+/// accepts unverified uploads, so its copy corroborates nothing. A fingerprint
+/// with no independent publication is a value this build would be trusting the
+/// serving host to have told it, which is the whole thing
+/// [`crate::domain::repositories`] exists to refuse.
+const GITHUB_CLI_PACKAGE: &str = "";
+
 /// The nftables front-end, in BaseOS.
 ///
 /// Packaged rather than preinstalled — a Rocky 9 base image ships neither `nft`
@@ -320,6 +348,8 @@ impl Backend for RhelBackend {
             Capability::Nftables => NFTABLES_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
+            Capability::Git => GIT_PACKAGE,
+            Capability::GithubCli => GITHUB_CLI_PACKAGE,
             Capability::UnattendedUpgrades => UNATTENDED_PACKAGE,
         }
     }
@@ -338,6 +368,8 @@ impl Backend for RhelBackend {
             Capability::Nftables => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
+            // Neither is a service: both are commands somebody runs.
+            Capability::Git | Capability::GithubCli => "",
             Capability::UnattendedUpgrades => "",
         }
     }
@@ -355,6 +387,13 @@ impl Backend for RhelBackend {
             Capability::Nftables => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
+            // Git's system-wide file, which `git config --system` writes.
+            // The per-account one is `~/.gitconfig`, which depends on whose
+            // account is being configured and so cannot be named here.
+            Capability::Git => "/etc/gitconfig",
+            // Configured per account under `$XDG_CONFIG_HOME` or
+            // `~/.config`, so there is no system path to name.
+            Capability::GithubCli => "",
             Capability::UnattendedUpgrades => "",
         }
     }

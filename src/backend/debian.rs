@@ -162,6 +162,24 @@ const MISE_PACKAGE: &str = "";
 /// to the release installer, which is the right answer rather than a failure.
 const RUST_PACKAGE_TRIXIE: &str = "rustup";
 
+/// Git, in `main`.
+const GIT_PACKAGE: &str = "git";
+
+/// The GitHub CLI on Debian: `gh`, not `github-cli`.
+///
+/// In `main` since bookworm — contrary to a widely repeated claim that Debian
+/// packages it nowhere, which `packages.debian.org`'s keyword search
+/// encourages by not surfacing it. The binary package pages do.
+///
+/// Ubuntu carries the same name in `universe` rather than `main`, so a minimal
+/// cloud image with universe disabled has no candidate and the release
+/// installer answers instead — the same shape as `rustup` on that family.
+///
+/// What the package does not offer is currency: trixie ships 2.46 against
+/// upstream's 2.97. That is a reason to prefer the release *where a
+/// distribution ships nothing*, not a reason to bypass a package that exists.
+const GITHUB_CLI_PACKAGE: &str = "gh";
+
 /// The nftables front-end on Debian.
 const NFTABLES_PACKAGE: &str = "nftables";
 
@@ -307,6 +325,8 @@ impl Backend for DebianBackend {
             Capability::Nftables => NFTABLES_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
+            Capability::Git => GIT_PACKAGE,
+            Capability::GithubCli => GITHUB_CLI_PACKAGE,
             Capability::UnattendedUpgrades => UNATTENDED_PACKAGE,
         }
     }
@@ -327,6 +347,8 @@ impl Backend for DebianBackend {
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
             // Driven by a timer the package ships, not by a unit of its own.
+            // Neither is a service: both are commands somebody runs.
+            Capability::Git | Capability::GithubCli => "",
             Capability::UnattendedUpgrades => "",
         }
     }
@@ -344,6 +366,16 @@ impl Backend for DebianBackend {
             Capability::Nftables => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
+            // Git's system-wide file, which `git config --system` writes and
+            // which is where a `safe.directory` covering every account belongs.
+            // The per-account file is `~/.gitconfig`, which this cannot name:
+            // it depends on whose account is being configured.
+            Capability::Git => "/etc/gitconfig",
+            // Configured per account under `$XDG_CONFIG_HOME` or `~/.config`,
+            // so there is no system path to name. Since 2.97 the token is not
+            // in a file at all by default — it goes to the system credential
+            // store, falling back to plaintext only when none is available.
+            Capability::GithubCli => "",
             Capability::UnattendedUpgrades => "/etc/apt/apt.conf.d",
         }
     }

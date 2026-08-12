@@ -73,6 +73,14 @@ pub enum Error {
     /// repository is not registered and nothing is claimed about it.
     RepositoryKeyUnverifiable { repository: String },
 
+    /// A path that has to be absolute was not.
+    ///
+    /// `safe.directory` is matched literally by git, so a relative path never
+    /// matches anything: the setting would be written, reported as applied, and
+    /// do nothing. Refused where it is typed rather than discovered later, when
+    /// git refuses a repository the operator believes they trusted.
+    PathNotAbsolute { path: String },
+
     /// An APT repository was reached without knowing which suite to fetch.
     ///
     /// Distinct from either key failure: the key may be perfectly good. APT
@@ -429,6 +437,7 @@ impl Error {
             Self::RepositoryUnknownSuite { repository } => Msg::RepositoryUnknownSuite {
                 repository: repository.clone(),
             },
+            Self::PathNotAbsolute { path } => Msg::PathNotAbsolute { path: path.clone() },
             Self::NoFirewallFrontEnd => Msg::NoFirewallFrontEnd,
             Self::ProgramNotFound { program } => Msg::ProgramNotFound {
                 program: program.clone(),
@@ -682,6 +691,7 @@ impl Error {
             Self::RepositoryUnknownSuite { repository } => {
                 vec![(ErrorField::Repository, repository.clone())]
             }
+            Self::PathNotAbsolute { path } => vec![(ErrorField::Path, path.clone())],
             Self::ServiceDidNotStart { service, user } => vec![
                 (ErrorField::Service, service.clone()),
                 (ErrorField::User, user.clone()),

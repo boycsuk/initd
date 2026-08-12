@@ -330,6 +330,39 @@ TUI or CLI:
     it is installed as that account. A toolchain manager resolves its home from
     the environment at run time, so one installed by root belongs to root
     however the request was phrased.
+- As an **administrator**, I can give an account a git identity, so that commits
+  made on this box are attributed to somebody.
+  - Acceptance: git refuses to commit without one — it exits 128 saying *"Please
+    tell me who you are"* — so the row that installs git says so rather than
+    reporting success on a tool that cannot yet do its job.
+  - Acceptance: the identity is written per account, never machine-wide. One
+    `user.email` for the host would attribute everybody's commits to one person.
+  - Acceptance: everything already in that account's config file survives.
+    Aliases, editor choices and comments are the operator's, and a tool that
+    tidied them into its own shape would destroy work while reporting success.
+  - Acceptance: setting an identity twice replaces it rather than appending a
+    second one. git reads the last of a repeated key, so a duplicate leaves the
+    operator looking at two values unable to tell which is in effect.
+- As an **administrator**, I can let git read a repository owned by another
+  account, so that a deploy checkout works without weakening the check for
+  everything else.
+  - Acceptance: paths are added, not replaced. A host with three checkouts needs
+    three entries, and replacing would un-trust one that worked yesterday — a
+    failure that surfaces later and somewhere else.
+  - Acceptance: a relative path is refused where it is typed. git matches this
+    setting literally, so a relative one is not a near miss: it never matches,
+    and would read as applied.
+  - Acceptance: trusting one path is offered; opting out of the check entirely
+    is not.
+- As an **administrator**, I can install the GitHub CLI, so that I can work with
+  repositories from the server.
+  - Acceptance: it is installed from the distribution where the distribution has
+    it, under whichever name that distribution uses, and from a checksum-verified
+    release where it does not.
+  - Acceptance: the tool says how to authenticate on a machine with no browser,
+    naming the command, because the default flow cannot work there.
+  - Acceptance: no token is asked for, stored or handled by this tool. It is the
+    operator's credential, and gh has its own storage for it.
 - As an **administrator**, I can remove a tool I installed, so that a box I use
   for one thing does not accumulate the tools I tried for another.
   - Acceptance: I choose whether its configuration goes with it. The default

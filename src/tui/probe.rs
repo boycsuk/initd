@@ -271,6 +271,10 @@ fn program_for(capability: Capability) -> Option<&'static str> {
         Capability::Mise => Some("mise"),
         Capability::Caddy => Some("caddy"),
         Capability::Rust => Some("rustup"),
+        // The binary is `gh` on every family, including the two that package
+        // it as `github-cli` — which is why this table exists separately from
+        // the package names.
+        Capability::GithubCli => Some("gh"),
         // Everything else is packaged on every family this tool supports, so a
         // host that has no package for it has no other way to have got it
         // either. Written as an exhaustive match rather than a catch-all: a
@@ -281,6 +285,8 @@ fn program_for(capability: Capability) -> Option<&'static str> {
         | Capability::DockerRootless
         | Capability::Nftables
         | Capability::Fish
+        // The one capability all five families package under one name.
+        | Capability::Git
         | Capability::Fail2ban
         | Capability::Crowdsec
         | Capability::UnattendedUpgrades => None,

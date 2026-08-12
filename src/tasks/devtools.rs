@@ -40,6 +40,21 @@ pub fn category() -> Category {
                 forward: Box::new(InstallRust),
                 inverse: Box::new(UninstallRust),
             },
+            Node::Reversible {
+                forward: Box::new(InstallGit),
+                inverse: Box::new(UninstallGit),
+            },
+            Node::Reversible {
+                forward: Box::new(InstallGithubCli),
+                inverse: Box::new(UninstallGithubCli),
+            },
+            // Configuration rather than installation, so no inverse: undoing
+            // "this account commits as Ada" is not removing the setting, it is
+            // deciding who else it should be — which is the same task run
+            // again.
+            Node::Task(Box::new(SetGitIdentity)),
+            Node::Task(Box::new(SetGitDefaultBranch)),
+            Node::Task(Box::new(SetGitSafeDirectory)),
         ],
     )
 }
@@ -291,6 +306,489 @@ impl Task for InstallZellij {
         report(progress, &Msg::TaskZellijVerified);
 
         Ok(Outcome::Done)
+    }
+}
+
+/// Installs git.
+pub struct InstallGit;
+
+impl Task for InstallGit {
+    fn id(&self) -> &'static str {
+        "git.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install git"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs git. It will refuse to commit until an account has a name and \
+         an email address — set those with git.identity."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Git)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["git.install"]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // Measured rather than inferred: on git 2.47.3 with an empty HOME,
+        // `git commit` exits 128 with `*** Please tell me who you are.` A
+        // freshly installed git is not a working git, and the row that installs
+        // it should not imply otherwise.
+        vec![Consequence::Invalidates {
+            task: "git.identity",
+            reason: Reason::RequiresSetting {
+                setting: "user.name and user.email — git refuses to commit without them",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        backend
+            .packages()
+            .install(executor, backend.package_for(Capability::Git))?;
+
+        report(progress, &Msg::TaskGitNeedsIdentity);
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Sets a git identity for one account.
+pub struct SetGitIdentity;
+
+impl SetGitIdentity {
+    /// Name of the parameter holding the account being configured.
+    pub const USER: &'static str = "user";
+    /// Name of the parameter holding the name commits are attributed to.
+    pub const NAME: &'static str = "name";
+    /// Name of the parameter holding the email commits are attributed to.
+    pub const EMAIL: &'static str = "email";
+}
+
+impl Task for SetGitIdentity {
+    fn id(&self) -> &'static str {
+        "git.identity"
+    }
+
+    fn title(&self) -> &'static str {
+        "Set a git identity for a user"
+    }
+
+    fn description(&self) -> &'static str {
+        "Writes user.name and user.email into an account's own ~/.gitconfig. \
+         Without them git refuses to commit at all."
+    }
+
+    supported_everywhere!();
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["git.identity"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::USER, "Username", ParamKind::Username)
+                .with_hint("the account whose identity this is")
+                .suggesting_accounts()
+                .naming_an_existing_account(),
+            Param::new(Self::NAME, "Name", ParamKind::PersonName)
+                .with_hint("what commits are attributed to, e.g. Ada Lovelace"),
+            Param::new(Self::EMAIL, "Email", ParamKind::Email)
+                .with_hint("the address commits are attributed to"),
+        ]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let user = values.get(Self::USER)?.to_owned();
+        let name = values.get(Self::NAME)?.to_owned();
+        let email = values.get(Self::EMAIL)?.to_owned();
+
+        if !backend.accounts().exists(executor, &user)? {
+            return Err(Error::NoSuchAccount { user });
+        }
+
+        // `--global` is per account, which is the only scope an identity has:
+        // a system-wide `user.email` would attribute every account's commits to
+        // one person. Written through the owned-directory path rather than by
+        // running `git config` as the user, because it is the same write with
+        // one fewer program involved — and because a `~/.gitconfig` that is a
+        // symlink to somewhere else must not have root follow it.
+        let home = backend.accounts().home_dir(executor, &user)?;
+        let path = format!("{home}/.gitconfig");
+
+        // Read first so an existing file keeps everything else it holds. A
+        // `git config` invocation would merge; a whole-file write must be told
+        // to.
+        let existing = if backend.files().exists(executor, &path)? {
+            backend.files().read(executor, &path)?
+        } else {
+            String::new()
+        };
+
+        let contents = crate::tasks::gitconfig::with_identity(&existing, &name, &email);
+
+        backend.files().write_in_owned_dir(
+            executor,
+            &crate::domain::files::OwnedDirWrite {
+                dir: &home,
+                dir_mode: 0o755,
+                path: &path,
+                file_mode: 0o644,
+                owner: &user,
+                contents: &contents,
+            },
+        )?;
+
+        report(
+            progress,
+            &Msg::TaskGitIdentitySet {
+                user: user.clone(),
+                email,
+            },
+        );
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Marks a directory as safe for git to read whoever owns it.
+pub struct SetGitSafeDirectory;
+
+impl SetGitSafeDirectory {
+    /// Name of the parameter holding the directory to trust.
+    pub const PATH: &'static str = "path";
+}
+
+impl Task for SetGitSafeDirectory {
+    fn id(&self) -> &'static str {
+        "git.safe-directory"
+    }
+
+    fn title(&self) -> &'static str {
+        "Trust a repository owned by another account"
+    }
+
+    fn description(&self) -> &'static str {
+        "Adds a path to safe.directory system-wide. Since CVE-2022-24765 git \
+         refuses to read a repository owned by somebody else, which is what a \
+         deploy checkout usually is."
+    }
+
+    supported_everywhere!();
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["git.safe-directory"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::PATH, "Directory", ParamKind::Path)
+                .with_hint("an absolute path, e.g. /srv/www/site"),
+        ]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let path = values.get(Self::PATH)?.to_owned();
+
+        // Refused rather than accepted and quietly useless: git matches
+        // `safe.directory` literally, so a relative path never matches
+        // anything and the operator would be left with a setting that appears
+        // applied and does nothing.
+        if !path.starts_with('/') {
+            return Err(Error::PathNotAbsolute { path });
+        }
+
+        // `--system` rather than `--global`: the whole point is a checkout one
+        // account owns and another reads, so a setting written into one
+        // account's file answers the wrong half.
+        let config = backend.path_for(Capability::Git);
+
+        let existing = if backend.files().exists(executor, config)? {
+            backend.files().read(executor, config)?
+        } else {
+            String::new()
+        };
+
+        // `*` is refused by the same reasoning: it opts out of the check
+        // entirely rather than trusting one path, and a task named for
+        // trusting a directory should not be the way that happens.
+        let contents = crate::tasks::gitconfig::with_safe_directory(&existing, &path);
+
+        backend.files().write(executor, config, &contents)?;
+
+        report(progress, &Msg::TaskGitDirectoryTrusted { path });
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Sets the branch name `git init` starts a repository on.
+pub struct SetGitDefaultBranch;
+
+impl SetGitDefaultBranch {
+    /// Name of the parameter holding the branch name.
+    pub const BRANCH: &'static str = "branch";
+}
+
+impl Task for SetGitDefaultBranch {
+    fn id(&self) -> &'static str {
+        "git.default-branch"
+    }
+
+    fn title(&self) -> &'static str {
+        "Set the default branch for new repositories"
+    }
+
+    fn description(&self) -> &'static str {
+        "Sets init.defaultBranch system-wide. Without it every `git init` prints \
+         a ten-line hint saying the name is subject to change."
+    }
+
+    supported_everywhere!();
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["git.default-branch"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![
+            Param::new(Self::BRANCH, "Branch", ParamKind::BranchName)
+                .with_hint("the name `git init` starts on, e.g. main"),
+        ]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let branch = values.get(Self::BRANCH)?.to_owned();
+        let config = backend.path_for(Capability::Git);
+
+        let existing = if backend.files().exists(executor, config)? {
+            backend.files().read(executor, config)?
+        } else {
+            String::new()
+        };
+
+        let contents = crate::tasks::gitconfig::with_default_branch(&existing, &branch);
+
+        backend.files().write(executor, config, &contents)?;
+
+        report(progress, &Msg::TaskGitDefaultBranchSet { branch });
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Installs the GitHub CLI.
+pub struct InstallGithubCli;
+
+impl InstallGithubCli {
+    /// Releases this build carries a digest for.
+    ///
+    /// Both were computed on 2026-08-12 by downloading the archive and hashing
+    /// it, then compared against the `checksums.txt` the release publishes; the
+    /// two agree. As everywhere here, the compiled-in value is the defence and
+    /// the published one only says the transfer completed.
+    ///
+    /// **The release rather than GitHub's own repository, and the reason is
+    /// timing.** That repository is signed by a key being rotated: the
+    /// certificate this project would have pinned expires 2026-09-05, and its
+    /// replacement appears on `keyserver.ubuntu.com` and not on
+    /// `keys.openpgp.org` — and that keyserver accepts unverified uploads, so
+    /// its copy corroborates nothing. Pinning either would be wrong in a
+    /// different way: the old one stops working within weeks, the new one was
+    /// never independently published.
+    ///
+    /// The releases carry no PGP signature either, but they do carry Sigstore
+    /// build attestations, and the digests below are measured. That is the same
+    /// standard `rustup-init` is held to and better than the alternative.
+    pub const RELEASES: &[Release] = &[Release {
+        version: "2.97.0",
+        payload: Payload::Member("gh_2.97.0_linux_amd64/bin/gh"),
+        artefacts: &[
+            Artefact {
+                arch: "x86_64",
+                url: "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_amd64.tar.gz",
+                sha256: "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
+            },
+            Artefact {
+                arch: "aarch64",
+                url: "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_arm64.tar.gz",
+                sha256: "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5",
+            },
+        ],
+    }];
+}
+
+impl Task for InstallGithubCli {
+    fn id(&self) -> &'static str {
+        "gh.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install the GitHub CLI"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs gh. Authenticating is a separate step, and on a server it is \
+         a token rather than a browser: run `gh auth login --with-token` as the \
+         account that will use it."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::GithubCli)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["gh.install"]
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // An unauthenticated `gh` runs and does almost nothing, which reads as
+        // the install having failed. There is no task to point at because
+        // authentication is not something this tool can do for somebody: the
+        // token is theirs, and the documented headless flow reads it from
+        // stdin or the environment.
+        vec![Consequence::Invalidates {
+            task: "gh.install",
+            reason: Reason::RequiresSetting {
+                setting: "a token — `gh auth login --with-token`, or GH_TOKEN in the environment",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        // Four of the five families package it, under two different names —
+        // `gh` on Debian, Ubuntu and openSUSE, `github-cli` on Arch and
+        // Alpine. Red Hat packages it nowhere, so the empty name routes to the
+        // verified release, as it does for mise and the Rust toolchain.
+        if backend.has_package_for(Capability::GithubCli) {
+            backend
+                .packages()
+                .install(executor, backend.package_for(Capability::GithubCli))?;
+        } else if backend.binaries().is_installed(executor, "gh")? {
+            report(
+                progress,
+                &Msg::TaskAlreadyInstalled {
+                    what: "gh".to_owned(),
+                },
+            );
+
+            return Ok(Outcome::Done);
+        } else {
+            let release = crate::backend::release_installer::release_for(
+                Self::RELEASES,
+                Self::RELEASES
+                    .first()
+                    .map(|release| release.version)
+                    .unwrap_or_default(),
+            )?;
+
+            report(
+                progress,
+                &Msg::TaskInstalling {
+                    what: format!("gh {}", release.version),
+                },
+            );
+
+            backend.binaries().install(executor, "gh", release)?;
+        }
+
+        report(progress, &Msg::TaskGithubCliNeedsToken);
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Removes the GitHub CLI.
+pub struct UninstallGithubCli;
+
+impl Task for UninstallGithubCli {
+    fn id(&self) -> &'static str {
+        "gh.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the GitHub CLI"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes gh. Any token an account authenticated with stays where gh put \
+         it — this tool did not store it and does not know where it went."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::GithubCli)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["gh.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::GithubCli)
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::GithubCli,
+            "gh",
+        )
     }
 }
 
@@ -800,6 +1298,52 @@ impl Task for UninstallZellij {
 }
 
 /// Removes the mise version manager.
+pub struct UninstallGit;
+
+impl Task for UninstallGit {
+    fn id(&self) -> &'static str {
+        "git.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall git"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes git. Repositories on this host stay where they are: a checkout \
+         is somebody's work, and nothing here created one."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Git)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["git.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Git)
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(executor, backend, values, progress, Capability::Git, "git")
+    }
+}
+
+/// Removes the mise version manager.
 pub struct UninstallMise;
 
 impl Task for UninstallMise {
@@ -1082,6 +1626,132 @@ mod tests {
         let mut values = ParamValues::new();
         values.set(InstallRust::USER, user.to_owned());
         values
+    }
+
+    #[test]
+    fn the_github_cli_is_packaged_under_two_names() {
+        // The split is by family and by nothing else: `gh` on Debian, Ubuntu
+        // and openSUSE, `github-cli` on Arch and Alpine. Asking the wrong one
+        // is the failure the capability indirection exists to prevent, and a
+        // mock would answer either happily.
+        for (family, expected) in [
+            (Family::Debian, "gh"),
+            (Family::Suse, "gh"),
+            (Family::Arch, "github-cli"),
+            (Family::Alpine, "github-cli"),
+        ] {
+            assert_eq!(
+                for_family(family).package_for(Capability::GithubCli),
+                expected,
+                "{family} packages it as {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn red_hat_reaches_the_github_cli_through_a_verified_release() {
+        // The one family packaging it nowhere — absent from BaseOS, AppStream
+        // and Extras. EPEL carries it and is declined, as it is for fail2ban:
+        // here the alternative is better than the package, since the release
+        // is an artefact this build verified rather than one a third-party
+        // repository vouches for.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(1, ""), // command -v gh
+            Reply::ok("x86_64\n"), // uname -m
+            Reply::ok(""),         // the download-and-verify script
+        ]);
+        let backend = for_family(Family::Rhel);
+
+        assert!(!backend.has_package_for(Capability::GithubCli));
+
+        InstallGithubCli
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect("the release must install");
+
+        let script = mock
+            .recorded()
+            .into_iter()
+            .find_map(|command| {
+                command
+                    .args
+                    .into_iter()
+                    .find(|arg| arg.contains("sha256sum"))
+            })
+            .expect("the artefact must be checksummed before it is extracted");
+
+        assert!(
+            script.contains("a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112"),
+            "the compiled-in digest must be the one checked: {script}"
+        );
+    }
+
+    #[test]
+    fn every_family_packages_git() {
+        // The one capability in the tree that is the same everywhere. Worth an
+        // assertion rather than a comment: it is the claim that lets
+        // `git.install` say `supported_everywhere!`.
+        for family in Family::ALL {
+            assert!(
+                for_family(*family).has_package_for(Capability::Git),
+                "{family} must package git"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_path_is_refused_before_anything_is_written() {
+        // git matches `safe.directory` literally, so a relative path is not a
+        // near miss: it never matches, and the setting would read as applied.
+        let mock = MockExecutor::with_replies([]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(SetGitSafeDirectory::PATH, "relative/path".to_owned());
+
+        let result = SetGitSafeDirectory.run(&mock, backend.as_ref(), &values, &mut |_| {});
+
+        assert!(matches!(result, Err(Error::PathNotAbsolute { .. })));
+        assert!(
+            mock.recorded_lines().is_empty(),
+            "nothing may be written: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn an_identity_is_written_into_the_accounts_own_file() {
+        // `--global` rather than `--system`, and the difference is the whole
+        // point: one `user.email` for the machine would attribute every
+        // account's commits to one person.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("dev:x:1001:1001::/home/dev:/bin/sh"), // getent, for `exists`
+            Reply::ok("dev:x:1001:1001::/home/dev:/bin/sh"), // getent again, for `home_dir`
+            Reply::failure(1, ""),                           // no ~/.gitconfig yet
+            Reply::ok(""),                                   // the owned-directory write
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(SetGitIdentity::USER, "dev".to_owned());
+        values.set(SetGitIdentity::NAME, "Ada Lovelace".to_owned());
+        values.set(SetGitIdentity::EMAIL, "ada@example.com".to_owned());
+
+        SetGitIdentity
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect("the identity must be written");
+
+        let lines = mock.recorded_lines();
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("/home/dev/.gitconfig")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("/etc/gitconfig")),
+            "an identity is never system-wide: {lines:?}"
+        );
     }
 
     #[test]

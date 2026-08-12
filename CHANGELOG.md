@@ -8,6 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **git and the GitHub CLI, with the configuration each needs to be usable.**
+  Seven tasks: `git.install` / `git.uninstall`, `git.identity`,
+  `git.default-branch`, `git.safe-directory`, and `gh.install` /
+  `gh.uninstall`.
+
+  git is the one capability all five families package under one name — worth
+  stating, since it is the shape the backend indirection exists because most
+  capabilities do *not* have. `gh` is the immediate counter-example: `gh` on
+  Debian, Ubuntu and openSUSE, `github-cli` on Arch and Alpine, and nothing at
+  all in Red Hat's repositories. Two priors were wrong and measured rather than
+  assumed — `gh` **is** in Debian main (2.46 in trixie), which
+  `packages.debian.org`'s keyword search does not surface, and the name splits
+  by family rather than by packaging system.
+
+  **RHEL reaches it through a checksum-verified release, and GitHub's own
+  repository was declined on timing rather than principle.** That repository's
+  signing key is mid-rotation: the certificate this build would have pinned
+  (`2C6106201985B60E6C7AC87323F3D4EA75716059`) **expires 2026-09-05**, and its
+  replacement appears on `keyserver.ubuntu.com` and not on `keys.openpgp.org` —
+  and that keyserver accepts unverified uploads, so its copy corroborates
+  nothing. Pinning either would be wrong differently: one stops working within
+  weeks, the other was never independently published. The releases carry no PGP
+  signature either, but the digests are measured, which is the standard
+  `rustup-init` is already held to. The release is also the newer artefact:
+  2.97.0 against Debian's 2.46.
+
+  **The configuration is what upstream calls mandatory or strongly recommended,
+  and nothing else.** git exits 128 without an identity — measured on 2.47.3,
+  printing `*** Please tell me who you are.` — so `git.identity` writes
+  `user.name` and `user.email` into an account's *own* `~/.gitconfig`, never
+  system-wide, since one `user.email` for a host would attribute everybody's
+  commits to one person. `git.safe-directory` covers the case that actually
+  bites on a server: since CVE-2022-24765 git refuses to read a repository owned
+  by somebody else, which a deploy checkout usually is. `git.default-branch`
+  silences the ten-line hint `git init` prints. Deliberately absent:
+  `pull.rebase`, `push.default`, `core.editor` and `core.autocrlf` — preference
+  rather than requirement, and the last is a Windows concern that is actively
+  wrong on a Linux server.
+
+  `git config` is not shelled out to, for the reason nothing here shells out to
+  the program that owns a file: the value would reach a shell, and a name
+  carrying an apostrophe is ordinary. `tasks/gitconfig.rs` parses the subset it
+  writes and leaves every other line exactly as found — an operator's config is
+  theirs, and `safe.directory` is appended to rather than replaced, since
+  replacing would un-trust a checkout that worked yesterday.
+
+  Verified on all five families against real hosts rather than mocks, because a
+  mock answers whatever it is asked: git *reads back* the identity, the default
+  branch and both trusted paths on Debian 13, Arch, Alpine 3.23, Rocky 9 and
+  Tumbleweed — and on Rocky the release path installed 2.97.0 where no package
+  exists.
+
 - **`rust.install` runs on RHEL, and on the Debian suites that package no
   `rustup`.** RHEL's refusal named the condition it was waiting for —
   `rustup-init` is checksummed per architecture, and only the archive path pins

@@ -313,6 +313,13 @@ command line, running the subcommand *is* the confirmation.
 | `mise.uninstall` | `run <id> name=value` | no | Removes mise. Toolchains it installed under each account's own directory stay — this tool did not write them. |
 | `rust.install` | `run <id> name=value` | no | Installs rustup and a stable toolchain for one account. |
 | `rust.uninstall` | `run <id> name=value` | no | Removes rustup. Where the distribution packages it, an account's own `~/.rustup` and `~/.cargo` stay. Where it was installed for one account, rustup's own uninstaller takes those directories with it and offers no way to keep them. |
+| `git.install` | `run <id>` | no | Installs git. It refuses to commit until an account has a name and an email — set those with `git.identity`. |
+| `git.uninstall` | `run <id> name=value` | no | Removes git. Repositories on this host stay where they are. |
+| `git.identity` | `run <id> name=value` | no | Writes `user.name` and `user.email` into one account's own `~/.gitconfig`. Takes `user`, `name` and `email`. |
+| `git.default-branch` | `run <id> name=value` | no | Sets `init.defaultBranch` system-wide. Takes `branch`, checked against `git check-ref-format`'s rules. |
+| `git.safe-directory` | `run <id> name=value` | no | Adds a path to `safe.directory` system-wide, for a checkout owned by another account. Takes `path`, which must be absolute — git matches this setting literally. Multi-valued: a second path is added rather than replacing the first. |
+| `gh.install` | `run <id>` | no | Installs the GitHub CLI. Packaged as `gh` on Debian, Ubuntu and openSUSE and as `github-cli` on Arch and Alpine; on RHEL it comes from a checksum-verified release. Authenticating is separate and, on a server, headless: `gh auth login --with-token`, or `GH_TOKEN`. |
+| `gh.uninstall` | `run <id> name=value` | no | Removes gh. Any token an account authenticated with stays where gh put it. |
 
 ### Hardening
 

@@ -7,6 +7,7 @@
 pub mod algorithms;
 pub mod consequence;
 pub mod devtools;
+pub mod gitconfig;
 pub mod hardening;
 pub mod network;
 pub mod params;

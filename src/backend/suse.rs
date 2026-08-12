@@ -126,6 +126,16 @@ const MISE_PACKAGE: &str = "";
 /// The Rust toolchain manager, packaged here unlike on RHEL.
 const RUST_PACKAGE: &str = "rustup";
 
+/// Git, in `oss` on both variants.
+const GIT_PACKAGE: &str = "git";
+
+/// The GitHub CLI: `gh` here, as on Debian rather than as on Arch.
+///
+/// openSUSE sides with Debian on the name and with Arch on currency — 2.96
+/// against Debian's 2.46. Packaged on both Tumbleweed and Leap 16.0, so unlike
+/// Zellij this one does not vary within the family.
+const GITHUB_CLI_PACKAGE: &str = "gh";
+
 /// The nftables front-end.
 ///
 /// Packaged rather than preinstalled — neither `nft` nor `firewall-cmd` is in
@@ -276,6 +286,8 @@ impl Backend for SuseBackend {
             Capability::Nftables => NFTABLES_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
+            Capability::Git => GIT_PACKAGE,
+            Capability::GithubCli => GITHUB_CLI_PACKAGE,
             Capability::UnattendedUpgrades => UNATTENDED_PACKAGE,
         }
     }
@@ -292,6 +304,8 @@ impl Backend for SuseBackend {
             Capability::Nftables => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
+            // Neither is a service: both are commands somebody runs.
+            Capability::Git | Capability::GithubCli => "",
             Capability::UnattendedUpgrades => "",
         }
     }
@@ -309,6 +323,13 @@ impl Backend for SuseBackend {
             Capability::Nftables => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
+            // Git's system-wide file, which `git config --system` writes.
+            // The per-account one is `~/.gitconfig`, which depends on whose
+            // account is being configured and so cannot be named here.
+            Capability::Git => "/etc/gitconfig",
+            // Configured per account under `$XDG_CONFIG_HOME` or
+            // `~/.config`, so there is no system path to name.
+            Capability::GithubCli => "",
             Capability::UnattendedUpgrades => "",
         }
     }

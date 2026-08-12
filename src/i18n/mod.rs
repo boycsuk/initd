@@ -106,6 +106,9 @@ pub enum Msg {
     RepositoryUnknownSuite {
         repository: String,
     },
+    PathNotAbsolute {
+        path: String,
+    },
 
     NoFirewallFrontEnd,
 
@@ -1028,6 +1031,18 @@ pub enum Msg {
     },
     TaskFishNotForRoot,
     TaskMiseUseShims,
+    TaskGitNeedsIdentity,
+    TaskGithubCliNeedsToken,
+    TaskGitIdentitySet {
+        user: String,
+        email: String,
+    },
+    TaskGitDirectoryTrusted {
+        path: String,
+    },
+    TaskGitDefaultBranchSet {
+        branch: String,
+    },
     TaskRustPathHint {
         home: String,
     },

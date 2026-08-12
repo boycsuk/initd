@@ -54,6 +54,13 @@ pub(super) fn render(message: &Msg) -> String {
                  guessed one would register a repository serving nothing"
             )
         }
+        // Says why it matters rather than only that it is required: git matches
+        // this setting literally, so a relative path is not a near miss — it
+        // never matches anything, and the setting would look applied.
+        Msg::PathNotAbsolute { path } => format!(
+            "{path} is not an absolute path. git matches safe.directory \
+             literally, so a relative one would be written and never match"
+        ),
         Msg::NoFirewallFrontEnd => {
             "no inbound filtering front-end is installed on this host".to_owned()
         }
@@ -918,6 +925,34 @@ pub(super) fn render(message: &Msg) -> String {
         // The home is read from passwd rather than assumed: `/home/<user>` is a
         // convention this project already refuses to rely on elsewhere, and a
         // hint naming the wrong directory is worse than none.
+        // Measured rather than paraphrased: git 2.47.3 exits 128 with
+        // `*** Please tell me who you are.` A freshly installed git is not a
+        // working git, and the row that installed it should say so.
+        Msg::TaskGitNeedsIdentity => {
+            "git will refuse to commit until an account has a name and an email \
+             — set them with git.identity"
+                .to_owned()
+        }
+        // The headless flow, named exactly, because the default one cannot work
+        // here: `gh auth login` without arguments wants a browser. Upstream
+        // documents `--with-token` and the environment variables as "most
+        // suitable for headless use", which is what a server is.
+        Msg::TaskGithubCliNeedsToken => {
+            "gh does almost nothing until it has a token. On a server there is \
+             no browser, so authenticate as the account that will use it: \
+             `gh auth login --with-token < token.txt`, or set GH_TOKEN. \
+             Minimum scopes are repo, read:org and gist"
+                .to_owned()
+        }
+        Msg::TaskGitIdentitySet { user, email } => {
+            format!("{user} commits as {email}")
+        }
+        Msg::TaskGitDirectoryTrusted { path } => {
+            format!("{path} is trusted system-wide; git will read it whoever owns it")
+        }
+        Msg::TaskGitDefaultBranchSet { branch } => {
+            format!("new repositories start on {branch}")
+        }
         Msg::TaskRustPathHint { home } => format!(
             "the toolchain is in {home}/.cargo/bin, which no shell has been \
              told about — add it to PATH in that account's own profile, or run \

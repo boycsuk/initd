@@ -66,6 +66,16 @@ const FISH_PACKAGE: &str = "fish";
 /// Zellij on Alpine, which packages it in `community`.
 const ZELLIJ_PACKAGE: &str = "zellij";
 
+/// Git, in `main`.
+const GIT_PACKAGE: &str = "git";
+
+/// The GitHub CLI on Alpine: `github-cli`, in `community` rather than `main`.
+///
+/// The same name Arch uses and not the one Debian, Ubuntu and openSUSE use,
+/// which is a split along no line but packaging habit — the binary is `gh`
+/// everywhere.
+const GITHUB_CLI_PACKAGE: &str = "github-cli";
+
 /// The fail2ban package on Alpine.
 const FAIL2BAN_PACKAGE: &str = "fail2ban";
 
@@ -128,6 +138,8 @@ impl Backend for AlpineBackend {
             Capability::Zellij => ZELLIJ_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Caddy => CADDY_PACKAGE,
+            Capability::Git => GIT_PACKAGE,
+            Capability::GithubCli => GITHUB_CLI_PACKAGE,
             // Genuinely absent rather than named differently. Alpine has no
             // rootless Docker extras, no mise, no rustup and no unattended
             // upgrades — an empty name is the honest answer, and the tasks
@@ -152,6 +164,8 @@ impl Backend for AlpineBackend {
             | Capability::Zellij
             | Capability::Mise
             | Capability::Rust
+            | Capability::Git
+            | Capability::GithubCli
             | Capability::Crowdsec
             | Capability::UnattendedUpgrades => "",
         }
@@ -164,11 +178,15 @@ impl Backend for AlpineBackend {
             Capability::Caddy => CADDY_CONFIG,
             Capability::Fish => "/etc/fish/config.fish",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
+            // Git's system-wide file, which `git config --system` writes.
+            Capability::Git => "/etc/gitconfig",
             Capability::Nftables
             | Capability::DockerRootless
             | Capability::Zellij
             | Capability::Mise
             | Capability::Rust
+            // Configured per account under `$XDG_CONFIG_HOME` or `~/.config`.
+            | Capability::GithubCli
             | Capability::Crowdsec
             | Capability::UnattendedUpgrades => "",
         }
