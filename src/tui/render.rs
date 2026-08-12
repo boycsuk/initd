@@ -32,7 +32,9 @@ use ratatui::widgets::{
     Wrap,
 };
 
-use super::app::{App, Mode, Pane, VERIFY_BANNER_ROWS, VERSION};
+use super::app::{
+    App, DETAIL_MAX_ROWS, Mode, OUTPUT_MIN_ROWS, Pane, SPLIT_MIN_ROWS, VERIFY_BANNER_ROWS, VERSION,
+};
 use super::probe::InstalledState;
 use super::verify::Verification;
 use super::{help, layout, search, style};
@@ -273,11 +275,37 @@ fn right(frame: &mut Frame, app: &App, right_area: Rect) {
         verification(frame, banner, window, app.lang);
         app.output
             .render(frame, log, app.lang, app.focus == Pane::Output);
-    } else if app.output.is_empty() {
+    } else if app.output.is_empty() || !app.output_shown {
+        // The description takes the pane when there is nothing to show beneath
+        // it, and when the operator has folded the output away.
         detail(frame, app, right_area);
-    } else {
+    } else if right_area.height < SPLIT_MIN_ROWS {
+        // Too short to split usefully: a description squeezed into three rows
+        // and an output squeezed into the rest serves neither. The output wins,
+        // being what a running task is producing, and the description is one
+        // keypress away.
         app.output
             .render(frame, right_area, app.lang, app.focus == Pane::Output);
+    } else {
+        // Both, which is what the pane could not do before: it chose by whether
+        // any output existed, so once a task had run, every task selected
+        // afterwards had its description displaced by the previous one's
+        // transcript.
+        //
+        // The description takes what it needs up to a ceiling and the output
+        // takes the rest, rather than a percentage each: a description is a
+        // sentence or two whose length is known, while a transcript grows, so
+        // splitting evenly would leave half the pane blank above a log that is
+        // scrolling.
+        let [top, bottom] = Layout::vertical([
+            Constraint::Max(DETAIL_MAX_ROWS),
+            Constraint::Min(OUTPUT_MIN_ROWS),
+        ])
+        .areas(right_area);
+
+        detail(frame, app, top);
+        app.output
+            .render(frame, bottom, app.lang, app.focus == Pane::Output);
     }
 }
 
@@ -423,9 +451,18 @@ fn tree_keys(app: &App) -> Vec<(&'static str, Msg)> {
         keys.push(("Esc", Msg::KeyBarBack));
     }
 
-    // Switching panes is pointless with nothing to read.
+    // Switching panes is pointless with nothing to read, and so is folding it
+    // away: both are offered only once there is a transcript to act on.
     if !app.output.is_empty() {
         keys.push(("Tab", Msg::KeyBarOutput));
+        keys.push((
+            "o",
+            if app.output_shown {
+                Msg::KeyBarHideOutput
+            } else {
+                Msg::KeyBarShowOutput
+            },
+        ));
     }
 
     keys

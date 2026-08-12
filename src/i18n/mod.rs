@@ -339,6 +339,7 @@ pub enum Msg {
     HelpStopAfterCommand,
     HelpScrollOutput,
     HelpFocusOutput,
+    HelpFoldOutput,
     HelpScrollLine,
     HelpScrollPage,
     HelpOldestLine,
@@ -595,6 +596,8 @@ pub enum Msg {
     KeyBarHistory,
     KeyBarBack,
     KeyBarOutput,
+    KeyBarHideOutput,
+    KeyBarShowOutput,
     KeyBarStop,
     KeyBarScroll,
     /// What `y` does in the output pane.

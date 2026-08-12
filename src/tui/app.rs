@@ -49,6 +49,36 @@ pub(super) const PAGE_SCROLL: usize = 10;
 /// Rows the verification banner occupies: its top border and four lines.
 pub(super) const VERIFY_BANNER_ROWS: u16 = 5;
 
+/// Tallest the description is drawn when it shares the pane with the output.
+///
+/// A ceiling rather than a share, because a description is a sentence or two
+/// of known length while a transcript grows without bound: splitting the pane
+/// by percentage would leave half of it blank above a log that is scrolling.
+/// Seven rows is two borders, a title and four lines of wrapped text, which
+/// holds every description in the tree at the width the pane is drawn at.
+pub(super) const DETAIL_MAX_ROWS: u16 = 7;
+
+/// Fewest rows the output keeps when it shares the pane.
+///
+/// Two borders, a title, and four lines of transcript. Below that it shows a
+/// frame and almost nothing — the state that makes an operator think the task
+/// produced no output. The description yields first, being static text they can
+/// come back to.
+pub(super) const OUTPUT_MIN_ROWS: u16 = 7;
+
+/// Shortest right-hand pane that is split at all.
+///
+/// Above the two minima rather than exactly their sum, and the difference was
+/// measured rather than reasoned about: the sum is 14, the interface refuses to
+/// draw below [`layout::MIN_HEIGHT`] of 15, and the pane at that height is 13
+/// rows — so a threshold of 14 could never be reached and the branch guarding
+/// it was dead code that read as covering the short-terminal case.
+///
+/// Eighteen is the first height at which both halves are worth drawing: it
+/// leaves the description its four lines and the output six, and below it the
+/// output takes the pane whole with the description one keypress away.
+pub(super) const SPLIT_MIN_ROWS: u16 = 18;
+
 /// Lines a page key moves the help overlay by.
 pub(super) const HELP_PAGE: u16 = 10;
 
@@ -130,6 +160,18 @@ pub struct App {
     /// Which pane the movement keys currently address.
     pub(super) focus: Pane,
     pub(super) output: OutputPane,
+    /// Whether the output shares the right-hand pane with the description.
+    ///
+    /// The pane used to be one or the other, chosen by whether any output
+    /// existed — so after the first task ran, the description of every task
+    /// selected afterwards had nowhere to appear. Reported as the output
+    /// covering the description, which is what it was.
+    ///
+    /// Split by default, and collapsible because the split costs rows the
+    /// output would otherwise have: on a 24-row terminal a long transcript is
+    /// worth the whole pane, and the description of a task already running is
+    /// not what the operator is reading.
+    pub(super) output_shown: bool,
     /// The parameter form, while one is being filled in.
     pub(super) form: Option<Form>,
     /// Where the cursor sits in the list of a field's options, while it is
@@ -273,6 +315,7 @@ impl App {
             // there is no output to read.
             focus: Pane::Tree,
             output: OutputPane::new(),
+            output_shown: true,
             form: None,
             options_at: None,
             confirm: None,
@@ -2720,6 +2763,123 @@ mod tests {
         assert!(
             !drawn.contains(style::MARKER_INPUT),
             "the two flags must not both be drawn: {drawn}"
+        );
+    }
+
+    #[test]
+    fn the_description_keeps_its_place_once_a_task_has_run() {
+        // The reported defect: the right-hand pane chose between description
+        // and output by whether any output existed, so after the first task
+        // ran, every task selected afterwards had its description displaced by
+        // the previous one's transcript — with no way back until another task
+        // started.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        let drawn = render_to_rows(&mut app, 100, 24).join("\n");
+
+        assert!(
+            drawn.contains("Detail"),
+            "the description must keep its place: {drawn}"
+        );
+        assert!(
+            drawn.contains("sysctl -n net.ipv4.ip_forward"),
+            "and the transcript must still be readable: {drawn}"
+        );
+    }
+
+    #[test]
+    fn the_output_folds_away_and_gives_the_pane_back() {
+        // The split costs rows the output would otherwise have, so it is
+        // collapsible: on a short terminal a long transcript is worth the whole
+        // pane. Folding rather than clearing — the transcript is still there
+        // when it comes back, which is what the pane's design is careful about.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+        let folded = render_to_rows(&mut app, 100, 24).join("\n");
+
+        assert!(
+            !folded.contains("sysctl -n net.ipv4.ip_forward"),
+            "the output must be out of the way: {folded}"
+        );
+        assert!(
+            folded.contains("Detail"),
+            "and the description must have the pane: {folded}"
+        );
+
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+        let restored = render_to_rows(&mut app, 100, 24).join("\n");
+
+        assert!(
+            restored.contains("sysctl -n net.ipv4.ip_forward"),
+            "folding must not discard the transcript: {restored}"
+        );
+    }
+
+    #[test]
+    fn folding_the_output_takes_the_focus_with_it() {
+        // Otherwise the arrow keys go on scrolling a pane nobody can see while
+        // the tree appears frozen — the interface looking broken for as long as
+        // it takes to guess which key caused it.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        app.on_key(KeyEvent::from(KeyCode::Tab));
+        assert_eq!(app.focus, Pane::Output, "the premise: focus is on output");
+
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+
+        assert_eq!(
+            app.focus,
+            Pane::Tree,
+            "focus must not stay in a pane that is no longer drawn"
+        );
+    }
+
+    #[test]
+    fn a_short_terminal_gives_the_whole_pane_to_the_output() {
+        // Splitting serves neither half when there are not rows for both, so
+        // below the threshold the output takes the pane and the description
+        // stays one keypress away.
+        //
+        // Measured rather than derived: the sum of the two minima is 14, the
+        // interface refuses to draw below 15 rows at all, and the pane at that
+        // height is 13 — so a threshold set to that sum could never be reached,
+        // and the branch guarding it was dead code that read as covering this
+        // case.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        let short = render_to_rows(&mut app, 100, 17).join("\n");
+
+        assert!(
+            short.contains("sysctl -n net.ipv4.ip_forward"),
+            "the output must be readable: {short}"
+        );
+        assert!(
+            !short.contains("Detail"),
+            "and must not be squeezed to share with a description: {short}"
+        );
+
+        let tall = render_to_rows(&mut app, 100, 19).join("\n");
+
+        assert!(
+            tall.contains("Detail") && tall.contains("sysctl -n net.ipv4.ip_forward"),
+            "two rows taller, both fit: {tall}"
         );
     }
 

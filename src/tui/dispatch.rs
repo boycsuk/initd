@@ -140,6 +140,29 @@ impl App {
                 self.search = Some(Search::new(self.cursor.tree()));
                 return true;
             }
+            // Folds the output away, giving the pane back to the description.
+            // Global rather than a key of the output pane, because the reason
+            // to press it is usually that the output is in the way — and
+            // reaching a key that belongs to the pane would mean focusing the
+            // thing being dismissed.
+            //
+            // Folding rather than clearing: the transcript is still there when
+            // it comes back, which is what the pane's own design is careful
+            // about. A finished task's output must not be discarded by a
+            // keystroke aimed at making room.
+            KeyCode::Char('o') => {
+                self.output_shown = !self.output_shown;
+
+                // Focus follows the pane out of sight, or the arrow keys go on
+                // scrolling something nobody can see while the tree appears
+                // frozen — the interface looking broken for as long as it takes
+                // to guess which key caused it.
+                if !self.output_shown {
+                    self.focus = Pane::Tree;
+                }
+
+                return true;
+            }
             // `h` is free now that the vim movement keys are gone, and the
             // objection to it went with them: it was the fourth way to leave
             // a category, pressed without looking by anyone navigating with

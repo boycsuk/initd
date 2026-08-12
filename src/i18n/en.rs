@@ -377,6 +377,10 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpStopAfterCommand => "stop after the current command".to_owned(),
         Msg::HelpScrollOutput => "scroll the output".to_owned(),
         Msg::HelpFocusOutput => "move focus to the output".to_owned(),
+        // "fold away" rather than "hide": the transcript is kept and comes
+        // back, and a word suggesting it was discarded would stop anybody
+        // pressing it while a task they care about is running.
+        Msg::HelpFoldOutput => "fold the output away, and back".to_owned(),
         Msg::HelpScrollLine => "scroll a line".to_owned(),
         Msg::HelpScrollPage => "scroll a page".to_owned(),
         Msg::HelpOldestLine => "oldest retained line".to_owned(),
@@ -551,6 +555,11 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarHistory => "history".to_owned(),
         Msg::KeyBarBack => "back".to_owned(),
         Msg::KeyBarOutput => "output".to_owned(),
+        // Named for what the key does next rather than for what it toggles: a
+        // bar reading "output" beside a visible output says nothing about
+        // which way pressing it goes.
+        Msg::KeyBarHideOutput => "hide output".to_owned(),
+        Msg::KeyBarShowOutput => "show output".to_owned(),
         Msg::KeyBarStop => "stop".to_owned(),
         Msg::KeyBarScroll => "scroll".to_owned(),
         Msg::KeyBarCopy => "copy".to_owned(),

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The description and the output now share the right-hand pane, and `o` folds
+  the output away.** The pane used to show one or the other, chosen by whether
+  any output existed — so once a task had run, every task selected afterwards
+  had its description displaced by the previous one's transcript, with no way
+  back until another task started. Reported as the output covering the
+  description, which is exactly what it was.
+
+  The description takes up to seven rows and the output takes the rest. A
+  ceiling rather than a share: a description is a sentence or two of known
+  length while a transcript grows, so splitting by percentage would leave half
+  the pane blank above a log that is scrolling.
+
+  `o` folds the output away entirely, for when a long transcript is worth the
+  whole pane. It folds rather than clears — the transcript is still there when
+  it comes back, which is what the pane's own design is careful about — and it
+  takes the focus with it, or the arrow keys would go on scrolling something
+  nobody can see while the tree appeared frozen.
+
+  The short-terminal threshold was measured rather than derived, and the first
+  attempt was dead code: the sum of the two pane minima is 14, the interface
+  refuses to draw below 15 rows at all, and the pane at that height is 13 — so
+  a branch guarding "too short to split" could never be reached while reading
+  as though it covered the case. It is 18 rows of pane, which is reachable and
+  pinned from both sides.
+
 ### Fixed
 - **Thirty field hints were written, compiled, and never drawn.** Reported
   against `firewall.enable`, whose dialog asks for an "SSH port" and gave no
