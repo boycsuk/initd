@@ -683,10 +683,20 @@ mod tests {
         // `nft` is packaged separately on every family. Going straight to
         // enabling would fail with "command not found", which reads as a
         // broken tool rather than as a missing package.
+        //
+        // `Reply::NotFound` rather than an exit code, and the difference is the
+        // whole reason this branch shipped broken. An absent binary produces no
+        // process and therefore no status: the `spawn` fails and the executor
+        // raises `ProgramNotFound`. Scripted as `failure(127, …)` this test
+        // passed for as long as `is_available` propagated that error, because
+        // 127 is a *process* saying "not found" — a thing only a shell can
+        // produce, and the shell is not in this path. The test asserted the
+        // install on a host that had `nft` all along, and a Debian without the
+        // package reported `nft --version` failing.
         let mock = MockExecutor::with_replies([
-            Reply::failure(127, "nft: not found"), // not available
-            Reply::ok(""),                         // install
-            Reply::ok(""),                         // the ruleset
+            Reply::NotFound, // no `nft` on this host at all
+            Reply::ok(""),   // install
+            Reply::ok(""),   // the ruleset
         ]);
         let backend = for_family(Family::Debian);
 

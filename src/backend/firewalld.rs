@@ -24,7 +24,7 @@
 
 use super::systemd::run_checked;
 use crate::domain::firewall::{FirewallManager, FirewallState, Protocol};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
 /// The zone rules are written to.
@@ -195,7 +195,18 @@ impl FirewallManager for Firewalld {
         // answer.
         let command = Command::new("firewall-cmd").arg("--state");
 
-        let output = executor.run(&command)?;
+        // An absent `firewall-cmd` answers the question as surely as a stopped
+        // daemon does, and mapping only the exit codes left the one case that
+        // never produces one. It matters most here because firewalld is the
+        // *first* candidate RHEL offers: a host whose administrator removed it
+        // to drive `nft` directly — a state this backend documents as ordinary
+        // rather than broken — failed on the first candidate and never reached
+        // the second.
+        let output = match executor.run(&command) {
+            Ok(output) => output,
+            Err(Error::ProgramNotFound { .. }) => return Ok(false),
+            Err(other) => return Err(other),
+        };
 
         if matches!(output.code, NOT_RUNNING | RUNNING_BUT_FAILED) {
             return Ok(false);
@@ -369,6 +380,22 @@ mod tests {
                 .is_available(&mock)
                 .expect("the query must succeed")
         );
+    }
+
+    #[test]
+    fn an_absent_front_end_is_not_available() {
+        // The case the exit codes above cannot express: no `firewall-cmd` at
+        // all, so no process runs and no status comes back. It must answer the
+        // question rather than raise, because RHEL asks firewalld *first* — an
+        // administrator who removed it to drive `nft` directly would otherwise
+        // fail on the first candidate and never reach the second.
+        let mock = MockExecutor::with_replies([Reply::NotFound]);
+
+        let available = Firewalld::new()
+            .is_available(&mock)
+            .expect("an absent binary must not raise");
+
+        assert!(!available);
     }
 
     #[test]

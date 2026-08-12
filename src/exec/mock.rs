@@ -8,20 +8,35 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use super::{Command, Executor, Output};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// A canned reply for one command.
 #[derive(Debug, Clone)]
-pub struct Reply {
-    pub code: i32,
-    pub stdout: String,
-    pub stderr: String,
+pub enum Reply {
+    /// A process ran and finished with this exit code and these streams.
+    Ran {
+        code: i32,
+        stdout: String,
+        stderr: String,
+    },
+    /// No process ran, because the program is not on this host.
+    ///
+    /// A third answer rather than an exit code, because that is what the
+    /// distinction is: [`LocalExecutor`](super::LocalExecutor) reports a failed
+    /// `spawn` as [`Error::ProgramNotFound`], and nothing that finished can
+    /// produce it. Until this existed the mock could only say "the program ran
+    /// and refused", so the branches every backend writes for an absent binary
+    /// were unreachable from a test — which is how `is_available` propagated
+    /// the error in two front-ends while the same file handled it correctly
+    /// twice. A defect a test cannot express is one review has to catch every
+    /// time.
+    NotFound,
 }
 
 impl Reply {
     /// A successful reply with the given stdout.
     pub fn ok(stdout: impl Into<String>) -> Self {
-        Self {
+        Self::Ran {
             code: 0,
             stdout: stdout.into(),
             stderr: String::new(),
@@ -30,7 +45,7 @@ impl Reply {
 
     /// A failing reply with the given exit code and stderr.
     pub fn failure(code: i32, stderr: impl Into<String>) -> Self {
-        Self {
+        Self::Ran {
             code,
             stdout: String::new(),
             stderr: stderr.into(),
@@ -172,11 +187,23 @@ impl Executor for MockExecutor {
     fn run(&self, command: &Command) -> Result<Output> {
         let reply = self.record(command);
 
-        Ok(Output {
-            code: reply.code,
-            stdout: reply.stdout,
-            stderr: reply.stderr,
-        })
+        match reply {
+            Reply::Ran {
+                code,
+                stdout,
+                stderr,
+            } => Ok(Output {
+                code,
+                stdout,
+                stderr,
+            }),
+            // The same error `LocalExecutor` raises from a failed `spawn`, and
+            // named after the same program, so a backend's absent-binary branch
+            // is reached here exactly as it is on a host missing the tool.
+            Reply::NotFound => Err(Error::ProgramNotFound {
+                program: command.program.clone(),
+            }),
+        }
     }
 }
 

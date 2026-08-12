@@ -143,7 +143,21 @@ impl FirewallManager for Nftables {
         // availability is asked before the tool knows it will need any.
         let command = Command::new("nft").arg("--version");
 
-        Ok(executor.run(&command)?.success())
+        // An absent binary is the answer to this question, not a failure to
+        // answer it — the same reasoning `persistence_target` and
+        // `enable_at_boot` already apply two functions above, and the reason
+        // this one is the third place to spell it out. Propagating it defeated
+        // both callers at once: `firewall.status` never reached the message it
+        // carries for a host with no front-end, and `firewall.enable` never
+        // reached the branch that installs one, so a Debian without the
+        // `nftables` package reported `nft --version` failing — which reads as
+        // a broken tool rather than a package that is not there, the very
+        // wording the install branch exists to avoid.
+        match executor.run(&command) {
+            Ok(output) => Ok(output.success()),
+            Err(Error::ProgramNotFound { .. }) => Ok(false),
+            Err(other) => Err(other),
+        }
     }
 
     fn enable(&self, executor: &dyn Executor, keep_open: &[(u32, Protocol)]) -> Result<()> {
@@ -643,5 +657,22 @@ mod tests {
         Nftables::new().is_available(&mock).expect("runs");
 
         assert!(!mock.any_privileged());
+    }
+
+    #[test]
+    fn an_absent_binary_is_not_available() {
+        // `nft` is packaged separately on every family, so a host that has
+        // never installed it is ordinary rather than broken. Answering the
+        // question is what lets `firewall.enable` install the package and
+        // `firewall.status` say which front-ends it looked for; raising instead
+        // defeated both, and reported `nft --version` failing over a Debian
+        // whose only problem was a package nobody had installed yet.
+        let mock = MockExecutor::with_replies([Reply::NotFound]);
+
+        let available = Nftables::new()
+            .is_available(&mock)
+            .expect("an absent binary must not raise");
+
+        assert!(!available);
     }
 }

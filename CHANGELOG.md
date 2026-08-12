@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A firewall front-end that is not installed made three tasks report a broken
+  tool.** Reported from a Debian 13 host: `firewall.status`, `firewall.enable`
+  and `firewall.allow-port` each answered `nft --version` / `FAILED — program
+  nft`, which reads as the tool being broken rather than as a package nobody
+  had installed.
+
+  `Nftables::is_available` propagated `ProgramNotFound` with `?` instead of
+  answering `false`. An absent binary produces no process at all — the `spawn`
+  fails — so the one case the check exists for was the one it could not report.
+  Both callers were defeated at once, and both already had correct code for it:
+  `firewall.status` carries a message naming the front-ends it looked for, and
+  `firewall.enable` carries a branch that installs the package, with a comment
+  saying it exists so nobody sees "command not found". Neither was reachable.
+
+  Measured on `rockylinux:9` with no front-end installed: `firewall.status` now
+  answers `none of these is installed: firewalld, nftables` and
+  `firewall.enable` answers `installing nftables`, where both previously failed.
+
+  `Firewalld::is_available` had the same defect and mattered more, because RHEL
+  asks firewalld **first**: a host whose administrator removed it to drive `nft`
+  directly failed on the first candidate and never reached the second — a state
+  that backend's own documentation calls ordinary rather than broken.
+
+  **The test that should have caught it asserted the bug instead.** It scripted
+  the absence as `Reply::failure(127, "nft: not found")` — a *process* that ran
+  and reported not-found, which only a shell produces, and no shell is in this
+  path. It passed for as long as the defect lived, asserting the install on a
+  host that had `nft` all along. The mock could not express the real case:
+  `Reply` modelled only "a process finished with this status", so
+  `Reply::NotFound` was added to model "no process ran". A defect a test cannot
+  express is one review has to catch every time, and this one was already
+  handled correctly twice in the same file.
 - **Two scenarios were deleting each other's containers, and blaming the code
   for it.** `TwoHosts::start` named its containers from `image.family`, which
   answers `suse` for both Tumbleweed and Leap — so the two built the same three
