@@ -78,7 +78,23 @@ impl TwoHosts {
     /// Returns `None` when Docker will not provide what this needs, so a
     /// caller can skip rather than fail.
     pub fn start(image: &Image, label: &str, configure: &str) -> Option<Self> {
-        let suffix = format!("{}-{}", image.family, label);
+        // `family_tag` rather than `family`, and the difference is a whole
+        // failure. openSUSE is two images and `image.family` answers `suse`
+        // for both, so Tumbleweed and Leap built the same three container
+        // names — and `start` begins by tearing down leftovers under those
+        // names. Running in parallel, whichever started second **destroyed the
+        // other's containers mid-scenario**.
+        //
+        // What that looked like is why it took a CI failure to find: the
+        // surviving scenario reported `ssh.harden must not lock out an old
+        // client (client Error response from daemon: No such container …)`,
+        // blaming the tier under test for a pair of containers another test
+        // had removed.
+        //
+        // The identical mistake is recorded on `Image::family_tag` itself,
+        // which exists because committed images collided the same way. The
+        // lesson was applied there and not here — one file further along.
+        let suffix = format!("{}-{}", image.family_tag(), label);
         let hosts = Self {
             server: format!("initd-server-{suffix}"),
             client: format!("initd-client-{suffix}"),
@@ -167,6 +183,19 @@ impl TwoHosts {
         reported.push_str(&String::from_utf8_lossy(&output.stderr));
 
         let reported = reported.trim();
+
+        // Docker's own complaints are not versions, and reading them as one is
+        // how a failure message came to say
+        // `(client Error response from daemon: No such container …)` — which
+        // reads as a version string until somebody looks twice, and buries the
+        // actual finding: the containers were gone. Naming that outright is
+        // the difference between a message that misleads and one that points
+        // at the harness.
+        if reported.starts_with("Error response from daemon")
+            || reported.contains("No such container")
+        {
+            return format!("<{container} is gone: {reported}>");
+        }
 
         if reported.is_empty() {
             // Said out loud rather than left blank: an empty version is itself

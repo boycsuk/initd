@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Two scenarios were deleting each other's containers, and blaming the code
+  for it.** `TwoHosts::start` named its containers from `image.family`, which
+  answers `suse` for both Tumbleweed and Leap — so the two built the same three
+  names, and `start` begins by tearing down leftovers under those names.
+  Running in parallel, whichever started second removed the other's containers
+  mid-scenario.
+
+  What CI reported was
+  `ssh.harden must not lock out an old client (client Error response from
+  daemon: No such container: initd-client-suse-safe …)`: the tier under test
+  blamed for a pair of containers another test had just removed. The surviving
+  scenario had waited its full 180s for a server that no longer existed, then
+  continued — the silent-degradation shape this project condemns elsewhere —
+  and took 207s to fail. It now takes 13s and passes.
+
+  **The identical mistake is recorded on `Image::family_tag` itself**, which
+  exists because committed images collided the same way and whose comment
+  describes this failure word for word. The lesson was applied there and not
+  one file along. Nothing else was affected: every other use of `image.family`
+  in the tests is a message or an assertion about the family, which is what it
+  is for.
+
+  A second defect surfaced with it, in the helper that reads OpenSSH versions
+  for that message: it returned Docker's own error *as though it were a
+  version*. `(client Error response from daemon: No such container …)` reads as
+  a version string until somebody looks twice, and buried the actual finding.
+  It now says `<container is gone: …>`.
+
+  Full suite: 1633 tests in 474s, down from 559s — the openSUSE pair no longer
+  fight each other.
+
 ## [0.2.1] — 2026-08-12
 
 One change, and it reverses a decision made hours earlier in the same day —
