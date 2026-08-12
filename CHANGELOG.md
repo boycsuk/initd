@@ -49,6 +49,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `5:29.7.2-1~debian.13~trixie`, `/usr/bin/dockerd-rootless-setuptool.sh` is
   present afterwards, and nothing lands in `trusted.gpg.d`.
 
+- **`mise.install` failed on Debian with "Unable to locate package mise".** No
+  Debian or Ubuntu suite has ever carried it — bookworm, trixie, forky, sid and
+  jammy through resolute all checked, where every search hit is a substring
+  (`misery`, a tail of `*-pro-mise-*` JavaScript packages). The task already
+  routes an empty name to the verified musl release, as it does on RHEL and
+  openSUSE, and already carries the digests; only the Debian constant claimed
+  otherwise. Three lines above it, `ZELLIJ_PACKAGE` records that blog posts
+  claiming `apt install zellij` works are wrong — mise had fallen into the same
+  trap without the note.
+
+  The test that should have caught it asserted the opposite: it ran the task
+  against Debian and checked the command mentioned `apt-get`, which a mock
+  answers whatever it is asked. A mock has no opinion about whether a package
+  exists. It now runs against Arch, which does package mise.
+
 - **A child that exits before reading its stdin no longer reports a broken pipe
   instead of its own refusal.** `join_stdin_writer` turned every write failure
   into `CommandIo`, and the owned-directory script refuses a planted symlink by

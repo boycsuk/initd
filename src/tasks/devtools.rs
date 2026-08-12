@@ -388,9 +388,9 @@ impl Task for InstallMise {
         progress: Progress<'_>,
     ) -> Result<Outcome> {
         // Which mechanism applies is asked of the backend, never of the
-        // family: Debian and Arch package this and Red Hat's repositories do
-        // not, so the empty name routes to the verified release instead —
-        // the same artefact, since it is musl and links against nothing.
+        // family: Arch packages this and Debian, Red Hat and openSUSE do not,
+        // so the empty name routes to the verified release instead — the same
+        // artefact, since it is musl and links against nothing.
         if backend.has_package_for(Capability::Mise) {
             backend
                 .packages()
@@ -924,15 +924,19 @@ mod tests {
 
     #[test]
     fn a_packaging_family_installs_mise_from_its_repository() {
+        // Arch, and now only Arch: this read `Family::Debian` while no Debian
+        // or Ubuntu suite has ever carried a package called `mise`. The mock
+        // answered `apt-get` because a mock answers whatever it is asked, so
+        // the test passed against a name `apt-get install` cannot resolve.
         let mock = MockExecutor::with_replies([Reply::ok("")]);
-        let backend = for_family(Family::Debian);
+        let backend = for_family(Family::Arch);
 
         InstallMise
             .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
-            .expect("Debian packages it");
+            .expect("Arch packages it");
 
         assert!(
-            mock.recorded_lines()[0].contains("apt-get"),
+            mock.recorded_lines()[0].contains("pacman"),
             "{:?}",
             mock.recorded_lines()
         );

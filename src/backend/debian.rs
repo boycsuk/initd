@@ -130,8 +130,20 @@ const FISH_PACKAGE: &str = "fish";
 /// it routes the task to the verified-release installer.
 const ZELLIJ_PACKAGE: &str = "";
 
-/// The mise package on Debian.
-const MISE_PACKAGE: &str = "mise";
+/// mise on Debian: there is none, for the reason Zellij records above.
+///
+/// Verified against the package databases of every current Debian and Ubuntu
+/// suite: bookworm, trixie, forky and sid, and jammy through resolute. The
+/// searches return matches and every one of them is a substring — `misery`,
+/// and a long tail of `*-pro-mise-*` JavaScript packages. There is no `mise`.
+///
+/// Upstream documents `extrepo enable mise`, which is better provenance than
+/// most third-party repositories: the fingerprint lives in Debian's own
+/// `extrepo-data`, on Debian infrastructure, rather than on the host serving
+/// the packages. It is still a repository added to the machine for one binary,
+/// where the musl release is one artefact this build already carries a digest
+/// for — so this resolves to the release installer, as RHEL and openSUSE do.
+const MISE_PACKAGE: &str = "";
 
 /// The Rust toolchain installer on Debian.
 ///
@@ -514,6 +526,22 @@ mod tests {
                 .suite
                 .is_none()
         );
+    }
+
+    #[test]
+    fn the_unpackaged_developer_tools_resolve_to_no_package() {
+        // Both route to the verified release installer instead. Zellij was
+        // already recorded as absent; mise was named as though Debian carried
+        // it, and no suite ever has — `apt-get` answered "Unable to locate
+        // package mise" on trixie.
+        let backend = DebianBackend::new();
+
+        for capability in [Capability::Zellij, Capability::Mise] {
+            assert!(
+                !backend.has_package_for(capability),
+                "{capability:?} is unpackaged on Debian and must route to a release"
+            );
+        }
     }
 
     #[test]
