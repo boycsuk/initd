@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Thirty field hints were written, compiled, and never drawn.** Reported
+  against `firewall.enable`, whose dialog asks for an "SSH port" and gave no
+  reason to — the hint answering that question, `kept open, so this session
+  survives`, had been on the field all along and the form rendered no hint at
+  all. `Param::with_hint` is called thirty times across the tree and
+  `header_line` never read the field.
+
+  Several of the missing ones resolve an ambiguity the label cannot: `keep
+  leaves the files on disk; delete removes them`, `must appear in /etc/shells`,
+  `space-separated; every other account is refused`.
+
+  Drawn beside the label rather than on a row of its own, for the reason the
+  code already gives about the option counter: a row per field is the
+  difference between fitting a 24-row terminal and not. When the row is too
+  tight it is dropped whole rather than truncated — half a sentence reads as a
+  defect, and the verdict it would crowd out is the part of the row nobody can
+  work without. Pinned in both directions, since a hint that never appears and
+  one that pushes the verdict off the edge are both regressions.
+
 - **Rootless Docker blamed the engine for a session that was never
   established.** Reported from a Debian 13 host:
   `runuser -l deploy -c 'systemctl --user disable --now docker.service'`
