@@ -242,6 +242,15 @@ pub const MARKER_PROBING: &str = "?";
 /// Marks a task that succeeded during this session.
 pub const MARKER_OK: &str = "✓";
 
+/// Marks a one-verb task whose subject the host already has.
+///
+/// Distinct from [`MARKER_OK`], which says *this session installed it*. This
+/// one says it was there before the session began, and the two are different
+/// facts an operator acts on differently: one is work just done, the other is
+/// work that need not be. A reversible row says the same thing by switching to
+/// its inverse verb, which a task with no inverse cannot do.
+pub const MARKER_PRESENT: &str = "•";
+
 /// Marks a task that failed during this session.
 pub const MARKER_FAIL: &str = "✗";
 

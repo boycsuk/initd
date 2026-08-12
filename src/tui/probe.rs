@@ -332,9 +332,21 @@ pub fn subjects_in(nodes: &[Node]) -> Vec<(&'static str, Capability)> {
 fn collect_subjects(nodes: &[Node], out: &mut Vec<(&'static str, Capability)>) {
     for node in nodes {
         match node {
-            // A lone task has no verb to choose, so nothing about it is worth
-            // a command at startup even if it declared a subject.
-            Node::Task(_) => {}
+            // A lone task has no verb to choose, and for a long time that was
+            // taken to mean it had nothing worth asking either. It does: a row
+            // with one verb can still say whether the thing is already there,
+            // and `ssh.install` is the case that surfaced it — reported as not
+            // detecting an SSH server that was installed, because the tree
+            // asked the host nothing and the answer arrived only once the task
+            // had been run.
+            //
+            // It stays opt-in through `subject()`, so this costs one query per
+            // task that has something to report rather than one per task.
+            Node::Task(task) => {
+                if let Some(capability) = task.subject() {
+                    out.push((task.id(), capability));
+                }
+            }
             Node::Reversible { forward, .. } => {
                 if let Some(capability) = forward.subject() {
                     out.push((forward.id(), capability));
@@ -604,23 +616,49 @@ mod tests {
         // and it would offer to install for the whole session, including on a
         // host where the subject is plainly present. Silent, and indisputably
         // wrong — so the tree is walked rather than trusted.
-        let mut pairs = 0;
-        count_pairs(&crate::tasks::tree(), &mut pairs);
+        let tree = crate::tasks::tree();
+        let mut pairs = Vec::new();
+        collect_pair_ids(&tree, &mut pairs);
 
-        assert_eq!(
-            subjects_in(&crate::tasks::tree()).len(),
-            pairs,
-            "every reversible pair must declare a subject to measure"
+        let measured: Vec<&str> = subjects_in(&tree).iter().map(|(id, _)| *id).collect();
+
+        // Every pair is measured. Compared by id rather than by count, which is
+        // what the assertion used to do: lone tasks may now declare a subject
+        // too, so a total that happened to match would no longer prove that the
+        // *pairs* were the things in it.
+        for id in &pairs {
+            assert!(
+                measured.contains(id),
+                "{id} is a reversible pair and must declare a subject: {measured:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_one_verb_task_may_declare_a_subject_too() {
+        // `ssh.install` has no inverse — removing the SSH server over SSH is
+        // the one thing this tool refuses to offer — and for as long as the
+        // probe skipped lone tasks, its row asked the host nothing. Reported as
+        // the tool not detecting an SSH server that was plainly installed: the
+        // answer existed and arrived only once the task had been run.
+        let measured: Vec<&str> = subjects_in(&crate::tasks::tree())
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+
+        assert!(
+            measured.contains(&"ssh.install"),
+            "a lone task that declares a subject must be measured: {measured:?}"
         );
     }
 
-    /// Counts reversible pairs in a forest, however deeply nested.
-    fn count_pairs(nodes: &[Node], out: &mut usize) {
+    /// Collects the ids of every reversible pair's forward task.
+    fn collect_pair_ids(nodes: &[Node], out: &mut Vec<&'static str>) {
         for node in nodes {
             match node {
                 Node::Task(_) => {}
-                Node::Reversible { .. } => *out += 1,
-                Node::Category(category) => count_pairs(&category.children, out),
+                Node::Reversible { forward, .. } => out.push(forward.id()),
+                Node::Category(category) => collect_pair_ids(&category.children, out),
             }
         }
     }

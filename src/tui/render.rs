@@ -711,7 +711,27 @@ pub(super) fn row(
 
             parts
         }
-        Node::Task(task) => task_row_parts(task.as_ref(), family),
+        // A task with no inverse cannot say "already there" by switching verbs
+        // the way a reversible row does, so it says it with a flag. Only the
+        // ones that declared a subject are measured at all, and the flag yields
+        // to whatever the task's own row already carries — a lockout warning
+        // outranks a note that the package is present.
+        Node::Task(task) => {
+            let mut parts = task_row_parts(task.as_ref(), family);
+            let measured = presence.of(task.id());
+
+            if parts.trailing.is_empty() {
+                if measured.calls_for_the_inverse() {
+                    parts.trailing = style::MARKER_PRESENT.to_owned();
+                    parts.trailing_style = style::BLOCK_SUBTITLE;
+                } else if task.subject().is_some() && !measured.is_settled() {
+                    parts.trailing = style::MARKER_PROBING.to_owned();
+                    parts.trailing_style = style::BLOCK_SUBTITLE;
+                }
+            }
+
+            parts
+        }
     };
 
     // A title longer than its column is cut with an ellipsis rather than

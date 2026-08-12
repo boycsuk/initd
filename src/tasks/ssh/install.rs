@@ -30,6 +30,17 @@ impl Task for InstallSsh {
 
     supported_everywhere!();
 
+    /// The package whose presence the row reports.
+    ///
+    /// Declared even though this task has no inverse, which is what the probe
+    /// was originally built to choose between. A row with one verb still has
+    /// something worth saying: reported as not detecting an SSH server that was
+    /// already installed, because the tree asked the host nothing about it and
+    /// the answer only arrived once the task had been run.
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Ssh)
+    }
+
     fn run(
         &self,
         executor: &dyn Executor,

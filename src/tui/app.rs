@@ -2718,6 +2718,55 @@ mod tests {
     }
 
     #[test]
+    fn a_one_verb_task_says_when_the_host_already_has_its_subject() {
+        // Reported as the tool not detecting an SSH server that was installed.
+        // It detected it fine when run — `openssh-server is already installed`
+        // — but the tree had asked the host nothing, because the probe only
+        // measured reversible pairs and `ssh.install` deliberately has no
+        // inverse. A row with one verb cannot say "already there" by switching
+        // verbs, so it says it with a flag.
+        let task = crate::tasks::find("ssh.install").expect("ssh.install must exist");
+        let node = Node::Task(task);
+        let mut state = InstalledState::default();
+
+        state.record("ssh.install", crate::tui::probe::Presence::Present);
+
+        let drawn: String = row(&node, Family::Debian, 60, &state)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            drawn.contains(style::MARKER_PRESENT),
+            "an installed subject must be visible without running the task: {drawn}"
+        );
+    }
+
+    #[test]
+    fn a_one_verb_task_whose_subject_is_absent_carries_no_flag() {
+        // The other direction, and the reason the flag is not simply always
+        // drawn: a row flagged whether or not the host has the thing says
+        // nothing at all.
+        let task = crate::tasks::find("ssh.install").expect("ssh.install must exist");
+        let node = Node::Task(task);
+        let mut state = InstalledState::default();
+
+        state.record("ssh.install", crate::tui::probe::Presence::Absent);
+
+        let drawn: String = row(&node, Family::Debian, 60, &state)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            !drawn.contains(style::MARKER_PRESENT),
+            "nothing is installed, so nothing may claim it is: {drawn}"
+        );
+    }
+
+    #[test]
     fn a_task_that_collects_parameters_is_flagged_in_the_tree() {
         // The operator has to be able to tell, before pressing Enter, which
         // tasks stop to ask and which run straight away.
