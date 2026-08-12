@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-12
+
+Nine tasks, three fixes for failures reported from a running server, and a key
+for the console those failures were seen on. Nothing a script depended on
+changed: no task id was renamed, no exit code moved, and the tree's regrouping
+is a matter for the interface alone.
+
 ### Added
 - **git and the GitHub CLI, with the configuration each needs to be usable.**
   Seven tasks: `git.install` / `git.uninstall`, `git.identity`,
