@@ -144,6 +144,12 @@ const GITHUB_CLI_PACKAGE: &str = "gh";
 /// presents one front-end rather than two.
 const NFTABLES_PACKAGE: &str = "nftables";
 
+/// What owns `sysctl` here.
+///
+/// Measured on `opensuse/tumbleweed`: `rpm -qf` answers `procps`, agreeing
+/// with Debian rather than with the other two RPM families.
+const SYSCTL_PACKAGE: &str = "procps";
+
 /// fail2ban is packaged, unlike on RHEL where it is EPEL-only.
 const FAIL2BAN_PACKAGE: &str = "fail2ban";
 
@@ -284,6 +290,7 @@ impl Backend for SuseBackend {
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => RUST_PACKAGE,
             Capability::Nftables => NFTABLES_PACKAGE,
+            Capability::Sysctl => SYSCTL_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
             Capability::Git => GIT_PACKAGE,
@@ -302,6 +309,7 @@ impl Backend for SuseBackend {
             // A front-end rather than a daemon, as on RHEL: the ruleset lives
             // in the kernel and `nft` only speaks to it.
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
             // Neither is a service: both are commands somebody runs.
@@ -321,6 +329,7 @@ impl Backend for SuseBackend {
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
             // Git's system-wide file, which `git config --system` writes.

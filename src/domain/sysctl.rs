@@ -26,6 +26,27 @@ pub struct Setting {
 
 /// Reads and sets kernel parameters.
 pub trait SysctlManager {
+    /// Whether the tool that reads and writes them is on this host.
+    ///
+    /// Asked for the same reason [`FirewallManager`](crate::domain::firewall::FirewallManager)
+    /// asks it, and added after the omission was collected on: `sysctl` is
+    /// packaged separately on four of the five families and absent from a
+    /// freshly provisioned RHEL, so a task going straight to it fails with a
+    /// missing binary — which reads as a broken tool rather than a package
+    /// nobody installed.
+    ///
+    /// The two halves of the operation fail differently, which is why this is
+    /// asked once up front instead of being inferred from either. Reading runs
+    /// unprivileged and raises [`Error::ProgramNotFound`](crate::error::Error);
+    /// writing is wrapped in `sudo`, so the binary that gets spawned *exists*
+    /// and what comes back is an exit code 127 with `sudo: sysctl: command not
+    /// found` on stderr — a generic command failure carrying the real cause in
+    /// text nothing parses.
+    ///
+    /// An absent binary must answer `false` rather than raise, or this repeats
+    /// the defect it exists to fix one layer up.
+    fn is_available(&self, executor: &dyn Executor) -> Result<bool>;
+
     /// The value a parameter currently holds.
     fn get(&self, executor: &dyn Executor, key: &str) -> Result<String>;
 

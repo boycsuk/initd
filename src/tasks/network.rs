@@ -483,6 +483,38 @@ fn set_and_report(
 ) -> Result<Outcome> {
     let sysctl = backend.sysctl();
 
+    // Before anything asks the kernel a question, because the tool that asks it
+    // is a package on four of the five families and is missing from a freshly
+    // provisioned RHEL — `rockylinux:9` ships no `sysctl` at all. Going
+    // straight to the read failed with a missing binary, and the write failed
+    // worse: it is wrapped in `sudo`, so the spawn succeeds and what surfaces
+    // is exit 127 with `sudo: sysctl: command not found` buried on stderr.
+    // Both read as a broken tool rather than as a package nobody installed,
+    // which is the same wording `firewall.enable` installs `nftables` to avoid.
+    //
+    // Alpine never reaches the install: `sysctl` is a busybox applet there, so
+    // it is always available and the backend names no package for it. An empty
+    // name would mean "nothing to install" rather than "unknown", and this
+    // refuses instead of running `apk add ""`.
+    if !sysctl.is_available(executor)? {
+        let package = backend.package_for(Capability::Sysctl);
+
+        if package.is_empty() {
+            return Err(Error::ProgramNotFound {
+                program: "sysctl".to_owned(),
+            });
+        }
+
+        report(
+            progress,
+            &Msg::TaskInstalling {
+                what: package.to_owned(),
+            },
+        );
+
+        backend.packages().install(executor, package)?;
+    }
+
     // Both halves, because either alone is a system that does not behave as
     // the task describes. A kernel can hold the right value for reasons that
     // do not outlive a reboot — another tool set it, the image ships it that
@@ -850,6 +882,7 @@ mod tests {
         let (outcome, commands) = run(
             &EnableIpForward,
             vec![
+                Reply::ok("Linux"),                   // sysctl is available
                 Reply::ok("1\n"),                     // the running value
                 Reply::ok(""),                        // test -e: the drop-in exists
                 Reply::ok("net.ipv4.ip_forward = 1"), // and records the value
@@ -862,6 +895,97 @@ mod tests {
         assert!(
             !commands.iter().any(|command| command.starts_with("tee")),
             "nothing needed writing: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_sysctl_tool_is_installed_when_it_is_absent() {
+        // `sysctl` is packaged separately on four of the five families, and a
+        // freshly provisioned RHEL has none — measured on `rockylinux:9`, where
+        // `dnf provides /usr/sbin/sysctl` answers `procps-ng` from baseos and
+        // the image ships nothing. Reported from a Debian host as
+        // `FAILED — sysctl.ip-forward / program sysctl`, which reads as a
+        // broken tool rather than a package nobody installed.
+        //
+        // `Reply::NotFound` rather than a non-zero exit, for the reason the
+        // firewall's own test records: an absent binary produces no process and
+        // therefore no status.
+        let (outcome, commands) = run(
+            &EnableIpForward,
+            vec![
+                Reply::NotFound,  // no `sysctl` on this host
+                Reply::ok(""),    // install
+                Reply::ok("0\n"), // now it reads, and does not hold the value
+                // `is_persisted` is never asked: `holds` is already false, and
+                // `&&` short-circuits.
+                Reply::ok(""), // sysctl -w
+                Reply::ok(""), // test -e inside the write
+                Reply::ok(""), // tee
+                Reply::ok(""), // chmod
+            ],
+            &ParamValues::new(),
+        );
+
+        outcome.expect("the task must install the tool rather than fail");
+
+        assert!(
+            commands.iter().any(|command| command.contains("procps")),
+            "the package must be installed: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn alpine_is_refused_rather_than_sent_to_install_nothing() {
+        // The family where an empty package name means "already there" rather
+        // than "not packaged": `sysctl` is a busybox applet, so it cannot be
+        // missing, and if it somehow is there is nothing to install. Without
+        // this branch the task would run `apk add ""`.
+        //
+        // Both directions of the guard matter, which is why this test exists
+        // beside the one above: an install branch that fired here would send a
+        // package manager after an empty name, and one that refused everywhere
+        // would leave Debian and RHEL exactly as broken as they were.
+        //
+        // The assertion that carries this test is the *second* one. Removing
+        // the guard entirely leaves the error unchanged — `ProgramNotFound`
+        // then comes from `sysctl -n` itself a line later — so an error-only
+        // test would pass over the defect it is named for. What only the guard
+        // produces is the absence of an install: without it, an empty package
+        // name reaches `apk add`.
+        let mock = MockExecutor::with_replies([Reply::NotFound]);
+        let backend = for_family(Family::Alpine);
+
+        let error = EnableIpForward
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect_err("an absent applet must be reported, not installed");
+
+        assert!(
+            matches!(error, Error::ProgramNotFound { ref program } if program == "sysctl"),
+            "the error must name the tool: {error:?}"
+        );
+
+        let commands = mock.recorded_lines();
+
+        // `apk` at all, not `apk add ""`: the empty name renders as nothing, so
+        // matching the full line would pass against the very command this
+        // rejects.
+        assert!(
+            !commands.iter().any(|command| command.contains("apk")),
+            "nothing may be installed on the one family that always has it: {commands:?}"
+        );
+
+        // Which command ran, not how many. Both assertions above hold with the
+        // guard deleted — the error then comes from `sysctl -n
+        // net.ipv4.ip_forward` a line later, which is also one command and also
+        // installs nothing — so a test that stopped there passed over the
+        // defect it is named for. The availability check reads
+        // `kernel.ostype`, a key chosen because every kernel carries it, and
+        // that is the one observable difference between the two paths.
+        assert_eq!(
+            commands,
+            ["sysctl -n kernel.ostype"],
+            "the task must refuse at the availability check, not stumble into \
+             the read: {commands:?}"
         );
     }
 
@@ -879,6 +1003,7 @@ mod tests {
         let (outcome, commands) = run(
             &EnableIpForward,
             vec![
+                Reply::ok("Linux"),    // sysctl is available
                 Reply::ok("1\n"),      // already live
                 Reply::failure(1, ""), // but no drop-in of ours exists
                 Reply::ok(""),         // sysctl -w

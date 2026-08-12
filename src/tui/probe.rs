@@ -275,6 +275,11 @@ fn program_for(capability: Capability) -> Option<&'static str> {
         // it as `github-cli` — which is why this table exists separately from
         // the package names.
         Capability::GithubCli => Some("gh"),
+        // Asked by name rather than by package, because the package is not the
+        // question on every family: Alpine's `sysctl` is a busybox applet, so a
+        // host with no `procps` of any spelling still has the binary. Asking
+        // the executable is the one question true on all five.
+        Capability::Sysctl => Some("sysctl"),
         // Everything else is packaged on every family this tool supports, so a
         // host that has no package for it has no other way to have got it
         // either. Written as an exhaustive match rather than a catch-all: a

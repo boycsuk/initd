@@ -95,6 +95,12 @@ const GITHUB_CLI_PACKAGE: &str = "github-cli";
 /// The nftables front-end on Arch.
 const NFTABLES_PACKAGE: &str = "nftables";
 
+/// What owns `sysctl` here.
+///
+/// Measured on `archlinux:latest`: `pacman -Qo` answers `procps-ng`, not
+/// Debian's `procps`.
+const SYSCTL_PACKAGE: &str = "procps-ng";
+
 /// The fail2ban package on Arch.
 const FAIL2BAN_PACKAGE: &str = "fail2ban";
 
@@ -167,6 +173,7 @@ impl Backend for ArchBackend {
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => RUST_PACKAGE,
             Capability::Nftables => NFTABLES_PACKAGE,
+            Capability::Sysctl => SYSCTL_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
             Capability::Git => GIT_PACKAGE,
@@ -185,6 +192,7 @@ impl Backend for ArchBackend {
             // A front-end rather than a daemon: the ruleset lives in the
             // kernel and `nft` only speaks to it.
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
             // Neither is a service: both are commands somebody runs.
@@ -204,6 +212,7 @@ impl Backend for ArchBackend {
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
             // Git's system-wide file, which `git config --system` writes.

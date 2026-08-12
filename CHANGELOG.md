@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`sysctl` was assumed present on every host, and is packaged separately on
+  four of the five families.** Reported from a Debian 13 host, where both
+  kernel-parameter tasks answered `FAILED — program sysctl`.
+
+  The firewall had a `is_available` on its trait and sysctl had none, so there
+  was nowhere to hang the check: `SysctlManager` grew one, and `Capability`
+  grew a `Sysctl` variant so each backend names its own package. The exhaustive
+  `match` did its job — the new variant produced **16** compile errors naming
+  exactly the sites that had to decide.
+
+  The two halves failed differently, which is why the check is asked once up
+  front rather than inferred from either. Reading runs unprivileged and raises
+  `ProgramNotFound`; writing is wrapped in `sudo`, so the binary that gets
+  spawned *exists* and what comes back is exit 127 with `sudo: sysctl: command
+  not found` on stderr — a generic command failure carrying the real cause in
+  text nothing parses.
+
+  Package names were measured rather than assumed, and disagree three ways:
+  `procps` on Debian and openSUSE, `procps-ng` on RHEL and Arch, and on Alpine
+  **no package at all** — `sysctl` there is a busybox applet
+  (`/sbin/sysctl -> /bin/busybox`), so it cannot be missing and installing
+  anything would be wrong. That family is refused rather than sent to `apk add
+  ""`.
+
+  **The obvious availability check was wrong and was measured before it
+  shipped.** `sysctl --version` was written first; busybox rejects it *and*
+  `-V` with exit 1, so the check would have declared the tool absent across all
+  of Alpine — the same trap as the installer's `sha256sum --ignore-missing`,
+  which this project has already paid for once. It reads `kernel.ostype`
+  instead, which procps and busybox both answer with `Linux`.
+
+  **A second defect surfaced only because the first was fixed.** On
+  `rockylinux:9` there is no `/etc/sysctl.d`, and installing `procps-ng` does
+  not create one — Debian's `procps` does, and Alpine and Arch ship it, so four
+  families hid the fifth. The task got past the install and failed at
+  `tee: /etc/sysctl.d/99-initd.conf.initd.new: No such file or directory`, a
+  write failing for a reason that names a temporary file rather than the
+  missing directory. The drop-in's parent is now created first.
+
+  Verified end to end on `rockylinux:9`, the worst case, where the task now
+  reports `Installing procps-ng...` and `net.ipv4.ip_forward = 1, now and after
+  a reboot`. Alpine and Arch were checked to still install nothing.
+
 - **A firewall front-end that is not installed made three tasks report a broken
   tool.** Reported from a Debian 13 host: `firewall.status`, `firewall.enable`
   and `firewall.allow-port` each answered `nft --version` / `FAILED — program

@@ -183,6 +183,12 @@ const GITHUB_CLI_PACKAGE: &str = "gh";
 /// The nftables front-end on Debian.
 const NFTABLES_PACKAGE: &str = "nftables";
 
+/// What owns `sysctl` here.
+///
+/// Measured on `debian:13`: `dpkg-query -S /usr/sbin/sysctl` answers `procps`.
+/// Ubuntu spells it the same.
+const SYSCTL_PACKAGE: &str = "procps";
+
 /// The fail2ban package on Debian.
 const FAIL2BAN_PACKAGE: &str = "fail2ban";
 
@@ -323,6 +329,7 @@ impl Backend for DebianBackend {
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => self.rust_package,
             Capability::Nftables => NFTABLES_PACKAGE,
+            Capability::Sysctl => SYSCTL_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
             Capability::Git => GIT_PACKAGE,
@@ -344,6 +351,7 @@ impl Backend for DebianBackend {
             // A front-end rather than a daemon: the ruleset lives in the
             // kernel and `nft` only speaks to it.
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
             // Driven by a timer the package ships, not by a unit of its own.
@@ -364,6 +372,7 @@ impl Backend for DebianBackend {
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
             // Git's system-wide file, which `git config --system` writes and
