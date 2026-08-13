@@ -23,7 +23,7 @@
 //! so a compromised third-party repository cannot vouch for a Debian one.
 
 use super::systemd::run_checked;
-use crate::domain::repositories::{Repository, RepositoryManager};
+use crate::domain::repositories::{Repository, RepositoryManager, verify_key};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
@@ -59,43 +59,6 @@ impl AptRepositories {
     fn keyring_path(repository: &Repository) -> String {
         format!("{KEYRING_DIR}/{}.asc", repository.name)
     }
-
-    /// Fetches the signing key and reports the fingerprint it actually has.
-    ///
-    /// Derived on the host from the bytes that arrived, for the reason the rpm
-    /// implementation records: the value in this binary came from somewhere the
-    /// serving host does not control, so the other side of the comparison has
-    /// to be computed rather than trusted.
-    ///
-    /// The first `fpr` is the primary key's. That matters here — Docker signs
-    /// its `InRelease` with a subkey, so a check that compared the signature's
-    /// issuer against this value would refuse a correct key. Pinning the
-    /// primary and letting `gpg` walk the binding signature is what makes the
-    /// subkey a detail rather than a special case.
-    fn fingerprint_of(executor: &dyn Executor, repository: &Repository) -> Result<String> {
-        // One script, because the key must not survive the check: a key file
-        // left behind after a mismatch is one a later run could import.
-        let script = format!(
-            "set -eu\n\
-             key=$(mktemp)\n\
-             trap 'rm -f \"$key\"' EXIT\n\
-             curl -fsSL --proto '=https' --tlsv1.2 -o \"$key\" '{url}'\n\
-             gpg --show-keys --with-fingerprint --with-colons \"$key\" \
-               | awk -F: '$1 == \"fpr\" {{ print $10; exit }}'\n",
-            url = repository.key_url
-        );
-
-        let command = Command::new("sh").args(["-c", &script]);
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Err(Error::RepositoryKeyUnverifiable {
-                repository: repository.name.to_owned(),
-            });
-        }
-
-        Ok(output.stdout.trim().to_ascii_uppercase())
-    }
 }
 
 impl RepositoryManager for AptRepositories {
@@ -115,19 +78,7 @@ impl RepositoryManager for AptRepositories {
             });
         };
 
-        let found = Self::fingerprint_of(executor, repository)?;
-        let expected = repository.fingerprint.to_ascii_uppercase();
-
-        // Refused rather than warned about, as on the rpm side: the packages a
-        // wrong key would sign are the ones this check exists to keep off the
-        // machine.
-        if found != expected {
-            return Err(Error::RepositoryKeyMismatch {
-                repository: repository.name.to_owned(),
-                expected,
-                found,
-            });
-        }
+        verify_key(executor, repository)?;
 
         // The key is placed first, because the source below refers to it: a
         // source naming a keyring that does not exist makes every `apt update`

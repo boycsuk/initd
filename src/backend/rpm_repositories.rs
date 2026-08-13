@@ -13,8 +13,8 @@
 //! cannot register, and says so.
 
 use super::systemd::run_checked;
-use crate::domain::repositories::{Repository, RepositoryManager};
-use crate::error::{Error, Result};
+use crate::domain::repositories::{Repository, RepositoryManager, verify_key};
+use crate::error::Result;
 use crate::exec::{Command, Executor};
 
 /// Where `dnf` reads repository definitions.
@@ -33,37 +33,6 @@ impl RpmRepositories {
     fn repo_path(repository: &Repository) -> String {
         format!("{REPO_DIR}/{}.repo", repository.name)
     }
-
-    /// Fetches the signing key and reports the fingerprint it actually has.
-    ///
-    /// Derived on the host rather than trusted from anywhere: the point of the
-    /// comparison is that the value in this binary came from somewhere the
-    /// serving host does not control, so the other side of it has to be
-    /// computed from the bytes that arrived.
-    fn fingerprint_of(executor: &dyn Executor, repository: &Repository) -> Result<String> {
-        // One script, because the key must not survive the check: a key file
-        // left behind after a mismatch is one a later run could import.
-        let script = format!(
-            "set -eu\n\
-             key=$(mktemp)\n\
-             trap 'rm -f \"$key\"' EXIT\n\
-             curl -fsSL --proto '=https' --tlsv1.2 -o \"$key\" '{url}'\n\
-             gpg --show-keys --with-fingerprint --with-colons \"$key\" \
-               | awk -F: '$1 == \"fpr\" {{ print $10; exit }}'\n",
-            url = repository.key_url
-        );
-
-        let command = Command::new("sh").args(["-c", &script]);
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Err(Error::RepositoryKeyUnverifiable {
-                repository: repository.name.to_owned(),
-            });
-        }
-
-        Ok(output.stdout.trim().to_ascii_uppercase())
-    }
 }
 
 impl RepositoryManager for RpmRepositories {
@@ -74,19 +43,7 @@ impl RepositoryManager for RpmRepositories {
     }
 
     fn register(&self, executor: &dyn Executor, repository: &Repository) -> Result<()> {
-        let found = Self::fingerprint_of(executor, repository)?;
-        let expected = repository.fingerprint.to_ascii_uppercase();
-
-        // Refused rather than warned about. A warning about a key that is not
-        // the expected one is a warning nobody can act on, and the packages it
-        // would sign are the ones this check exists to keep off the machine.
-        if found != expected {
-            return Err(Error::RepositoryKeyMismatch {
-                repository: repository.name.to_owned(),
-                expected,
-                found,
-            });
-        }
+        verify_key(executor, repository)?;
 
         // Only now, with the key established as the right one, is the
         // repository made usable. `gpgcheck=1` so every package it serves is
@@ -127,6 +84,7 @@ impl RepositoryManager for RpmRepositories {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// Docker's, as the task declares it.
