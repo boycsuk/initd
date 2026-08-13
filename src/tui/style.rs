@@ -16,10 +16,18 @@
 //!
 //! The table is declared whole rather than grown entry by entry, so that the
 //! roles stay a single readable reference and a new call site picks one instead
-//! of inventing a colour. Entries the interface does not draw yet — the gauge,
-//! result glyphs, the search highlight — are therefore allowed to be unused;
-//! the alternative is scattering their definitions across later commits, which
-//! is exactly the drift this module exists to prevent.
+//! of inventing a colour. Entries the interface does not draw yet are therefore
+//! allowed to be unused; the alternative is scattering their definitions across
+//! later commits, which is exactly the drift this module exists to prevent.
+//!
+//! Which entries those are is worth stating accurately, because the list is the
+//! only thing distinguishing "declared ahead of its use" from "outlived its
+//! caller". Undrawn today: [`GAUGE`], [`RESULT_FAIL`], and the [`MARKER_OK`],
+//! [`MARKER_FAIL`] and [`MARKER_CURSOR`] glyphs. The search highlight this once
+//! listed is drawn now, and [`BORDER_UNFOCUSED`] and [`KEYBAR_LABEL`] look
+//! unused to a grep while reaching the screen through [`border`] and
+//! [`key_hint`] — which is the trap that makes counting call sites by hand
+//! unreliable here.
 #![allow(dead_code)]
 
 use ratatui::style::{Color, Modifier, Style};

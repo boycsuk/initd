@@ -11,7 +11,12 @@
 //! screen may take are a single reference rather than numbers rediscovered at
 //! each call site. [`detail_height`] describes a split the interface does not
 //! draw yet — the detail/output division — and is unused until it does.
-#![allow(dead_code)]
+//!
+//! What is unused says so per item rather than through a blanket allow on the
+//! module. A blanket one covers whatever dies next as readily as what was
+//! declared ahead of its use, and it did: `centred_percent` outlived the
+//! proportional confirmation dialog it existed for, kept compiling, and kept a
+//! doc comment recommending the sizing the interface had already abandoned.
 
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::Style;
@@ -168,6 +173,7 @@ const TREE_PANE_WIDTH: u16 = 50;
 /// Two of border, two of marker, one of flag, one separating the last two.
 /// Stated here because [`TREE_PANE_WIDTH`] is derived from it and a test
 /// checks that derivation; a literal in both places is a literal that drifts.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const TREE_ROW_CHROME: u16 = 6;
 
 /// Minimum width left for the right pane in the wide layout.
@@ -185,15 +191,19 @@ const RIGHT_PANE_MIN_WIDTH: u16 = 46;
 const _: () = assert!(WIDE_LAYOUT_MIN_WIDTH >= TREE_PANE_WIDTH + RIGHT_PANE_MIN_WIDTH);
 
 /// Height at or below which the detail pane gives up rows to the output.
+#[allow(dead_code)]
 const SHORT_TERMINAL_HEIGHT: u16 = 30;
 
 /// Rows the detail pane occupies while browsing on a comfortable terminal.
+#[allow(dead_code)]
 const DETAIL_HEIGHT: u16 = 13;
 
 /// Rows the detail pane occupies once the terminal is short.
+#[allow(dead_code)]
 const DETAIL_HEIGHT_SHORT: u16 = 9;
 
 /// Rows the detail pane is squeezed to on the shortest terminals.
+#[allow(dead_code)]
 const DETAIL_HEIGHT_MINIMAL: u16 = 6;
 
 /// Smallest terminal `initd` will draw a real interface on.
@@ -307,6 +317,7 @@ pub fn body(area: Rect, layout: BodyLayout) -> (Rect, Rect) {
 ///
 /// The output is always the flexible constraint: in every state the spare space
 /// goes to the thing being watched, never to descriptive text.
+#[allow(dead_code)]
 pub const fn detail_height(terminal_height: u16) -> u16 {
     if terminal_height >= SHORT_TERMINAL_HEIGHT {
         DETAIL_HEIGHT
@@ -337,35 +348,6 @@ pub fn centred(width: u16, height: u16, area: Rect) -> Rect {
         .areas(vertical);
 
     centred
-}
-
-/// Centres a rectangle sized as a percentage of `area`.
-///
-/// The confirmation dialog is specified as a proportion of the screen rather
-/// than a cell size, so that a short question does not occupy a fixed block on
-/// a large terminal. Sizing in cells, the way the form and the help overlay do,
-/// would be a change to the contract in `docs/ui.md`.
-///
-/// The arithmetic widens to `u32` before multiplying: a terminal 1093 columns
-/// wide overflows `u16` at 60%, which panics in debug and wraps silently in
-/// release — the profile this ships as. Wide terminals are what a proportional
-/// dialog is for, so the overflow sits on the path the function exists to
-/// serve.
-pub fn centred_percent(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let scale = |extent: u16, percent: u16| {
-        let scaled = u32::from(extent) * u32::from(percent) / 100;
-
-        // The result is a fraction of `extent`, which is a `u16`, so it cannot
-        // exceed one — except for a percentage above 100, which no caller has
-        // and which the clamp in `centred` would absorb anyway.
-        u16::try_from(scaled).unwrap_or(extent)
-    };
-
-    centred(
-        scale(area.width, percent_x),
-        scale(area.height, percent_y),
-        area,
-    )
 }
 
 /// Reserves the last row of `area`, returning what precedes it and that row.
@@ -607,37 +589,6 @@ mod tests {
     }
 
     #[test]
-    fn a_proportional_dialog_takes_its_share_of_the_screen() {
-        // The confirmation dialog is specified as a proportion rather than a
-        // cell size, so it must scale with the terminal.
-        let dialog = centred_percent(60, 40, area(100, 50));
-
-        assert_eq!(dialog.width, 60);
-        assert_eq!(dialog.height, 20);
-    }
-
-    #[test]
-    fn a_proportional_dialog_stays_inside_its_area() {
-        let screen = area(37, 13);
-        let dialog = centred_percent(60, 40, screen);
-
-        assert!(dialog.x + dialog.width <= screen.width);
-        assert!(dialog.y + dialog.height <= screen.height);
-    }
-
-    #[test]
-    fn a_very_wide_terminal_does_not_overflow_the_arithmetic() {
-        // 1093 columns x 60% exceeds `u16`, which panics in debug and wraps
-        // silently in release. A wide terminal is precisely what a
-        // proportional dialog is for, so the case is on the path, not at its
-        // edge.
-        let dialog = centred_percent(60, 40, area(2000, 1000));
-
-        assert_eq!(dialog.width, 1200);
-        assert_eq!(dialog.height, 400);
-    }
-
-    #[test]
     fn the_reserved_row_is_the_last_one_and_the_prose_takes_the_rest() {
         let (prose, choice) = split_off_last_row(area(60, 10));
 
@@ -658,13 +609,5 @@ mod tests {
 
         assert_eq!(prose.height, 0);
         assert_eq!(choice.height, 1);
-    }
-
-    #[test]
-    fn the_widest_possible_terminal_is_still_proportional() {
-        let dialog = centred_percent(60, 40, area(u16::MAX, u16::MAX));
-
-        assert_eq!(dialog.width, 39321);
-        assert_eq!(dialog.height, 26214);
     }
 }
