@@ -35,7 +35,7 @@ use ratatui::widgets::{
 use super::app::{
     App, DETAIL_MAX_ROWS, Mode, OUTPUT_MIN_ROWS, Pane, SPLIT_MIN_ROWS, VERIFY_BANNER_ROWS, VERSION,
 };
-use super::probe::InstalledState;
+use super::probe::{InstalledState, Presence};
 use super::verify::Verification;
 use super::{help, layout, search, style};
 use crate::i18n::{Lang, Msg};
@@ -708,6 +708,17 @@ pub(super) fn row(
             // milliseconds — long enough to press a key in.
             if !measured.is_settled() && parts.trailing.is_empty() {
                 parts.trailing = style::MARKER_PROBING.to_owned();
+                parts.trailing_style = style::BLOCK_SUBTITLE;
+            }
+
+            // A copy the host has but this tool did not install keeps the
+            // forward verb — it is not ours to remove — and says so, or the row
+            // is indistinguishable from one where nothing is installed at all.
+            // Reported for SSH, which a provider's image ships already running:
+            // the row offered to install what was plainly there, and had no way
+            // to say otherwise.
+            if matches!(measured, Presence::Foreign { .. }) && parts.trailing.is_empty() {
+                parts.trailing = style::MARKER_PRESENT.to_owned();
                 parts.trailing_style = style::BLOCK_SUBTITLE;
             }
 

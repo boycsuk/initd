@@ -253,7 +253,25 @@ fn measure(
 
         return match backend.packages().is_installed(executor, package) {
             Ok(true) => Presence::Present,
-            Ok(false) => Presence::Absent,
+            // The package manager saying no is not the host saying no. A
+            // capability whose program is on the machine by some other route —
+            // a provider image, a different package, a build — is present, and
+            // a row reporting it absent offers to install what is already
+            // running. Reported for SSH, which a VPS ships preinstalled and
+            // which the backend asks about by one package name.
+            //
+            // `Foreign` rather than `Present`, which is the distinction this
+            // state exists for: the copy was not put there by this tool, so the
+            // row keeps its forward verb and never offers to remove something
+            // it did not install.
+            Ok(false) => match program_for(capability) {
+                Some(program) => match backend.binaries().location_of(executor, program) {
+                    Ok(Some(found_at)) => Presence::Foreign { found_at },
+                    Ok(None) => Presence::Absent,
+                    Err(_) => Presence::Unknown,
+                },
+                None => Presence::Absent,
+            },
             // A failed query is not an answer. Left `Unknown` rather than
             // guessed at, so the row keeps offering to install — the outcome
             // that is harmless when wrong.
@@ -299,13 +317,22 @@ fn program_for(capability: Capability) -> Option<&'static str> {
         // host with no `procps` of any spelling still has the binary. Asking
         // the executable is the one question true on all five.
         Capability::Sysctl => Some("sysctl"),
+        // The daemon rather than the package, for a reason the package name
+        // cannot cover: a provider's image ships SSH already running, and it
+        // need not have arrived as the one package this backend asks about.
+        // Reported as the tree not detecting the system's own SSH — true, and
+        // it was asking the wrong question.
+        //
+        // `sshd` rather than `ssh`: the client is a separate package on RHEL,
+        // which installs `openssh-server` alone, so asking for the client
+        // answers "absent" on a host plainly serving SSH.
+        Capability::Ssh => Some("sshd"),
         // Everything else is packaged on every family this tool supports, so a
         // host that has no package for it has no other way to have got it
         // either. Written as an exhaustive match rather than a catch-all: a
         // future capability installed from a release must decide here, and
         // silence would leave its row permanently offering to install.
-        Capability::Ssh
-        | Capability::Wireguard
+        Capability::Wireguard
         | Capability::DockerRootless
         | Capability::Nftables
         | Capability::Fish
@@ -545,6 +572,57 @@ mod tests {
         assert_eq!(
             task_for(&pair, &state).map(crate::tasks::Task::id),
             Some("caddy.validate")
+        );
+    }
+
+    #[test]
+    fn an_ssh_server_the_package_manager_did_not_install_is_still_found() {
+        // Reported as the tree not detecting the system's own SSH. It asked
+        // `dpkg-query` about `openssh-server` and stopped there, so a daemon
+        // that arrived by any other route — a provider's image, a different
+        // package, a build — read as absent and the row offered to install what
+        // was already running.
+        //
+        // Two replies: the package manager says no, then `command -v sshd`
+        // answers with a path.
+        let mock = crate::exec::mock::MockExecutor::with_replies([
+            crate::exec::mock::Reply::failure(1, ""),
+            crate::exec::mock::Reply::ok("/usr/sbin/sshd\n"),
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        let presence = measure(&mock, backend.as_ref(), Capability::Ssh);
+
+        // `Foreign`, not `Present`: this tool did not install that copy, so the
+        // row keeps its forward verb rather than offering to remove something
+        // it never put there. Removing the SSH server is the one operation here
+        // with no way back, which makes the distinction load-bearing rather
+        // than tidy.
+        assert!(
+            matches!(presence, Presence::Foreign { .. }),
+            "a daemon found outside the package manager must be reported as \
+             foreign: {presence:?}"
+        );
+        assert!(
+            !presence.calls_for_the_inverse(),
+            "and must not offer to uninstall it"
+        );
+    }
+
+    #[test]
+    fn a_host_with_no_ssh_at_all_still_reads_as_absent() {
+        // The other direction, and the reason the lookup is not simply assumed
+        // to find something: a host with neither the package nor the binary
+        // must go on offering to install.
+        let mock = crate::exec::mock::MockExecutor::with_replies([
+            crate::exec::mock::Reply::failure(1, ""),
+            crate::exec::mock::Reply::failure(1, ""),
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        assert_eq!(
+            measure(&mock, backend.as_ref(), Capability::Ssh),
+            Presence::Absent
         );
     }
 
