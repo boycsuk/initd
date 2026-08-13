@@ -190,7 +190,30 @@ fn readable_time(stamp: &str) -> String {
     // Anything not of the expected shape is shown as it is rather than sliced
     // into nonsense: a record written by a future version is still a record,
     // and its own timestamp is the honest thing to print.
-    if stamp.len() != 16 || !stamp.ends_with('Z') {
+    //
+    // The shape is checked rather than the length, because the slicing below
+    // indexes *bytes* and `len()` counts them too — so a sixteen-byte stamp
+    // holding a multibyte character passed this guard and then panicked on a
+    // boundary inside that character. Measured: `000é0000000000Z` is sixteen
+    // bytes, ends in `Z`, and `&stamp[0..4]` splits the `é`. Thirty-nine such
+    // strings exist for one two-byte character alone.
+    //
+    // It is reachable rather than theoretical. The stamp comes from
+    // `/var/lib/initd/backups.jsonl`, and `BackupRecord::from_line` matches its
+    // `task` and `service` fields against what this build knows while `at` is
+    // taken as it is — the same trust boundary the index documents, applied to
+    // two fields of three. A panic here takes the interface down while a task's
+    // history is being read, on a tool whose whole promise is a way back.
+    //
+    // Requiring digits and the `T` makes every boundary below an ASCII one by
+    // construction, which is what the slicing already assumed.
+    let shaped = stamp.len() == 16
+        && stamp.ends_with('Z')
+        && stamp.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+        && stamp.as_bytes()[8] == b'T'
+        && stamp.as_bytes()[9..15].iter().all(u8::is_ascii_digit);
+
+    if !shaped {
         return stamp.to_owned();
     }
 
@@ -311,6 +334,33 @@ mod tests {
         // its timestamp into nonsense would be worse than printing it.
         assert_eq!(readable_time("whenever"), "whenever");
         assert_eq!(readable_time(""), "");
+    }
+
+    #[test]
+    fn a_stamp_holding_a_multibyte_character_is_shown_rather_than_split() {
+        // The guard measured `len()`, which counts bytes, while the formatting
+        // below it indexes bytes too — so a sixteen-byte stamp carrying a
+        // two-byte character reached the slicing and panicked on a boundary
+        // inside it: "end byte index 4 is not a char boundary". Reproduced
+        // against this function before the guard was changed.
+        //
+        // Reachable rather than theoretical: the value comes from
+        // `backups.jsonl`, whose reader checks the task and service fields
+        // against what this build knows and takes the timestamp as it is.
+        for stamp in [
+            "000\u{e9}0000000000Z", // splits [0..4]
+            "00000\u{e9}00000000Z", // splits [4..6]
+            "0000000\u{e9}000000Z", // splits [6..8]
+            "00000000\u{e9}00000Z", // splits [9..11]
+            "0000000000\u{e9}000Z", // splits [11..13]
+        ] {
+            assert_eq!(stamp.len(), 16, "the old guard admitted this");
+            assert_eq!(
+                readable_time(stamp),
+                stamp,
+                "a stamp that is not the shape asked for is printed as it is"
+            );
+        }
     }
 
     #[test]
