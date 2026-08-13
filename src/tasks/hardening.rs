@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 use crate::i18n::Msg;
 use crate::tasks::consequence::{Check, Conflict, Consequence, Reason};
-use crate::tasks::params::{Param, ParamKind, ParamValues};
+use crate::tasks::params::{LiveDefault, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Confirmation, Node, Progress, Support, Task, report};
 
@@ -97,6 +97,7 @@ impl Task for InstallFail2ban {
         vec![
             Param::new(Self::SSH_PORT, "SSH port", ParamKind::Port)
                 .with_initial(DEFAULT_SSH_PORT.to_string())
+                .defaulting_to_live(LiveDefault::SshPort)
                 .with_hint("the port the jail watches"),
         ]
     }

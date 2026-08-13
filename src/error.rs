@@ -312,6 +312,26 @@ pub enum Error {
     /// say which task installs it.
     DockerEngineAbsent,
 
+    /// A Caddy task was asked for on a host with no Caddy installed.
+    ///
+    /// The same shape as [`Self::DockerEngineAbsent`] and added for the same
+    /// reason: without it the operator sees `ProgramNotFound`, which names the
+    /// binary that is missing from `PATH` and not the task that installs it.
+    /// Worse for `caddy.security-headers`, where the validation runs *after*
+    /// the snippet is written — so the raw error arrived with the file already
+    /// modified and nothing to say what had happened.
+    CaddyAbsent,
+
+    /// Validation was asked for against a Caddyfile that is not there.
+    ///
+    /// Separate from [`Self::InvalidCaddyfile`] because the two call for
+    /// different actions: one says to fix a file, the other says there is none
+    /// to fix. Caddy reports the absence through the same channel as a syntax
+    /// error — `open …: no such file` in its stderr — so left to it, an
+    /// operator on a host where no configuration was ever written is sent to
+    /// edit something that does not exist.
+    CaddyfileAbsent { path: String },
+
     /// An account's own service manager cannot be reached.
     ///
     /// `systemctl --user` finds its bus through `XDG_RUNTIME_DIR`, which
@@ -538,6 +558,7 @@ impl Error {
             Self::WireguardNotConfigured => Msg::WireguardNotConfigured,
             Self::NoSubordinateIds { user } => Msg::NoSubordinateIds { user: user.clone() },
             Self::DockerEngineAbsent => Msg::DockerEngineAbsent,
+            Self::CaddyAbsent => Msg::CaddyAbsent,
             Self::NoUserSession { user } => Msg::NoUserSession { user: user.clone() },
             Self::ChecksumMismatch { program, version } => Msg::ChecksumMismatch {
                 program: program.clone(),
@@ -565,6 +586,7 @@ impl Error {
             Self::InvalidCaddyfile { details } => Msg::InvalidCaddyfile {
                 details: details.clone(),
             },
+            Self::CaddyfileAbsent { path } => Msg::CaddyfileAbsent { path: path.clone() },
             Self::ServiceDidNotStart { service, user } => Msg::ServiceDidNotStart {
                 service: service.clone(),
                 user: user.clone(),
@@ -728,7 +750,9 @@ impl Error {
             Self::RepositoryUnknownSuite { repository } => {
                 vec![(ErrorField::Repository, repository.clone())]
             }
-            Self::PathNotAbsolute { path } => vec![(ErrorField::Path, path.clone())],
+            Self::PathNotAbsolute { path } | Self::CaddyfileAbsent { path } => {
+                vec![(ErrorField::Path, path.clone())]
+            }
             Self::ServiceDidNotStart { service, user } => vec![
                 (ErrorField::Service, service.clone()),
                 (ErrorField::User, user.clone()),
@@ -802,6 +826,7 @@ impl Error {
             // Carries no field worth labelling: the whole answer is the
             // sentence naming the task to run first.
             | Self::DockerEngineAbsent
+            | Self::CaddyAbsent
             | Self::LockoutRisk { .. } => Vec::new(),
         }
     }

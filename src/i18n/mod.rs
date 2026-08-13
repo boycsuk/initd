@@ -213,6 +213,12 @@ pub enum Msg {
         user: String,
     },
     DockerEngineAbsent,
+    /// A Caddy task was asked for on a host with no Caddy.
+    CaddyAbsent,
+    /// Validation was asked for against a Caddyfile that does not exist.
+    CaddyfileAbsent {
+        path: String,
+    },
     NoUserSession {
         user: String,
     },

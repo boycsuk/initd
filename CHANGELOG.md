@@ -90,6 +90,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinction deciding whether anything can close it.
 
 ### Fixed
+- **`fail2ban.install` watched port 22 whatever port SSH was on.** The field
+  carried a compiled-in `22` and never read the host, so on a machine where
+  `ssh.change-port` had moved the daemon the jail installed, wrote its
+  configuration, started its service and **reported success while protecting
+  nothing** — and no later task disagreed with it.
+
+  `LiveDefault::SshPort` already existed for exactly this and was wired to two
+  fields; its own comment said "both fields that ask for it" while three asked.
+  The other two fail loudly when wrong — a closed port drops the session, a
+  wrong "changing from" is read before `Enter` — which is why this was the one
+  that survived. A test now asserts over the whole tree that any port field
+  naming SSH reads it from the host, so a fourth inherits the requirement
+  rather than repeating the defect.
+
+- **`caddy.security-headers` left the snippet written on a host with no Caddy.**
+  Validation runs *after* the write, deliberately — what matters is whether the
+  file the server will read parses. But a missing binary raises `ProgramNotFound`
+  from the validation itself, and `?` carried it past the branch that restores
+  the backup: the file stayed modified, unvalidated, under an error naming
+  `PATH` rather than the task that installs the server. The presence check now
+  runs before the file is touched, and reports `caddy is not installed on this
+  host — run caddy.install first`.
+
+- **`caddy.validate` could not tell a missing server from a broken config, nor
+  a missing config from a broken one.** Both arrived as somebody else's error:
+  `ProgramNotFound` for the first, and for the second Caddy's own `open …: no
+  such file` wrapped as `InvalidCaddyfile` — which reads as a syntax error and
+  sends the operator to edit a file that was never written. Three outcomes now,
+  because they call for three different actions.
+
+- **`wireguard.add-peer` failed with a raw `cat` error on a host with no
+  server.** `files.read` was called with no existence guard, so adding a peer to
+  a WireGuard that was never installed reported `cat:
+  /etc/wireguard/wg0.conf: No such file or directory`. `WireguardNotConfigured`
+  — "run wireguard.install first" — already existed and was reachable only from
+  the other direction: a file that *was* read and held no `PrivateKey` line.
+  `wireguard.status` has guarded the same path since it was written.
+
+- **`mise.install` pointed at a task that does not exist.** Its consequence named
+  `mise.activate`, which is not in the tree and never was, so an operator reading
+  it went looking for a row that was never built. Activation is a line in the
+  operator's own shell configuration, which this tool does not edit — so the row
+  names itself and says what to add, the way `gh.install` does about a token it
+  cannot supply. The unit test beside it asserted the broken name rather than
+  the property; a tree-wide test now checks every consequence resolves to a real
+  task, and it was confirmed to catch this one by name.
+
 - **The verification banner never drew the one line stating the limit of its
   promise.** `"Reverts while this session lives."` was written, documented, and
   outside the drawn area at every terminal size — measured absent at 60×15,

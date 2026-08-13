@@ -208,6 +208,15 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::DockerEngineAbsent => {
             "the docker engine is not installed on this host — run docker.install first".to_owned()
         }
+        Msg::CaddyAbsent => {
+            "caddy is not installed on this host — run caddy.install first".to_owned()
+        }
+        // Says there is nothing to validate rather than that validation failed:
+        // the file may never have been written, and "invalid" would send the
+        // operator to edit something that is not there.
+        Msg::CaddyfileAbsent { path } => {
+            format!("there is no Caddy configuration at {path}, so nothing was validated")
+        }
         // Names systemd-logind, because that is what has to be working and
         // systemd's own message names neither it nor any cause — it reports two
         // unset variables and suggests `--machine=<user>@.host`, which is advice

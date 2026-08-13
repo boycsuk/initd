@@ -27,6 +27,9 @@ const DOCKER_USER_SERVICE: &str = "docker.service";
 /// name whichever repository the packages came from.
 const DOCKER_BINARY: &str = "docker";
 
+/// The web server's own binary, as every family puts it on `PATH`.
+const CADDY_BINARY: &str = "caddy";
+
 /// Upstream's rootless installer, for the one family that packages no script.
 ///
 /// `--proto '=https' --tlsv1.2` matching how the repository managers fetch a
@@ -395,6 +398,17 @@ fn engine_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<b
         .is_installed_here(executor, DOCKER_BINARY)
 }
 
+/// Whether this host has the web server.
+///
+/// Asked of the binary rather than of a package for the same reason as the
+/// engine above, and with a sharper edge here: RHEL has no Caddy package at
+/// all, so `caddy.install` there fetches a release binary that no package
+/// manager knows about. A presence check reading the package database would
+/// answer "absent" on a host serving traffic.
+fn caddy_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
+    backend.binaries().is_installed_here(executor, CADDY_BINARY)
+}
+
 /// Runs upstream's rootless setup as the account.
 ///
 /// Two routes, and which one a family takes is about whether the script can
@@ -677,12 +691,30 @@ impl Task for ValidateCaddy {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
+        // A missing server is a different answer from a broken configuration,
+        // and without this it arrived as `ProgramNotFound` — a sentence about
+        // `PATH` in front of an operator who asked whether their config parses.
+        if !caddy_is_present(executor, backend)? {
+            return Err(Error::CaddyAbsent);
+        }
+
         let path = backend.path_for(Capability::Caddy);
+
+        // A configuration that is not there is also not the same as one that
+        // does not parse. Left to Caddy, an absent file comes back as
+        // `InvalidCaddyfile` carrying `open …: no such file` — which reads as a
+        // syntax error in a file the operator may never have created, and sends
+        // them to edit something that does not exist.
+        if !backend.files().exists(executor, path)? {
+            return Err(Error::CaddyfileAbsent {
+                path: path.to_owned(),
+            });
+        }
 
         // Asked of Caddy rather than grepped out of the file. The directive
         // order in a Caddyfile is not its source order, so reading the text
         // says less about the running configuration than it appears to.
-        let command = Command::new("caddy")
+        let command = Command::new(CADDY_BINARY)
             .args(["validate", "--config", path])
             .privileged();
 
@@ -737,6 +769,18 @@ impl Task for CaddySecurityHeaders {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
+        // Before the file is touched, because the validation that would have
+        // caught this runs *after* the write. `executor.run` on a missing
+        // binary raises `ProgramNotFound`, and `?` carried it past the branch
+        // that restores the backup — so a host with no Caddy got the snippet
+        // written, no rollback, and an error naming `PATH` rather than the task
+        // that installs the server. Asked of the binary rather than a package
+        // name for the reason `engine_is_present` records: on RHEL this arrives
+        // as a release binary that no package manager knows about.
+        if !caddy_is_present(executor, backend)? {
+            return Err(Error::CaddyAbsent);
+        }
+
         let path = backend.path_for(Capability::Caddy);
         let files = backend.files();
 
@@ -1550,7 +1594,11 @@ mod tests {
         let (outcome, _) = run(
             &ValidateCaddy,
             Family::Debian,
-            vec![Reply::failure(1, "unrecognized directive: reverse_prox")],
+            vec![
+                Reply::ok(""), // caddy is installed
+                Reply::ok(""), // the Caddyfile exists
+                Reply::failure(1, "unrecognized directive: reverse_prox"),
+            ],
             &ParamValues::new(),
         );
 
@@ -1562,6 +1610,44 @@ mod tests {
             }
             other => panic!("wrong error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn validating_without_caddy_names_the_task_that_installs_it() {
+        // `ProgramNotFound` is what this used to be: a sentence about `PATH` in
+        // front of an operator who asked whether their configuration parses.
+        let (outcome, _) = run(
+            &ValidateCaddy,
+            Family::Debian,
+            vec![Reply::failure(1, "")], // caddy is not installed
+            &ParamValues::new(),
+        );
+
+        assert!(
+            matches!(outcome, Err(Error::CaddyAbsent)),
+            "the refusal must name the missing server: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_caddyfile_is_not_reported_as_a_broken_one() {
+        // Caddy reports an absent file through the same channel as a syntax
+        // error, so left to it the operator is sent to edit something that does
+        // not exist.
+        let (outcome, _) = run(
+            &ValidateCaddy,
+            Family::Debian,
+            vec![
+                Reply::ok(""),         // caddy is installed
+                Reply::failure(1, ""), // the Caddyfile does not exist
+            ],
+            &ParamValues::new(),
+        );
+
+        assert!(
+            matches!(outcome, Err(Error::CaddyfileAbsent { .. })),
+            "an absent file is not an invalid one: {outcome:?}"
+        );
     }
 
     #[test]
@@ -1598,6 +1684,7 @@ mod tests {
             &CaddySecurityHeaders,
             Family::Debian,
             vec![
+                Reply::ok(""),                    // caddy is installed
                 Reply::ok(""),                    // the file exists
                 Reply::ok("example.com {\n}\n"),  // read it
                 Reply::ok(""),                    // backup
@@ -1622,7 +1709,7 @@ mod tests {
         let (outcome, commands) = run(
             &CaddySecurityHeaders,
             Family::Debian,
-            vec![Reply::ok(""), Reply::ok(existing)],
+            vec![Reply::ok(""), Reply::ok(""), Reply::ok(existing)],
             &ParamValues::new(),
         );
 
@@ -1631,6 +1718,29 @@ mod tests {
         assert!(
             !commands.iter().any(|c| c.contains("tee")),
             "nothing must be written: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_snippet_is_not_written_on_a_host_with_no_caddy() {
+        // The validation that would have caught this runs *after* the write,
+        // and `ProgramNotFound` propagated past the branch that restores the
+        // backup — so the snippet stayed on disk, unvalidated, under an error
+        // naming `PATH`. Checked before the file is touched instead.
+        let (outcome, commands) = run(
+            &CaddySecurityHeaders,
+            Family::Debian,
+            vec![Reply::failure(1, "")], // caddy is not installed
+            &ParamValues::new(),
+        );
+
+        assert!(
+            matches!(outcome, Err(Error::CaddyAbsent)),
+            "the refusal must name the missing server: {outcome:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("tee")),
+            "and nothing may be written: {commands:?}"
         );
     }
 }

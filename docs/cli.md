@@ -292,7 +292,7 @@ command line, running the subcommand *is* the confirmation.
 | `wireguard.status` | `run wireguard.status` | no | Reports whether the tunnel is up and how many peers are configured. |
 | `wireguard.install` | `run <id> name=value` | no | Installs WireGuard, generates the server keys and writes `wg0.conf`. Refuses to overwrite an existing configuration. |
 | `wireguard.uninstall` | `run <id> name=value` | yes | Brings `wg0` down, disables it at boot and removes the WireGuard tools. `removal=` chooses `remove` (the default) or `purge`, which decides only what the package manager takes. `wg0.conf` and the server keys are left on disk either way: they cannot be regenerated to match peers that already hold the public key, so removing them is not something a field with two near-identical values should decide. Lockout because an administrator connected *over* the tunnel loses the session applying it. |
-| `wireguard.add-peer` | `run <id> name=value` | no | Generates a peer keypair, records it on the server, and prints the client configuration once. |
+| `wireguard.add-peer` | `run <id> name=value` | no | Generates a peer keypair, records it on the server, and prints the client configuration once. Refuses a host with no server configuration, naming `wireguard.install`; before this the failure was the raw `cat: /etc/wireguard/wg0.conf: No such file or directory`, which names neither this tool nor the step that was missed. |
 
 ### Network
 
@@ -317,8 +317,8 @@ command line, running the subcommand *is* the confirmation.
 | `docker.rootless-off` | `run <id> name=value` | no | Stops the named account's engine, runs upstream's own `dockerd-rootless-setuptool.sh uninstall` as that account, and stops it lingering. Containers, images and volumes under the account's directory are left alone, and so is the engine — the machine and other accounts may still be using it. |
 | `caddy.install` | `run caddy.install` | no | Installs Caddy. From the distribution where one packages it, and it is enabled; otherwise from a checksum-verified release, and no service is enabled because there is no unit to enable. Writes no site configuration either way. |
 | `caddy.uninstall` | `run <id> name=value` | no | Stops Caddy, disables it at boot and removes it. `removal=` chooses `remove` (the default, keeping configuration for a reinstall to find) or `purge`. Where the distribution packages no Caddy, deletes the verified release binary this tool installed — and only that one: a copy found elsewhere on `PATH` is named and left alone. |
-| `caddy.validate` | `run caddy.validate` | no | Asks Caddy whether its configuration parses. |
-| `caddy.security-headers` | `run caddy.security-headers` | yes | Defines a snippet setting HSTS, nosniff, frame-deny and a referrer policy. Rolls back if the result does not parse. |
+| `caddy.validate` | `run caddy.validate` | no | Asks Caddy whether its configuration parses. Refuses a host with no Caddy installed, naming `caddy.install` — the bare `executable caddy was not found in PATH` it used to give named the binary and not the task. Refuses an absent Caddyfile separately from a broken one: Caddy reports both through the same channel, so left to it "there is no configuration" arrived as a syntax error in a file that was never written. |
+| `caddy.security-headers` | `run caddy.security-headers` | yes | Defines a snippet setting HSTS, nosniff, frame-deny and a referrer policy. Rolls back if the result does not parse. Refuses a host with no Caddy **before touching the file**: validation runs after the write, and the error a missing binary raises travelled past the branch that restores the backup — so the snippet stayed on disk, unvalidated, under a message about `PATH`. |
 
 ### Developer environment
 
@@ -364,7 +364,7 @@ installing git on a build server has no business being shown GitHub.
 
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
-| `fail2ban.install` | `run <id> name=value` | no | Watches the authentication log and bans addresses that fail repeatedly. Conflicts with `crowdsec.install`. |
+| `fail2ban.install` | `run <id> name=value` | no | Watches the authentication log and bans addresses that fail repeatedly. Takes `ssh_port`, which **defaults to the port the daemon is actually listening on** rather than to 22 — a jail pointed at a port nothing listens on installs, starts and reports success while protecting nothing, and no later task disagrees with it. Read from `sshd_config` in both interfaces, on the same terms as `firewall.enable`'s. Conflicts with `crowdsec.install`. |
 | `fail2ban.uninstall` | `run <id> name=value` | no | Stops fail2ban, disables it at boot and removes it. Bans it had applied lapse when the daemon stops — they live in its own state, not in the firewall's saved ruleset. |
 | `crowdsec.install` | `run crowdsec.install` | yes | Bans addresses a reputation network has seen attacking others. Reports what this host sees in exchange. Conflicts with `fail2ban.install`. |
 | `crowdsec.uninstall` | `run <id> name=value` | no | Stops CrowdSec, disables it at boot and removes it. The host stops contributing what it sees, and stops benefiting from what the network has seen. |

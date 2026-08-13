@@ -709,7 +709,15 @@ mod tests {
         let consequences =
             InstallMise.consequences(for_family(Family::Debian).as_ref(), &ParamValues::new());
 
-        assert_eq!(consequences[0].task(), Some("mise.activate"));
+        // The row itself, not `mise.activate` — a task that does not exist and
+        // that this assertion used to pin. Activation is a line in the
+        // operator's own shell configuration, which this tool does not edit,
+        // so there is no row to send them to.
+        assert_eq!(consequences[0].task(), Some("mise.install"));
+        assert!(
+            crate::tasks::find(consequences[0].task().expect("a named task")).is_some(),
+            "the task named must be one the operator can actually find"
+        );
     }
 
     #[test]

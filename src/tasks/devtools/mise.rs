@@ -86,10 +86,18 @@ impl Task for InstallMise {
         // The failure this prevents: activation is a prompt hook, so a deploy
         // script or a systemd unit sees none of the versions mise manages, and
         // the tool appears to work everywhere except where it matters.
+        // Named as this task rather than as `mise.activate`, which does not
+        // exist and never did: activation is a line in the operator's own shell
+        // configuration, which this tool does not edit. The pointer sent anyone
+        // who read it looking through the tree for a row that was never built,
+        // and the unit test beside it asserted the broken name rather than the
+        // property. Same shape as `gh.install`, which names itself because the
+        // token it needs is not this tool's to supply.
         vec![Consequence::Invalidates {
-            task: "mise.activate",
+            task: "mise.install",
             reason: Reason::RequiresSetting {
-                setting: "shims on PATH — activation does not run non-interactively",
+                setting: "shims on PATH — add `mise activate` to your shell's \
+                          configuration; it does not run non-interactively",
             },
             check: None,
         }]
