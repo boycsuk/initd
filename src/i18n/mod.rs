@@ -76,6 +76,23 @@ impl Lang {
     }
 }
 
+/// What the kernel does with a parameter whose declaration was removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysctlHolding {
+    /// The kernel no longer holds the value.
+    No,
+    /// It still does, so something else on the host is setting it.
+    Yes,
+    /// The read-back failed, so neither answer can be given.
+    ///
+    /// Its own state rather than folded into [`No`](Self::No), which is the
+    /// reading that sounds finished: "no longer declared here" over a host
+    /// whose kernel was never asked is a claim about a machine nobody checked.
+    /// The two call for different actions, which is this project's stated test
+    /// for whether a distinction is worth carrying.
+    Unknown,
+}
+
 /// A user-facing message, as structured data rather than text.
 ///
 /// Variants carry the values to interpolate; the wording lives in the
@@ -1098,9 +1115,14 @@ pub enum Msg {
         key: String,
         value: String,
     },
+    /// A declaration was removed, and what the kernel does about it.
+    ///
+    /// Three states rather than the boolean this replaced. The read-back can
+    /// fail, and a failure is not "no longer holds it" — that is the reading
+    /// that sounds finished, and it was what a `unwrap_or(false)` chose.
     TaskSysctlUnset {
         key: String,
-        still_holding: bool,
+        holding: SysctlHolding,
     },
     TaskSysctlSet {
         key: String,

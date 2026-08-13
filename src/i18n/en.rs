@@ -1,6 +1,6 @@
 //! English message catalogue — the default and fallback language.
 
-use super::{ErrorField, Msg};
+use super::{ErrorField, Msg, SysctlHolding};
 
 /// Width the field labels are padded to, in columns.
 ///
@@ -1071,16 +1071,20 @@ pub(super) fn render(message: &Msg) -> String {
         // value is the common outcome, because something else on the host is
         // usually also asking for it. Reporting "removed" flat would be true
         // about the file and false about the machine.
-        Msg::TaskSysctlUnset { key, still_holding } => {
-            if *still_holding {
-                format!(
-                    "{key} is no longer declared here, and still holds its value — \
-                     something else on this host is setting it"
-                )
-            } else {
-                format!("{key} is no longer declared here")
-            }
-        }
+        Msg::TaskSysctlUnset { key, holding } => match holding {
+            SysctlHolding::Yes => format!(
+                "{key} is no longer declared here, and still holds its value — \
+                 something else on this host is setting it"
+            ),
+            SysctlHolding::No => format!("{key} is no longer declared here"),
+            // Says what was done and what could not be checked, rather than
+            // borrowing either of the answers above. The declaration is gone
+            // either way; what is unknown is what the kernel does now.
+            SysctlHolding::Unknown => format!(
+                "{key} is no longer declared here — whether the kernel still \
+                 holds its value could not be read back"
+            ),
+        },
         Msg::TaskSysctlSet { key, value } => format!("{key} = {value}, now and after a reboot"),
 
         Msg::TaskCaddyValidating { path } => format!("Validating {path}..."),

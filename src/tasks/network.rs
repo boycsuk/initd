@@ -11,7 +11,7 @@ use crate::domain::firewall::{PortOrigin, Protocol};
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
-use crate::i18n::Msg;
+use crate::i18n::{Msg, SysctlHolding};
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
 use crate::tasks::params::{LiveDefault, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -973,13 +973,24 @@ fn unset_and_report(
     // and that is the point: this removed a declaration, not a value. Saying
     // "removed" over a parameter that still reads 1 would be true about the
     // file and false about the machine.
-    let still = sysctl.holds(executor, setting).unwrap_or(false);
+    //
+    // A failed read-back is its own answer rather than `false`. `unwrap_or(false)`
+    // stood here and chose the branch that reads "no longer declared here" —
+    // finished, nothing more to do — over a host whose kernel had not answered.
+    // That is a claim about the machine on the strength of a question that
+    // failed, and it is the direction this project's own rule warns about:
+    // "could not be read" and "changed" call for different actions.
+    let holding = match sysctl.holds(executor, setting) {
+        Ok(true) => SysctlHolding::Yes,
+        Ok(false) => SysctlHolding::No,
+        Err(_) => SysctlHolding::Unknown,
+    };
 
     report(
         progress,
         &Msg::TaskSysctlUnset {
             key: setting.key.to_owned(),
-            still_holding: still,
+            holding,
         },
     );
 
@@ -1082,6 +1093,37 @@ mod tests {
         let outcome = task.run(&mock, backend.as_ref(), values, &mut |_| {});
 
         (outcome, mock.recorded_lines())
+    }
+
+    #[test]
+    fn a_read_back_that_fails_is_not_reported_as_no_longer_held() {
+        // `unwrap_or(false)` stood where this match is and turned a failed
+        // read-back into the branch that reads "no longer declared here" — the
+        // one that sounds finished. The declaration is gone either way; what
+        // the failure costs is knowing whether the kernel still holds the
+        // value, and saying nothing about that is a claim nobody checked.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("/usr/sbin/sysctl"),            // is_available
+            Reply::failure(1, ""),                    // the drop-in does not exist
+            Reply::failure(1, "sysctl: cannot stat"), // holds() fails
+        ]);
+
+        let mut lines = Vec::new();
+        DisableIpForward
+            .run(
+                &mock,
+                for_family(Family::Debian).as_ref(),
+                &ParamValues::new(),
+                &mut |line| lines.push(line.text),
+            )
+            .expect("removing a declaration that is not there still succeeds");
+
+        let output = lines.join("\n");
+
+        assert!(
+            output.contains("could not be read back"),
+            "an unanswered read-back must say so: {output}"
+        );
     }
 
     fn port_values(name: &'static str, port: u32) -> ParamValues {
