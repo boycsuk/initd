@@ -450,6 +450,46 @@ pub enum Msg {
     FormKeyIncomplete,
     FormKeyCancel,
 
+    // --- Interface: the ports table ---
+    //
+    // The one dialog whose contents are a list rather than a fixed run of
+    // fields, and the only one that refuses a keystroke on some of its rows.
+    /// How many ports the table is showing, on the frame opposite the title.
+    PortsOpenCount {
+        count: usize,
+    },
+    PortsColumnPort,
+    PortsColumnProtocol,
+    /// Heading of the column saying what admitted a port.
+    PortsColumnSource,
+    /// What admitted a row this tool did not open.
+    PortsSourceService {
+        service: String,
+    },
+    /// Marks a row that was not there when the table opened.
+    PortsSourceAdded,
+    /// Why a row cannot be removed.
+    ///
+    /// Names the service rather than saying "cannot": the operator can act on
+    /// the first and only argue with the second.
+    PortsRowFromService {
+        spec: String,
+        service: String,
+    },
+    /// Why a table will not submit.
+    PortsRowIncomplete,
+    /// Why a row was refused: another already names the same rule.
+    PortsRowDuplicate {
+        spec: String,
+    },
+    PortsKeyAdd,
+    PortsKeyRemove,
+    PortsKeyEdit,
+    PortsKeyApply,
+    PortsKeyCommit,
+    PortsKeyNextCell,
+    PortsKeyDiscard,
+
     // --- Interface: search ---
     //
     // The chrome around the query. The query itself is never rendered through
@@ -673,6 +713,23 @@ pub enum Msg {
         port: u32,
         listening: u32,
         agrees: bool,
+    },
+    /// The lockout warning for a declared set of ports that closes some.
+    ///
+    /// The inverse question `ConfirmFirewallLockout` asks: there the operator
+    /// named a port to keep, here they left one out.
+    ConfirmPortsClosing {
+        specs: String,
+        listening: u32,
+        closes_ssh: bool,
+    },
+    /// The same warning where the set closes nothing.
+    ///
+    /// Said plainly rather than dropped: the frame is red either way, because
+    /// the tier belongs to the task, and a red frame with nothing behind it is
+    /// what teaches an operator to stop reading the ones that mean it.
+    ConfirmPortsOpeningOnly {
+        opening: usize,
     },
     /// The lockout warning for `users.lock-root`, heading the accounts that
     /// keep access.
@@ -985,6 +1042,9 @@ pub enum Msg {
     TaskFirewallNoOpenPorts,
     TaskFirewallPortOpen {
         port: String,
+        /// The service or range that admitted it, where something other than
+        /// the port's own name did.
+        admitted_by: Option<String>,
     },
     TaskFirewallPersisted,
     TaskFirewallNotPersisted,
@@ -997,17 +1057,27 @@ pub enum Msg {
     TaskFirewallEnabled {
         port: u32,
     },
-    TaskFirewallPortAllowed {
-        port: u32,
-        protocol: String,
-    },
     TaskFirewallEnabledNotPersisted {
         port: u32,
     },
-    TaskFirewallPortAllowedNotPersisted {
-        port: u32,
-        protocol: String,
+    /// What a declared set of ports changed.
+    TaskFirewallPortsApplied {
+        opened: usize,
+        closed: usize,
     },
+    /// Ports the front-end still admits after being asked to close them.
+    ///
+    /// Carries what was read back rather than what was attempted: on firewalld
+    /// a port a *service* admits survives `--remove-port` with the command
+    /// reporting success.
+    TaskFirewallPortsStillOpen {
+        specs: String,
+    },
+    /// Ports the host gained while the operator was deciding.
+    TaskFirewallPortsAppearedSince {
+        specs: String,
+    },
+    TaskFirewallPortsNotPersisted,
     TaskFirewallNotFilteringYet,
     TaskSysctlAlready {
         key: String,

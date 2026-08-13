@@ -474,8 +474,8 @@ for_each_image! {
         );
     }
 
-    /// `firewall.allow-port` refuses where nothing is filtering yet.
-    fn allowing_a_port_before_anything_filters_is_refused(image) {
+    /// `firewall.manage-ports` refuses where nothing is filtering yet.
+    fn managing_ports_before_anything_filters_is_refused(image) {
         // Against no default-deny policy every port is already reachable, so a
         // rule admitting one enforces nothing — and on a host where
         // `firewall.enable` has never run there is no table to add it to
@@ -484,7 +484,7 @@ for_each_image! {
         // file for a table nobody created and reads as a defect in the rule.
         let observed = observe(
             image,
-            "initd run firewall.allow-port port=8080 protocol=tcp >/tmp/o 2>&1; \
+            "initd run firewall.manage-ports ports=8080/tcp >/tmp/o 2>&1; \
                  echo exit=$?; cat /tmp/o",
         );
 

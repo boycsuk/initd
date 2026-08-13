@@ -194,37 +194,69 @@ for_each_image! {
         );
     }
 
-    /// And a port opened afterwards reaches the ruleset that is filtering.
-    fn a_port_opened_after_the_firewall_is_on_reaches_the_live_ruleset(image) {
-        // `firewall.allow-port` resolves the front-end rather than assuming
+    /// And a port declared afterwards reaches the ruleset that is filtering —
+    /// then leaves it again when the declaration drops it.
+    fn a_declared_port_reaches_the_live_ruleset_and_leaves_it(image) {
+        // `firewall.manage-ports` resolves the front-end rather than assuming
         // one, because a rule added to the front-end that is *not* filtering is
         // a rule nothing enforces — a port reported open that stays closed.
         // Enabling first is what makes the resolution meaningful.
+        //
+        // The second half is the assertion this suite could not make before:
+        // nothing in this repository had ever deleted a firewall rule, so
+        // "closed" had never been observed against a live ruleset. Both halves
+        // in one scenario because the interesting failure is asymmetric — a
+        // close that silently does nothing looks exactly like a close that
+        // worked, unless the port was demonstrably there first.
         let observed = privileged!(observe_privileged(
             image,
             &format!("{}; {}", image.install_nftables, image.install_firewalld),
             "initd run firewall.enable ssh_port=22 >/dev/null 2>&1; \
-             initd run firewall.allow-port port=8080 protocol=tcp >/tmp/o 2>&1; \
-             echo exit=$?; cat /tmp/o; \
-             echo '--- ruleset ---'; \
+             initd run firewall.manage-ports ports='22/tcp 8080/tcp' >/tmp/o 2>&1; \
+             echo opened=$?; cat /tmp/o; \
+             echo '--- opened ---'; \
+             nft list ruleset 2>/dev/null; \
+             firewall-cmd --list-all 2>/dev/null; \
+             initd run firewall.manage-ports ports='22/tcp' ports_were='22/tcp 8080/tcp' >/tmp/c 2>&1; \
+             echo closed=$?; cat /tmp/c; \
+             echo '--- closed ---'; \
              nft list ruleset 2>/dev/null; \
              firewall-cmd --list-all 2>/dev/null",
         ));
 
         assert!(
-            common::has_line(&observed, "exit=0"),
-            "{}: opening a port must succeed once something is filtering: {observed}",
+            common::has_line(&observed, "opened=0"),
+            "{}: declaring a set must succeed once something is filtering: {observed}",
+            image.name
+        );
+        assert!(
+            common::has_line(&observed, "closed=0"),
+            "{}: and dropping a port from the set must succeed too: {observed}",
             image.name
         );
 
-        let ruleset = observed
-            .split_once("--- ruleset ---")
-            .map(|(_, after)| after)
+        let (opened, closed) = observed
+            .split_once("--- opened ---")
+            .and_then(|(_, after)| after.split_once("--- closed ---"))
             .unwrap_or_default();
 
         assert!(
-            ruleset.contains("8080"),
-            "{}: and the port must be in the live ruleset: {observed}",
+            opened.contains("8080"),
+            "{}: the declared port must be in the live ruleset: {observed}",
+            image.name
+        );
+
+        assert!(
+            !closed.contains("8080"),
+            "{}: and must be gone once the declaration drops it: {observed}",
+            image.name
+        );
+
+        // The port that stayed in the set must still be there, which is what
+        // separates "closed 8080" from "flushed the ruleset".
+        assert!(
+            closed.contains("22"),
+            "{}: a port kept in the set must survive the close: {observed}",
             image.name
         );
     }

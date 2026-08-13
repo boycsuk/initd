@@ -292,7 +292,7 @@ impl Task for InstallCaddy {
     fn consequences(&self, backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         vec![
             Consequence::Invalidates {
-                task: "firewall.allow-port",
+                task: "firewall.manage-ports",
                 reason: Reason::RequiresSetting {
                     setting: "inbound rules for 80 and 443",
                 },

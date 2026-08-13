@@ -102,6 +102,15 @@ pub(super) fn all(frame: &mut Frame, app: &mut App) {
                 }
             }
         }
+        // Borrowed mutably for the same reason and by the same route: the
+        // cell being edited recomputes its scroll window as it is drawn.
+        Mode::EditingPorts => {
+            let lang = app.lang;
+
+            if let Some(ref mut ports) = app.ports {
+                ports.render(frame, lang);
+            }
+        }
         // None of these draws a dialog: the countdown is a banner inside
         // the body, and a running task is the pane itself.
         Mode::Help | Mode::Running | Mode::Verifying | Mode::Browsing => {}
@@ -560,7 +569,7 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Both draw their own keys inside the dialog, where the operator
         // is already looking; repeating them along the bottom would be
         // the same hint twice.
-        Mode::Filling | Mode::Confirming(_) => Vec::new(),
+        Mode::Filling | Mode::EditingPorts | Mode::Confirming(_) => Vec::new(),
         // The overlay states its own keys, and it covers this row anyway.
         Mode::Help => Vec::new(),
         Mode::Browsing => match app.focus {

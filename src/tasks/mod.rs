@@ -664,8 +664,14 @@ mod tests {
         // `Lockout` the red frame would mark every row and distinguish none,
         // and the dialog it teaches people to dismiss is the one before
         // `users.lock-root`, whose recovery is the provider's rescue console.
-        const LOCKOUT: [&str; 9] = [
+        const LOCKOUT: [&str; 10] = [
             "firewall.enable",
+            // A declared set of ports is the quieter half of the same risk.
+            // `firewall.enable` asks which port to keep and warns about naming
+            // the wrong one; here the operator removes a row, and nothing about
+            // deleting a row from a table announces that the row was the one
+            // carrying this session.
+            "firewall.manage-ports",
             "ssh.allow-users",
             "ssh.harden",
             "ssh.harden-strict",

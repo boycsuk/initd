@@ -478,6 +478,32 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::FormKeyIncomplete => "(fill every field)".to_owned(),
         Msg::FormKeyCancel => "cancel".to_owned(),
 
+        // --- Interface: the ports table ---
+        Msg::PortsOpenCount { count } => format!(" {count} open "),
+        Msg::PortsColumnPort => "PORT".to_owned(),
+        Msg::PortsColumnProtocol => "PROTOCOL".to_owned(),
+        Msg::PortsColumnSource => "SOURCE".to_owned(),
+        Msg::PortsSourceService { service } => format!("service {service}"),
+        Msg::PortsSourceAdded => "added".to_owned(),
+        // Names the service and what to do about it. "Cannot be removed" would
+        // be true and leave the operator with nowhere to go, and the reason is
+        // the part that says which tool to reach for instead.
+        Msg::PortsRowFromService { spec, service } => format!(
+            "{spec} is admitted by the service {service}, which removing the port does not undo"
+        ),
+        Msg::PortsRowIncomplete => "this row needs a port and a protocol".to_owned(),
+        // Names the spec rather than saying "duplicate", because the protocol
+        // is half the answer: 443/tcp and 443/udp are two different rules, and
+        // an operator told only "already listed" would look for the number.
+        Msg::PortsRowDuplicate { spec } => format!("{spec} is already in the table"),
+        Msg::PortsKeyAdd => "add".to_owned(),
+        Msg::PortsKeyRemove => "remove".to_owned(),
+        Msg::PortsKeyEdit => "edit".to_owned(),
+        Msg::PortsKeyApply => "apply".to_owned(),
+        Msg::PortsKeyCommit => "done".to_owned(),
+        Msg::PortsKeyNextCell => "next".to_owned(),
+        Msg::PortsKeyDiscard => "discard".to_owned(),
+
         // --- Interface: search ---
         //
         // The query is interpolated untranslated — it is what the operator
@@ -694,6 +720,38 @@ pub(super) fn render(message: &Msg) -> String {
                 )
             }
         }
+        // Names the ports rather than counting them, unlike the applied
+        // message: this is the last screen where the set can still be changed,
+        // and a count gives the operator nothing to check it against.
+        Msg::ConfirmPortsClosing {
+            specs,
+            listening,
+            closes_ssh,
+        } => {
+            if *closes_ssh {
+                format!(
+                    "This closes {specs}.\n\n\
+                     {listening}/tcp is the port this host's sshd is listening on. If you \
+                     are reading this over SSH, applying it ends your session the moment \
+                     it runs, and only a console can undo that."
+                )
+            } else {
+                format!(
+                    "This closes {specs}, and anything reaching this host on them stops \
+                     answering the moment it runs.\n\n\
+                     This host's sshd is listening on {listening}, which is not among \
+                     them — but sshd's own port is not the only way a session arrives. A \
+                     jump host, a forwarded port or a provider console each reach this \
+                     machine by a route nothing here can see."
+                )
+            }
+        }
+        Msg::ConfirmPortsOpeningOnly { opening } => format!(
+            "This opens {opening} port(s) and closes none, so nothing that answers now \
+             stops answering.\n\n\
+             Opening a port here says nothing about whether the provider's edge firewall \
+             admits it, which is the layer most often forgotten."
+        ),
         // The path and the size are the whole point. "Also delete the home
         // directory?" is a question answered by habit; a sentence naming
         // /home/deploy and 2.4 GB is one that gets read.
@@ -944,7 +1002,10 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::TaskFirewallDefaultDeny => "inbound denied by default".to_owned(),
         Msg::TaskFirewallNoOpenPorts => "no ports are open".to_owned(),
-        Msg::TaskFirewallPortOpen { port } => format!("  {port} is open"),
+        Msg::TaskFirewallPortOpen { port, admitted_by } => match admitted_by {
+            Some(source) => format!("  {port} is open (admitted by {source})"),
+            None => format!("  {port} is open"),
+        },
         Msg::TaskFirewallPersisted => "the rules are restored at boot".to_owned(),
         Msg::TaskFirewallNotPersisted => {
             "the rules are not restored at boot — they end at the next restart".to_owned()
@@ -954,8 +1015,34 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskFirewallEnabled { port } => {
             format!("inbound denied except {port}/tcp, now and after a reboot")
         }
-        Msg::TaskFirewallPortAllowed { port, protocol } => {
-            format!("{port}/{protocol} is open inbound, now and after a reboot")
+        // Counts rather than a list: the ports themselves were on the screen
+        // the operator just left, and a batch repeating them says less than the
+        // two numbers that changed.
+        Msg::TaskFirewallPortsApplied { opened, closed } => match (opened, closed) {
+            (0, 0) => "the open ports already matched what was declared".to_owned(),
+            (opened, 0) => format!("opened {opened} port(s), now and after a reboot"),
+            (0, closed) => format!("closed {closed} port(s), now and after a reboot"),
+            (opened, closed) => {
+                format!("opened {opened} port(s) and closed {closed}, now and after a reboot")
+            }
+        },
+        // Names them, unlike the counts above: this is the half that did not do
+        // what was asked, and the operator has to know which ports to go and
+        // deal with by another route.
+        Msg::TaskFirewallPortsStillOpen { specs } => {
+            format!(
+                "still open: {specs} — admitted by a service rather than by name, \
+                 which removing the port does not undo"
+            )
+        }
+        Msg::TaskFirewallPortsAppearedSince { specs } => {
+            format!(
+                "left alone: {specs} — opened by something else after this list \
+                 was read, so closing it was never asked for"
+            )
+        }
+        Msg::TaskFirewallPortsNotPersisted => {
+            "saved, but this host has no service manager to replay it at boot".to_owned()
         }
         // Says what is missing rather than only that something is: the rules
         // are applied and saved, and what this host has nowhere to register is
@@ -964,12 +1051,6 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskFirewallEnabledNotPersisted { port } => {
             format!(
                 "inbound denied except {port}/tcp — saved, but this host has no \
-                 service manager to replay it at boot"
-            )
-        }
-        Msg::TaskFirewallPortAllowedNotPersisted { port, protocol } => {
-            format!(
-                "{port}/{protocol} is open inbound — saved, but this host has no \
                  service manager to replay it at boot"
             )
         }

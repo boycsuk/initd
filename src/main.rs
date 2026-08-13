@@ -400,6 +400,11 @@ fn apply_live_defaults(
                 backend.path_for(backend::Capability::Ssh),
             )
             .to_string(),
+            // Without this an invocation naming no ports would declare the
+            // empty set, and the empty set closes everything.
+            tasks::params::LiveDefault::OpenPorts => {
+                tasks::network::open_ports_value(executor, backend)
+            }
         };
 
         values.set(param.name, resolved);

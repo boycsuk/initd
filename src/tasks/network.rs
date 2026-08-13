@@ -7,7 +7,7 @@
 //! once and asked about by name.
 
 use crate::backend::{Backend, Capability, firewall_for};
-use crate::domain::firewall::Protocol;
+use crate::domain::firewall::{PortOrigin, Protocol};
 use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
@@ -55,7 +55,7 @@ pub fn category() -> Category {
                         forward: Box::new(EnableFirewall),
                         inverse: Box::new(DisableFirewall),
                     },
-                    Node::Task(Box::new(AllowPort)),
+                    Node::Task(Box::new(ManagePorts)),
                 ],
             )),
             Node::Category(Category::new(
@@ -154,7 +154,21 @@ impl Task for FirewallStatus {
             report(progress, &Msg::TaskFirewallNoOpenPorts);
         } else {
             for port in &state.allowed {
-                report(progress, &Msg::TaskFirewallPortOpen { port: port.clone() });
+                // The origin is reported rather than kept for the code's own
+                // use: a port admitted by a service is one this tool does not
+                // close, and an administrator reading a list of open ports is
+                // the person who most needs to know which of them behave
+                // differently.
+                report(
+                    progress,
+                    &Msg::TaskFirewallPortOpen {
+                        port: port.spec.clone(),
+                        admitted_by: match &port.origin {
+                            PortOrigin::Direct => None,
+                            PortOrigin::Service(service) => Some(service.clone()),
+                        },
+                    },
+                );
             }
         }
 
@@ -191,7 +205,7 @@ impl Task for EnableFirewall {
          including the connection you are reading this over — which is why the \
          port your SSH listens on is asked for and admitted in the same step. \
          Established connections and loopback keep working. Open anything else \
-         afterwards with firewall.allow-port."
+         afterwards with firewall.manage-ports."
     }
 
     /// A default-deny policy applied without admitting the current session is
@@ -347,58 +361,187 @@ impl EnableFirewall {
     pub const ID: &'static str = "firewall.enable";
 }
 
-/// Opens one inbound port.
-pub struct AllowPort;
-
-impl AllowPort {
-    /// Name of the parameter holding the port to open.
-    pub const PORT: &'static str = "port";
-    /// Name of the parameter holding the protocol.
-    pub const PROTOCOL: &'static str = "protocol";
+/// One `port/protocol` spec, as every front-end spells it.
+///
+/// Parsed rather than carried as a string so that a spec reaching a front-end
+/// has already been proven to be one. A range is deliberately absent: the
+/// specs this tool *writes* name a single port, and the ones it merely reads
+/// back keep their string form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Spec {
+    port: u32,
+    protocol: Protocol,
 }
 
-impl Task for AllowPort {
+impl Spec {
+    /// Reads a spec, or nothing where the text is not one.
+    ///
+    /// `None` rather than an error because the callers parse a *set*: a host
+    /// listing something this tool cannot act on — firewalld reports a range as
+    /// one spec — must not fail the whole operation. What cannot be parsed is
+    /// something this task leaves alone, which is also the honest treatment of
+    /// a rule it did not write.
+    fn parse(text: &str) -> Option<Self> {
+        let (port, protocol) = text.split_once('/')?;
+
+        Some(Self {
+            port: port.parse().ok()?,
+            protocol: match protocol {
+                "tcp" => Protocol::Tcp,
+                "udp" => Protocol::Udp,
+                _ => return None,
+            },
+        })
+    }
+
+    /// The spec as the front-ends and the parameter both spell it.
+    fn text(self) -> String {
+        format!("{}/{}", self.port, self.protocol.as_str())
+    }
+}
+
+/// Reads a set of specs out of a parameter, keeping the order and dropping
+/// repeats.
+///
+/// Order is kept so that what a task reports back reads like what the operator
+/// typed. Repeats are dropped because the value declares a *set*: `443/tcp`
+/// twice admits the port exactly as once does, and acting on it twice would
+/// report two openings of one port.
+fn specs_in(value: &str) -> Vec<Spec> {
+    let mut specs = Vec::new();
+
+    for spec in value.split_whitespace().filter_map(Spec::parse) {
+        if !specs.contains(&spec) {
+            specs.push(spec);
+        }
+    }
+
+    specs
+}
+
+/// What the host currently admits inbound, as a [`ParamKind::PortList`] value.
+///
+/// The one place that question is turned into a parameter's text, because both
+/// interfaces ask it: the table is populated from it and the CLI fills its
+/// field from it. Two readings written separately would be two chances to
+/// disagree about what "currently open" means, and the disagreement would show
+/// up as the CLI closing a port the interface would have kept.
+///
+/// Answers an empty string where nothing can be read — no front-end, no
+/// filtering, a command that failed. That is the safe direction for this
+/// particular value only because the task refuses against an inactive policy
+/// before acting on it; the field never reaches a host where an empty set
+/// would be taken as "close everything".
+pub fn open_ports_value(executor: &dyn Executor, backend: &dyn Backend) -> String {
+    let Ok(Some(firewall)) = firewall_for(backend, executor) else {
+        return String::new();
+    };
+
+    let Ok(state) = firewall.state(executor) else {
+        return String::new();
+    };
+
+    state
+        .allowed
+        .iter()
+        .map(|port| port.spec.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Declares which ports are open, opening and closing to match.
+pub struct ManagePorts;
+
+impl ManagePorts {
+    /// Name of the parameter holding the ports that should be open.
+    pub const PORTS: &'static str = "ports";
+
+    /// Name of the parameter holding what was open when the operator was shown
+    /// the set.
+    ///
+    /// Carried so that a port opened by somebody else, while the table was on
+    /// screen, is reported rather than closed. Without it the difference
+    /// between "the operator removed this" and "this appeared after they
+    /// looked" cannot be told apart, and the tool would silently undo a change
+    /// it never saw. Empty from the CLI, where there was no table and a
+    /// declared set is exactly what was meant.
+    pub const PORTS_WERE: &'static str = "ports_were";
+
+    /// Identifies the task to the dialog that warns about closing the port a
+    /// session arrived on.
+    ///
+    /// A constant for the reason `EnableFirewall::ID` records: a literal at the
+    /// match site puts the id in two places with nothing tying them together.
+    pub const ID: &'static str = "firewall.manage-ports";
+}
+
+impl Task for ManagePorts {
     fn id(&self) -> &'static str {
-        "firewall.allow-port"
+        Self::ID
     }
 
     fn title(&self) -> &'static str {
-        "Allow a port"
+        "Manage ports"
     }
 
     fn description(&self) -> &'static str {
-        "Admits inbound traffic on one port. The protocol matters: WireGuard is \
-         UDP, SSH and HTTP are TCP, and a rule for one does not admit the other."
+        "Declares which ports are admitted inbound: anything listed is opened, \
+         anything removed is closed. The protocol matters — WireGuard is UDP, \
+         SSH and HTTP are TCP, and a rule for one does not admit the other."
+    }
+
+    /// The strongest confirmation, because a set with a port left out of it is
+    /// how a session ends.
+    ///
+    /// `firewall.enable` carries this for naming the wrong port to keep. Here
+    /// the risk is quieter: the operator removes a row without connecting it to
+    /// the connection they are reading the screen through, and nothing about
+    /// deleting a table row announces that.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
     }
 
     fn params(&self) -> Vec<Param> {
         vec![
-            Param::new(Self::PORT, "Port", ParamKind::Port).with_hint("1-65535"),
-            Param::new(Self::PROTOCOL, "Protocol", ParamKind::Protocol)
-                .with_initial("tcp")
-                .offering(&["tcp", "udp"])
-                .with_hint("tcp or udp"),
+            // Filled from the host before it is shown, which is what makes an
+            // invocation naming no ports a no-op rather than "close
+            // everything" — the worst reading the CLI could take.
+            Param::new(Self::PORTS, "Open ports", ParamKind::PortList)
+                .defaulting_to_live(LiveDefault::OpenPorts)
+                .with_hint("port/protocol, space separated"),
+            Param::new(Self::PORTS_WERE, "Previously open", ParamKind::PortList).optional(),
         ]
     }
 
     supported_everywhere!();
 
+    /// What the row reports is whether this host is *filtering*, the same
+    /// question `firewall.enable` asks: there is nothing to manage against a
+    /// host with no policy.
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Nftables)
+    }
+
     fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
-        let Ok(port) = values.port(Self::PORT) else {
+        let Ok(ports) = values.get(Self::PORTS) else {
             return Vec::new();
         };
 
-        let protocol = match values.get(Self::PROTOCOL) {
-            Ok("udp") => WarnProtocol::Udp,
-            _ => WarnProtocol::Tcp,
-        };
-
-        // Opening a port here says nothing about whether the provider's edge
-        // firewall admits it, and that is the layer administrators most often
-        // forget.
-        vec![Consequence::External {
-            note: External::ProviderFirewall { port, protocol },
-        }]
+        // One note per port opened rather than one for the batch: the provider's
+        // edge firewall admits ports individually, so a single note naming a
+        // count would leave the administrator to work out which.
+        specs_in(ports)
+            .into_iter()
+            .map(|spec| Consequence::External {
+                note: External::ProviderFirewall {
+                    port: spec.port,
+                    protocol: match spec.protocol {
+                        Protocol::Tcp => WarnProtocol::Tcp,
+                        Protocol::Udp => WarnProtocol::Udp,
+                    },
+                },
+            })
+            .collect()
     }
 
     fn run(
@@ -408,62 +551,124 @@ impl Task for AllowPort {
         values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
-        let port = values.port(Self::PORT)?;
-        let protocol = match values.get(Self::PROTOCOL)? {
-            "udp" => Protocol::Udp,
-            _ => Protocol::Tcp,
-        };
+        let desired = specs_in(values.get(Self::PORTS)?);
 
-        // A port opened on a front-end that is not the one filtering is a port
-        // that stays closed, so this resolves rather than assuming.
+        // A port managed on a front-end that is not the one filtering is a port
+        // that stays as it was, so this resolves rather than assuming.
         let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
 
-        // Before the rule, not after it. This check existed at the end of the
-        // task, where it reported "nothing is being filtered yet" over a rule
-        // that had just been added — and on a host where `firewall.enable` had
-        // never run, it was never reached at all: there is no table to add a
-        // rule to, so `nft` fails first. Reported from a Debian 13 host as
-        // `Error: Could not process rule: No such file or directory`, which
-        // names a file for a table that was never created and reads as a
-        // defect in the rule.
-        //
-        // Refused rather than repaired. Creating the table here would leave an
-        // `accept` rule in a ruleset with no default-deny policy — a firewall
-        // that filters nothing while looking configured, which is worse than
-        // the error. And enabling the policy is not this task's to do: it can
-        // end the session that asked for it, which is why `firewall.enable`
-        // carries a lockout confirmation and this one does not.
-        if !firewall.state(executor)?.active {
+        let state = firewall.state(executor)?;
+
+        // Before anything is written, and refused rather than repaired — the
+        // reasoning `AllowPort` carried and this inherits unchanged. There is
+        // no table to add a rule to on a host where `firewall.enable` never
+        // ran, so `nft` fails first with an error naming a file, which reads as
+        // a defect in the rule. Creating the policy here is not this task's to
+        // do: it can end the session that asked for it.
+        if !state.active {
             return Err(Error::FirewallNotEnabled);
         }
 
-        firewall.allow(executor, port, protocol)?;
+        // Only what this tool can actually close is a candidate for closing.
+        // firewalld admits SSH on a stock RHEL host as the service `ssh`, and
+        // `--remove-port 22/tcp` against that succeeds while changing nothing —
+        // so a set built from everything listed would report closing a port
+        // that stays open.
+        let closeable: Vec<Spec> = state
+            .allowed
+            .iter()
+            .filter(|port| port.origin == PortOrigin::Direct)
+            .filter_map(|port| Spec::parse(&port.spec))
+            .collect();
 
-        // Kept, for the same reason enabling is: a rule that only exists in the
-        // kernel is a rule that ends at the next restart.
+        // What the operator was looking at, where they were looking at
+        // anything. The CLI passes nothing and means the set it declared, so
+        // the snapshot falls back to what the host holds now.
+        let snapshot = match values.get(Self::PORTS_WERE) {
+            Ok(were) if !were.trim().is_empty() => specs_in(were),
+            _ => closeable.clone(),
+        };
+
+        let to_open: Vec<Spec> = desired
+            .iter()
+            .filter(|spec| !closeable.contains(spec))
+            .copied()
+            .collect();
+
+        let to_close: Vec<Spec> = snapshot
+            .iter()
+            .filter(|spec| !desired.contains(spec) && closeable.contains(spec))
+            .copied()
+            .collect();
+
+        // A port the host admits that the operator never saw and did not
+        // declare: somebody else opened it while the table was on screen.
+        // Reported and left alone, because closing it would undo a change this
+        // tool has no evidence the operator meant to undo.
+        let appeared: Vec<Spec> = closeable
+            .iter()
+            .filter(|spec| !desired.contains(spec) && !snapshot.contains(spec))
+            .copied()
+            .collect();
+
+        // Opened before anything is closed. A set that moves SSH from 22 to
+        // 2222 must have 2222 admitted before 22 goes, or the session dies in
+        // the window between the two commands — the same reasoning that makes
+        // `enable` build its ruleset in one transaction.
+        for spec in &to_open {
+            firewall.allow(executor, spec.port, spec.protocol)?;
+        }
+
+        let mut refused = Vec::new();
+
+        for spec in &to_close {
+            if !firewall.close(executor, spec.port, spec.protocol)? {
+                // The command reported success and the port is still open. Read
+                // back rather than counted, so what is reported is what the
+                // machine holds rather than what the calls returned.
+                refused.push(spec.text());
+            }
+        }
+
+        // Kept, for the same reason opening one was: a ruleset that only exists
+        // in the kernel ends at the next restart — and a port reported closed
+        // that reopens at boot is the more expensive half of that mistake.
         let replayed = firewall.persist(executor)?;
 
         report(
             progress,
-            &if replayed {
-                Msg::TaskFirewallPortAllowed {
-                    port,
-                    protocol: protocol.as_str().to_owned(),
-                }
-            } else {
-                Msg::TaskFirewallPortAllowedNotPersisted {
-                    port,
-                    protocol: protocol.as_str().to_owned(),
-                }
+            &Msg::TaskFirewallPortsApplied {
+                opened: to_open.len(),
+                closed: to_close.len() - refused.len(),
             },
         );
 
-        // The "nothing is being filtered yet" note that used to live here is
-        // gone, and its absence is the fix rather than an omission. It reported
-        // the condition *after* adding a rule, which on a host with no policy
-        // is a rule that cannot be added at all — so the note was either
-        // unreachable or printed over work that had already happened. The
-        // condition is now refused before anything is written, above.
+        if !refused.is_empty() {
+            report(
+                progress,
+                &Msg::TaskFirewallPortsStillOpen {
+                    specs: refused.join(", "),
+                },
+            );
+        }
+
+        if !appeared.is_empty() {
+            report(
+                progress,
+                &Msg::TaskFirewallPortsAppearedSince {
+                    specs: appeared
+                        .iter()
+                        .map(|spec| spec.text())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                },
+            );
+        }
+
+        if !replayed {
+            report(progress, &Msg::TaskFirewallPortsNotPersisted);
+        }
+
         Ok(Outcome::Done)
     }
 }
@@ -1084,8 +1289,7 @@ mod tests {
         // added at all, so the note was unreachable in exactly the case it
         // described.
         let mut values = ParamValues::new();
-        values.set(AllowPort::PORT, "443".to_owned());
-        values.set(AllowPort::PROTOCOL, "tcp".to_owned());
+        values.set(ManagePorts::PORTS, "443/tcp".to_owned());
 
         let mock = MockExecutor::with_replies([
             Reply::ok("nftables v1.0.9"),                   // `nft` is here
@@ -1093,7 +1297,7 @@ mod tests {
         ]);
         let backend = for_family(Family::Debian);
 
-        let error = AllowPort
+        let error = ManagePorts
             .run(&mock, backend.as_ref(), &values, &mut |_| {})
             .expect_err("a port must not be opened against no policy");
 
@@ -1117,17 +1321,18 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_port_keeps_it_across_a_reboot() {
-        // Same reasoning as enabling: a rule only in the kernel is a rule that
-        // ends at the next restart.
+    fn the_declared_set_keeps_its_changes_across_a_reboot() {
+        // Same reasoning as enabling, and sharper for a removal: a port closed
+        // only in the kernel reopens at the next restart, under a task that
+        // reported it closed.
         let mut values = ParamValues::new();
-        values.set(AllowPort::PORT, "443".to_owned());
-        values.set(AllowPort::PROTOCOL, "tcp".to_owned());
+        values.set(ManagePorts::PORTS, "443/tcp".to_owned());
 
         let mock = MockExecutor::with_replies([
-            Reply::ok("nftables v1.0.9"),       // available
-            Reply::ok("table inet initd {\n}"), // state: a policy is in place
-            Reply::failure(1, ""),              // not already allowed
+            Reply::ok("nftables v1.0.9"), // available
+            // The policy is in place, admitting nothing yet.
+            Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+            Reply::failure(1, ""),              // is_allowed: not yet
             Reply::ok(""),                      // add rule
             Reply::ok("table inet initd {\n}"), // list ruleset
             Reply::ok("systemd 257"),           // which init
@@ -1136,15 +1341,15 @@ mod tests {
         ]);
         let backend = for_family(Family::Debian);
 
-        AllowPort
+        ManagePorts
             .run(&mock, backend.as_ref(), &values, &mut |_| {})
-            .expect("opening must succeed");
+            .expect("declaring a set must succeed");
 
         assert!(
             mock.recorded_lines()
                 .iter()
                 .any(|line| line.starts_with("tee ")),
-            "the rule must outlive the kernel that holds it: {:?}",
+            "the ruleset must outlive the kernel that holds it: {:?}",
             mock.recorded_lines()
         );
     }
@@ -1154,23 +1359,22 @@ mod tests {
         // WireGuard is UDP. A rule written for TCP admits none of its traffic
         // while looking, in a listing, very much like it should.
         let mut values = ParamValues::new();
-        values.set(AllowPort::PORT, "51820".to_owned());
-        values.set(AllowPort::PROTOCOL, "udp".to_owned());
+        values.set(ManagePorts::PORTS, "51820/udp".to_owned());
 
         let (outcome, commands) = run(
-            &AllowPort,
+            &ManagePorts,
             vec![
                 Reply::ok("nftables v1.0.9"),
-                // The policy is in place: a port is only opened against one,
+                // The policy is in place: ports are only managed against one,
                 // since against no policy every port is already reachable.
-                Reply::ok("table inet initd {\n}"),
+                Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
                 Reply::failure(1, "no such table"), // is_allowed: not yet
                 Reply::ok(""),                      // add rule
             ],
             &values,
         );
 
-        outcome.expect("opening a port must succeed");
+        outcome.expect("declaring a set must succeed");
 
         assert!(
             commands
@@ -1181,32 +1385,281 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_port_defaults_to_tcp() {
+    fn the_declared_set_opens_what_is_missing_and_closes_what_is_gone() {
+        // The whole of what a declaration means: the host is made to match it,
+        // in both directions, and ports already right are left alone.
         let mut values = ParamValues::new();
-        values.set(AllowPort::PORT, "443".to_owned());
-        values.set(AllowPort::PROTOCOL, "tcp".to_owned());
+        values.set(ManagePorts::PORTS, "22/tcp 443/tcp".to_owned());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp 8080/tcp".to_owned());
+
+        let listing = "table inet initd { # handle 1\n\
+                       \tchain input { # handle 1\n\
+                       \t\ttcp dport 22 accept # handle 2\n\
+                       \t\ttcp dport 8080 accept # handle 3\n\
+                       \t}\n\
+                       }";
 
         let (outcome, commands) = run(
-            &AllowPort,
+            &ManagePorts,
             vec![
-                // The front-end is resolved before anything is written: a port
-                // opened on one that is not filtering stays closed.
                 Reply::ok("nftables v1.0.9"),
-                // The policy is in place: a port is only opened against one,
-                // since against no policy every port is already reachable.
-                Reply::ok("table inet initd {\n}"),
-                Reply::failure(1, "no such table"), // is_allowed: not yet
-                Reply::ok(""),                      // add rule
+                // state: 22 and 8080 are open.
+                Reply::ok(listing),
+                Reply::failure(1, ""), // is_allowed(443): no
+                Reply::ok(""),         // add rule 443
+                Reply::ok(listing),    // handles_for(8080)
+                Reply::ok(""),         // delete rule handle 3
+                // The read-back: 8080 is gone.
+                Reply::ok("table inet initd {\n  chain input {\n    tcp dport 22 accept\n  }\n}"),
+                Reply::ok("table inet initd {\n}"), // list ruleset
+                Reply::ok("systemd 257"),
+                Reply::ok(""),
+                Reply::ok(""),
             ],
             &values,
         );
 
-        outcome.expect("opening a port must succeed");
+        outcome.expect("declaring a set must succeed");
 
         assert!(
             commands.iter().any(|c| c.contains("tcp dport 443 accept")),
-            "{commands:?}"
+            "the missing port must be opened: {commands:?}"
         );
+        assert!(
+            commands.iter().any(|c| c.contains("delete rule")),
+            "the removed port must be closed: {commands:?}"
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c.contains("dport 22") && c.contains("delete")),
+            "a port in both sets must be left alone: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_port_is_opened_before_another_is_closed() {
+        // A set that moves SSH from one port to another must have the new one
+        // admitted before the old one goes, or the session dies in the window
+        // between the two commands.
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, "2222/tcp".to_owned());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp".to_owned());
+
+        let listing = "table inet initd { # handle 1\n\
+                       \tchain input { # handle 1\n\
+                       \t\ttcp dport 22 accept # handle 2\n\
+                       \t}\n\
+                       }";
+
+        let (outcome, commands) = run(
+            &ManagePorts,
+            vec![
+                Reply::ok("nftables v1.0.9"),
+                Reply::ok(listing),
+                Reply::failure(1, ""), // is_allowed(2222): no
+                Reply::ok(""),         // add rule 2222
+                Reply::ok(listing),    // handles_for(22)
+                Reply::ok(""),         // delete rule handle 2
+                Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+                Reply::ok("table inet initd {\n}"),
+                Reply::ok("systemd 257"),
+                Reply::ok(""),
+                Reply::ok(""),
+            ],
+            &values,
+        );
+
+        outcome.expect("declaring a set must succeed");
+
+        let opened = commands
+            .iter()
+            .position(|c| c.contains("add rule"))
+            .expect("the new port must be opened");
+
+        let closed = commands
+            .iter()
+            .position(|c| c.contains("delete rule"))
+            .expect("the old port must be closed");
+
+        assert!(
+            opened < closed,
+            "the new port must be admitted first: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_set_identical_to_the_host_writes_nothing() {
+        // Idempotent, which is the property a declaration has and a sequence of
+        // add-one-at-a-time operations does not.
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, "22/tcp".to_owned());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp".to_owned());
+
+        let (outcome, commands) = run(
+            &ManagePorts,
+            vec![
+                Reply::ok("nftables v1.0.9"),
+                Reply::ok("table inet initd {\n  chain input {\n    tcp dport 22 accept\n  }\n}"),
+                Reply::ok("table inet initd {\n}"), // list ruleset, for persist
+                Reply::ok("systemd 257"),
+                Reply::ok(""),
+                Reply::ok(""),
+            ],
+            &values,
+        );
+
+        outcome.expect("declaring the current set must succeed");
+
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c.contains("add rule") || c.contains("delete rule")),
+            "nothing must be written: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_declaration_closes_every_port() {
+        // Drastic and coherent, and pinned so it cannot quietly become a
+        // no-op: a firewall admitting nothing is a policy, and the field's
+        // validator admits the empty set precisely so this can be asked for.
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, String::new());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp".to_owned());
+
+        let listing = "table inet initd { # handle 1\n\
+                       \tchain input { # handle 1\n\
+                       \t\ttcp dport 22 accept # handle 2\n\
+                       \t}\n\
+                       }";
+
+        let (outcome, commands) = run(
+            &ManagePorts,
+            vec![
+                Reply::ok("nftables v1.0.9"),
+                Reply::ok(listing),
+                Reply::ok(listing), // handles_for(22)
+                Reply::ok(""),      // delete rule handle 2
+                Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+                Reply::ok("table inet initd {\n}"),
+                Reply::ok("systemd 257"),
+                Reply::ok(""),
+                Reply::ok(""),
+            ],
+            &values,
+        );
+
+        outcome.expect("declaring the empty set must succeed");
+
+        assert!(
+            commands.iter().any(|c| c.contains("delete rule")),
+            "the empty set must close what was open: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_port_that_could_not_be_closed_is_reported_rather_than_claimed() {
+        // The partial-failure case, read back rather than inferred. A rule the
+        // listing did not name — hand-written, or spelled differently — is a
+        // port still open after every delete reported success.
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, String::new());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp".to_owned());
+
+        let listing = "table inet initd { # handle 1\n\
+                       \tchain input { # handle 1\n\
+                       \t\ttcp dport 22 accept # handle 2\n\
+                       \t}\n\
+                       }";
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"),
+            Reply::ok(listing),
+            Reply::ok(listing), // handles_for
+            Reply::ok(""),      // delete
+            // The read-back still finds it.
+            Reply::ok("table inet initd {\n  chain input {\n    tcp dport 22 accept\n  }\n}"),
+            Reply::ok("table inet initd {\n}"),
+            Reply::ok("systemd 257"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let mut lines = Vec::new();
+
+        ManagePorts
+            .run(&mock, backend.as_ref(), &values, &mut |line| {
+                lines.push(line.text);
+            })
+            .expect("the task must not fail over a port it could not close");
+
+        let output = lines.join("\n");
+
+        assert!(
+            output.contains("still open") && output.contains("22/tcp"),
+            "the port that stayed open must be named: {output}"
+        );
+        assert!(
+            !output.contains("closed 1"),
+            "a port that is still open must not be counted as closed: {output}"
+        );
+    }
+
+    #[test]
+    fn a_port_that_appeared_since_the_set_was_read_is_left_alone() {
+        // Somebody else opened it while the operator was deciding. Closing it
+        // would undo a change this tool has no evidence anybody meant to undo,
+        // so it is reported and left.
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, "22/tcp".to_owned());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp".to_owned());
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"),
+            // 9000 is here now, and was in neither set.
+            Reply::ok(
+                "table inet initd {\n  chain input {\n    tcp dport 22 accept\n    \
+                 tcp dport 9000 accept\n  }\n}",
+            ),
+            Reply::ok("table inet initd {\n}"),
+            Reply::ok("systemd 257"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let mut lines = Vec::new();
+
+        ManagePorts
+            .run(&mock, backend.as_ref(), &values, &mut |line| {
+                lines.push(line.text);
+            })
+            .expect("declaring a set must succeed");
+
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|c| c.contains("delete rule")),
+            "a port nobody declared must not be closed: {:?}",
+            mock.recorded_lines()
+        );
+
+        let output = lines.join("\n");
+
+        assert!(
+            output.contains("9000/tcp"),
+            "the port that appeared must be named: {output}"
+        );
+    }
+
+    #[test]
+    fn managing_ports_asks_before_it_runs() {
+        // A set with a port left out of it is how a session ends, and nothing
+        // about deleting a table row announces that.
+        assert_eq!(ManagePorts.confirmation(), Confirmation::Lockout);
     }
 
     #[test]
