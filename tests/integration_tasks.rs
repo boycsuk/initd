@@ -737,26 +737,81 @@ for_each_image! {
         );
     }
 
-    /// `docker-rootless.install` refuses an account with no subordinate ids.
-    fn rootless_docker_refuses_an_account_that_cannot_own_a_user_namespace(image) {
-        // Rootless Docker maps container uids into a range the host delegates
-        // to the account. Without one there is no namespace to enter, and the
-        // daemon fails at first use rather than at install — so the check
-        // happens here, where the failure can still name its cause.
+    /// `docker.rootless` refuses a host with no engine before anything else.
+    fn rootless_docker_refuses_a_host_with_no_engine(image) {
+        // The dependency the split creates. None of the base images carries an
+        // engine, so this is the first thing the task meets — and it must name
+        // the task that installs one rather than letting the setup script fail
+        // in terms naming neither this tool nor what to run first.
+        //
+        // Asserted on the message and not only on the exit code, for the reason
+        // `docs/cli.md`'s own contract test records: a code with more than one
+        // possible cause identifies nothing. `user=nobody` would also be
+        // refused for having no subordinate range, and this scenario is about
+        // which refusal comes first.
         let observed = observe(
             image,
-            "initd run docker-rootless.install user=nobody >/tmp/o 2>&1; \
+            "initd run docker.rootless user=nobody >/tmp/o 2>&1; \
                  echo exit=$?; cat /tmp/o",
         );
 
         assert!(
             common::has_line(&observed, "exit=1"),
-            "{}: an account with no subordinate range must be refused: {observed}",
+            "{}: a host with no engine must be refused: {observed}",
+            image.name
+        );
+
+        // Alpine refuses one step earlier and for a different reason: OpenRC
+        // has no per-user service manager, so the task is unsupported there and
+        // never reaches the engine check. Both are correct refusals, and which
+        // one an operator gets is the thing worth pinning — a family that
+        // started answering the *other* message would mean the support matrix
+        // and the precondition had swapped places.
+        let expected = if image.family == "alpine" {
+            "not supported"
+        } else {
+            "docker.install"
+        };
+
+        assert!(
+            observed.contains(expected),
+            "{}: the refusal must say `{expected}`: {observed}",
             image.name
         );
         assert!(
             !observed.contains("panicked"),
             "{}: and reported rather than panicking: {observed}",
+            image.name
+        );
+    }
+
+    /// The engine install puts a working `docker` on the host.
+    ///
+    /// The scenario that would have caught the defect this split fixes, and
+    /// which no test covered: the only container coverage Docker had was a
+    /// refusal, so `docker-ce-rootless-extras` installing a rootless wrapper
+    /// around an absent daemon passed everything for as long as it shipped.
+    fn the_engine_install_leaves_a_daemon_and_a_client(image) {
+        // No systemd in these containers, so the task fails at `enable --now`
+        // whatever the packages did — which is why this asserts on what landed
+        // on the filesystem rather than on the exit code. `tests/integration_systemd.rs`
+        // is where the unit itself is observed.
+        let observed = observe(
+            image,
+            "initd run docker.install >/tmp/o 2>&1; echo exit=$?; \
+             command -v dockerd >/dev/null && echo daemon=yes || echo daemon=no; \
+             command -v docker  >/dev/null && echo client=yes || echo client=no; \
+             tail -5 /tmp/o",
+        );
+
+        assert!(
+            common::has_line(&observed, "daemon=yes"),
+            "{}: the engine install must leave a daemon: {observed}",
+            image.name
+        );
+        assert!(
+            common::has_line(&observed, "client=yes"),
+            "{}: and a client to drive it: {observed}",
             image.name
         );
     }

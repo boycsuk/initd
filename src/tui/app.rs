@@ -4037,7 +4037,7 @@ mod tests {
         let mut app = test_app(Family::Debian);
 
         app.finish_run(
-            "docker-rootless.uninstall",
+            "docker.rootless-off",
             Err(crate::error::Error::CommandFailed {
                 command: "systemctl --user disable docker.service".to_owned(),
                 code: 5,
@@ -4049,7 +4049,7 @@ mod tests {
         let transcript = app.output.transcript();
 
         assert!(
-            transcript.contains("FAILED — docker-rootless.uninstall"),
+            transcript.contains("FAILED — docker.rootless-off"),
             "the heading names the task, since the border no longer does: {transcript}"
         );
 

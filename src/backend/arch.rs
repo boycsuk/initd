@@ -43,12 +43,31 @@ const WIREGUARD_SERVICE: &str = "wg-quick@";
 /// Where WireGuard keeps its configuration.
 const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 
-/// The rootless Docker extras on Arch.
+/// The engine on Arch, which the distribution packages itself.
 ///
-/// `docker` carries `dockerd-rootless-setuptool.sh` itself here — there is no
-/// separate extras package, which is exactly the kind of divergence the
-/// capability indirection exists for.
-const DOCKER_ROOTLESS_PACKAGE: &str = "docker";
+/// Arch is not one of the six platforms Docker publishes a repository for, so
+/// the official route here is the distribution's own package rather than
+/// upstream's — `pacman -Si docker` answers version `1:29.7.2-1`, carrying
+/// `containerd` and `runc` as dependencies.
+const DOCKER_ENGINE_PACKAGE: &str = "docker";
+
+/// What `rootlesskit` is packaged as, and the only half of the rootless story
+/// Arch packages at all.
+///
+/// This comment used to say `docker` carried `dockerd-rootless-setuptool.sh`.
+/// It does not, and no official package does: measured on `archlinux:latest`,
+/// `pacman -F dockerd-rootless-setuptool.sh` finds nothing and `pacman -Fl
+/// docker` lists no rootless file. Only `extra/rootlesskit` exists. So the
+/// rootless task installs this and then fetches upstream's script, which is why
+/// it asks for confirmation on this family and on no other — see
+/// `docker.rootless`.
+const DOCKER_ROOTLESS_PACKAGE: &str = "rootlesskit";
+
+/// The system engine's unit.
+const DOCKER_SYSTEM_UNIT: &str = "docker.service";
+
+/// Where the system daemon reads its configuration.
+const DOCKER_SYSTEM_CONFIG: &str = "/etc/docker/daemon.json";
 
 /// The rootless engine's user unit.
 const DOCKER_USER_UNIT: &str = "docker.service";
@@ -166,6 +185,7 @@ impl Backend for ArchBackend {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
             Capability::Wireguard => WIREGUARD_PACKAGE,
+            Capability::DockerEngine => DOCKER_ENGINE_PACKAGE,
             Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGE,
             Capability::Caddy => CADDY_PACKAGE,
             Capability::Fish => FISH_PACKAGE,
@@ -186,6 +206,7 @@ impl Backend for ArchBackend {
         match capability {
             Capability::Ssh => SSH_SERVICE,
             Capability::Wireguard => WIREGUARD_SERVICE,
+            Capability::DockerEngine => DOCKER_SYSTEM_UNIT,
             Capability::DockerRootless => DOCKER_USER_UNIT,
             Capability::Caddy => CADDY_SERVICE,
             Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
@@ -205,6 +226,7 @@ impl Backend for ArchBackend {
         match capability {
             Capability::Ssh => SSH_CONFIG,
             Capability::Wireguard => WIREGUARD_CONFIG,
+            Capability::DockerEngine => DOCKER_SYSTEM_CONFIG,
             Capability::DockerRootless => DOCKER_CONFIG,
             Capability::Caddy => CADDY_CONFIG,
             Capability::Fish => "/etc/fish/config.fish",
@@ -272,7 +294,7 @@ impl Backend for ArchBackend {
 pub struct PacmanPackages;
 
 impl PackageManager for PacmanPackages {
-    fn install(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn install(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // `--needed` skips reinstalling an up-to-date package, making the
         // operation idempotent; `--noconfirm` avoids a prompt that would hang
         // the TUI.
@@ -297,7 +319,8 @@ impl PackageManager for PacmanPackages {
         // package, the sync is the smaller risk, and the packages this backend
         // names are base-repository ones that rarely move independently.
         let command = Command::new("pacman")
-            .args(["-Sy", "--needed", "--noconfirm", package])
+            .args(["-Sy", "--needed", "--noconfirm"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
@@ -356,7 +379,7 @@ mod tests {
         // production server.
         let mock = MockExecutor::new();
 
-        PacmanPackages.install(&mock, "procps-ng").expect("runs");
+        PacmanPackages.install(&mock, &["procps-ng"]).expect("runs");
 
         let commands = mock.recorded_lines();
 
@@ -376,7 +399,7 @@ mod tests {
         let mock = MockExecutor::new();
 
         PacmanPackages
-            .install(&mock, ArchBackend::new().package_for(Capability::Ssh))
+            .install(&mock, &[ArchBackend::new().package_for(Capability::Ssh)])
             .expect("install must succeed");
 
         // `-Sy`, not `-S`: pacman never refreshes its databases on its own, so
@@ -395,7 +418,7 @@ mod tests {
     fn install_is_idempotent_and_noninteractive() {
         let mock = MockExecutor::new();
 
-        PacmanPackages.install(&mock, "openssh").expect("runs");
+        PacmanPackages.install(&mock, &["openssh"]).expect("runs");
 
         let args = mock.single_command().args;
         assert!(args.contains(&"--needed".to_owned()), "must not reinstall");

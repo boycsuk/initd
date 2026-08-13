@@ -202,6 +202,12 @@ pub(super) fn render(message: &Msg) -> String {
                  so rootless containers cannot map their users"
             )
         }
+        // Names the task that installs it. The rootless setup needs an engine
+        // already on the host, and upstream's script fails in terms that name
+        // neither this tool nor what to run first.
+        Msg::DockerEngineAbsent => {
+            "the docker engine is not installed on this host — run docker.install first".to_owned()
+        }
         // Names systemd-logind, because that is what has to be working and
         // systemd's own message names neither it nor any cause — it reports two
         // unset variables and suggests `--machine=<user>@.host`, which is advice
@@ -372,6 +378,18 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::ConsequenceDnsMustResolve => {
             "the name must resolve to this host before a certificate can be \
              issued — this tool cannot see it"
+                .to_owned()
+        }
+        Msg::ConsequenceDockerGroupIsRoot => {
+            "adding an account to the `docker` group makes it equivalent to \
+             root: the daemon socket takes commands that mount any file on \
+             this host"
+                .to_owned()
+        }
+        Msg::ConsequenceUnverifiedRootlessInstaller => {
+            "no official package here ships the rootless setup script, so it \
+             is fetched from get.docker.com — which publishes no digest to \
+             check it against"
                 .to_owned()
         }
         // --- Terminal ---
@@ -1120,9 +1138,6 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskCaddyInstalledAt { version } => {
             format!("caddy {version} is installed at /usr/local/bin")
         }
-        Msg::TaskDockerRootlessReady { user } => {
-            format!("rootless docker is running for {user}")
-        }
         Msg::TaskLingerEnabled { user } => {
             format!("{user} may now keep services running between logins")
         }
@@ -1205,6 +1220,10 @@ pub(super) fn render(message: &Msg) -> String {
             format!("add `import {name}` to a site block to apply it")
         }
         Msg::TaskDockerInstalling { user } => format!("installing docker for {user}"),
+        Msg::TaskDockerEngineInstalling => "installing the docker engine".to_owned(),
+        Msg::TaskDockerFetchingInstaller => {
+            "fetching the rootless installer from get.docker.com".to_owned()
+        }
         Msg::TaskDockerConnectHint { user } => {
             format!("connect with DOCKER_HOST=unix:///run/user/$(id -u {user})/docker.sock")
         }

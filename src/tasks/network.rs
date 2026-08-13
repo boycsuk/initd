@@ -301,7 +301,7 @@ impl Task for EnableFirewall {
 
                 backend
                     .packages()
-                    .install(executor, backend.package_for(Capability::Nftables))?;
+                    .install(executor, &[backend.package_for(Capability::Nftables)])?;
 
                 fallback
             }
@@ -824,7 +824,7 @@ impl Task for EnableUnprivilegedPorts {
         // makes the same point, and an administrator who skips it sees a
         // container that still cannot bind 80 with the parameter visibly set.
         vec![Consequence::Invalidates {
-            task: "docker-rootless.install",
+            task: "docker.rootless",
             reason: Reason::NeedsRestart {
                 service: "docker.service",
             },
@@ -1037,7 +1037,7 @@ fn set_and_report(
             },
         );
 
-        backend.packages().install(executor, package)?;
+        backend.packages().install(executor, &[package])?;
     }
 
     // Both halves, because either alone is a system that does not behave as
@@ -1974,7 +1974,7 @@ mod tests {
         assert_eq!(consequences.len(), 1, "{consequences:?}");
         assert_eq!(
             consequences[0].task(),
-            Some("docker-rootless.install"),
+            Some("docker.rootless"),
             "{consequences:?}"
         );
         assert!(!consequences[0].is_external());

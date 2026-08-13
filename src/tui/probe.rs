@@ -356,6 +356,11 @@ fn program_for(capability: Capability) -> Option<&'static str> {
         // which installs `openssh-server` alone, so asking for the client
         // answers "absent" on a host plainly serving SSH.
         Capability::Ssh => Some("sshd"),
+        // The binary rather than the package, for the same reason SSH asks
+        // that way: the engine may have arrived through the distribution's
+        // package or through Docker's own repository, under different names on
+        // the same host, and `docker` is what both put on the PATH.
+        Capability::DockerEngine => Some("docker"),
         // Everything else is packaged on every family this tool supports, so a
         // host that has no package for it has no other way to have got it
         // either. Written as an exhaustive match rather than a catch-all: a

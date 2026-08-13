@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **BREAKING: `docker-rootless.install` is now two tasks, `docker.install` and
+  `docker.rootless`.** Scripts calling
+  `initd run docker-rootless.install user=deploy` must now call
+  `initd run docker.install` followed by
+  `initd run docker.rootless user=deploy`. `docker-rootless.uninstall` is
+  `docker.rootless-off`, and `docker.uninstall` is new.
+
+  One task meant two scopes — an engine belongs to the machine, a rootless
+  setup belongs to one account — so a single capability had to resolve one
+  package name for both jobs. On three of the five families the name it
+  resolved was wrong, and none of it was visible because the only container
+  coverage Docker had was a refusal.
+
+  Measured, per family. `docker-ce-rootless-extras` declares
+  `Enhances: docker-ce`, not `Depends`: on `debian:13`, installing it alone
+  brings in `rootlesskit` and the two setup scripts and leaves the host with no
+  daemon and no client at all. On Arch no official package ships
+  `dockerd-rootless-setuptool.sh` — `pacman -F` finds only `extra/rootlesskit`
+  — so the task ran a script that was never there, while a comment in the
+  backend asserted it was. On openSUSE the script lives in
+  `docker-rootless-extras`, a package the task never installed.
+
+  Each family now installs the way its own documentation says. Docker publishes
+  a repository for Debian, Ubuntu, RHEL and its rebuilds, and there the five
+  packages upstream's page lists are installed in **one** transaction — which
+  is why `PackageManager::install` takes a slice rather than a name. Arch,
+  openSUSE and Alpine are not platforms Docker publishes for, so they install
+  the distribution's own package.
+
+  `docker.rootless` refuses a host with no engine, naming `docker.install`
+  rather than letting upstream's script fail in terms that name neither this
+  tool nor the step that was missed.
+
+- **Alpine can install the Docker engine.** It was refused for the whole
+  capability on the stated grounds that the distribution packages no Docker. It
+  packages both halves — `docker-29.5.2-r0` and `docker-rootless-extras`,
+  measured on `alpine:3.23`. What Alpine has no answer for is a per-user
+  service manager, so only `docker.rootless` refuses it now, and the refusal
+  says OpenRC rather than saying "not packaged" about two packages that are.
+
 - **BREAKING: `firewall.allow-port` is now `firewall.manage-ports`, and it
   declares a set rather than adding one rule.** Scripts calling
   `initd run firewall.allow-port port=8080 protocol=tcp` must become
@@ -49,7 +89,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a *service* now reads `22/tcp is open (admitted by ssh)`, because that is the
   distinction deciding whether anything can close it.
 
+### Fixed
+- **RHEL's Docker repository served no metadata.** The `baseurl` was the
+  archive root, with no `$releasever/$basearch/stable` tail, so every install
+  failed at `dnf install` reporting a repository it could not download.
+  Measured: `.../centos/9/x86_64/stable/repodata/repomd.xml` answers 200 and
+  `.../centos/repodata/repomd.xml` answers 404. dnf expands both variables
+  itself; what it cannot do is invent the path they belong in.
+
+- **Registering an APT repository assumed tools the host may not have.** `curl`
+  and `gpg` are absent from a bare `debian:13`, and so is the CA bundle — so
+  the key check reported a perfectly good key as unreadable, which reads as
+  Docker having published a bad key rather than as this host having nothing to
+  read it with. They are installed first, which is the first step of Docker's
+  own installation page. A refused key still writes no source, no keyring and
+  no key; what it can now leave behind is three ordinary tools, which the test
+  for that property states rather than glossing.
+
+  Both were found the same afternoon by a container scenario that reaches the
+  install. Nothing had, before: Docker's only container coverage was a refusal,
+  and a test that asserts what a task refuses proves nothing about what it does.
+
 ### Added
+- **`docker.install` and `docker.uninstall`, the engine as a machine-wide
+  thing.** Installs the container engine and starts it, enabling it at boot,
+  and reads both back rather than trusting a command that exited zero. It
+  states — without doing it — that adding an account to the `docker` group
+  makes that account equivalent to root, since that is the usual next step and
+  nothing about the command announces what it grants. The removal leaves
+  `/var/lib/docker` alone: images and volumes are the operator's data, and
+  nothing here could put them back.
+
+- **The rootless setup on Arch, which no official package provides.** Every
+  other family installs the setup script from a package. Arch ships none —
+  measured — so the script is fetched from `get.docker.com/rootless`, and the
+  task says so before it runs: upstream publishes no per-artefact digest, which
+  makes it the one route in this tool that executes code it cannot verify. It
+  is stated as a consequence on that family alone, because a warning shown
+  everywhere is one nobody reads where it matters.
+
 - **A port can be closed through the front-end that opened it.**
   `FirewallManager::close` is the per-port inverse of `allow`, and it answers
   whether the port is closed *afterwards* rather than whether the command

@@ -62,7 +62,7 @@ impl Task for InstallGit {
     ) -> Result<Outcome> {
         backend
             .packages()
-            .install(executor, backend.package_for(Capability::Git))?;
+            .install(executor, &[backend.package_for(Capability::Git)])?;
 
         report(progress, &Msg::TaskGitNeedsIdentity);
 

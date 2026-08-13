@@ -154,7 +154,7 @@ impl Task for InstallRust {
         if backend.has_package_for(Capability::Rust) {
             backend
                 .packages()
-                .install(executor, backend.package_for(Capability::Rust))?;
+                .install(executor, &[backend.package_for(Capability::Rust)])?;
         } else {
             let release = crate::backend::release_installer::newest(Self::RELEASES)?;
 

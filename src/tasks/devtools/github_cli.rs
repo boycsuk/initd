@@ -107,7 +107,7 @@ impl Task for InstallGithubCli {
         if backend.has_package_for(Capability::GithubCli) {
             backend
                 .packages()
-                .install(executor, backend.package_for(Capability::GithubCli))?;
+                .install(executor, &[backend.package_for(Capability::GithubCli)])?;
         } else if backend.binaries().is_installed(executor, "gh")? {
             report(
                 progress,

@@ -9,8 +9,17 @@ use crate::exec::Executor;
 /// names: `openssh-server` on Debian is `openssh` on Arch. Callers ask for a
 /// capability, never for a package name.
 pub trait PackageManager {
-    /// Installs a package, doing nothing if it is already present.
-    fn install(&self, executor: &dyn Executor, package: &str) -> Result<()>;
+    /// Installs one or more packages, doing nothing to those already present.
+    ///
+    /// A slice rather than a single name, because a capability is not always
+    /// one package: Docker's engine is five on the families whose installation
+    /// page lists it that way, and they must reach the package manager in one
+    /// invocation so it resolves them as one transaction. Passing them as a
+    /// space-joined string was the alternative and is wrong at this layer —
+    /// every implementation puts `package` into a single `argv` element, so the
+    /// whole string would arrive as one nonexistent package name, and each
+    /// backend would have to remember to split it.
+    fn install(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()>;
 
     /// Whether the package is currently installed.
     fn is_installed(&self, executor: &dyn Executor, package: &str) -> Result<bool>;

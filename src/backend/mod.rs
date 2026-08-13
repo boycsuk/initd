@@ -56,7 +56,24 @@ pub enum Capability {
     /// the agreement is a fact about these five distributions and not a
     /// property of WireGuard — the same reasoning `config_for` records below.
     Wireguard,
-    /// The rootless Docker engine.
+    /// The Docker engine itself: daemon, CLI and container runtime, installed
+    /// once for the machine.
+    ///
+    /// Split from `DockerRootless` because the two are different scopes and
+    /// were measured to be different packages. `docker-ce-rootless-extras`
+    /// declares `Enhances: docker-ce`, not `Depends` — measured on `debian:13`,
+    /// where installing it alone brings in `rootlesskit` and the two setup
+    /// scripts and leaves the host with no daemon and no client at all. One
+    /// capability resolving one name could not say both things.
+    DockerEngine,
+    /// What a single account needs to run that engine as itself: the setup
+    /// script and `rootlesskit`.
+    ///
+    /// Packaged apart from the engine on three families and not packaged at all
+    /// on Arch, where no official package ships
+    /// `dockerd-rootless-setuptool.sh` — measured with `pacman -F`, which finds
+    /// only `extra/rootlesskit`. A family answering `""` here means the engine
+    /// package already carries the script.
     DockerRootless,
     /// The Caddy web server.
     Caddy,
@@ -117,6 +134,22 @@ pub trait Backend {
     /// Empty when the distribution has no package for it, which
     /// [`Backend::has_package_for`] is the readable way to ask.
     fn package_for(&self, capability: Capability) -> &'static str;
+
+    /// Every package a capability needs, where one name is not the whole
+    /// answer.
+    ///
+    /// Only Docker's engine answers with more than one name, and only on the
+    /// families whose installation page lists more than one: they must reach
+    /// the package manager together so it resolves them as one transaction. An
+    /// empty slice means the same thing as an empty
+    /// [`package_for`](Self::package_for) — no package here.
+    ///
+    /// Defaulted so the fourteen single-package capabilities are untouched: a
+    /// family answers this only where it disagrees with the default, and the
+    /// default is what `package_for` already resolved.
+    fn packages_for(&self, _capability: Capability) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Whether this distribution packages a capability at all.
     ///

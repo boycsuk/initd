@@ -91,7 +91,29 @@ const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 /// setup script, which is the part the task actually runs.
 const DOCKER_ROOTLESS_PACKAGE: &str = "docker-ce-rootless-extras";
 
+/// The engine itself, as Docker's RHEL installation page lists it.
+///
+/// The same five names as Debian's, because it is the same upstream archive
+/// under a different packaging format. And the same reason for keeping them
+/// apart from [`DOCKER_ROOTLESS_PACKAGE`]: that package enhances the engine
+/// rather than depending on it, so asking for it alone installs a rootless
+/// wrapper around a daemon nobody installed.
+const DOCKER_ENGINE_PACKAGES: &[&str] = &[
+    "docker-ce",
+    "docker-ce-cli",
+    "containerd.io",
+    "docker-buildx-plugin",
+    "docker-compose-plugin",
+];
+
+/// The system engine's unit, which `docker.install` enables.
+const DOCKER_SYSTEM_UNIT: &str = "docker.service";
+
+/// Where the system daemon reads its configuration.
+const DOCKER_SYSTEM_CONFIG: &str = "/etc/docker/daemon.json";
+
 /// Where Docker serves packages for Red Hat Enterprise Linux itself.
+///
 /// The `$releasever/$basearch/stable` tail is what upstream's own `.repo` file
 /// carries, and dnf expands both variables from the running host. It was absent
 /// here, which is a different mistake from the one the comment below guards
@@ -357,6 +379,8 @@ impl Backend for RhelBackend {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
             Capability::Wireguard => WIREGUARD_PACKAGE,
+            // The first of five; `packages_for` carries the whole list.
+            Capability::DockerEngine => DOCKER_ENGINE_PACKAGES[0],
             Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGE,
             Capability::Caddy => CADDY_PACKAGE,
             Capability::Fish => FISH_PACKAGE,
@@ -373,10 +397,18 @@ impl Backend for RhelBackend {
         }
     }
 
+    fn packages_for(&self, capability: Capability) -> &'static [&'static str] {
+        match capability {
+            Capability::DockerEngine => DOCKER_ENGINE_PACKAGES,
+            _ => &[],
+        }
+    }
+
     fn service_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_SERVICE,
             Capability::Wireguard => WIREGUARD_SERVICE,
+            Capability::DockerEngine => DOCKER_SYSTEM_UNIT,
             Capability::DockerRootless => DOCKER_USER_UNIT,
             Capability::Caddy => CADDY_SERVICE,
             Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
@@ -398,6 +430,7 @@ impl Backend for RhelBackend {
         match capability {
             Capability::Ssh => SSH_CONFIG,
             Capability::Wireguard => WIREGUARD_CONFIG,
+            Capability::DockerEngine => DOCKER_SYSTEM_CONFIG,
             Capability::DockerRootless => DOCKER_CONFIG,
             Capability::Caddy => CADDY_CONFIG,
             Capability::Fish => "/etc/fish/config.fish",
@@ -473,7 +506,9 @@ impl Backend for RhelBackend {
             // fingerprint of its RPM signing key on its own documentation and
             // on two keyservers, so the key that arrives can be checked against
             // a value this build did not learn from the same host.
-            Capability::DockerRootless => Some(Repository {
+            // The engine's, not the extras': `docker.install` registers it and
+            // `docker.rootless` finds the extras there once it has.
+            Capability::DockerEngine => Some(Repository {
                 name: "docker-ce",
                 base_url: self.docker_repo_path,
                 // Served beside the packages it signs, on whichever path this
@@ -517,13 +552,14 @@ impl Backend for RhelBackend {
 pub struct DnfPackages;
 
 impl PackageManager for DnfPackages {
-    fn install(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn install(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // `-y` answers the prompts that would otherwise hang the TUI, including
         // the one asking whether to trust a repository's signing key. The
         // operation is idempotent on its own: `dnf install` on an installed
         // package exits zero having done nothing.
         let command = Command::new("dnf")
-            .args(["install", "-y", package])
+            .args(["install", "-y"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
@@ -576,7 +612,7 @@ mod tests {
         let mock = MockExecutor::new();
 
         DnfPackages
-            .install(&mock, RhelBackend::new().package_for(Capability::Ssh))
+            .install(&mock, &[RhelBackend::new().package_for(Capability::Ssh)])
             .expect("install must succeed");
 
         assert_eq!(mock.recorded_lines(), ["dnf install -y openssh-server"]);
@@ -608,7 +644,9 @@ mod tests {
     fn install_is_noninteractive() {
         let mock = MockExecutor::new();
 
-        DnfPackages.install(&mock, "openssh-server").expect("runs");
+        DnfPackages
+            .install(&mock, &["openssh-server"])
+            .expect("runs");
 
         let args = mock.single_command().args;
         assert!(args.contains(&"-y".to_owned()), "must not prompt");
@@ -704,7 +742,7 @@ mod tests {
         // register one before asking for it.
         let backend = RhelBackend::new();
 
-        assert!(backend.repository_for(Capability::DockerRootless).is_some());
+        assert!(backend.repository_for(Capability::DockerEngine).is_some());
 
         for capability in [
             Capability::Ssh,
@@ -727,10 +765,10 @@ mod tests {
         // `$releasever` resolves to nothing it carries — an empty repository
         // rather than an error, which reads as a broken install.
         let rhel = RhelBackend::for_distribution("rhel")
-            .repository_for(Capability::DockerRootless)
+            .repository_for(Capability::DockerEngine)
             .expect("docker must resolve");
         let rocky = RhelBackend::for_distribution("rocky")
-            .repository_for(Capability::DockerRootless)
+            .repository_for(Capability::DockerEngine)
             .expect("docker must resolve");
 
         assert!(rhel.base_url.contains("/rhel/"), "{}", rhel.base_url);
@@ -763,7 +801,7 @@ mod tests {
             .into_iter()
             .map(|id| {
                 RhelBackend::for_distribution(id)
-                    .repository_for(Capability::DockerRootless)
+                    .repository_for(Capability::DockerEngine)
                     .expect("docker must resolve")
                     .fingerprint
             })

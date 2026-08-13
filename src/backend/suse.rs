@@ -90,6 +90,23 @@ const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 /// which is why [`Backend::repository_for`] is left at its default here.
 const DOCKER_PACKAGE: &str = "docker";
 
+/// What the rootless half needs here, which the engine package does not carry.
+///
+/// The one family where the split is visible in the distribution's own
+/// packaging rather than in Docker's: measured on `opensuse/tumbleweed`,
+/// `zypper search --provides dockerd-rootless-setuptool.sh` answers
+/// `docker-rootless-extras`, and the `docker` package above is not among the
+/// answers. Installing only `docker` and then running the setup script — which
+/// is what this backend did while one capability meant both halves — fails with
+/// the script not found.
+const DOCKER_ROOTLESS_PACKAGE: &str = "docker-rootless-extras";
+
+/// The system engine's unit.
+const DOCKER_SYSTEM_UNIT: &str = "docker.service";
+
+/// Where the system daemon reads its configuration.
+const DOCKER_SYSTEM_CONFIG: &str = "/etc/docker/daemon.json";
+
 /// The rootless engine's user unit, once a mechanism exists to install it.
 const DOCKER_USER_UNIT: &str = "docker.service";
 
@@ -283,7 +300,8 @@ impl Backend for SuseBackend {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
             Capability::Wireguard => WIREGUARD_PACKAGE,
-            Capability::DockerRootless => DOCKER_PACKAGE,
+            Capability::DockerEngine => DOCKER_PACKAGE,
+            Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGE,
             Capability::Caddy => CADDY_PACKAGE,
             Capability::Fish => FISH_PACKAGE,
             Capability::Zellij => self.zellij_package,
@@ -303,6 +321,7 @@ impl Backend for SuseBackend {
         match capability {
             Capability::Ssh => SSH_SERVICE,
             Capability::Wireguard => WIREGUARD_SERVICE,
+            Capability::DockerEngine => DOCKER_SYSTEM_UNIT,
             Capability::DockerRootless => DOCKER_USER_UNIT,
             Capability::Caddy => CADDY_SERVICE,
             Capability::Fish | Capability::Zellij | Capability::Mise | Capability::Rust => "",
@@ -322,6 +341,7 @@ impl Backend for SuseBackend {
         match capability {
             Capability::Ssh => SSH_CONFIG,
             Capability::Wireguard => WIREGUARD_CONFIG,
+            Capability::DockerEngine => DOCKER_SYSTEM_CONFIG,
             Capability::DockerRootless => DOCKER_CONFIG,
             Capability::Caddy => CADDY_CONFIG,
             Capability::Fish => "/etc/fish/config.fish",
@@ -509,14 +529,15 @@ impl Backend for SuseBackend {
 pub struct ZypperPackages;
 
 impl PackageManager for ZypperPackages {
-    fn install(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn install(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // `--non-interactive` before the subcommand rather than `-y` after it:
         // zypper is interactive by default and prompts for licence agreements
         // and vendor changes as well as for confirmation. A prompt none of
         // those flags cover would hang the TUI, which is the failure
         // `DEBIAN_FRONTEND=noninteractive` prevents on Debian.
         let command = Command::new("zypper")
-            .args(["--non-interactive", "install", package])
+            .args(["--non-interactive", "install"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
@@ -562,7 +583,7 @@ mod tests {
         let mock = MockExecutor::new();
 
         ZypperPackages
-            .install(&mock, SuseBackend::new().package_for(Capability::Ssh))
+            .install(&mock, &[SuseBackend::new().package_for(Capability::Ssh)])
             .expect("install must succeed");
 
         assert_eq!(
@@ -590,7 +611,7 @@ mod tests {
         let mock = MockExecutor::new();
 
         ZypperPackages
-            .install(&mock, "openssh-server")
+            .install(&mock, &["openssh-server"])
             .expect("runs");
 
         let args = mock.single_command().args;
@@ -925,6 +946,6 @@ mod tests {
         let backend = SuseBackend::new();
 
         assert!(backend.repositories().is_none());
-        assert!(backend.repository_for(Capability::DockerRootless).is_none());
+        assert!(backend.repository_for(Capability::DockerEngine).is_none());
     }
 }

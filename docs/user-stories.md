@@ -390,12 +390,36 @@ TUI or CLI:
 
 ### Containers and web server
 
-- As an **administrator**, I can install a container engine that runs as an
-  ordinary account rather than as root, so that a container escape lands in a
-  user instead of on the machine.
+- As an **administrator**, I can install a container engine for the machine, so
+  that it can run containers at all.
+  - Acceptance: the engine is installed the way the distribution's own
+    documentation says. Where Docker publishes a repository for it, that
+    repository is registered and every package upstream's page lists is
+    installed in one transaction — a host left holding some of them is one
+    where the daemon or the client may be missing without anything saying so.
+    Where Docker publishes no repository, the distribution's own package is
+    used rather than a third-party one.
+  - Acceptance: the engine is confirmed running *and* enabled at boot, rather
+    than assumed from a command that exited zero.
+  - Acceptance: I am told that adding an account to the `docker` group makes it
+    equivalent to root, since that is the usual next step and nothing about the
+    command announces what it grants. The tool states it and does not do it.
+
+- As an **administrator**, I can then have that engine run as an ordinary
+  account rather than as root, so that a container escape lands in a user
+  instead of on the machine.
+  - Acceptance: this is a separate step from installing the engine, because the
+    two have different scopes: an engine belongs to the machine and a rootless
+    setup belongs to one account. Asking for it on a host with no engine is
+    refused in words naming the step that installs one.
   - Acceptance: the account is allowed to keep services running with no session
     open. Without that the engine stops at logout and nothing restarts it after
     a reboot.
+  - Acceptance: where my distribution ships no rootless setup script in any
+    official package, I am told before anything runs that the script will be
+    fetched from upstream and that there is no digest to check it against.
+    Every other route the tool takes verifies what it downloads; this one
+    cannot, and says so rather than staying quiet about the one exception.
   - Acceptance: an account with no subordinate id range is refused before
     anything is installed, since no container could start.
   - Acceptance: an account whose own service manager cannot be reached is
@@ -441,8 +465,11 @@ TUI or CLI:
     after a reboot, having reported itself stopped.
   - Acceptance: removing the container engine from an account leaves its
     containers, images and volumes alone: they are that account's data, not
-    this tool's. The engine package also stays, since another account may be
-    running its own from it.
+    this tool's. The engine itself also stays, since the machine and other
+    accounts may still be using it.
+  - Acceptance: removing the engine from the machine leaves `/var/lib/docker`
+    alone for the same reason — images and volumes are my data, and nothing
+    here could put them back.
   - Acceptance: removal stops rather than half-completing when the account's
     service manager cannot be reached, and says which account and why. Running
     on regardless would remove the engine's files while leaving a unit nothing
