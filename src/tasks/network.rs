@@ -619,6 +619,31 @@ impl Task for ManagePorts {
             firewall.allow(executor, spec.port, spec.protocol)?;
         }
 
+        // Said here rather than with the summary below, for the reason
+        // `ssh/port.rs` states at its own backup line: each of the three steps
+        // that follow can fail, and a task ending on an error returns no
+        // `Outcome`, so none of the reports below are reached. Without this the
+        // operator sees a failed `nft` for one port over a firewall that has
+        // already admitted the others — which reads as nothing having happened,
+        // and the natural response is to re-run with a set that no longer
+        // matches what the host holds.
+        //
+        // Only when something was opened: a set that closes ports and opens
+        // none has nothing to say here, and a line reporting zero is one more
+        // thing to read past.
+        if !to_open.is_empty() {
+            report(
+                progress,
+                &Msg::TaskFirewallPortsOpened {
+                    specs: to_open
+                        .iter()
+                        .map(|spec| spec.text())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                },
+            );
+        }
+
         let mut refused = Vec::new();
 
         for spec in &to_close {
@@ -1555,6 +1580,53 @@ mod tests {
         assert!(
             commands.iter().any(|c| c.contains("delete rule")),
             "the empty set must close what was open: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn what_was_opened_is_reported_even_when_the_closing_half_fails() {
+        // The set is applied in two halves and the second can fail — a lost
+        // privilege, an expired sudo timestamp, a rule nft rejects. A task that
+        // ends on that error returns no `Outcome`, so the summary below it is
+        // never reached, and the operator is left with a failed command over a
+        // firewall that already admits the new ports. Re-running with a set
+        // that no longer matches the host is the natural next move, which is
+        // how a port nobody declared stays open.
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, "2222/tcp".to_owned());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp".to_owned());
+
+        let listing = "table inet initd { # handle 1\n\
+                       \tchain input { # handle 1\n\
+                       \t\ttcp dport 22 accept # handle 2\n\
+                       \t}\n\
+                       }";
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"),
+            Reply::ok(listing),
+            Reply::ok(listing), // is_allowed(2222) — absent, so it is opened
+            Reply::ok(""),      // add rule 2222
+            Reply::ok(listing), // handles_for(22)
+            Reply::ok(""),      // delete rule handle 2
+            Reply::ok("table inet initd {\n}"), // read back: 22 is gone
+            // `persist` dumps the ruleset before writing it anywhere, and that
+            // is where this run stops.
+            Reply::failure(1, "nft: lost privilege"),
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let mut lines = Vec::new();
+        let outcome = ManagePorts.run(&mock, backend.as_ref(), &values, &mut |line| {
+            lines.push(line.text)
+        });
+
+        assert!(outcome.is_err(), "the failure must still surface");
+
+        let output = lines.join("\n");
+        assert!(
+            output.contains("2222/tcp"),
+            "the port already admitted must be named before the failure: {output}"
         );
     }
 

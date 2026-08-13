@@ -1066,6 +1066,15 @@ pub enum Msg {
     TaskFirewallEnabledNotPersisted {
         port: u32,
     },
+    /// Ports admitted, said before any is closed.
+    ///
+    /// The set is applied in two halves and either can fail partway. A task
+    /// that ended on the second half's error reported a failed `nft` command
+    /// over a firewall that had already gained ports, which reads as "nothing
+    /// happened" — so what the first half did is said while it is still true.
+    TaskFirewallPortsOpened {
+        specs: String,
+    },
     /// What a declared set of ports changed.
     TaskFirewallPortsApplied {
         opened: usize,

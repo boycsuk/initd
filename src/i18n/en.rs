@@ -1021,6 +1021,10 @@ pub(super) fn render(message: &Msg) -> String {
         // Counts rather than a list: the ports themselves were on the screen
         // the operator just left, and a batch repeating them says less than the
         // two numbers that changed.
+        // Named rather than counted, and said before the closing half runs: if
+        // that half fails, this line is the only record that the firewall
+        // already admits these.
+        Msg::TaskFirewallPortsOpened { specs } => format!("opened: {specs}"),
         Msg::TaskFirewallPortsApplied { opened, closed } => match (opened, closed) {
             (0, 0) => "the open ports already matched what was declared".to_owned(),
             (opened, 0) => format!("opened {opened} port(s), now and after a reboot"),
