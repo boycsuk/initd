@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-13
+
 ### Changed
 - **BREAKING: `docker-rootless.install` is now two tasks, `docker.install` and
   `docker.rootless`.** Scripts calling
@@ -89,7 +91,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a *service* now reads `22/tcp is open (admitted by ssh)`, because that is the
   distinction deciding whether anything can close it.
 
+- **The key bar and the verification banner are no longer rebuilt several times
+  a frame.** `fitted` re-totalled every hint on each shedding pass, and
+  `Lang::render` allocates a `String` per label, so a row of eight hints cost
+  up to five full passes — and the verification banner was built once to be
+  measured, thrown away, and built again to be drawn, ten times a second for
+  the whole countdown. Both now measure what they already built.
+
+- **Two style-table entries that had outlived their callers were removed**, and
+  `style.rs` now marks what is unused per item rather than through a blanket
+  `#![allow(dead_code)]` on the module. The blanket one was hiding exactly what
+  `layout.rs` records it hid there — `GAUGE` and `RESULT_FAIL` had no caller
+  and no pending one, with no `Gauge` widget anywhere in the tree — while the
+  header maintained a hand-written list of undrawn entries that had drifted
+  from the code it described.
+
+- **The bootstrap-installer scenarios guard against a container that never
+  started.** Without it a Docker daemon refusing to start reported as
+  `a_tampered_binary_is_refused` failing — "the install script does not verify
+  checksums" — which is a security claim about a script that never ran. The
+  systemd image builder also takes the build lock its sibling has always taken;
+  in a second test binary the lock could not reach, several scenarios could each
+  build the same image at `-j8`.
+
+- **Seven comments still stated the pre-update task counts.** The test pinning
+  them names the files to correct and was passing, because the constants had
+  been updated and the prose had not. Its own guidance was part of the problem:
+  it suggested searching for the *new* spelling, which finds the sentences that
+  are already right, and missed the count worn as an adjective ("fifty
+  implementations"). Both holes are now named in the failure message.
+
 ### Fixed
+- **The interface's own threads could raise a password prompt under the
+  alternate screen.** `LocalExecutor` asked `auth_need()` only when it held a
+  `TerminalBroker`, so the two executors built without one — the main thread's
+  and the probe thread's — skipped the check entirely and spawned with the
+  terminal inherited. On a host whose helper has no live timestamp (`doas`
+  without `persist`, or `sudo` after Arch's five minutes) opening the history
+  overlay or reverting drew a prompt into the alternate screen in raw mode,
+  where it cannot be read and the keystrokes answering it are not echoed: the
+  interface appears to hang. Worse on the hangup path, where there is no
+  terminal at all — the revert the verification window promises would fail
+  silently and leave the change it was undoing in place.
+
+  "No broker" meant two opposite things: on the command line `sudo` *should*
+  prompt, and under the interface it must not. Both were spelled `None`, so a
+  third state was added rather than inferred — `LocalExecutor::silent` refuses
+  with `NoTerminalForPrompt`, naming the command, since the operator's remedy
+  is to authenticate before the interface needs to rather than to retry. A
+  comment in `probe.rs` asserted both that every query there was unprivileged
+  and that a brokerless executor refused; neither was true, which is likely why
+  the two privileged calls beneath it went unnoticed.
+
+- **`wireguard.uninstall` ignored `has_purge_for()`.** RHEL and SUSE have no
+  purge and both package WireGuard, so `removal=purge` performed a plain
+  removal and said nothing — an operator who asked for the configuration to go
+  would find their old settings back after reinstalling. The shared helper
+  every other task delegates to has consulted the backend and reported
+  `TaskPurgeUnavailable` since it was written; this task cannot delegate, its
+  unit being a `wg-quick@` template instance, and the copy had lost the gate.
+
+- **A backup copy of the WireGuard private key was left world-readable.**
+  `write_uncopied` staged through `tee`, which creates under the process umask,
+  and the `chmod` that followed ran only when an existing file's mode was being
+  preserved — which a rewrite of `wg0.conf` does not do. The staging file is
+  now created at `0600` with `install -m` before anything is written into it,
+  and a file this tool creates is given `0644` outright rather than inheriting
+  the staging mode. `/var/lib/initd/backups.jsonl` had the same shape on its
+  first append and is fixed the same way.
+
+- **The two-host scenarios mounted a binary four of the six images cannot
+  run.** `TwoHosts::start_server` called `binary_path()` where the systemd
+  helper calls `binary_for(image)`, so Rocky, Alpine, Tumbleweed and Leap got
+  the glibc-linked build and every command died with `GLIBC_2.39 not found`.
+  Because `configure` is redirected to `/dev/null`, the failure was silent and
+  inverted the test: sshd came up unhardened, the old client connected, and
+  `an_old_client_survives_the_safe_tier` passed while asserting that hardening
+  had not locked it out.
+
+- **The history overlay truncated paths by character count rather than by
+  cells**, so a path from `backups.jsonl` holding a wide character overran its
+  row — and since the ellipsis is prepended last, the ellipsis was what the
+  pane clipped. A second copy of `truncate_head`, measuring the way the one in
+  `render.rs` documents as wrong.
+
 - **`users.lock-root` took group membership as proof of escalation.** An
   administrator who takes `%sudo` out of `/etc/sudoers` leaves an account that
   reads back as a member of a group granting it nothing — so the guard counted
