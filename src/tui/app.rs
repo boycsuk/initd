@@ -530,15 +530,48 @@ impl App {
 
         let event = event::read().map_err(|source| crate::error::Error::Terminal { source })?;
 
-        // Key release events would otherwise trigger every action twice on
-        // terminals that report them.
-        if let Event::Key(key) = event
-            && key.kind == KeyEventKind::Press
-        {
-            self.on_key(key);
+        match event {
+            // Key release events would otherwise trigger every action twice on
+            // terminals that report them.
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
+            Event::Paste(text) => self.on_paste(&text),
+            _ => {}
         }
 
         Ok(())
+    }
+
+    /// Inserts pasted text into whichever field is collecting a value.
+    ///
+    /// Without this a paste arrives as one key event per character and the
+    /// trailing newline lands on the form's `Enter` arm, which submits — so
+    /// pasting a public key, the way a key is actually entered, sent the form
+    /// on whatever had arrived before the newline. Routed through the field's
+    /// own `insert`, so what a value accepts is decided in one place: the
+    /// newline is filtered there rather than being special-cased here.
+    ///
+    /// Anywhere that is not collecting a value, a paste is dropped. The tree
+    /// and the output pane act on keys rather than text, and replaying a
+    /// paste's characters as keystrokes there would run whatever those
+    /// characters happen to be bound to.
+    fn on_paste(&mut self, text: &str) {
+        if self.options_at.is_some() {
+            return;
+        }
+
+        if let Some(field) = self.form.as_mut().and_then(Form::focused_mut) {
+            for character in text.chars() {
+                field.insert(character);
+            }
+
+            return;
+        }
+
+        if let Some(field) = self.ports.as_mut().and_then(PortTable::editing_field) {
+            for character in text.chars() {
+                field.insert(character);
+            }
+        }
     }
 
     /// The task currently under the cursor, if the cursor is on one.
@@ -1088,6 +1121,58 @@ mod tests {
         press(&mut app, KeyCode::Enter);
 
         assert!(app.form.is_some(), "an invalid form stays open");
+    }
+
+    #[test]
+    fn pasting_a_key_fills_the_field_rather_than_submitting_the_form() {
+        // A public key is pasted far more often than it is typed, and what a
+        // terminal pastes usually ends in a newline. Without bracketed paste
+        // that newline arrives as `Enter`, which submits — so the form went in
+        // on whatever had been delivered before it, and on a multi-field form
+        // the remainder landed in the wrong field.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.authorize-key");
+        press(&mut app, KeyCode::Enter);
+
+        // Past the account, which is prefilled, onto the key itself — the
+        // field the paste is actually aimed at.
+        press(&mut app, KeyCode::Tab);
+
+        let pasted = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB1nGqQ8example operator@laptop\n";
+        app.on_paste(pasted);
+
+        assert!(
+            app.form.is_some(),
+            "the trailing newline must not submit the form"
+        );
+
+        let value = app
+            .form
+            .as_mut()
+            .and_then(Form::focused_mut)
+            .map(|field| field.value())
+            .expect("the key field holds what was pasted");
+
+        assert_eq!(
+            value,
+            pasted.trim_end(),
+            "the whole key arrives, without the newline"
+        );
+    }
+
+    #[test]
+    fn a_paste_outside_a_field_is_dropped_rather_than_replayed() {
+        // The tree acts on keys, not text. Replaying a paste's characters
+        // there would run whatever they happen to be bound to — a pasted `q`
+        // would quit, and a pasted `h` would open the list that rewrites
+        // configuration files.
+        let mut app = test_app(Family::Debian);
+
+        app.on_paste("qh/");
+
+        assert!(!app.should_quit, "a pasted `q` must not quit");
+        assert!(app.history.is_none(), "a pasted `h` must not open history");
+        assert!(app.search.is_none(), "a pasted `/` must not open search");
     }
 
     #[test]
