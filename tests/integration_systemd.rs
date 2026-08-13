@@ -30,10 +30,31 @@ use common::systemd::SystemdContainer;
 /// Bounded at six seconds rather than waiting indefinitely, so a unit that
 /// genuinely never settles fails the assertion instead of hanging the job
 /// until the runner kills it.
+///
+/// The word rather than the exit code, and that is the whole correctness of
+/// this helper. `is-active --quiet` succeeds for `reloading` as readily as for
+/// `active` — measured on systemd 257 with a unit given a deliberately slow
+/// `ExecReload`, which prints `reloading` and exits 0 — so the original
+/// spelling broke out of the loop on the very state it existed to wait through,
+/// and waited for nothing. It collected on the release build of v0.3.0, on
+/// Tumbleweed, reporting `sshd.service must still be running on the new port:
+/// reloading` beside a `Port 2222` that had applied perfectly.
+///
+/// The fix is verified by the mechanism rather than by the scenario: with the
+/// old spelling restored, all six images still pass locally, because a machine
+/// that finishes the reload before the next command runs never opens the
+/// window. That is what the paragraph above means by "never here", and it is
+/// why this is `test "$(...)" = active` rather than something re-measured by
+/// running the suite until it goes red.
+///
+/// The same trap the suite already recorded twice for `is-active`: `inactive`
+/// contains `active`, which is why the assertion below matches a whole line.
+/// A status this command reports has to be compared as a value, never inferred
+/// from whether the command succeeded.
 fn wait_until_settled(unit: &str) -> String {
     format!(
         "for _ in $(seq 30); do \
-           systemctl is-active --quiet {unit} && break; \
+           test \"$(systemctl is-active {unit})\" = active && break; \
            sleep 0.2; \
          done;"
     )
