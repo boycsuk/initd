@@ -805,7 +805,7 @@ pub enum Msg {
     // left the narration itself untouched.
     //
     // The generic ones come first: "installing X" is the same sentence
-    // whichever task says it, and a variant per task would be thirty-nine
+    // whichever task says it, and a variant per task would be fifty
     // spellings of one string to keep in step.
     /// A package or program is being installed.
     TaskInstalling {

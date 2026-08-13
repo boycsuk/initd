@@ -5,7 +5,7 @@
 //! out — opening the window in which it can still be undone.
 //!
 //! Separated from `app.rs` for navigation rather than for independence. These
-//! methods reach nine of `App`'s twenty-one fields and share seven of them with
+//! methods reach nine of `App`'s twenty-seven fields and share seven of them with
 //! the key handlers, so the coupling is unchanged; what changes is that the
 //! run's own logic is now readable in one place.
 
@@ -29,7 +29,7 @@ impl App {
     pub(super) fn run_selected(&mut self, values: ParamValues) {
         // Through `selected_task` rather than by matching `Node::Task` here.
         // That match accepted a lone task and silently dropped every
-        // reversible row — eleven of them, each the *undo* half of an install
+        // reversible row — sixteen of them, each the *undo* half of an install
         // — so a confirmed uninstall returned without running, clearing, or
         // reporting anything. Nothing distinguished it from a keypress that
         // never arrived. Which half a shared row means is a question the probe

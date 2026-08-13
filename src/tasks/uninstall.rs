@@ -1,10 +1,14 @@
 //! What every inverse task does, written once.
 //!
-//! Ten tasks undo an install, and they differ in three things: which
-//! capability, which program name a release-installed one carries, and whether
-//! a unit has to be stopped first. Everything else is identical — which is
-//! exactly the shape that produces ten near-copies where the one that drifts
-//! is the one nobody notices.
+//! Twelve tasks reach this to undo an install, and they differ in three things:
+//! which capability, which program name a release-installed one carries, and
+//! whether a unit has to be stopped first. Everything else is identical — which
+//! is exactly the shape that produces twelve near-copies where the one that
+//! drifts is the one nobody notices.
+//!
+//! Not the same count as the tree's reversible rows, which is sixteen: a row is
+//! reversible when it pairs two tasks, and four of those inverses do something
+//! this helper does not describe.
 //!
 //! The order is the mirror of installing. A unit is stopped and disabled
 //! *before* the package goes, because the reverse leaves a moment where the

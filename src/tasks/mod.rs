@@ -48,7 +48,7 @@ pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
 ///
 /// The rendering happens here rather than in each task because this is the one
 /// place every line already passes through: a `Lang` threaded into `Task::run`
-/// would be a parameter thirty-nine implementations carry and one forgets.
+/// would be a parameter fifty implementations carry and one forgets.
 pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
     // Resolved per line, which is affordable here in a way it is not in the
     // interface: a task reports a handful of steps over seconds, where a key

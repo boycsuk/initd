@@ -316,9 +316,17 @@ impl Task for InstallWireguard {
             },
         );
 
-        // Enabled but not started: starting it before forwarding and the
-        // firewall are in place produces a tunnel that comes up and carries
-        // nothing, which is harder to diagnose than one that is plainly off.
+        // Enabled *and* started. Forwarding and the firewall are not steps of
+        // this task — they are `sysctl.ip-forward` and `firewall.manage-ports`,
+        // declared above as consequences for the operator to run next — so
+        // there is nothing here to wait for. The interface between them is the
+        // warning, not the ordering: a tunnel that is up and carries nothing is
+        // what the two consequences describe, and the task's own description
+        // says so before it runs.
+        //
+        // The comment here used to claim the unit was left unstarted, which no
+        // caller could have honoured: `ServiceManager` has only
+        // `enable_and_start`, and never offered an enable on its own.
         let unit = format!("{}{INTERFACE}", backend.service_for(Capability::Wireguard));
         backend.services().enable_and_start(executor, &unit)?;
 

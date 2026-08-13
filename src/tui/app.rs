@@ -911,7 +911,7 @@ mod tests {
     fn a_reversible_row_actually_starts_its_task() {
         // Reported from a real session: `zellij.uninstall` was confirmed and
         // nothing happened — no output, no status, no command. `run_selected`
-        // matched `Node::Task` alone, so every one of the eleven rows that
+        // matched `Node::Task` alone, so every one of the sixteen rows that
         // share an install with its undo fell through to a silent `return`.
         // A lone task worked, which is why the whole feature looked fine.
         let mut app = test_app(Family::Debian);

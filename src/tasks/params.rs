@@ -436,7 +436,6 @@ fn validate_endpoint(value: &str) -> std::result::Result<(), String> {
     validate_port(port)
 }
 
-/// Rejects anything that could not name a release.
 /// Rejects a branch name `git init` would refuse.
 ///
 /// The rules are `git check-ref-format`'s rather than this project's, which is
@@ -521,6 +520,7 @@ fn validate_email(value: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Rejects anything that could not name a release.
 fn validate_version(value: &str) -> std::result::Result<(), String> {
     if value.is_empty() {
         return Err("a version is required".to_owned());
@@ -845,9 +845,9 @@ impl Param {
     /// Offers the values a closed choice admits, in full.
     ///
     /// For a field whose validator names its own answers. The list and that
-    /// validator must agree, which is why `a_closed_choice_offers_what_it_
-    /// accepts` walks every kind that has one rather than trusting the two to
-    /// be edited together.
+    /// validator must agree, which is why
+    /// [`a_closed_choice_offers_exactly_what_it_accepts`] checks the two
+    /// against each other rather than trusting them to be edited together.
     #[must_use]
     pub const fn offering(mut self, values: &'static [&'static str]) -> Self {
         self.suggestions = Some(Suggestions::Fixed(values));

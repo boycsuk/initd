@@ -1349,7 +1349,7 @@ mod tests {
         // Decision 5: the three refusals stopped aborting the task and became
         // the reason each account was discarded. Asserted on the rendered
         // report rather than on the enum, because the operator's remedy is in
-        // the words — `AdminGroupGrantsNothing` names a file and a line, and a
+        // the words — `GroupGrantsNothing` names a file and a line, and a
         // diagnosis nobody reads is not a diagnosis.
         let mock = MockExecutor::with_replies(vec![
             Reply::ok(passwd(&["cosmin", "deploy"])),

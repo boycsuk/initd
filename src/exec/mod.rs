@@ -314,7 +314,7 @@ pub trait OutputObserver: Send + Sync {
 /// Deliberately *not* a parameter of [`Executor::run`], and not a method on the
 /// trait: a task is stopped between its commands, and the executor is already
 /// the only place every command passes through. Threading a token through all
-/// thirty-nine tasks would put the obligation to check it on each of them, and
+/// fifty tasks would put the obligation to check it on each of them, and
 /// the one that forgot would be the one that could not be stopped.
 ///
 /// Cloning shares the flag rather than copying its value — the interface holds

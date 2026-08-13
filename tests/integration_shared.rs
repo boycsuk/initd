@@ -12,14 +12,19 @@
 //! family that does not exist yet?* If yes, it is an invariant and belongs
 //! here.
 //!
-//! # One documented case with no scenario
+//! # A documented case this does not yet cover
 //!
 //! `docs/cli.md` states that a task unsupported on the running distribution
-//! exits `1`. Every task supports both families `Family` resolves, so that
-//! branch cannot be reached from any container: it is waiting on a
-//! distribution that does not exist yet, not on a test. It becomes reachable —
-//! and worth covering — with the first family a task declines, which is the
-//! same reason Alpine has no matrix entry.
+//! exits `1`. This once recorded that branch as unreachable, on the grounds
+//! that every task supported every family `Family` resolves — true when it was
+//! written, and false since the tree grew tasks that decline one. There are
+//! fifteen such refusals now: `crowdsec.install` declines Alpine, RHEL and
+//! SUSE, each citing something measured, and Alpine has been in the image
+//! matrix for as long as those refusals have existed.
+//!
+//! So the branch is reachable today and simply has no scenario. That is a gap
+//! rather than an impossibility, which is the distinction worth keeping
+//! accurate: a comment calling something untestable is the reason nobody tries.
 
 mod common;
 

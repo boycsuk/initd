@@ -560,7 +560,7 @@ impl Task for ManagePorts {
         let state = firewall.state(executor)?;
 
         // Before anything is written, and refused rather than repaired — the
-        // reasoning `AllowPort` carried and this inherits unchanged. There is
+        // reasoning the per-port task carried before this replaced it. There is
         // no table to add a rule to on a host where `firewall.enable` never
         // ran, so `nft` fails first with an error naming a file, which reads as
         // a defect in the rule. Creating the policy here is not this task's to

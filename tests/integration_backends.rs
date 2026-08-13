@@ -13,7 +13,7 @@
 //!
 //! - **firewalld** works fully offline. `firewall-offline-cmd` writes a zone's
 //!   configuration with no daemon running and reads it back, which is the path
-//!   `FirewalldFirewall::enable` uses precisely so that turning filtering on
+//!   `Firewalld::enable` uses precisely so that turning filtering on
 //!   cannot lock anybody out. So these are real assertions about real state.
 //!
 //! - **OpenRC** enables and lists services with no init running, so

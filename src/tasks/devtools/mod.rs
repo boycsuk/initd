@@ -597,9 +597,14 @@ mod tests {
 
     #[test]
     fn debian_refuses_a_version_this_build_cannot_verify() {
-        // The release table is empty until real digests are filled in, so every
-        // version is refused. Installing an unverified binary as root is the
-        // failure the whole capability exists to prevent.
+        // `0.1.0` is not in the release table, so this build carries no digest
+        // for it and it is refused. Installing an unverified binary as root is
+        // the failure the whole capability exists to prevent.
+        //
+        // The table itself is not empty — it holds real digests, and a sibling
+        // test asserts that it does. This once read "empty until real digests
+        // are filled in", which had stopped being true and left the test
+        // passing for a reason its comment did not describe.
         let mock = MockExecutor::with_replies([Reply::failure(1, "")]);
         let backend = for_family(Family::Debian);
 
