@@ -592,8 +592,17 @@ pub fn prepare_every_image() {
 /// `-j8`, eight scenarios finding no cache all build one, each downloading the
 /// same metadata, and the seven that lose the race have spent minutes on work
 /// the winner also did.
-fn build_lock(image: &Image) -> std::fs::File {
-    let path = std::env::temp_dir().join(format!("initd-cache-{}.lock", image.family_tag()));
+///
+/// `pub` because `systemd::build_systemd_image` builds an image the same way
+/// and raced the same way, in a second test binary this lock could not reach
+/// while it was private to this module.
+///
+/// The `kind` names what is being built, and keeps the two builders off each
+/// other's lock: they produce different images from the same family, so one
+/// name would serialise two builds that never conflict — the same mistake
+/// `Image::family_tag` exists to prevent one layer down.
+pub fn build_lock_for(kind: &str, image: &Image) -> std::fs::File {
+    let path = std::env::temp_dir().join(format!("initd-{kind}-{}.lock", image.family_tag()));
 
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -651,7 +660,7 @@ fn cached_image(image: &Image) -> String {
     // downloading the same metadata, and the one that commits last wins. The
     // lock is held across the whole build rather than around the `commit`,
     // since the download is what costs.
-    let _guard = build_lock(image);
+    let _guard = build_lock_for("cache", image);
 
     // Another thread may have built it while this one waited.
     if Command::new("docker")
@@ -751,6 +760,19 @@ const DOCKER_COULD_NOT_START: i32 = 125;
 /// is no honest value to return: "the question could not be asked" is not a
 /// result the caller's assertion can represent.
 fn panic_if_the_container_never_ran(image: &Image, output: &std::process::Output) {
+    panic_if_the_named_container_never_ran(image.name, output);
+}
+
+/// The same guard, for a container started from an image name rather than an
+/// [`Image`].
+///
+/// The installer scenarios build their own `docker run` against `python:3-alpine`
+/// — they test the bootstrap script, which has no distribution matrix — so they
+/// have no `Image` to pass. They had no guard at all, which made this the worst
+/// place in the suite to lose one: a daemon that refuses to start reports as
+/// *"the install script does not verify checksums"*, which is a security claim
+/// about code that was never run.
+pub fn panic_if_the_named_container_never_ran(image: &str, output: &std::process::Output) {
     if output.status.code() != Some(DOCKER_COULD_NOT_START) {
         return;
     }
@@ -767,7 +789,7 @@ fn panic_if_the_container_never_ran(image: &Image, output: &std::process::Output
          `wsl --shutdown`), which serialising does not fix and which costs an \
          eleven-fold slowdown to pretend otherwise.\n\
          stdout: {}\nstderr: {}",
-        image.name,
+        image,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );

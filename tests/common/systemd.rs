@@ -175,7 +175,16 @@ fn remove_container(name: &str) {
 fn build_systemd_image(image: &Image) -> Option<String> {
     let tag = format!("initd-systemd-{}:test", image.family_tag());
 
-    // Already built by an earlier scenario in this run.
+    // Taken before the existence check rather than around the commit, so that a
+    // process losing the race waits and then finds the finished image instead
+    // of building a second copy of it. `cached_image` holds its own lock the
+    // same way and for the same reason; this builder had none at all, being in
+    // a different test binary from the lock, so at `-j8` several scenarios
+    // could each build this image from scratch.
+    let _guard = super::build_lock_for("systemd", image);
+
+    // Already built by an earlier scenario in this run, or by whoever held the
+    // lock just now.
     let existing = Command::new("docker")
         .args(["image", "inspect", &tag])
         .output()

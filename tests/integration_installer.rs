@@ -14,6 +14,24 @@ mod common;
 use std::fs;
 use std::process::Command;
 
+/// The image most scenarios here run in.
+///
+/// Not the family matrix: what is under test is the bootstrap shell script,
+/// which is the same on every distribution. Chosen for what it *lacks* —
+/// neither `sudo` nor `doas` — which is what makes the no-route-to-root
+/// scenarios possible, and it carries the `python3` the fake release is served
+/// with.
+const INSTALLER_IMAGE: &str = "python:3-alpine";
+
+/// The image the sudo scenarios run in.
+///
+/// Alpine ships no `sudo`, and those scenarios are about `sudo` specifically.
+/// Named separately rather than folded into the constant above, because the
+/// guard reports the image it was given: one name covering two images would
+/// print the wrong one at exactly the moment somebody is trying to work out
+/// which container failed to start.
+const SUDO_IMAGE: &str = "debian:13";
+
 /// Runs the install script against a release directory served from a container.
 ///
 /// Everything happens inside one container: the script, the "release" it
@@ -60,9 +78,15 @@ fn run_installer(tamper: bool) -> String {
     );
 
     let output = Command::new("docker")
-        .args(["run", "--rm", "python:3-alpine", "sh", "-c", &scenario])
+        .args(["run", "--rm", INSTALLER_IMAGE, "sh", "-c", &scenario])
         .output()
         .expect("docker run must execute");
+
+    // Before the output is read as an answer. Without this a daemon that
+    // refused to start reports as `a_tampered_binary_is_refused` failing —
+    // "the install script does not verify checksums" — which is a security
+    // claim about a script that never ran.
+    common::panic_if_the_named_container_never_ran(INSTALLER_IMAGE, &output);
 
     format!(
         "{}{}",
@@ -128,9 +152,15 @@ fn run_installer_as_user() -> String {
     );
 
     let output = Command::new("docker")
-        .args(["run", "--rm", "python:3-alpine", "sh", "-c", &scenario])
+        .args(["run", "--rm", INSTALLER_IMAGE, "sh", "-c", &scenario])
         .output()
         .expect("docker run must execute");
+
+    // Before the output is read as an answer. Without this a daemon that
+    // refused to start reports as `a_tampered_binary_is_refused` failing —
+    // "the install script does not verify checksums" — which is a security
+    // claim about a script that never ran.
+    common::panic_if_the_named_container_never_ran(INSTALLER_IMAGE, &output);
 
     format!(
         "{}{}",
@@ -195,9 +225,14 @@ fn run_installer_with_sudo(passwordless: bool) -> String {
     );
 
     let output = Command::new("docker")
-        .args(["run", "--rm", "debian:13", "sh", "-c", &scenario])
+        .args(["run", "--rm", SUDO_IMAGE, "sh", "-c", &scenario])
         .output()
         .expect("docker run must execute");
+
+    // Before the output is read as an answer. Without this a daemon that
+    // refused to start reports as the script having stalled on a password
+    // prompt — a claim about code that never ran.
+    common::panic_if_the_named_container_never_ran(SUDO_IMAGE, &output);
 
     format!(
         "{}{}",
