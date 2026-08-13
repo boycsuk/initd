@@ -3497,6 +3497,38 @@ mod tests {
     }
 
     #[test]
+    fn a_hangup_stops_a_task_that_is_still_running() {
+        // The signal path looked only at the verification window, so a hangup
+        // arriving mid-task broke the loop and returned from `run` with the
+        // task still going — the process exiting with its worker unjoined and
+        // the task's remaining privileged commands still to come, against a
+        // machine whose administrator has just lost the session.
+        //
+        // Cancellation is cooperative by contract: the executor refuses the
+        // *next* command rather than interrupting the one in flight, since a
+        // task killed mid-command leaves a step half applied. So what this
+        // pins is that the flag is set, which is what stops the commands that
+        // have not run yet.
+        let mut app = test_app(Family::Debian);
+
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        app.resolve_on_hangup();
+
+        assert!(
+            app.running
+                .as_ref()
+                .expect("the task is still there to be reported on")
+                .is_cancelling(),
+            "a task must be told to stop when the session ends"
+        );
+    }
+
+    #[test]
     fn the_key_bar_names_only_what_the_current_state_accepts() {
         // The bar is derived from the same `mode` the dispatcher routes on, so
         // it cannot advertise a key the state would refuse. `q` is the one
