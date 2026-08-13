@@ -374,15 +374,20 @@ fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect) {
 /// Draws whichever of detail, output or verification the state calls for.
 fn right(frame: &mut Frame, app: &App, right_area: Rect) {
     if let Some(ref window) = app.verification {
+        // Built once and then both measured and drawn. The height still derives
+        // from the content — which is the property the comment on
+        // `verification_lines` exists to protect — but deriving it no longer
+        // means building the lines twice a frame, ten times a second, for the
+        // whole countdown.
+        let lines = verification_lines(window, app.lang);
+
         // The countdown takes the top of the pane and the output keeps the
         // rest: what the change did is the evidence for the decision.
-        let [banner, log] = Layout::vertical([
-            Constraint::Length(verification_rows(window, app.lang)),
-            Constraint::Min(3),
-        ])
-        .areas(right_area);
+        let [banner, log] =
+            Layout::vertical([Constraint::Length(rows_for(&lines)), Constraint::Min(3)])
+                .areas(right_area);
 
-        verification(frame, banner, window, app.lang);
+        verification(frame, banner, lines);
         app.output
             .render(frame, log, app.lang, app.focus == Pane::Output);
     } else if app.output.is_empty() {
@@ -646,24 +651,44 @@ const SHED_ORDER: [Msg; 4] = [
 /// a translated label is a different width and a budget fixed by English
 /// would overflow in any language with longer words.
 fn fitted(mut keys: Vec<(&'static str, Msg)>, lang: Lang, width: u16) -> Vec<(&'static str, Msg)> {
-    // The spaces each pair is drawn with, counted here so the measurement
-    // matches what reaches the screen.
     // A pair with no key glyph loses that column rather than reserving it, the
     // way `style::key_hint` draws it — measured the same way here so the budget
     // matches what reaches the screen.
-    let pair_width = |(key, label): &(&'static str, Msg)| {
-        let glyph = if key.is_empty() { 0 } else { cells(key) + 1 };
+    //
+    // Measured once per pair and then kept, rather than recomputed on each
+    // pass. `Lang::render` builds a `String` for every label it is asked for, so
+    // re-totalling the whole row per shed step allocated the entire bar up to
+    // five times a frame — ten times a second while nothing is happening, and
+    // continuously under a running task.
+    let mut widths: Vec<usize> = keys
+        .iter()
+        .map(|(key, label)| {
+            let glyph = if key.is_empty() { 0 } else { cells(key) + 1 };
 
-        glyph + cells(&lang.render(label)) + 2
-    };
-    let total = |keys: &Vec<(&'static str, Msg)>| keys.iter().map(pair_width).sum::<usize>();
+            glyph + cells(&lang.render(label)) + 2
+        })
+        .collect();
+    let mut total: usize = widths.iter().sum();
 
     for sheddable in SHED_ORDER {
-        if total(&keys) <= width as usize {
+        if total <= width as usize {
             break;
         }
 
-        keys.retain(|(_, label)| *label != sheddable);
+        // The width is dropped with the pair it belongs to, so the running
+        // total stays the sum of what is left without being rebuilt.
+        let mut index = 0;
+        keys.retain(|(_, label)| {
+            let keep = *label != sheddable;
+
+            if !keep {
+                total -= widths.remove(index);
+            } else {
+                index += 1;
+            }
+
+            keep
+        });
     }
 
     keys
@@ -765,12 +790,16 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The lines the verification banner draws, in order.
 ///
-/// Built here rather than inline so that [`verification_rows`] can count them:
-/// the banner is given a fixed height by the layout above it, and a height
-/// chosen independently of the content is one that stops matching it. It did:
-/// the constant said five for five lines plus a border, so the last line — the
-/// one stating the limit of the promise — was drawn outside the area and never
+/// Built here rather than inline so that [`rows_for`] can count them: the
+/// banner is given a fixed height by the layout above it, and a height chosen
+/// independently of the content is one that stops matching it. It did: the
+/// constant said five for five lines plus a border, so the last line — the one
+/// stating the limit of the promise — was drawn outside the area and never
 /// reached the screen at any terminal size.
+///
+/// The caller builds this once and hands the same vector to [`rows_for`] and to
+/// [`verification`], so measuring and drawing cannot disagree and the lines are
+/// not built twice on every frame of a live countdown.
 fn verification_lines<'a>(window: &Verification, lang: Lang) -> Vec<Line<'a>> {
     vec![
         Line::from(vec![
@@ -815,16 +844,14 @@ fn verification_lines<'a>(window: &Verification, lang: Lang) -> Vec<Line<'a>> {
     ]
 }
 
-/// Rows the banner needs: its lines and the top border above them.
+/// Rows a built banner needs: its lines and the top border above them.
 ///
-/// Derived from the lines themselves so the two cannot disagree. It does not
-/// account for a line long enough to wrap — `Wrap` is on, and a translation
-/// wider than the pane would take a second row — which is what
-/// [`verification_fits`] is asserted against in the tests.
-pub(super) fn verification_rows(window: &Verification, lang: Lang) -> u16 {
+/// Takes the lines rather than building them, so that the drawing path can
+/// measure and draw one vector instead of building it twice a frame.
+fn rows_for(lines: &[Line<'_>]) -> u16 {
     const TOP_BORDER_ROWS: u16 = 1;
 
-    u16::try_from(verification_lines(window, lang).len()).unwrap_or(u16::MAX) + TOP_BORDER_ROWS
+    u16::try_from(lines.len()).unwrap_or(u16::MAX) + TOP_BORDER_ROWS
 }
 
 /// Draws the banner over an applied change that has not been kept.
@@ -832,9 +859,9 @@ pub(super) fn verification_rows(window: &Verification, lang: Lang) -> u16 {
 /// It states three things in order: that the change is applied but not yet
 /// permanent, how long is left, and what to press. The countdown is red
 /// because it is the one number on screen that acts on its own.
-fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang) {
+fn verification(frame: &mut Frame, area: Rect, lines: Vec<Line<'_>>) {
     frame.render_widget(
-        Paragraph::new(verification_lines(window, lang))
+        Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
