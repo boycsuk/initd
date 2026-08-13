@@ -926,6 +926,35 @@ mod tests {
         assert_eq!(counted + pairs, all_tasks().len());
     }
 
+    #[test]
+    fn the_tree_holds_the_number_of_tasks_the_prose_claims() {
+        // The sibling above asserts the *relation* between rows, pairs and
+        // tasks, which holds at any size — so the tree grew from thirty-nine
+        // tasks to fifty and eleven pairs to sixteen without anything
+        // objecting, while eight comments and `CLAUDE.md` went on stating the
+        // old figures. Prose is where those numbers are read, and prose is the
+        // one thing no test was watching.
+        //
+        // So this pins the absolutes. It is *meant* to fail when a task is
+        // added: the failure is the reminder to update the sentences that
+        // quote it, and the message names them. `docs/cli.md` is already
+        // covered in both directions by
+        // `docs_cli_lists_exactly_the_tasks_the_tree_offers`; what this adds
+        // is the count itself, which that test does not state.
+        assert_eq!(
+            all_tasks().len(),
+            50,
+            "the task count changed; update it in CLAUDE.md's task-areas entry \
+             and in the comments that restate it — `rg 'fifty tasks'`"
+        );
+        assert_eq!(
+            count_pairs(&tree()),
+            16,
+            "the reversible-row count changed; update it in CLAUDE.md and in \
+             `tui/execution.rs`, `tui/app.rs` and `tasks/uninstall.rs`"
+        );
+    }
+
     /// Number of reversible pairs anywhere in a forest.
     fn count_pairs(nodes: &[Node]) -> usize {
         nodes
