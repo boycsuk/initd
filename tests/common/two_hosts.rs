@@ -26,7 +26,7 @@
 
 use std::process::{Command, Output};
 
-use super::{Image, LOGIN_USER, PREPARE_LOGIN_ACCOUNT, TEST_KEY, binary_path};
+use super::{Image, LOGIN_USER, PREPARE_LOGIN_ACCOUNT, TEST_KEY, binary_for};
 
 /// The oldest client worth testing against.
 ///
@@ -213,8 +213,15 @@ impl TwoHosts {
     /// helper documents: the tasks reload a unit that does not exist here, and
     /// a daemon started first stops listening the moment hardening runs.
     fn start_server(&self, image: &Image, configure: &str) -> Option<()> {
-        let binary = binary_path();
-        let mount = format!("{binary}:/usr/local/bin/initd:ro");
+        // `binary_for` rather than `binary_path`, for the reason the systemd
+        // helper documents beside its own call: four of the six images need the
+        // static build, and a glibc-linked binary mounted into Rocky dies with
+        // `version GLIBC_2.39 not found` on every command. Here that failure was
+        // silent and inverted the test — `configure` is redirected to
+        // `/dev/null`, so a binary that cannot start leaves sshd unhardened, the
+        // old client connects, and the scenario passes while asserting that
+        // hardening did not lock it out.
+        let mount = format!("{}:/usr/local/bin/initd:ro", binary_for(image)?);
 
         let started = Command::new("docker")
             .args([
