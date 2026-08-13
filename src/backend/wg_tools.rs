@@ -1,6 +1,7 @@
 //! `wireguard-tools` implementation of [`WireguardTools`].
 //!
-//! Shared by every family shipping `wg`, which is both implemented today. The
+//! Shared by every family shipping `wg`, which is all five implemented today.
+//! The
 //! commands are identical; only the package providing them and the unit that
 //! brings an interface up differ, and both come from the backend.
 

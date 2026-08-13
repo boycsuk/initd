@@ -97,7 +97,7 @@ impl SelinuxManager for Semanage {
 /// The answer for families with no mandatory access control layer.
 ///
 /// A distinct type rather than an `Option` on the backend: every family answers
-/// the question, and three of them answer that nothing is enforcing. That keeps
+/// the question, and four of them answer that nothing is enforcing. That keeps
 /// the task free of a branch it would otherwise have to write, which is the
 /// same reason the firewall front-ends are resolved rather than matched on.
 #[derive(Debug, Clone, Copy, Default)]

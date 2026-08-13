@@ -953,9 +953,16 @@ pub(super) fn render(message: &Msg) -> String {
         // saying otherwise would send the operator to `usermod` for a problem
         // that command cannot fix. The cause is the distribution's own sudoers,
         // so it names the file and the line to uncomment.
+        // `/usr/etc/sudoers`, not `/etc/sudoers`: openSUSE's `/usr/etc` split
+        // is the whole reason this state exists, and this message is only ever
+        // shown there. Naming the wrong path sends the operator to a file whose
+        // commented line is not in it — the failure the message exists to
+        // prevent, committed by the message itself.
         Msg::TaskAccountGroupGrantsNothing { user, group } => format!(
-            "  {user} — in {group}, but {group} grants nothing here: uncomment \
-             \"%{group} ALL=(ALL:ALL) ALL\" in /etc/sudoers"
+            "  {user} — in {group}, but {group} grants nothing here: \
+             \"%{group} ALL=(ALL:ALL) ALL\" is commented out in \
+             /usr/etc/sudoers. Creating an administrator with initd writes a \
+             drop-in instead, which is the route that survives an upgrade"
         ),
         Msg::TaskAccountCannotAuthenticate { user } => {
             format!("  {user} — no authorised key and no usable password")

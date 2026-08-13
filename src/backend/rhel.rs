@@ -773,8 +773,12 @@ mod tests {
 
     #[test]
     fn a_family_with_no_third_party_repository_offers_no_manager() {
-        // The default: nothing this tool installs on Arch or Alpine comes from
-        // outside the distribution, so neither can register anything at all.
+        // The default: nothing this tool installs on Arch, Alpine or SUSE comes
+        // from outside the distribution, so none of them can register anything
+        // at all. SUSE takes the trait's `None` like the other two and was
+        // covered by neither the sentence nor the loop — the second time this
+        // list has gone stale, and the paragraph below records what it cost
+        // the first time.
         //
         // Debian was in this list and no longer is. It packages `docker.io`,
         // which carries no rootless setup script, so the engine comes from
@@ -782,7 +786,7 @@ mod tests {
         // test asserted otherwise, the Debian backend named a package no
         // Debian suite serves and the install failed on a host with no
         // repository to fetch it from.
-        for family in [Family::Arch, Family::Alpine] {
+        for family in [Family::Arch, Family::Alpine, Family::Suse] {
             assert!(
                 super::super::for_family(family).repositories().is_none(),
                 "{family} must not be able to register repositories"
