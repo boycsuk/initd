@@ -104,10 +104,21 @@ for_each_image! {
             // one given a value that fails the check the interactive form
             // applies — the CLI never passes through the keystroke filter, so
             // this is the only barrier between an argument and a system file.
-            "run firewall.allow-port",
-            "run firewall.allow-port porta=443",
-            "run firewall.allow-port port=99999",
-            "run firewall.allow-port port=443 protocol=sctp",
+            // A task whose values have no default. Not `ssh.change-port` or
+            // `firewall.manage-ports`: both read their field from the host
+            // when it is not given, so an invocation naming nothing is a valid
+            // one — which is the point of that mechanism and makes them the
+            // wrong example of a missing argument.
+            "run users.set-shell",
+            "run firewall.manage-ports porta=443/tcp",
+            // A set is checked spec by spec. A port out of range, a protocol
+            // this tool does not write, and a spec naming no protocol at all —
+            // the last because `443` and `443/tcp` differ by whether the rule
+            // admits UDP, and a value silently read as one of them would open
+            // something nobody asked for.
+            "run firewall.manage-ports ports=99999/tcp",
+            "run firewall.manage-ports ports=443/sctp",
+            "run firewall.manage-ports ports=443",
             "run users.create user=has\\ a\\ space",
             // Refused whatever the arguments: both apply a change that can end
             // the session applying it, and only the interactive interface can

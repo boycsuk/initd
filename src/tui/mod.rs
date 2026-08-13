@@ -24,6 +24,7 @@ pub mod history;
 pub mod layout;
 pub mod navigation;
 pub mod output;
+pub mod ports;
 pub mod probe;
 pub mod render;
 pub mod search;

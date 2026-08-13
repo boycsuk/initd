@@ -33,17 +33,60 @@ impl Protocol {
     }
 }
 
+/// How a port came to be admitted, and therefore whether it can be closed.
+///
+/// Not decoration. firewalld admits SSH on a stock RHEL host as the *service*
+/// `ssh` rather than as `22/tcp`, and `firewall-cmd --remove-port 22/tcp`
+/// against that exits **zero having closed nothing** — a removal this tool
+/// would otherwise report as done over a port that is still open. Anything
+/// offering to close a port has to know which of these it is holding, which is
+/// why the origin travels beside the spec rather than being recovered later by
+/// guessing at its shape.
+///
+/// A range is deliberately *not* a variant. `--list-ports` reporting
+/// `8000-8080/tcp` yields one `Direct` row spelled that way, because
+/// `--remove-port 8000-8080/tcp` closes it wholesale: the range as written is
+/// both the honest description and the closeable unit. Expanding it into the
+/// ports it covers would offer eighty-one removals, none of which work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortOrigin {
+    /// Named directly, and closed by naming it again.
+    Direct,
+    /// Admitted by a named service; closing it means removing the service,
+    /// which is a different operation on a different subject.
+    Service(String),
+}
+
+/// One port a front-end admits inbound, and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedPort {
+    /// The port as the front-end spells it: `port/protocol`.
+    pub spec: String,
+    /// What admitted it.
+    pub origin: PortOrigin,
+}
+
+impl AllowedPort {
+    /// A port named directly, which is the only kind this tool closes.
+    pub fn direct(spec: impl Into<String>) -> Self {
+        Self {
+            spec: spec.into(),
+            origin: PortOrigin::Direct,
+        }
+    }
+}
+
 /// Whether the firewall is filtering, and what it does by default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirewallState {
     /// Whether filtering is active at all.
     pub active: bool,
-    /// Ports currently allowed inbound, as `port/protocol`.
+    /// Ports currently allowed inbound.
     ///
     /// Reported so the interface can say what is open rather than only whether
     /// something is: an administrator about to change the SSH port needs to
     /// know which port is currently reachable.
-    pub allowed: Vec<String>,
+    pub allowed: Vec<AllowedPort>,
 }
 
 /// Manages inbound packet filtering.
@@ -80,6 +123,31 @@ pub trait FirewallManager {
 
     /// Allows a port inbound.
     fn allow(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<()>;
+
+    /// Closes a port this front-end admits directly.
+    ///
+    /// The inverse of [`allow`](Self::allow), and narrower than "close this
+    /// port" deliberately. A front-end may admit a port by a route this cannot
+    /// undo: firewalld's stock RHEL arrangement admits SSH as the *service*
+    /// `ssh`, and `--remove-port 22/tcp` against that exits zero having closed
+    /// nothing. Callers are expected to have consulted [`PortOrigin`] first,
+    /// and this reports what happened rather than assuming.
+    ///
+    /// Answers whether the port is closed *afterwards*, read back from the
+    /// host rather than inferred from an exit status. The sysctl capability
+    /// learned this first and the lesson transfers exactly: a command that
+    /// succeeded says something about the command, and a caller reporting
+    /// "closed" from it would be true about the call and false about the
+    /// machine. It is also the whole of the partial-failure story — a batch
+    /// closing several ports counts these answers rather than needing an
+    /// outcome variant of its own.
+    ///
+    /// Does not persist. Whoever calls this calls [`persist`](Self::persist)
+    /// afterwards, for the reason stated there in the more dangerous
+    /// direction: a port removed from the kernel while the boot still replays
+    /// the old ruleset is a port that reopens at the next restart, reported as
+    /// closed.
+    fn close(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<bool>;
 
     /// Makes the current ruleset survive a reboot.
     ///

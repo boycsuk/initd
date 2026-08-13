@@ -80,7 +80,7 @@ impl Task for ChangePort {
 
         vec![
             Consequence::Invalidates {
-                task: "firewall.allow-port",
+                task: "firewall.manage-ports",
                 reason: Reason::PortChanged {
                     from: DEFAULT_SSH_PORT.to_string(),
                     to: port.to_string(),
@@ -468,7 +468,7 @@ mod tests {
 
         let firewall = consequences
             .iter()
-            .find(|c| c.task() == Some("firewall.allow-port"))
+            .find(|c| c.task() == Some("firewall.manage-ports"))
             .expect("changing the port must name the firewall");
 
         assert!(matches!(
@@ -489,7 +489,7 @@ mod tests {
 
         let firewall = consequences
             .iter()
-            .find(|c| c.task() == Some("firewall.allow-port"))
+            .find(|c| c.task() == Some("firewall.manage-ports"))
             .expect("changing the port must name the firewall");
 
         let check = firewall

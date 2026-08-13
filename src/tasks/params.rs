@@ -23,6 +23,18 @@ use crate::error::{Error, Result};
 pub enum ParamKind {
     /// A TCP port: 1-65535.
     Port,
+    /// A set of `port/protocol` specs, space separated, as the whole of what a
+    /// firewall should admit.
+    ///
+    /// A declaration rather than an instruction: the value is the state the
+    /// host should end in, so a spec dropped from it is a port that closes.
+    /// That is what lets one field replace an add-one-at-a-time task, and it
+    /// is why the empty list is *valid* here where an empty
+    /// [`UsernameList`](Self::UsernameList) is refused — a firewall admitting
+    /// nothing is a coherent, if drastic, policy, whereas an `AllowUsers` line
+    /// with no users locks everyone out of the machine. The confirmation is
+    /// what stands in front of the drastic reading, not the validator.
+    PortList,
     /// A username that must exist on this host.
     Username,
     /// A space-separated list of usernames, as `AllowUsers` takes.
@@ -166,6 +178,14 @@ pub enum LiveDefault {
     /// the operator is connected on, and `ssh.change-port` uses it to say what
     /// is changing.
     SshPort,
+    /// The ports the host currently admits inbound.
+    ///
+    /// Read for the same reason and with a sharper edge. The field declares the
+    /// whole of what should be open, so an empty one means "close everything" —
+    /// which is what an invocation naming no ports would otherwise be taken to
+    /// ask for. Filling it from the host first makes the do-nothing case
+    /// do nothing.
+    OpenPorts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,6 +274,13 @@ impl ParamKind {
             Self::BranchName => !character.is_control() && !character.is_whitespace(),
             Self::Protocol | Self::Removal | Self::HomeDirectory => character.is_ascii_alphabetic(),
             Self::Version => character.is_ascii_digit() || character == '.',
+            // A spec is `port/protocol` and a space separates them. Letters
+            // because the protocol is spelled out; this is the filter for the
+            // fallback text path, since the table edits each half through a
+            // field of its own narrower kind.
+            Self::PortList => {
+                character.is_ascii_alphanumeric() || matches!(character, '/' | ' ' | '-')
+            }
             // Hostnames are admitted in an endpoint, so letters and `-` too.
             Self::Cidr | Self::Ip | Self::Endpoint => {
                 character.is_ascii_alphanumeric() || matches!(character, '.' | '/' | ':' | '-')
@@ -270,6 +297,7 @@ impl ParamKind {
             Self::Port => validate_port(value),
             Self::Username => validate_username(value),
             Self::UsernameList => validate_username_list(value),
+            Self::PortList => validate_port_list(value),
             Self::PublicKey => validate_public_key(value),
             Self::Path => validate_path(value),
             Self::Protocol => validate_protocol(value),
@@ -312,6 +340,44 @@ fn validate_port(value: &str) -> std::result::Result<(), String> {
 /// Shared with the tasks that act on a port, so the range is stated once
 /// rather than re-derived beside every check.
 pub const MAX_PORT: u32 = 65_535;
+
+/// Rejects anything that is not a set of `port/protocol` specs.
+///
+/// **The empty list is valid**, and the divergence from
+/// [`validate_username_list`] is deliberate rather than an oversight. A set of
+/// ports is a declaration of what a firewall should admit, and admitting
+/// nothing is a policy — drastic, and coherent. An `AllowUsers` line with no
+/// users is not the same shape of thing: it locks every account out of the
+/// host, which is why that validator refuses it here rather than leaving it to
+/// a confirmation. What guards the drastic reading of an empty set is the
+/// dialog that names what closes, not this function.
+///
+/// A range is admitted because a front-end reports one: firewalld's
+/// `--list-ports` answers `8000-8080/tcp` as a single spec, and a value
+/// populated from the host would otherwise fail to validate the moment it was
+/// read back.
+fn validate_port_list(value: &str) -> std::result::Result<(), String> {
+    for spec in value.split_whitespace() {
+        let Some((ports, protocol)) = spec.split_once('/') else {
+            return Err(format!(
+                "'{spec}' must name a protocol, as in '443/tcp' — a rule for \
+                 one protocol does not admit the other"
+            ));
+        };
+
+        if !matches!(protocol, "tcp" | "udp") {
+            return Err(format!("'{protocol}' is not tcp or udp"));
+        }
+
+        // Each end of a range is a port in its own right, so both are checked
+        // by the same rule rather than by a looser one.
+        for port in ports.split('-') {
+            validate_port(port).map_err(|reason| format!("in '{spec}': {reason}"))?;
+        }
+    }
+
+    Ok(())
+}
 
 /// Rejects anything that is not a dotted-quad IPv4 address.
 ///
@@ -959,19 +1025,23 @@ mod tests {
 
     #[test]
     fn every_closed_choice_offers_its_values() {
-        // The three kinds whose validators name their own answers. A fourth
-        // added without a list would be a field asking for one of two words
-        // it never names — which is the state all three were in until now.
+        // The kinds whose validators name their own answers. A further one
+        // added without a list would be a field asking for one of two words it
+        // never names — which is the state all of them were in until now.
+        //
+        // `Protocol` is deliberately absent from this list, and its absence is
+        // the interesting case. No *task* declares it any more: a protocol is a
+        // column of the ports table rather than a field of its own, so the
+        // parameter it belongs to is built by the interface and never reaches
+        // `Task::params`. The kind and its validator are still what the column
+        // is checked against, which is why neither was deleted along with the
+        // task that used to name it.
         let offering: Vec<&str> = fixed_choices()
             .iter()
             .map(|(_, param)| param.name)
             .collect();
 
-        for kind in [
-            ParamKind::Protocol,
-            ParamKind::Removal,
-            ParamKind::HomeDirectory,
-        ] {
+        for kind in [ParamKind::Removal, ParamKind::HomeDirectory] {
             let named: Vec<(&str, Param)> = crate::tasks::all_tasks()
                 .into_iter()
                 .flat_map(|task| {

@@ -223,7 +223,7 @@ impl Task for InstallWireguard {
             // zone and `nft list table inet initd` names a table that does not
             // exist — an answer of "still to do" for a port already open.
             Consequence::Invalidates {
-                task: "firewall.allow-port",
+                task: "firewall.manage-ports",
                 reason: Reason::RequiresSetting {
                     setting: "an inbound UDP rule for this port",
                 },
@@ -622,7 +622,7 @@ impl Task for UninstallWireguard {
             // tunnel, and an open port with nothing behind it is exactly the
             // residue an uninstall is supposed to avoid leaving.
             Consequence::Invalidates {
-                task: "firewall.allow-port",
+                task: "firewall.manage-ports",
                 reason: Reason::RequiresSetting {
                     setting: "the rule admitting the WireGuard port now admits nothing",
                 },
@@ -934,7 +934,7 @@ mod tests {
         let named: Vec<_> = consequences.iter().filter_map(|c| c.task()).collect();
 
         assert!(named.contains(&"sysctl.ip-forward"), "{named:?}");
-        assert!(named.contains(&"firewall.allow-port"), "{named:?}");
+        assert!(named.contains(&"firewall.manage-ports"), "{named:?}");
     }
 
     #[test]
@@ -948,7 +948,7 @@ mod tests {
 
         let firewall = consequences
             .iter()
-            .find(|c| c.task() == Some("firewall.allow-port"))
+            .find(|c| c.task() == Some("firewall.manage-ports"))
             .expect("the firewall must be named");
 
         let check = firewall.check().expect("a local rule is answerable");
@@ -975,7 +975,7 @@ mod tests {
                     &install_values("10.89.0.0/24", 51_820),
                 )
                 .into_iter()
-                .find(|c| c.task() == Some("firewall.allow-port"))
+                .find(|c| c.task() == Some("firewall.manage-ports"))
                 .and_then(|c| c.check().cloned())
                 .expect("the firewall consequence must carry a check")
         };

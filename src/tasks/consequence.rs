@@ -274,7 +274,7 @@ mod tests {
     fn one_of_each() -> Vec<Consequence> {
         vec![
             Consequence::Invalidates {
-                task: "firewall.allow-port",
+                task: "firewall.manage-ports",
                 reason: Reason::PortChanged {
                     from: "22".to_owned(),
                     to: "2222".to_owned(),
@@ -376,7 +376,7 @@ mod tests {
 
     fn invalidates_with_check() -> Consequence {
         Consequence::Invalidates {
-            task: "firewall.allow-port",
+            task: "firewall.manage-ports",
             reason: Reason::PortChanged {
                 from: "22".to_owned(),
                 to: "2222".to_owned(),
@@ -445,7 +445,10 @@ mod tests {
     fn only_external_warnings_point_at_no_task() {
         // An `Invalidates` or `Conflicts` naming no task would render as a
         // warning with nowhere to go.
-        assert_eq!(invalidates_with_check().task(), Some("firewall.allow-port"));
+        assert_eq!(
+            invalidates_with_check().task(),
+            Some("firewall.manage-ports")
+        );
 
         let external = Consequence::External {
             note: External::DnsMustResolve,

@@ -23,7 +23,7 @@
 //!   answers "closed" on a stock machine where SSH is plainly reachable.
 
 use super::systemd::run_checked;
-use crate::domain::firewall::{FirewallManager, FirewallState, Protocol};
+use crate::domain::firewall::{AllowedPort, FirewallManager, FirewallState, PortOrigin, Protocol};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
@@ -87,6 +87,38 @@ impl Firewalld {
         Ok(())
     }
 
+    /// Removes a port from both the running configuration and the stored one.
+    ///
+    /// The mirror of [`add_port`](Self::add_port), and two calls for the same
+    /// reason rather than a similar one: removing from runtime alone leaves a
+    /// port that any later `--reload` restores, and removing from the permanent
+    /// configuration alone leaves it open until the next boot. Either half on
+    /// its own reports a closed port that is not closed, in one case
+    /// immediately and in the other eventually.
+    ///
+    /// `--reload` is not called here either, and here the argument is sharper:
+    /// a batch that opens one port and closes another would have the opening
+    /// discarded by a reload standing between them.
+    fn remove_port(executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<()> {
+        let spec = Self::port_spec(port, protocol);
+
+        for args in [
+            vec!["--zone", ZONE, "--remove-port", &spec],
+            vec!["--permanent", "--zone", ZONE, "--remove-port", &spec],
+        ] {
+            // Idempotent in the same shape as adding: removing a port that is
+            // not there reports `NOT_ENABLED` on stderr and exits zero. That is
+            // also what removing a port admitted only by a *service* looks
+            // like, which is why the caller reads the state back afterwards
+            // instead of believing this.
+            let command = Command::new("firewall-cmd").args(args).privileged();
+
+            run_checked(executor, &command)?;
+        }
+
+        Ok(())
+    }
+
     /// The ports a named service covers.
     ///
     /// Read from `--info-service`, whose `ports:` line lists them space
@@ -133,23 +165,53 @@ impl Firewalld {
     /// The two sources are kept together because an administrator asking what
     /// is open does not care which of firewalld's two ways admitted it — and on
     /// a stock RHEL host the answer for SSH comes entirely from the service.
+    ///
+    /// Specs only, for the questions that ask whether a port is *covered*.
+    /// Anything meaning to *close* one needs [`admitted`](Self::admitted)
+    /// instead, since the two sources come apart the moment a removal is
+    /// attempted.
     fn open_ports(executor: &dyn Executor) -> Result<Vec<String>> {
+        Ok(Self::admitted(executor)?
+            .into_iter()
+            .map(|port| port.spec)
+            .collect())
+    }
+
+    /// Every port the zone admits, each carrying what admitted it.
+    ///
+    /// The distinction `open_ports` discards. `--list-ports` names ports that
+    /// `--remove-port` closes; a service names ports that it does not, and
+    /// firewalld reports success either way — so the caller that means to close
+    /// something has to be told which it is holding before it tries.
+    ///
+    /// A range stays one row rather than being expanded into the ports it
+    /// covers. `--remove-port 8000-8080/tcp` closes it wholesale, so the range
+    /// as written is both the honest description and the closeable unit;
+    /// expanding it would offer eighty-one removals, none of which work.
+    fn admitted(executor: &dyn Executor) -> Result<Vec<AllowedPort>> {
         let command = Command::new("firewall-cmd").args(["--zone", ZONE, "--list-ports"]);
 
         let output = executor.run(&command)?;
 
-        let mut ports: Vec<String> = if output.success() {
+        let mut ports: Vec<AllowedPort> = if output.success() {
             output
                 .stdout
                 .split_whitespace()
-                .map(str::to_owned)
+                .map(AllowedPort::direct)
                 .collect()
         } else {
             Vec::new()
         };
 
         for service in Self::services(executor)? {
-            ports.extend(Self::service_ports(executor, &service)?);
+            ports.extend(
+                Self::service_ports(executor, &service)?
+                    .into_iter()
+                    .map(|spec| AllowedPort {
+                        spec,
+                        origin: PortOrigin::Service(service.clone()),
+                    }),
+            );
         }
 
         Ok(ports)
@@ -303,6 +365,17 @@ impl FirewallManager for Firewalld {
         Self::add_port(executor, port, protocol)
     }
 
+    fn close(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<bool> {
+        Self::remove_port(executor, port, protocol)?;
+
+        // Asked through `is_allowed`, which expands services and honours
+        // ranges, so this answers `false` for exactly the case `--remove-port`
+        // cannot handle: a port the zone admits as a service. On a stock RHEL
+        // host that is SSH, and the two commands above will have reported
+        // success while changing nothing.
+        Ok(!self.is_allowed(executor, port, protocol)?)
+    }
+
     /// Asks firewalld's own zone, since that is where the rule was written.
     ///
     /// `--list-ports` rather than `--query-port`: a check carries one command
@@ -353,7 +426,7 @@ impl FirewallManager for Firewalld {
         // tool's own table exists.
         Ok(FirewallState {
             active: true,
-            allowed: Self::open_ports(executor)?,
+            allowed: Self::admitted(executor)?,
         })
     }
 }
@@ -507,6 +580,110 @@ mod tests {
     }
 
     #[test]
+    fn closing_writes_both_the_running_and_the_stored_configuration() {
+        // The mirror of allowing, and wrong in both directions if either half
+        // is skipped: runtime alone is a port any later reload restores, and
+        // permanent alone is a port that stays open until the next boot.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),
+            Reply::ok(""),
+            // The read-back, through `--list-ports` and then the services.
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        let closed = Firewalld::new()
+            .close(&mock, 2222, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        assert!(closed);
+
+        let lines = mock.recorded_lines();
+
+        let removals: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("--remove-port"))
+            .collect();
+
+        assert_eq!(removals.len(), 2, "{removals:?}");
+        assert!(
+            removals.iter().any(|line| !line.contains("--permanent")),
+            "the runtime configuration must be written: {removals:?}"
+        );
+        assert!(
+            removals.iter().any(|line| line.contains("--permanent")),
+            "the stored configuration must be written: {removals:?}"
+        );
+    }
+
+    #[test]
+    fn closing_never_reloads() {
+        // Sharper here than for allowing: a batch that opens one port and
+        // closes another would have the opening discarded by a reload standing
+        // between them.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        Firewalld::new()
+            .close(&mock, 2222, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        for line in mock.recorded_lines() {
+            assert!(!line.contains("--reload"), "must not reload: {line}");
+        }
+    }
+
+    #[test]
+    fn a_port_a_service_admits_is_reported_as_still_open() {
+        // The case the whole design exists for. On a stock RHEL host `22/tcp`
+        // is admitted by the service `ssh`, and `--remove-port 22/tcp` against
+        // that exits zero having closed nothing. Believing the exit status
+        // would report a closed port over a session that is still reachable —
+        // and, worse, over one an operator now thinks is protected.
+        let mock = MockExecutor::with_replies([
+            // Both removals "succeed".
+            Reply::ok(""),
+            Reply::ok(""),
+            // The read-back finds nothing named directly...
+            Reply::ok(""),
+            // ...but the service still admits it.
+            Reply::ok("ssh"),
+            Reply::ok("ssh\n  ports: 22/tcp\n  protocols:\n"),
+        ]);
+
+        let closed = Firewalld::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        assert!(
+            !closed,
+            "a port a service admits is still open after --remove-port"
+        );
+    }
+
+    #[test]
+    fn closing_a_port_named_directly_reports_it_closed() {
+        // The other half of the pair above: where `--remove-port` is the right
+        // instrument, the answer must be an unqualified yes.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok("51820/udp"),
+            Reply::ok(""),
+        ]);
+
+        let closed = Firewalld::new()
+            .close(&mock, 2222, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        assert!(closed);
+    }
+
+    #[test]
     fn allowing_never_reloads() {
         // The pair of calls exists precisely to avoid `--reload`, which
         // discards runtime changes that were never persisted.
@@ -623,6 +800,65 @@ mod tests {
             .expect("the query must succeed");
 
         assert!(state.active);
-        assert_eq!(state.allowed, ["51820/udp", "22/tcp"]);
+
+        let specs: Vec<&str> = state
+            .allowed
+            .iter()
+            .map(|port| port.spec.as_str())
+            .collect();
+
+        assert_eq!(specs, ["51820/udp", "22/tcp"]);
+    }
+
+    #[test]
+    fn a_port_a_service_admits_says_which_service() {
+        // The finding this distinction exists for. On a stock RHEL host the
+        // `22/tcp` in a listing came from the service `ssh`, and
+        // `--remove-port 22/tcp` against it exits zero having closed nothing —
+        // so a caller offering to close it has to be told before it tries,
+        // rather than discovering it from an exit status that says success.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("running"),
+            Reply::ok("51820/udp"),
+            Reply::ok("ssh"),
+            Reply::ok("ssh\n  ports: 22/tcp\n  protocols:\n"),
+        ]);
+
+        let state = Firewalld::new()
+            .state(&mock)
+            .expect("the query must succeed");
+
+        let direct = state
+            .allowed
+            .iter()
+            .find(|port| port.spec == "51820/udp")
+            .expect("the directly-named port must be listed");
+
+        let by_service = state
+            .allowed
+            .iter()
+            .find(|port| port.spec == "22/tcp")
+            .expect("the service-admitted port must be listed");
+
+        assert_eq!(direct.origin, PortOrigin::Direct);
+        assert_eq!(by_service.origin, PortOrigin::Service("ssh".to_owned()));
+    }
+
+    #[test]
+    fn a_range_stays_one_row_rather_than_the_ports_it_covers() {
+        // `--remove-port 8000-8080/tcp` closes the range wholesale, so the
+        // range as written is the closeable unit. Expanding it would offer
+        // eighty-one removals, none of which work.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("running"),
+            Reply::ok("8000-8080/tcp"),
+            Reply::ok(""),
+        ]);
+
+        let state = Firewalld::new()
+            .state(&mock)
+            .expect("the query must succeed");
+
+        assert_eq!(state.allowed, [AllowedPort::direct("8000-8080/tcp")]);
     }
 }

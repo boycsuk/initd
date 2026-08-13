@@ -11,7 +11,7 @@
 //! is active, this implementation reports itself unavailable.
 
 use super::systemd::run_checked;
-use crate::domain::firewall::{FirewallManager, FirewallState, Protocol};
+use crate::domain::firewall::{AllowedPort, FirewallManager, FirewallState, Protocol};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
@@ -62,6 +62,56 @@ impl Nftables {
     /// The rule matching one port.
     fn rule(port: u32, protocol: Protocol) -> String {
         format!("{} dport {port} accept", protocol.as_str())
+    }
+
+    /// What `nft -a` appends to every line it lists.
+    ///
+    /// Separated from the parsing so the needle and the thing being split on
+    /// cannot drift apart.
+    const HANDLE_MARKER: &'static str = " # handle ";
+
+    /// The handles of every rule admitting a port.
+    ///
+    /// `nft` deletes a rule by handle and by nothing else — there is no "delete
+    /// the rule that says this" — so the listing is re-read with `-a` at the
+    /// moment of deletion rather than remembered. A handle cached from an
+    /// earlier listing names whatever rule occupies that identity now, and
+    /// after any other edit that is a different rule.
+    ///
+    /// Every match rather than the first. [`allow`](FirewallManager::allow)
+    /// will not create a duplicate, but a hand-edited ruleset can hold one, and
+    /// deleting a single handle there leaves the port open under a task that
+    /// reported it closed. Measured on `debian:13`: two identical `accept`
+    /// rules coexist happily, and deleting one leaves the other serving.
+    ///
+    /// The comparison is against the whole left-hand side rather than a
+    /// substring, because the table and the chain carry `# handle` too — a
+    /// looser match would collect the handle of the table itself and go on to
+    /// delete a chain.
+    fn handles_for(executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<Vec<u32>> {
+        let command = Command::new("nft")
+            .args(["-a", "list", "table", "inet", "initd"])
+            .privileged();
+
+        let output = executor.run(&command)?;
+
+        if !output.success() {
+            // No table means no rules to name, which is an answer rather than a
+            // failure — the same reading `is_allowed` gives the same exit.
+            return Ok(Vec::new());
+        }
+
+        let rule = Self::rule(port, protocol);
+
+        Ok(output
+            .stdout
+            .lines()
+            .filter_map(|line| {
+                let (text, handle) = line.trim().split_once(Self::HANDLE_MARKER)?;
+
+                (text == rule).then(|| handle.trim().parse().ok())?
+            })
+            .collect())
     }
 
     /// Where the ruleset has to be written for the boot to replay it, and what
@@ -305,6 +355,33 @@ impl FirewallManager for Nftables {
         run_checked(executor, &command)
     }
 
+    fn close(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<bool> {
+        // Deleted in the order the listing named them. Handles are stable
+        // identities rather than positions — measured on `debian:13`, where
+        // removing handle 2 left handles 3 and 4 answering to the same numbers
+        // — so no handle collected here goes stale as the others are removed.
+        for handle in Self::handles_for(executor, port, protocol)? {
+            let command = Command::new("nft")
+                .args([
+                    "delete",
+                    "rule",
+                    "inet",
+                    "initd",
+                    CHAIN,
+                    "handle",
+                    &handle.to_string(),
+                ])
+                .privileged();
+
+            run_checked(executor, &command)?;
+        }
+
+        // Read back rather than counted: a rule this listing did not name — one
+        // written between the two commands, or spelled differently by hand — is
+        // a port still open, and the deletions succeeding says nothing about it.
+        Ok(!self.is_allowed(executor, port, protocol)?)
+    }
+
     fn persist(&self, executor: &dyn Executor) -> Result<bool> {
         // `nft` speaks only to the kernel, so nothing said so far survives a
         // reboot. What restores a ruleset at boot is a service replaying a
@@ -409,6 +486,11 @@ impl FirewallManager for Nftables {
         // Parsed back out of the listing rather than remembered: the ruleset is
         // the state, and anything this tool cached would be wrong the moment
         // someone edited it by hand.
+        //
+        // Every rule here is one this tool wrote into its own table and can
+        // delete by handle, so the origin is `Direct` throughout. The variants
+        // that are not closeable belong to firewalld, which admits ports by
+        // routes `nft` has no equivalent of.
         let allowed = output
             .stdout
             .lines()
@@ -419,7 +501,7 @@ impl FirewallManager for Nftables {
                 let port = parts.next()?;
 
                 (dport == "dport" && matches!(protocol, "tcp" | "udp"))
-                    .then(|| format!("{port}/{protocol}"))
+                    .then(|| AllowedPort::direct(format!("{port}/{protocol}")))
             })
             .collect();
 
@@ -433,6 +515,7 @@ impl FirewallManager for Nftables {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::firewall::PortOrigin;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// The ruleset fed to `nft -f -`.
@@ -679,6 +762,205 @@ mod tests {
         );
     }
 
+    /// A listing as `nft -a` prints it.
+    ///
+    /// Verbatim from `debian:13` rather than invented: the table and the chain
+    /// carry `# handle` of their own, which is what a looser parse would
+    /// collect and then delete.
+    fn listing_with_handles() -> &'static str {
+        "table inet initd { # handle 1\n\
+         \tchain input { # handle 1\n\
+         \t\ttype filter hook input priority filter; policy drop;\n\
+         \t\ttcp dport 22 accept # handle 2\n\
+         \t\tudp dport 51820 accept # handle 3\n\
+         \t}\n\
+         }"
+    }
+
+    #[test]
+    fn a_port_is_closed_by_the_handle_the_listing_names() {
+        // `nft` deletes by handle and by nothing else, so the listing is what
+        // turns a port into something deletable.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(listing_with_handles()),
+            Reply::ok(""),
+            // The read-back: the rule is gone.
+            Reply::ok("table inet initd {\n  chain input {\n    udp dport 51820 accept\n  }\n}"),
+        ]);
+
+        let closed = Nftables::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        assert!(closed);
+
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line.contains("delete rule inet initd input handle 2")),
+            "the handle from the listing must be the one deleted: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn the_handle_of_the_table_itself_is_never_deleted() {
+        // The table and the chain are listed with handles too, and both happen
+        // to be `1`. A parse matching on `# handle` alone would collect them
+        // and go on to delete a chain.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(listing_with_handles()),
+            Reply::ok(""),
+            Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+        ]);
+
+        Nftables::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        let lines = mock.recorded_lines();
+
+        let deletions: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("delete"))
+            .collect();
+
+        assert_eq!(deletions.len(), 1, "exactly one rule must be deleted");
+        assert!(deletions[0].contains("handle 2"), "{deletions:?}");
+    }
+
+    #[test]
+    fn every_duplicate_of_a_rule_is_deleted() {
+        // `allow` will not create a duplicate, but a hand-edited ruleset can
+        // hold one — measured on `debian:13`, where two identical accept rules
+        // coexist and deleting one leaves the other serving. Closing the first
+        // and reporting success would leave the port open.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(
+                "table inet initd { # handle 1\n\
+                 \tchain input { # handle 1\n\
+                 \t\ttcp dport 22 accept # handle 2\n\
+                 \t\ttcp dport 22 accept # handle 4\n\
+                 \t}\n\
+                 }",
+            ),
+            Reply::ok(""),
+            Reply::ok(""),
+            Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+        ]);
+
+        let closed = Nftables::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        assert!(closed);
+
+        let lines = mock.recorded_lines();
+
+        let deletions: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("delete rule"))
+            .collect();
+
+        assert_eq!(deletions.len(), 2, "both duplicates must go: {deletions:?}");
+        assert!(deletions[0].contains("handle 2"), "{deletions:?}");
+        assert!(deletions[1].contains("handle 4"), "{deletions:?}");
+    }
+
+    #[test]
+    fn the_handles_are_read_at_the_moment_of_deletion() {
+        // A handle cached from an earlier listing names whatever rule holds
+        // that identity now, which after any other edit is a different rule.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(listing_with_handles()),
+            Reply::ok(""),
+            Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+        ]);
+
+        Nftables::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        let lines = mock.recorded_lines();
+
+        let listed = lines
+            .iter()
+            .position(|line| line.contains("-a list table"))
+            .expect("the listing must be read");
+
+        let deleted = lines
+            .iter()
+            .position(|line| line.contains("delete rule"))
+            .expect("the rule must be deleted");
+
+        assert!(listed < deleted, "the listing must precede the delete");
+    }
+
+    #[test]
+    fn closing_a_port_that_is_not_open_is_not_a_failure() {
+        // Nothing to delete is an answer rather than an error, and the port is
+        // closed afterwards either way — which is what the caller asked.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(listing_with_handles()),
+            Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+        ]);
+
+        let closed = Nftables::new()
+            .close(&mock, 8080, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        assert!(closed);
+
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|line| line.contains("delete")),
+            "nothing must be deleted: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn a_port_still_open_after_the_delete_is_reported_as_still_open() {
+        // The deletions succeeding says nothing about a rule the listing never
+        // named. Read back rather than counted.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(listing_with_handles()),
+            Reply::ok(""),
+            Reply::ok("table inet initd {\n  chain input {\n    tcp dport 22 accept\n  }\n}"),
+        ]);
+
+        let closed = Nftables::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        assert!(!closed, "a port that is still listed is still open");
+    }
+
+    #[test]
+    fn closing_never_flushes_the_ruleset() {
+        // Closing one port must not reach rules it was not asked about — the
+        // failure `disable` is careful to avoid, in a narrower operation.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(listing_with_handles()),
+            Reply::ok(""),
+            Reply::ok("table inet initd {\n  chain input {\n  }\n}"),
+        ]);
+
+        Nftables::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("the call must succeed");
+
+        for line in mock.recorded_lines() {
+            assert!(!line.contains("flush"), "must not flush: {line}");
+            assert!(
+                !line.contains("delete table"),
+                "must not drop the table: {line}"
+            );
+        }
+    }
+
     #[test]
     fn a_port_allowed_over_tcp_is_not_allowed_over_udp() {
         // WireGuard is UDP and SSH is TCP on adjacent numbers often enough
@@ -721,7 +1003,34 @@ mod tests {
             .expect("the query must succeed");
 
         assert!(state.active);
-        assert_eq!(state.allowed, ["22/tcp", "51820/udp"]);
+        assert_eq!(
+            state.allowed,
+            [
+                AllowedPort::direct("22/tcp"),
+                AllowedPort::direct("51820/udp")
+            ]
+        );
+    }
+
+    #[test]
+    fn every_rule_in_this_tools_table_is_named_directly() {
+        // Nothing reaches `inet initd` except through `allow`, so there is no
+        // second route admitting a port the way firewalld's services do — and
+        // therefore nothing here that a removal would fail to close.
+        let mock = MockExecutor::with_replies([Reply::ok(
+            "table inet initd {\n  chain input {\n    tcp dport 22 accept\n  }\n}",
+        )]);
+
+        let state = Nftables::new()
+            .state(&mock)
+            .expect("the query must succeed");
+
+        assert!(
+            state
+                .allowed
+                .iter()
+                .all(|port| port.origin == PortOrigin::Direct)
+        );
     }
 
     #[test]

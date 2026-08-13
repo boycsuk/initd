@@ -104,17 +104,31 @@ refusal.
 
 ## Modals
 
-The five dialogs — confirmation, parameter form, help overlay, search,
-recorded changes — are drawn to one set of rules, so a frame does not move for
-reasons the operator cannot name:
+The six dialogs — confirmation, parameter form, ports table, help overlay,
+search, recorded changes — are drawn to one set of rules, so a frame does not
+move for reasons the operator cannot name:
 
 | Rule | Value |
 |------|-------|
-| Width | 72 columns, clamped to the terminal |
+| Width | 72 columns, clamped to the terminal — except the ports table, at 88 |
 | Height | measured from the content; never a share of the screen |
 | Gutter | 2 cells between the frame and any text |
 | Inset | one blank row at each end of the content |
-| Footer | separated from the content by a rule spanning the frame |
+| Footer | on the bottom border, or above it behind a rule where the content runs to the frame |
+
+The ports table is the one dialog wider than 72, and the exception is about
+what it holds rather than about taste. The shared width is a *floor* set by the
+parameter form's footer, and every other dialog's content is prose, which reads
+worse the wider it gets. A table is the opposite: its columns need room to be
+columns rather than words that happen to line up, and its third column carries
+a service name beside them.
+
+The footer has two spellings and the difference is what the content needs
+rather than taste: the confirmation and the parameter form draw a rule because
+their content reaches the bottom of the frame and a footer against it would
+read as part of the text, while the four whose content stops short — the ports
+table among them — ride the border itself. Either way the keys are drawn, which
+is the part that matters.
 
 They had three widths between them — 72, 70 and 64 — each defensible alone and
 none chosen against the others. The width's floor is the parameter form's
@@ -822,6 +836,73 @@ than options that cannot be reached.
 
 Moving the cursor here is reading the list, not answering it: nothing is
 written to the field until `Enter`.
+
+### Ports table (modal)
+
+`firewall.manage-ports` collects a *set* rather than a fixed run of values, so
+it opens a table instead of a form: one row per port the host admits, with rows
+added and removed. Everything else about it follows the modal contract above.
+
+The table is ruled — `PORT`, `PROTOCOL` and `SOURCE` divided by vertical lines,
+with a horizontal rule above the heading, below it, and under the last row.
+Three columns of left-aligned text read as one ragged block, and the eye has
+nothing to follow down a value that is two characters in one row and five in
+the next. The dialog is measured from its rows, so the rule closes directly
+under the last port rather than at the foot of a frame taller than its content.
+
+**The same rule cannot be listed twice.** A second row naming a port *and
+protocol* another row already names is refused where the operator can still see
+which keystroke caused it, and the message names the spec. The pair rather than
+the number: `443/tcp` and `443/udp` are two different rules and both are
+legitimate — SSH is TCP and WireGuard UDP on adjacent numbers often enough that
+refusing the second would refuse a set an operator legitimately wants. The
+typed value stays and the cell stays open, so there is something to correct.
+Pressing `a` with an unfinished row already on screen moves to that row instead
+of stacking another.
+
+Two layers of keys, because a cell being edited has to swallow letters — `d`
+removes a row while navigating and types a letter while editing.
+
+**Navigating:**
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` (or `k` / `j`) | Move between rows |
+| `a` | Append a row and open it for editing |
+| `d` | Remove the focused row |
+| `Enter` | Edit the focused row |
+| `Tab` | Apply the set |
+| `Esc` | Cancel — twice where the table has been edited |
+
+**Editing a cell:**
+
+| Key | Action |
+|-----|--------|
+| *printable*, `Backspace`, `Delete`, `←` / `→`, `Home`, `End`, `Ctrl-A/E/U/K/W` | Edit, exactly as a form field does |
+| `↑` / `↓` | Step through `tcp` / `udp`, on the protocol cell |
+| `Tab` | Commit the cell and move to the next |
+| `Enter` | Commit the cell and close the editor |
+| `Esc` | Discard the cell, leaving the row as it was |
+
+`Tab` applies and `Enter` edits, which is the one binding here that disagrees
+with the form. `Enter` opens what is under the cursor everywhere else in this
+interface — a category, a task, a field — and taking that away to mean "apply"
+would be the surprising half of the trade. `Tab` edits text nowhere, so it is
+free to mean the thing that leaves.
+
+**A row the host admits by a route this tool cannot undo is drawn and refused,
+not hidden.** firewalld admits SSH on a stock RHEL host as the *service* `ssh`,
+where `--remove-port 22/tcp` succeeds and closes nothing. Such rows are dim,
+carry the service's name in the `SOURCE` column — the word as well as the
+colour, since no signal here is carried by colour alone — and `d` on one
+answers with a sentence naming what admits it. Hiding them was the alternative
+and is worse in both directions: the operator would leave believing a port
+closed, and the table would disagree with `firewall.status` on the same host
+about what is open.
+
+The terminal cursor appears only while a cell is open. Navigating, the focus bar
+in the gutter says where the operator is — this is the one dialog that draws no
+cursor most of the time.
 
 ### Help overlay
 

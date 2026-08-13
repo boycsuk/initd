@@ -22,11 +22,12 @@ use super::field::Field;
 use super::form::Form;
 use super::help;
 use super::history::History;
+use super::ports::{Column, PortTable};
 use super::search::Search;
 use crate::exec::{OutputLine, Stream};
 use crate::i18n::Msg;
-use crate::tasks::network::EnableFirewall;
-use crate::tasks::params::{LiveDefault, ParamValues, Suggestions};
+use crate::tasks::network::{EnableFirewall, ManagePorts};
+use crate::tasks::params::{LiveDefault, ParamKind, ParamValues, Suggestions};
 use crate::tasks::users::{Credentials, DeleteUser, Examined, LockRoot, escalated_from};
 use crate::tasks::{Confirmation, Node};
 
@@ -92,6 +93,7 @@ impl App {
                 None
             }
             Mode::Filling => self.on_form_key(key),
+            Mode::EditingPorts => self.on_ports_key(key),
             Mode::Confirming(_) => self.on_confirm_key(key),
             Mode::Searching(_) => {
                 self.on_search_key(key);
@@ -532,6 +534,157 @@ impl App {
 
         None
     }
+    /// Handles a key press while the ports table is open.
+    ///
+    /// Two layers, because a cell being edited has to swallow letters: `d`
+    /// removes a row while navigating and types a letter while editing, and a
+    /// handler that could not tell those apart would delete a row every time
+    /// somebody typed `udp`.
+    fn on_ports_key(&mut self, key: KeyEvent) -> Option<ParamValues> {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        let table = self.ports.as_mut()?;
+
+        // Any key means the operator carried on, so an explanation cannot
+        // outlive the keystroke it belonged to.
+        if key.code != KeyCode::Esc {
+            table.forget_refusal();
+        }
+
+        if table.is_editing() {
+            let edit: fn(&mut Field) = match key.code {
+                // Discards the cell rather than the table: the row was there
+                // before the cell was opened, and `Esc` inside an editor means
+                // "not this value" everywhere else in this interface.
+                KeyCode::Esc => {
+                    table.discard_cell();
+                    return None;
+                }
+                KeyCode::Enter => {
+                    table.commit_cell();
+                    return None;
+                }
+                KeyCode::Tab => {
+                    table.edit_next_cell();
+                    return None;
+                }
+                KeyCode::Down if table.focused_offers_options() => Field::next_option,
+                KeyCode::Up if table.focused_offers_options() => Field::previous_option,
+                // Readline's bindings win inside a text cell, exactly as they
+                // do inside a form's field.
+                KeyCode::Char('u') if control => Field::clear_before_cursor,
+                KeyCode::Char('k') if control => Field::clear_after_cursor,
+                KeyCode::Char('w') if control => Field::delete_word,
+                KeyCode::Char('a') if control => Field::home,
+                KeyCode::Char('e') if control => Field::end,
+                KeyCode::Char(character) if !control => {
+                    if let Some(field) = table.editing_field() {
+                        field.insert(character);
+                    }
+
+                    return None;
+                }
+                KeyCode::Backspace => Field::backspace,
+                KeyCode::Delete => Field::delete,
+                KeyCode::Left => Field::left,
+                KeyCode::Right => Field::right,
+                KeyCode::Home => Field::home,
+                KeyCode::End => Field::end,
+                _ => return None,
+            };
+
+            if let Some(field) = table.editing_field() {
+                edit(field);
+            }
+
+            return None;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                // A table nobody edited has nothing to lose and closes
+                // outright; one with edits in it asks twice, the way a form
+                // with typed values does.
+                if table.is_untouched() || table.cancel_armed() {
+                    self.ports = None;
+                } else {
+                    table.arm_cancel();
+                }
+
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                table.disarm_cancel();
+                table.focus_next();
+                None
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                table.disarm_cancel();
+                table.focus_previous();
+                None
+            }
+            KeyCode::Char('a') => {
+                table.disarm_cancel();
+                table.add_row();
+                None
+            }
+            KeyCode::Char('d') => {
+                table.disarm_cancel();
+                table.remove_row();
+                None
+            }
+            KeyCode::Enter => {
+                table.disarm_cancel();
+                table.edit(Column::Port);
+                None
+            }
+            // `Tab` applies rather than moving, which is the one binding here
+            // that disagrees with the form. `Enter` opens what is under the
+            // cursor everywhere in this interface — the tree, a category, a
+            // field — and taking that away from the table to mean "apply"
+            // would be the surprising half of the trade. `Tab` edits text
+            // nowhere, so it is free to mean the thing that leaves.
+            KeyCode::Tab => self.submit_ports(),
+            _ => {
+                table.disarm_cancel();
+                None
+            }
+        }
+    }
+
+    /// Turns the table into the values the task runs with.
+    ///
+    /// The mirror of [`submit_form`](Self::submit_form), including pointing at
+    /// the row that stopped it rather than refusing without saying which.
+    fn submit_ports(&mut self) -> Option<ParamValues> {
+        let table = self.ports.as_mut()?;
+
+        if let Some((row, reason)) = table.refuses_to_submit() {
+            table.refuse(row, reason);
+            return None;
+        }
+
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, table.value());
+        // What the host admitted when this opened, so the task can tell a port
+        // the operator removed from one that appeared while they decided.
+        values.set(ManagePorts::PORTS_WERE, table.opened_on());
+
+        self.ports = None;
+
+        let asks = self
+            .selected_task()
+            .is_some_and(|task| task.confirmation() != Confirmation::None);
+
+        if asks {
+            self.pending_values = values;
+            self.open_confirmation();
+            return None;
+        }
+
+        Some(values)
+    }
+
     /// Moves through the focused field's options, or takes one.
     ///
     /// Nothing is written to the field until `Enter`: moving the cursor here
@@ -718,7 +871,22 @@ impl App {
                     self.backend.path_for(crate::backend::Capability::Ssh),
                 )
                 .to_string(),
+                // The set the operator is about to edit starts as what the host
+                // holds, so removing a row is the only way a port closes.
+                LiveDefault::OpenPorts => crate::tasks::network::open_ports_value(
+                    self.executor.as_ref(),
+                    self.backend.as_ref(),
+                ),
             };
+        }
+
+        // A parameter holding a set of ports is collected in a table rather
+        // than a text field. Keyed off the *kind* rather than the task id: a
+        // field that declares a list wants a list, and the interface should
+        // not have to be told which tasks those are.
+        if asked.iter().any(|param| param.kind == ParamKind::PortList) {
+            self.ports = Some(PortTable::new(task.title(), &self.admitted_ports()));
+            return None;
         }
 
         if !asked.is_empty() {
@@ -734,6 +902,33 @@ impl App {
         }
 
         Some(ParamValues::new())
+    }
+
+    /// What the host admits inbound, for the table to open on.
+    ///
+    /// Read here rather than in the table, and once rather than per keystroke:
+    /// this is a command, and putting the executor in the path of an arrow
+    /// press is the thing `offer_what_the_host_knows` exists to avoid.
+    ///
+    /// The rows carry their origin, which the parameter's own live default
+    /// cannot: `open_ports_value` answers with specs because that is what a
+    /// text field holds, and the table needs to know which rows it must refuse
+    /// to remove.
+    ///
+    /// An empty answer where nothing can be read, for the same reason the
+    /// suggestions are dropped rather than raised: the task refuses on its own
+    /// terms with a better message than a dialog that would not open.
+    fn admitted_ports(&self) -> Vec<crate::domain::firewall::AllowedPort> {
+        let Ok(Some(firewall)) =
+            crate::backend::firewall_for(self.backend.as_ref(), self.executor.as_ref())
+        else {
+            return Vec::new();
+        };
+
+        firewall
+            .state(self.executor.as_ref())
+            .map(|state| state.allowed)
+            .unwrap_or_default()
     }
 
     /// Fills each field with what the host says it could hold.
@@ -835,6 +1030,7 @@ impl App {
                     LockRoot::ID => self.lockout_warning(),
                     DeleteUser::ID => self.deletion_warning(),
                     EnableFirewall::ID => self.firewall_warning(),
+                    ManagePorts::ID => self.ports_warning(),
                     _ => self.lang.render(&Msg::ConfirmLockoutWarning),
                 };
 
@@ -951,6 +1147,66 @@ impl App {
             port,
             listening,
             agrees: port == listening,
+        })
+    }
+
+    /// Names the ports about to close, and says whether SSH is one of them.
+    ///
+    /// The inverse of the question [`firewall_warning`](Self::firewall_warning)
+    /// asks. There the operator named one port to keep and the risk was naming
+    /// the wrong one; here they left a row out of a table, and the row they
+    /// left out may be the one carrying this session. Nothing about deleting a
+    /// row announces that, which is why the dialog says it instead.
+    ///
+    /// Computed from the two parameters rather than by asking the host what is
+    /// open: the difference between them *is* what will close, and the table
+    /// that produced them was itself read from the host a moment ago. The one
+    /// command spent here is the same one `firewall_warning` spends, for the
+    /// same reason — the daemon's own port is the fact that decides.
+    pub(super) fn ports_warning(&self) -> String {
+        let (Ok(declared), Ok(were)) = (
+            self.pending_values.get(ManagePorts::PORTS),
+            self.pending_values.get(ManagePorts::PORTS_WERE),
+        ) else {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        let declared: Vec<&str> = declared.split_whitespace().collect();
+
+        let closing: Vec<&str> = were
+            .split_whitespace()
+            .filter(|spec| !declared.contains(spec))
+            .collect();
+
+        let opening = declared
+            .iter()
+            .filter(|spec| !were.split_whitespace().any(|was| was == **spec))
+            .count();
+
+        // Still framed as a lockout even when nothing closes: the tier belongs
+        // to the task rather than to the values. But the sentence says plainly
+        // that nothing is being closed, because a red frame over a batch that
+        // only opens ports is how the warnings beside it stop being read.
+        if closing.is_empty() {
+            return self.lang.render(&Msg::ConfirmPortsOpeningOnly { opening });
+        }
+
+        let listening = crate::tasks::sshd_config::effective_port(
+            self.executor.as_ref(),
+            self.backend.path_for(crate::backend::Capability::Ssh),
+        );
+
+        // Matched on the port rather than on the whole spec: sshd serves TCP,
+        // and a `22/udp` in the closing set is not the session's.
+        let ssh = closing.iter().any(|spec| {
+            spec.split_once('/')
+                .is_some_and(|(port, protocol)| protocol == "tcp" && port == listening.to_string())
+        });
+
+        self.lang.render(&Msg::ConfirmPortsClosing {
+            specs: closing.join(", "),
+            listening,
+            closes_ssh: ssh,
         })
     }
 

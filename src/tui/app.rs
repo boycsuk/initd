@@ -11,6 +11,7 @@ use super::cursor::TreeCursor;
 use super::form::Form;
 use super::history::History;
 use super::output::OutputPane;
+use super::ports::PortTable;
 use super::probe::{InstalledState, Probe};
 use super::search::Search;
 use super::signals::Hangup;
@@ -130,6 +131,12 @@ pub(super) enum Mode<'a> {
     /// Also carries nothing: `Form::render` needs `&mut self` for its scroll
     /// state, which a mode borrowing the rest of `App` could not lend.
     Filling,
+    /// The table of admitted ports is being edited.
+    ///
+    /// Payload-free for exactly the reason `Filling` is, and for the same
+    /// mechanism: the cell being edited recomputes its scroll window as it is
+    /// drawn, so rendering wants `&mut`.
+    EditingPorts,
     /// A destructive task is waiting to be confirmed.
     Confirming(&'a Confirm),
     /// A search is open over the task tree.
@@ -186,6 +193,11 @@ pub struct App {
     /// written only when `Enter` is pressed, so `Esc` leaves what was typed
     /// exactly as it was.
     pub(super) options_at: Option<usize>,
+    /// The table of admitted ports, while one is being edited.
+    ///
+    /// `Option` for the same reason `form` is, and mutually exclusive with it:
+    /// a task collects its values through one or the other, never both.
+    pub(super) ports: Option<PortTable>,
     pub(super) confirm: Option<Confirm>,
     /// A helper waiting for the terminal, until the next turn of the loop.
     ///
@@ -319,6 +331,7 @@ impl App {
             output: OutputPane::new(),
             detail_shown: true,
             form: None,
+            ports: None,
             options_at: None,
             confirm: None,
             pending_values: ParamValues::new(),
@@ -402,6 +415,13 @@ impl App {
         // takes the keyboard from the search that led to it.
         if self.form.is_some() {
             return Mode::Filling;
+        }
+
+        // Beside the form rather than above or below it: the two collect the
+        // same thing by different means and a task opens one or the other, so
+        // the order between them never decides anything.
+        if self.ports.is_some() {
+            return Mode::EditingPorts;
         }
 
         if let Some(ref confirm) = self.confirm {
@@ -2866,6 +2886,111 @@ mod tests {
     }
 
     #[test]
+    fn closing_the_port_the_daemon_serves_is_named_as_ending_the_session() {
+        // The inverse of the question `firewall_warning` asks, and the quieter
+        // half of the same risk: the operator deleted a row, and nothing about
+        // deleting a row from a table says it was the one carrying this
+        // session. The mock answers nothing for `sshd -T`, so `effective_port`
+        // falls back to 22 — which is the row being dropped here.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::ManagePorts::PORTS,
+            "443/tcp".to_owned(),
+        );
+        app.pending_values.set(
+            crate::tasks::network::ManagePorts::PORTS_WERE,
+            "22/tcp 443/tcp".to_owned(),
+        );
+
+        let warning = app.ports_warning();
+
+        assert!(
+            warning.contains("closes 22/tcp"),
+            "the warning must name what closes: {warning}"
+        );
+        assert!(
+            warning.contains("ends your session"),
+            "and say plainly that this is the one that ends the session: {warning}"
+        );
+    }
+
+    #[test]
+    fn closing_ports_that_are_not_the_daemons_still_warns_about_the_route() {
+        // `sshd -T` says what the daemon serves, not how the operator reached
+        // it. A jump host or a forwarded port arrives by a route nothing here
+        // can see, so "these are safe" would be a promise made on evidence
+        // that does not support it.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::ManagePorts::PORTS,
+            "22/tcp".to_owned(),
+        );
+        app.pending_values.set(
+            crate::tasks::network::ManagePorts::PORTS_WERE,
+            "22/tcp 8080/tcp".to_owned(),
+        );
+
+        let warning = app.ports_warning();
+
+        assert!(
+            warning.contains("closes 8080/tcp"),
+            "the warning must name what closes: {warning}"
+        );
+        assert!(
+            !warning.contains("ends your session"),
+            "but must not claim the session ends: {warning}"
+        );
+        assert!(
+            warning.contains("jump host"),
+            "and must not promise safety it cannot know: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_set_that_only_opens_says_it_closes_nothing() {
+        // Still a lockout dialog, because the tier belongs to the task. A red
+        // frame with nothing behind it is how the warnings that mean it stop
+        // being read, so the sentence says what is actually happening.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::ManagePorts::PORTS,
+            "22/tcp 443/tcp".to_owned(),
+        );
+        app.pending_values.set(
+            crate::tasks::network::ManagePorts::PORTS_WERE,
+            "22/tcp".to_owned(),
+        );
+
+        let warning = app.ports_warning();
+
+        assert!(
+            warning.contains("closes none"),
+            "the warning must say nothing closes: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_udp_port_sharing_the_daemons_number_is_not_the_session() {
+        // sshd serves TCP. A `22/udp` in the closing set is WireGuard's
+        // business, and reporting it as the end of the session would be the
+        // false alarm that teaches an operator to ignore the true one.
+        let mut app = test_app(Family::Debian);
+        app.pending_values
+            .set(crate::tasks::network::ManagePorts::PORTS, String::new());
+        app.pending_values.set(
+            crate::tasks::network::ManagePorts::PORTS_WERE,
+            "22/udp".to_owned(),
+        );
+
+        let warning = app.ports_warning();
+
+        assert!(
+            !warning.contains("ends your session"),
+            "a udp port is not the daemon's: {warning}"
+        );
+    }
+
+    #[test]
     fn a_one_verb_task_says_when_the_host_already_has_its_subject() {
         // Reported as the tool not detecting an SSH server that was installed.
         // It detected it fine when run — `openssh-server is already installed`
@@ -3837,7 +3962,7 @@ mod tests {
         let output = render_to_rows(&mut app, 100, 30).join("\n");
 
         assert!(
-            output.contains("firewall.allow-port"),
+            output.contains("firewall.manage-ports"),
             "the firewall warning must reach the pane: {output}"
         );
         assert!(
@@ -3968,7 +4093,7 @@ mod tests {
         let output = render_to_rows(&mut app, 100, 30).join("\n");
 
         assert!(
-            !output.contains("firewall.allow-port"),
+            !output.contains("firewall.manage-ports"),
             "a failed task must not warn: {output}"
         );
     }
