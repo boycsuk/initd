@@ -64,6 +64,20 @@ pub trait FirewallManager {
     /// session is otherwise the last thing that session does.
     fn enable(&self, executor: &dyn Executor, keep_open: &[(u32, Protocol)]) -> Result<()>;
 
+    /// Turns filtering off again, and stops it returning at boot.
+    ///
+    /// The inverse of [`enable`](Self::enable), and deliberately narrower than
+    /// "turn the firewall off": an implementation removes only what this tool
+    /// created. A host filtering through rules somebody else wrote keeps them —
+    /// a task named for undoing its own change must not become the one that
+    /// flushed a ruleset it never made.
+    ///
+    /// Both halves, for the reason `enable` and `persist` are two calls: a
+    /// table removed from the kernel while the boot still replays it is a
+    /// firewall that comes back at the next restart, and reporting it as off
+    /// would be true for as long as nobody rebooted.
+    fn disable(&self, executor: &dyn Executor) -> Result<()>;
+
     /// Allows a port inbound.
     fn allow(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<()>;
 

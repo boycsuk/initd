@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The firewall row now offers to disable when the host is already
+  filtering.** Reported as a row offering to enable a firewall that was plainly
+  on. `firewall.enable` and a new `firewall.disable` share a row like every
+  other reversible pair, and the probe decides which verb by asking what the
+  host is *doing* rather than what it has installed — the one capability where
+  those differ, since every Debian can install `nft` and none filters until
+  told to.
+
+  Disabling removes only what this tool created: the `inet initd` table, the
+  saved ruleset and the boot unit, or firewalld's daemon where that is the
+  front-end. A ruleset somebody else wrote is left alone — a task named for
+  undoing its own change must not become the one that flushed Docker's rules.
+  Both halves, because a table removed while the boot still replays it is a
+  firewall that returns at the next restart, reported as off.
+
+  The saved ruleset is emptied rather than deleted: measured, `nft -f` on an
+  empty file exits 0 and leaves the ruleset empty, while a deleted file leaves
+  the unit failing at every boot instead of having nothing to do.
+
+- **`ssh.uninstall` exists, against this project's own advice.** It was absent
+  by decision — removing the SSH server over its own connection is the single
+  operation here with no route back, since the session ends mid-removal and
+  reinstalling needs the network path that just closed. Added on request; the
+  reasoning has not stopped being true, so it carries the strongest
+  confirmation the interface has and says plainly that recovery is the
+  provider's console. `docs/user-stories.md` records the reversal rather than
+  quietly dropping the promise it made.
+
 - **`ssh.install` reports which OpenSSH the host runs.** Asked for because
   `openssh-server is already installed` says nothing about *what* is installed,
   and the version is what decides which hardening tier is safe —

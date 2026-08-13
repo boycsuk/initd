@@ -104,6 +104,28 @@ impl Nftables {
     /// the thing that replays it, on a host that may not boot at all. Refusing
     /// would turn "the firewall is on and will need one more step" into "the
     /// firewall did not go on", which is worse and false.
+    /// Stops whatever replays the ruleset at boot.
+    ///
+    /// The mirror of [`enable_at_boot`](Self::enable_at_boot), including its
+    /// tolerance: a host with no service manager has nothing to disable, and
+    /// that is the same answer as a manager that refused.
+    fn disable_at_boot(executor: &dyn Executor, service: BootService) -> Result<bool> {
+        let command = match service {
+            BootService::Systemd => Command::new("systemctl")
+                .args(["disable", SYSTEMD_UNIT])
+                .privileged(),
+            BootService::OpenRc => Command::new("rc-update")
+                .args(["del", OPENRC_SERVICE, "default"])
+                .privileged(),
+        };
+
+        match executor.run(&command) {
+            Ok(output) => Ok(output.success()),
+            Err(Error::ProgramNotFound { .. }) => Ok(false),
+            Err(other) => Err(other),
+        }
+    }
+
     fn enable_at_boot(executor: &dyn Executor, service: BootService) -> Result<bool> {
         let command = match service {
             BootService::Systemd => Command::new("systemctl")
@@ -204,6 +226,59 @@ impl FirewallManager for Nftables {
             .privileged();
 
         run_checked(executor, &command)
+    }
+
+    fn disable(&self, executor: &dyn Executor) -> Result<()> {
+        // Only this tool's own table. `nft flush ruleset` would take every rule
+        // on the host with it — Docker's, libvirt's, whatever the distribution
+        // installed — and a task named for undoing one change must not be the
+        // one that removed somebody else's.
+        //
+        // Absent is success: the table this removes is the thing being asked
+        // about, so a host that has none is already in the state wanted, and
+        // failing there would refuse an operation that has nothing left to do.
+        let remove = Command::new("nft")
+            .args(["delete", "table", TABLE])
+            .privileged();
+
+        match executor.run(&remove) {
+            Ok(output) if output.success() => {}
+            // `No such file or directory` is how `nft` reports a table that is
+            // not there, which is the only failure this tolerates.
+            Ok(output) if output.stderr.contains("No such file or directory") => {}
+            Ok(output) => {
+                return Err(Error::CommandFailed {
+                    command: remove.to_string(),
+                    code: output.code,
+                    stderr: output.stderr,
+                });
+            }
+            Err(other) => return Err(other),
+        }
+
+        // Then the file and the unit, in that order: the kernel no longer holds
+        // the ruleset, and what is left is whatever would put it back. Removing
+        // the table while `nftables.service` still replays `/etc/nftables.conf`
+        // is a firewall that returns at the next restart, reported as off.
+        let (path, service) = Self::persistence_target(executor)?;
+
+        // Emptied rather than deleted, and the choice is measured: `nft -f` on
+        // an empty file exits 0 and leaves the ruleset empty, which is exactly
+        // what a boot should replay now. Deleting it would leave the unit
+        // pointing at a path that is gone — a service that fails at every boot
+        // rather than one with nothing to do — and removing a file is not
+        // something this tool's file editor offers, deliberately.
+        use crate::domain::FileEditor as _;
+
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        if files.exists(executor, path)? {
+            files.write(executor, path, "")?;
+        }
+
+        Self::disable_at_boot(executor, service)?;
+
+        Ok(())
     }
 
     fn allow(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<()> {

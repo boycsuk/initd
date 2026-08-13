@@ -597,8 +597,8 @@ pub enum Msg {
     KeyBarHistory,
     KeyBarBack,
     KeyBarOutput,
-    KeyBarHideOutput,
-    KeyBarShowOutput,
+    KeyBarHideDetail,
+    KeyBarShowDetail,
     KeyBarStop,
     KeyBarScroll,
     /// What `y` does in the output pane.
@@ -975,6 +975,7 @@ pub enum Msg {
         tried: String,
     },
     TaskFirewallInactive,
+    TaskFirewallDisabled,
     TaskFirewallDefaultDeny,
     TaskFirewallNoOpenPorts,
     TaskFirewallPortOpen {

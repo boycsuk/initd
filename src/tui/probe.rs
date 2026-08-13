@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
-use crate::backend::Capability;
+use crate::backend::{Capability, firewall_for};
 use crate::distro::Distro;
 use crate::tasks::Node;
 
@@ -229,6 +229,25 @@ fn measure(
     backend: &dyn crate::backend::Backend,
     capability: Capability,
 ) -> Presence {
+    // The one capability where "present" is not a question about software. `nft`
+    // being installed says nothing about whether this host is filtering, and a
+    // row that offered to *disable* a firewall on the strength of a package
+    // being there would offer it on every Debian, none of which filter until
+    // told to. What the row reports is the policy, so that is what is measured.
+    if capability == Capability::Nftables {
+        return match firewall_for(backend, executor) {
+            Ok(Some(firewall)) => match firewall.state(executor) {
+                Ok(state) if state.active => Presence::Present,
+                Ok(_) => Presence::Absent,
+                Err(_) => Presence::Unknown,
+            },
+            // Nothing installed is nothing filtering, which is the same answer
+            // the row needs: it goes on offering to enable.
+            Ok(None) => Presence::Absent,
+            Err(_) => Presence::Unknown,
+        };
+    }
+
     if backend.has_package_for(capability) {
         let package = backend.package_for(capability);
 

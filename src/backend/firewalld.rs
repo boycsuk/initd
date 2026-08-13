@@ -243,6 +243,24 @@ impl FirewallManager for Firewalld {
         Ok(executor.run(&command)?.success())
     }
 
+    fn disable(&self, executor: &dyn Executor) -> Result<()> {
+        // Simpler than the nftables inverse, because firewalld *is* the thing
+        // filtering: stop the daemon and the host stops filtering. There is no
+        // table of this tool's own to remove, and the stored zone
+        // configuration is left alone deliberately — the ports an
+        // administrator added over months are not this task's to discard, and
+        // a daemon that is not running enforces none of them anyway.
+        //
+        // `disable --now` mirrors the `enable --now` above: stopping without
+        // disabling is a firewall that returns at the next reboot, which this
+        // task would have reported as off.
+        let command = Command::new("systemctl")
+            .args(["disable", "--now", "firewalld"])
+            .privileged();
+
+        run_checked(executor, &command)
+    }
+
     fn enable(&self, executor: &dyn Executor, keep_open: &[(u32, Protocol)]) -> Result<()> {
         // The ports go in before the daemon starts, which is the opposite of
         // the nftables implementation's problem and for the same reason. There
