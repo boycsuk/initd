@@ -226,23 +226,36 @@ a command that broke.
   only in whether the operator can fix it, which is why one names a task and the
   other names a distribution.
 
-  **Not in the flag column**, which shows one marker: `firewall.manage-ports`
-  already spends it on `!`, and trading "this can lock you out" for "run
-  firewall.enable first" would give up the more urgent sentence for the more
-  actionable one.
+  **The row refuses `Enter` as well as saying why.** It is dimmed and carries
+  `-` in the flag column, exactly as a task the distribution cannot run is
+  dimmed and carries `·`: both are rows the key declines, and the detail pane is
+  what tells them apart. The key bar drops its `Enter` hint there rather than
+  promising an action the row will decline.
+
+  That marker outranks `!`, which looks wrong and is not. `!` warns that acting
+  on the row could end the session; a row whose precondition is unmet will not
+  act at all, so the warning describes something that cannot happen while the
+  marker describes why the key does nothing.
+
+  Saying so without refusing was the first version, and it was worse than
+  either: `firewall.manage-ports` still collected a set of ports and still
+  opened its red lockout dialog before the guard inside the task refused —
+  a sequence of decisions spent on an outcome that was never available.
 
   Nine tasks declare one today: `firewall.manage-ports` needs a policy, the four
   that edit `sshd_config` need an SSH server, and `wireguard.add-peer`,
   `docker.rootless`, `caddy.validate` and `caddy.security-headers` each need the
   thing they configure.
 
-  **Silent until measured.** The check runs on the same background probe as the
-  install/uninstall verbs, which has no privilege escalation by design — it must
-  never raise a password prompt over somebody reading the tree — so a check it
-  could not run is an ordinary outcome rather than an edge case. That state says
-  nothing at all: a row warning about a precondition nobody measured is worse
-  than a row saying nothing. The task's own guard remains the barrier either
-  way; this only decides what the row *says*. With a category selected it shows the category name and how many tasks
+  **Silent until measured, and pressable until measured.** The check runs on the
+  same background probe as the install/uninstall verbs, which has no privilege
+  escalation by design — it must never raise a password prompt over somebody
+  reading the tree — so a check it could not run is an ordinary outcome rather
+  than an edge case. That state says nothing and refuses nothing: a row greyed
+  out on the strength of a question nobody managed to ask is one the operator
+  can neither run nor explain. The task's own guard is still there, and it asks
+  the host at the moment it would act rather than reporting what was last
+  measured. With a category selected it shows the category name and how many tasks
   it holds at any depth.
 
   It **shares the right-hand pane with Output**, description above and
@@ -352,9 +365,10 @@ Meaning is carried by a glyph, never by colour alone, so a monochrome or
 | Marker | Meaning |
 |--------|---------|
 | `›` | The row opens onto another level |
+| `·` | The task is not supported on this host |
+| `-` | The task is supported, and something must run before it — the detail pane names what |
 | `!` | The task can lock me out of the machine |
 | `…` | The task collects parameters before it runs |
-| `·` | The task is not supported on this host |
 | `?` | The row's verb has not been settled yet |
 | `•` | The subject was already here before this session — the row offers to install something the host already has, and has no inverse verb to switch to instead |
 
@@ -362,6 +376,13 @@ A row carries at most one flag, and they rank in that order: a task that both
 risks a lockout and takes parameters shows `!`, since the warning outranks the
 notice. `!` marks the lockout tier alone, not every task that confirms —
 almost all of them do, and a marker on nearly every row names none of them.
+
+The two that refuse the key come first, which is the ordering worth explaining.
+A row the distribution cannot run and a row waiting on another task are both
+rows `Enter` declines, so what they carry has to say *that* before it says
+anything about what the task would have done. `firewall.manage-ports` on a host
+with no policy shows `-` rather than `!`: the lockout warning describes a risk
+of acting, and the row will not act.
 
 **The five flags are also listed in the help overlay**, in the colours they are
 drawn in, so this table is not the only place they are explained. It was, and
