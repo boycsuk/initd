@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
@@ -79,6 +80,24 @@ const SECTIONS: &[Section] = &[
             ("/", Msg::HelpFind),
             ("h", Msg::HelpHistory),
             ("Esc ←", Msg::HelpBack),
+        ],
+    },
+    // The one section that is not keys. A row's flag is the only thing on
+    // screen that carries meaning without a word beside it, so it is the only
+    // thing an operator can see and be unable to look up: `docs/ui.md` has the
+    // table, and the whole point of this overlay is being the answer on a
+    // server where the docs are not.
+    //
+    // Placed after the tree, which is where the markers are drawn, and before
+    // the modal sections that only appear once something has been pressed.
+    Section {
+        title: Msg::HelpSectionMarkers,
+        keys: &[
+            (style::MARKER_DANGER, Msg::HelpMarkerDanger),
+            (style::MARKER_INPUT, Msg::HelpMarkerInput),
+            (style::MARKER_UNSUPPORTED, Msg::HelpMarkerUnsupported),
+            (style::MARKER_PRESENT, Msg::HelpMarkerPresent),
+            (style::MARKER_PROBING, Msg::HelpMarkerProbing),
         ],
     },
     Section {
@@ -156,6 +175,27 @@ fn glyph_for(lang: Lang, key: &'static str, description: &Msg) -> String {
         Msg::HelpFilter => lang.render(&Msg::HelpTypeGlyph),
         Msg::HelpAutoRevert => lang.render(&Msg::HelpWaitGlyph),
         _ => key.to_owned(),
+    }
+}
+
+/// How the glyph column is drawn for one entry.
+///
+/// A row marker keeps the colour it has in the tree; everything else is a key
+/// and is drawn as one. The legend has to *look* like what it explains — an
+/// operator asking about a red `!` is asking about the colour as much as the
+/// glyph, and answering in the colour of a key glyph would explain something
+/// they cannot match to the row that sent them here.
+///
+/// Matched on the marker constants rather than on the message, so the pairing
+/// is with the thing actually drawn: a marker whose colour changes in
+/// `style.rs` changes here too, and one renamed fails to compile.
+fn glyph_style(key: &'static str) -> Style {
+    match key {
+        style::MARKER_DANGER => style::FLAG_DANGER,
+        style::MARKER_INPUT => style::FLAG_INPUT,
+        style::MARKER_UNSUPPORTED => style::FLAG_UNSUPPORTED,
+        style::MARKER_PRESENT | style::MARKER_PROBING => style::BLOCK_SUBTITLE,
+        _ => style::KEYBAR_KEY,
     }
 }
 
@@ -251,7 +291,7 @@ fn build_lines(lang: Lang) -> Vec<Line<'static>> {
             let glyph = glyph_for(lang, key, description);
 
             lines.push(Line::from(vec![
-                Span::styled(format!("  {glyph:<12}"), style::KEYBAR_KEY),
+                Span::styled(format!("  {glyph:<12}"), glyph_style(key)),
                 Span::styled(lang.render(description), style::NORMAL),
             ]));
         }
@@ -377,6 +417,51 @@ mod tests {
         assert!(area.width <= 60);
         assert!(area.height <= 15);
         assert!(!lines(Lang::En).is_empty(), "something must still be shown");
+    }
+
+    #[test]
+    fn every_marker_the_tree_draws_is_explained_here() {
+        // A flag is the only thing on screen carrying meaning with no word
+        // beside it, so it is the only thing an operator can see and be unable
+        // to look up. `docs/ui.md` has the table; this overlay is the answer on
+        // a server where the docs are not.
+        //
+        // Asserted against the constants rather than a copy of them, so a
+        // marker added to the tree and forgotten here fails rather than
+        // shipping unexplained.
+        let markers = SECTIONS
+            .iter()
+            .find(|section| matches!(section.title, Msg::HelpSectionMarkers))
+            .expect("the overlay must carry a marker legend");
+
+        for drawn in [
+            style::MARKER_DANGER,
+            style::MARKER_INPUT,
+            style::MARKER_UNSUPPORTED,
+            style::MARKER_PRESENT,
+            style::MARKER_PROBING,
+        ] {
+            assert!(
+                markers.keys.iter().any(|(glyph, _)| *glyph == drawn),
+                "{drawn:?} is drawn on rows but not explained in the overlay"
+            );
+        }
+    }
+
+    #[test]
+    fn a_marker_keeps_the_colour_it_has_on_the_row() {
+        // The legend has to look like what it explains: someone asking about a
+        // red `!` is asking about the colour as much as the glyph, and a legend
+        // drawing it as a key glyph answers about something else.
+        assert_eq!(glyph_style(style::MARKER_DANGER), style::FLAG_DANGER);
+        assert_eq!(glyph_style(style::MARKER_INPUT), style::FLAG_INPUT);
+        assert_eq!(
+            glyph_style(style::MARKER_UNSUPPORTED),
+            style::FLAG_UNSUPPORTED
+        );
+
+        // And a key is still drawn as a key.
+        assert_eq!(glyph_style("Tab"), style::KEYBAR_KEY);
     }
 
     #[test]
