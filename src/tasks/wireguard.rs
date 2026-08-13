@@ -391,6 +391,18 @@ impl Task for AddPeer {
         let config = format!("{dir}/{INTERFACE}.conf");
         let files = backend.files();
 
+        // Before the read, because `read` on a file that is not there is a
+        // `cat` failure: the operator asking to add a peer to a server they
+        // never installed was told `cat: /etc/wireguard/wg0.conf: No such file
+        // or directory`, which names neither this tool nor the task that
+        // creates it. The error that says so already existed and was reachable
+        // only from the *other* direction — a file that was read and held no
+        // `PrivateKey` line. `wireguard.status` has guarded this since it was
+        // written; this path never did.
+        if !files.exists(executor, &config)? {
+            return Err(Error::WireguardNotConfigured);
+        }
+
         let existing = files.read(executor, &config)?;
 
         // Two peers sharing an address is a tunnel where the second one to
@@ -1029,6 +1041,7 @@ mod tests {
         // copy from carrying it back across the SSH hop into a clipboard
         // history — the disclosure `write_uncopied` refuses on disk.
         let mock = MockExecutor::with_replies([
+            Reply::ok(""),                                           // the config exists
             Reply::ok(format!("[Interface]\nPrivateKey = {KEY}\n")), // existing config
             Reply::ok(format!("{KEY}\n")),                           // genkey
             Reply::ok(format!("{KEY}\n")),                           // pubkey
@@ -1064,6 +1077,42 @@ mod tests {
     }
 
     #[test]
+    fn adding_a_peer_to_no_server_names_the_task_that_installs_one() {
+        // The failure used to be `cat: /etc/wireguard/wg0.conf: No such file or
+        // directory` — a message naming neither this tool nor the step that was
+        // missed. The error that says so already existed and was reachable only
+        // from the other direction: a file that *was* read and held no
+        // `PrivateKey` line.
+        let mock = MockExecutor::with_replies([Reply::failure(1, "")]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(AddPeer::NAME, "phone".to_owned());
+        values.set(AddPeer::ADDRESS, "10.89.0.2".to_owned());
+        values.set(AddPeer::ENDPOINT, "203.0.113.7:51820".to_owned());
+
+        let err = AddPeer
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect_err("a peer must not be added to a server that is not there");
+
+        assert!(
+            matches!(err, Error::WireguardNotConfigured),
+            "the refusal must name the missing server: {err:?}"
+        );
+
+        // Nothing may be written, and no key generated for a peer that cannot
+        // be recorded anywhere.
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|line| line.contains("tee")),
+            "nothing may be written: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
     fn a_peer_cannot_take_an_address_another_holds() {
         // Two peers on one address is a tunnel where the second to connect
         // takes the first one's traffic, and neither reports an error.
@@ -1071,7 +1120,7 @@ mod tests {
             "[Interface]\nPrivateKey = {KEY}\n\n# laptop\n[Peer]\nAllowedIPs = 10.89.0.2/32\n"
         );
 
-        let mock = MockExecutor::with_replies([Reply::ok(existing)]);
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok(existing)]);
         let backend = for_family(Family::Debian);
 
         let mut values = ParamValues::new();
@@ -1132,6 +1181,7 @@ mod tests {
         let existing = format!("[Interface]\nPrivateKey = {KEY}\n");
 
         let mock = MockExecutor::with_replies([
+            Reply::ok(""),       // the config exists
             Reply::ok(existing), // read the config
             Reply::ok(KEY),      // genkey
             Reply::ok(KEY),      // genpsk
@@ -1193,6 +1243,7 @@ mod tests {
         let existing = format!("[Interface]\nPrivateKey = {KEY}\n");
 
         let mock = MockExecutor::with_replies([
+            Reply::ok(""),       // the config exists
             Reply::ok(existing), // read the config
             Reply::ok(KEY),      // genkey
             Reply::ok(KEY),      // genpsk
