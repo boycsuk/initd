@@ -368,14 +368,55 @@ for_each_image! {
         let output = run_with_ssh_ready(
             image,
             "initd run ssh.harden-strict >/dev/null 2>&1; \
-             ssh -Q cipher > /tmp/supported; \
+             ssh -Q cipher > /tmp/supported 2>/dev/null; \
              grep '^Ciphers ' /etc/ssh/sshd_config | cut -d' ' -f2 | tr ',' '\\n' \
-               | grep -vxF -f /tmp/supported | wc -l",
+               > /tmp/written; \
+             echo supported=$(wc -l < /tmp/supported); \
+             echo written=$(wc -l < /tmp/written); \
+             echo unsupported=$(grep -vxF -f /tmp/supported /tmp/written | wc -l)",
         );
         let stdout = stdout_of(&output);
 
+        // Three counts rather than one, because the lone `0` could not tell
+        // "nothing unsupported was written" from "there was nothing to check".
+        // Both inputs can be empty for reasons that have nothing to do with the
+        // task: `ssh` is a separate package on Rocky and both openSUSE images —
+        // measured, absent after `install_ssh` alone — so `ssh -Q` writes
+        // nothing when the cached image's client install did not happen; and
+        // busybox `grep -vxF -f` against an *empty* pattern file answers zero
+        // unmatched where GNU grep answers every line. Measured on alpine:3.23
+        // against debian:13: 0 and 2 for the same input. So on Alpine the two
+        // failures compounded into a green test.
         assert!(
-            has_line(&stdout, "0"),
+            !has_line(&stdout, "supported=0"),
+            "the local ssh must be able to list its ciphers — is the client \
+             installed on {}?: {stdout}",
+            image.family
+        );
+
+        // RHEL declines this tier entirely — its shipped `50-redhat.conf` is
+        // read first and carries the crypto policies this tier would set — so
+        // the task writes nothing and `written=0` is the right answer there.
+        // Asserted rather than skipped: a family that started writing a
+        // `Ciphers` line despite declaring the task unsupported is a change
+        // worth failing on.
+        if image.family == "rhel" {
+            assert!(
+                has_line(&stdout, "written=0"),
+                "RHEL declines this tier, so no Ciphers line may be written: \
+                 {stdout}"
+            );
+
+            return;
+        }
+
+        assert!(
+            !has_line(&stdout, "written=0"),
+            "the task must have written a Ciphers line to check on {}: {stdout}",
+            image.family
+        );
+        assert!(
+            has_line(&stdout, "unsupported=0"),
             "every written cipher must be supported on {}: {stdout}",
             image.family
         );
@@ -390,14 +431,44 @@ for_each_image! {
         let output = run_with_ssh_ready(
             image,
             "initd run ssh.harden-strict >/dev/null 2>&1; \
-             ssh -Q kex > /tmp/supported; \
+             ssh -Q kex > /tmp/supported 2>/dev/null; \
              grep '^KexAlgorithms ' /etc/ssh/sshd_config | cut -d' ' -f2 | tr ',' '\\n' \
-               | grep -vxF -f /tmp/supported | wc -l",
+               > /tmp/written; \
+             echo supported=$(wc -l < /tmp/supported); \
+             echo written=$(wc -l < /tmp/written); \
+             echo unsupported=$(grep -vxF -f /tmp/supported /tmp/written | wc -l)",
         );
         let stdout = stdout_of(&output);
 
+        // The same three counts as the cipher scenario beside it, and for the
+        // same reason: an empty `ssh -Q` or a missing directive turned the lone
+        // `0` into a pass that had checked nothing.
         assert!(
-            has_line(&stdout, "0"),
+            !has_line(&stdout, "supported=0"),
+            "the local ssh must be able to list its kex algorithms — is the \
+             client installed on {}?: {stdout}",
+            image.family
+        );
+
+        // RHEL declines this tier, as in the cipher scenario above.
+        if image.family == "rhel" {
+            assert!(
+                has_line(&stdout, "written=0"),
+                "RHEL declines this tier, so no KexAlgorithms line may be \
+                 written: {stdout}"
+            );
+
+            return;
+        }
+
+        assert!(
+            !has_line(&stdout, "written=0"),
+            "the task must have written a KexAlgorithms line to check on {}: \
+             {stdout}",
+            image.family
+        );
+        assert!(
+            has_line(&stdout, "unsupported=0"),
             "every written kex algorithm must be supported on {}: {stdout}",
             image.family
         );
