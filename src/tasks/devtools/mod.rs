@@ -76,13 +76,15 @@ pub fn category() -> Category {
                     Node::Task(Box::new(SetGitSafeDirectory)),
                 ],
             )),
-            Node::Category(Category::new(
-                "GitHub",
-                vec![Node::Reversible {
-                    forward: Box::new(InstallGithubCli),
-                    inverse: Box::new(UninstallGithubCli),
-                }],
-            )),
+            // Flat rather than a category of its own, unlike Git beside it. The
+            // reason to nest is a row count that crowds its neighbours, and one
+            // row crowds nobody: a category holding a single task costs a
+            // keystroke to open and shows exactly what its own title already
+            // said. Git keeps its category because it contributes five.
+            Node::Reversible {
+                forward: Box::new(InstallGithubCli),
+                inverse: Box::new(UninstallGithubCli),
+            },
         ],
     )
 }

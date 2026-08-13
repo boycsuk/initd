@@ -54,12 +54,19 @@ const IP_FORWARD: Setting = Setting {
 pub fn category() -> Category {
     Category::new(
         "WireGuard",
+        // Install first, then status, then peers — the order the operations
+        // actually happen in. Status led the list by the same reasoning the
+        // firewall category uses, that knowing the state precedes changing it;
+        // that holds where the thing exists, and WireGuard is the category an
+        // operator most often opens on a host that has none. A status row above
+        // the install answers "no tunnel is configured" to somebody who has not
+        // configured one yet.
         vec![
-            Node::Task(Box::new(WireguardStatus)),
             Node::Reversible {
                 forward: Box::new(InstallWireguard),
                 inverse: Box::new(UninstallWireguard),
             },
+            Node::Task(Box::new(WireguardStatus)),
             Node::Task(Box::new(AddPeer)),
         ],
     )
