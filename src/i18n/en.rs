@@ -659,6 +659,41 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::ConfirmLockoutWarning => "This operation can lock you out of a server you reach \
              over SSH. Make sure you have another way in before continuing."
             .to_owned(),
+        // Names the port and says whether it is the right one, which the generic
+        // sentence above cannot: "make sure you have another way in" is true
+        // here and unactionable, and this dialog is the last place the value can
+        // still be changed.
+        //
+        // The agreeing case still warns rather than reassuring. `sshd -T` says
+        // what the daemon serves, not how the operator reached it — a jump host,
+        // a forwarded port or a provider console all end up here — so "these
+        // match, you are safe" would be a promise made on evidence that does not
+        // support it.
+        Msg::ConfirmFirewallLockout {
+            port,
+            listening,
+            agrees,
+        } => {
+            if *agrees {
+                format!(
+                    "Everything except {port}/tcp stops answering the moment this runs, \
+                     including anything else this host serves.\n\n\
+                     If you are connected over SSH, {port} is the port keeping that \
+                     connection alive — this host's sshd is listening on it, which is \
+                     why it is filled in. Changing it to a port sshd does not serve \
+                     ends your session, and only a console can undo that."
+                )
+            } else {
+                format!(
+                    "Everything except {port}/tcp stops answering the moment this runs, \
+                     including anything else this host serves.\n\n\
+                     This host's sshd is listening on {listening}, not {port}. If you \
+                     are connected over SSH, this closes the port carrying your session \
+                     and leaves open one nothing answers on — and only a console can \
+                     undo that. Use {listening} unless you know why not."
+                )
+            }
+        }
         // The path and the size are the whole point. "Also delete the home
         // directory?" is a question answered by habit; a sentence naming
         // /home/deploy and 2.4 GB is one that gets read.

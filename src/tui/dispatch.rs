@@ -25,6 +25,7 @@ use super::history::History;
 use super::search::Search;
 use crate::exec::{OutputLine, Stream};
 use crate::i18n::Msg;
+use crate::tasks::network::EnableFirewall;
 use crate::tasks::params::{LiveDefault, ParamValues, Suggestions};
 use crate::tasks::users::{Credentials, DeleteUser, Examined, LockRoot, escalated_from};
 use crate::tasks::{Confirmation, Node};
@@ -833,6 +834,7 @@ impl App {
                 let warning = match task.id() {
                     LockRoot::ID => self.lockout_warning(),
                     DeleteUser::ID => self.deletion_warning(),
+                    EnableFirewall::ID => self.firewall_warning(),
                     _ => self.lang.render(&Msg::ConfirmLockoutWarning),
                 };
 
@@ -919,6 +921,39 @@ impl App {
     /// A path that cannot be measured says so instead of reporting zero. An
     /// unreadable directory and an empty one are different facts, and "(0 B)"
     /// understates the stake by exactly the amount that matters.
+    /// Names the port about to be the only one admitted, and what that means
+    /// for a session reaching this host over SSH.
+    ///
+    /// The generic lockout sentence — "this can lock you out, make sure you
+    /// have another way in" — is true here and useless: it says nothing about
+    /// *which* port decides, and this dialog is the last place the operator can
+    /// still change it. Reported as a task asking for a port with no stated
+    /// reason, which the field's own hint answers in six words and the dialog
+    /// has room to answer properly.
+    ///
+    /// The port comes from what was just typed rather than from the host, on
+    /// purpose: the value being confirmed is the one that will be applied, and
+    /// a warning quoting anything else would describe a different operation.
+    pub(super) fn firewall_warning(&self) -> String {
+        let Ok(port) = self.pending_values.port(EnableFirewall::SSH_PORT) else {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        // What the daemon is actually serving, so the warning can say whether
+        // the two agree. A mismatch is the case that ends the session, and it
+        // is invisible to an operator who has not thought about it.
+        let listening = crate::tasks::sshd_config::effective_port(
+            self.executor.as_ref(),
+            self.backend.path_for(crate::backend::Capability::Ssh),
+        );
+
+        self.lang.render(&Msg::ConfirmFirewallLockout {
+            port,
+            listening,
+            agrees: port == listening,
+        })
+    }
+
     pub(super) fn deletion_warning(&self) -> String {
         let Ok(user) = self.pending_values.get(DeleteUser::USER) else {
             return self.lang.render(&Msg::ConfirmLockoutWarning);

@@ -669,6 +669,11 @@ pub enum Msg {
     /// the time this is on screen the operator has already decided to proceed
     /// and the useful sentence is the one they can act on.
     ConfirmLockoutWarning,
+    ConfirmFirewallLockout {
+        port: u32,
+        listening: u32,
+        agrees: bool,
+    },
     /// The lockout warning for `users.lock-root`, heading the accounts that
     /// keep access.
     ///

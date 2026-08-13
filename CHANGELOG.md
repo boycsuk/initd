@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The firewall's confirmation names the port and what getting it wrong
+  costs.** It showed the generic lockout sentence — "this operation can lock
+  you out of a server you reach over SSH, make sure you have another way in" —
+  which is true here and unactionable: it names no port, and that dialog is the
+  last place the value can still be changed.
+
+  It now reads like `users.lock-root`'s, which was the shape asked for: a red
+  block naming the port about to be the only one admitted, and saying plainly
+  that a session arriving over SSH depends on it. Where the value disagrees
+  with what `sshd -T` reports the host is serving, it says so and names the
+  port to use instead — the case that ends the session, and the one an operator
+  who has not thought about it cannot see.
+
+  The agreeing case still warns rather than reassuring. `sshd -T` says what the
+  daemon serves, not how the operator reached it: a jump host, a forwarded port
+  or a provider console all end up here, so "these match, you are safe" would
+  be a promise made on evidence that does not support it.
+
 - **The firewall row now offers to disable when the host is already
   filtering.** Reported as a row offering to enable a firewall that was plainly
   on. `firewall.enable` and a new `firewall.disable` share a row like every
