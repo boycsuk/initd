@@ -92,7 +92,16 @@ const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 const DOCKER_ROOTLESS_PACKAGE: &str = "docker-ce-rootless-extras";
 
 /// Where Docker serves packages for Red Hat Enterprise Linux itself.
-const DOCKER_REPO_RHEL: &str = "https://download.docker.com/linux/rhel";
+/// The `$releasever/$basearch/stable` tail is what upstream's own `.repo` file
+/// carries, and dnf expands both variables from the running host. It was absent
+/// here, which is a different mistake from the one the comment below guards
+/// against: the path resolved to the archive root, which serves no metadata at
+/// all. Measured — `.../linux/centos/9/x86_64/stable/repodata/repomd.xml`
+/// answers 200 and `.../linux/centos/repodata/repomd.xml` answers 404, so every
+/// install here failed at `dnf install` reporting a repository it could not
+/// download.
+const DOCKER_REPO_RHEL: &str =
+    "https://download.docker.com/linux/rhel/$releasever/$basearch/stable";
 
 /// Where it serves the rebuilds — Rocky, AlmaLinux, CentOS Stream.
 ///
@@ -100,7 +109,8 @@ const DOCKER_REPO_RHEL: &str = "https://download.docker.com/linux/rhel";
 /// for the rebuilds and another for Red Hat's own, and pointing a host at the
 /// wrong one yields a repository whose `$releasever` resolves to nothing it
 /// carries.
-const DOCKER_REPO_CENTOS: &str = "https://download.docker.com/linux/centos";
+const DOCKER_REPO_CENTOS: &str =
+    "https://download.docker.com/linux/centos/$releasever/$basearch/stable";
 
 /// Where each path serves its signing key.
 ///
@@ -723,8 +733,25 @@ mod tests {
             .repository_for(Capability::DockerRootless)
             .expect("docker must resolve");
 
-        assert!(rhel.base_url.ends_with("/rhel"), "{}", rhel.base_url);
-        assert!(rocky.base_url.ends_with("/centos"), "{}", rocky.base_url);
+        assert!(rhel.base_url.contains("/rhel/"), "{}", rhel.base_url);
+        assert!(rocky.base_url.contains("/centos/"), "{}", rocky.base_url);
+
+        // And both must name a release and an architecture. This asserted only
+        // the family segment, which is why the missing tail went unnoticed: the
+        // archive root answers 404 for `repodata/repomd.xml`, so every install
+        // failed at `dnf install` reporting a repository it could not download.
+        // Measured — `.../centos/9/x86_64/stable/repodata/repomd.xml` answers
+        // 200. dnf expands both variables itself; what it cannot do is invent
+        // the path they belong in.
+        for repository in [&rhel, &rocky] {
+            assert!(
+                repository
+                    .base_url
+                    .ends_with("/$releasever/$basearch/stable"),
+                "a repository root serves no metadata: {}",
+                repository.base_url
+            );
+        }
     }
 
     #[test]
