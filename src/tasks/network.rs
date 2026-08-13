@@ -201,18 +201,16 @@ impl Task for EnableFirewall {
             // second label as an unrelated question — reported as exactly that
             // — and the answer they skip past is the one keeping their session
             // alive.
-            // The hint warns rather than describes, and it names no number.
-            // Recommending "22" would be recommending the value that locks out
-            // every host whose SSH has moved — the defect this field was just
-            // fixed for — and the port already shown is the one this host is
-            // serving, read from `sshd -T`. What an operator needs told is not
-            // which port to type but what happens if it is wrong, which is the
-            // one thing no other field on this form can cost them.
+            // No warning on the field, by request. It was tried twice — beside
+            // the label, then on a row of its own — and both were rejected as
+            // clutter on a dialog whose whole content is one number. What the
+            // warning said is not lost: the task's description carries it above
+            // this form, and the confirmation that follows states it in full
+            // with the port named, which is the screen that actually stands
+            // between the operator and the change.
             Param::new(Self::SSH_PORT, "Port to keep open", ParamKind::Port)
                 .with_initial(DEFAULT_SSH_PORT.to_string())
-                .defaulting_to_live(LiveDefault::SshPort)
-                .with_hint("wrong port here ends this session")
-                .warning_hint(),
+                .defaulting_to_live(LiveDefault::SshPort),
         ]
     }
 

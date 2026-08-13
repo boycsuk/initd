@@ -634,14 +634,7 @@ fn header_line(field: &Field, lang: Lang, width: usize, focused: bool) -> Line<'
         // than a retry, and the danger colour is worth exactly as much as it is
         // rare — spending it on "must appear in /etc/shells" would spend it on
         // nothing.
-        Span::styled(
-            hint,
-            if field.param.hint_warns {
-                style::DANGER_TEXT
-            } else {
-                style::BLOCK_SUBTITLE
-            },
-        ),
+        Span::styled(hint, style::BLOCK_SUBTITLE),
         Span::styled(" ".repeat(gap), style::NORMAL),
         Span::styled(options, style::BLOCK_SUBTITLE),
         Span::styled("  ", style::NORMAL),
@@ -738,31 +731,6 @@ mod tests {
         let empty = Field::new(Param::new("user", "Username", ParamKind::Username));
 
         assert_eq!(header_of(&empty), "Username a username is required");
-    }
-
-    #[test]
-    fn a_warning_hint_is_drawn_in_the_danger_colour() {
-        // One field in the tree carries a hint where being wrong costs the
-        // machine rather than a retry, and it is the only one: colouring the
-        // others would spend the signal that means "this can lock you out" on
-        // "must appear in /etc/shells".
-        // A short label, so the row has room for the hint: what this test is
-        // about is the colour, and a hint dropped for width would pass the
-        // "not drawn in danger" check for the wrong reason.
-        let field = Field::new(
-            Param::new("port", "Port", ParamKind::Port)
-                .with_hint("wrong port here ends this session")
-                .warning_hint(),
-        );
-
-        let line = header_line(&field, Lang::En, layout::DIALOG_WIDTH as usize, true);
-        let hint = line
-            .spans
-            .iter()
-            .find(|span| span.content.contains("ends this session"))
-            .expect("the warning must be drawn");
-
-        assert_eq!(hint.style, style::DANGER_TEXT);
     }
 
     #[test]
