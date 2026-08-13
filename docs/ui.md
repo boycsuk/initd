@@ -65,10 +65,12 @@ a form occupies the middle of it, an unsupported row is dimmed and flagged —
 and what a task *did* is reported in the output pane, beside the commands that
 produced it. See *Failure reports*.
 
-What went with it and has no replacement: the spinner and wall-clock timer that
-distinguished a quiet command from a session that had stopped answering. The
-output pane's write cursor is what is left of that signal, and it neither moves
-nor counts.
+What went with it were the spinner and wall-clock timer that distinguished a
+quiet command from a session that had stopped answering. For a while nothing
+replaced them and the output pane's write cursor was the whole signal, which
+neither moves nor counts. Both are back in the header while a task runs, where
+they cost no rows and can name the task as well — see *What the interface says it
+is doing*.
 
 The body's split follows the terminal width:
 
@@ -179,6 +181,14 @@ a command that broke.
   "this will need a password" is known before a task is started rather than
   when one fails. A `? help` hint is right-aligned when the width allows, and
   dropped rather than wrapped when it does not.
+
+  **While a task runs it says so instead.** The distribution and the privilege
+  mechanism give way to a turning throbber, the running task's id and an elapsed
+  `m:ss`; the name and hostname stay, and the two facts come back when the task
+  ends. They are the right ones to spend: neither changes, and what is happening
+  now is the more urgent question. Below 72 columns the header shows the
+  `tasks / output` indicator instead, since nothing else would say which pane
+  `Tab` is showing.
 - **Task tree** — the navigable list of categories and tasks. Left column.
   Navigation is **drill-down**: exactly one level is on screen at a time, and
   opening a category replaces the list with its contents. Category rows are
@@ -349,21 +359,59 @@ and what a task *did* is said by the output pane.
 
 | Situation | How it is shown |
 |-----------|-----------------|
-| A task is running | The output pane streams its lines; `▌` marks where the next lands |
+| A task is running | The header names it beside a turning throbber and the time it has run; the output pane streams its lines, `▌` marking where the next lands |
+| A stop has been asked for | The key bar drops `Ctrl-C stop` for `stopping after this command` |
 | A task succeeded | Its output, and any consequences it declared, in the pane |
 | A task failed | A `FAILED` block in the pane — see *Failure reports* |
 | A task was stopped | A `STOPPED` block naming the command it stopped before |
 | A change is applied, not yet kept | The verification banner, with its countdown and both keys |
 | A confirmation is open | The dialog itself, centred and modal |
 | A form is collecting values | The form itself, centred and modal |
+| A first `Esc` has armed a discard | The dialog's `Esc` hint reads `again to discard` |
 | The selected task cannot run here | The row is dimmed and flagged; the detail pane says why |
 
+**The header answers "is anything happening" while a task runs.** It trades the
+distribution and the privilege mechanism — two facts that do not change, and
+both back the moment the task ends — for a throbber, the task's id, and an
+elapsed `m:ss`. Before this the only sign of life was the output pane's write
+cursor, which neither moves nor counts, so a command that is merely slow (an
+`apt-get` resolving mirrors over a laggy link) was indistinguishable from a
+session that had stopped answering. The reflex that follows is closing the
+terminal, and closing the terminal raises `SIGHUP` — which reverts an unrelated
+unkept change. The id is there for the same reason the hostname is: it answers
+*what* is running, not only *that* something is.
+
+The count is elapsed time rather than progress. A task's command count is not
+known before it runs, so a percentage would be invented, and the throbber is
+indexed off elapsed time rather than a counter — the event loop already redraws
+on a timeout it has, so the animation costs no extra wakeups and no state. The
+words beside it carry the meaning either way, so a terminal without the braille
+glyphs loses nothing.
+
+**A stop that has been asked for is acknowledged.** Cancellation is refused
+between commands rather than interrupting the one in flight, so a task mid-`dnf`
+can absorb a minute before anything else changes. For that minute the screen was
+byte-identical to before the keypress and still advertised the key — so the
+keypress read as dropped, and pressing it again is silently ignored. The label
+says `stopping after this command` rather than `stopping`, which would read as
+"killed": the command in flight is still changing the machine.
+
 **What this gives up.** A refusal that answers a keystroke — pressing `Enter` on
-an unsupported row, `q` while a task runs — now produces no message. The screen
+an unsupported row, `q` while a task runs — produces no message. The screen
 does not change, which is indistinguishable from a key that never arrived. The
 dimmed row and its flag are what remain for the unsupported case; the others say
 nothing at all. Accepted deliberately: a word in the corner describing a dialog
 that occupies the middle of the screen was the larger cost.
+
+Two keys are **not** covered by that, and the difference is what the silence
+costs. `Ctrl-C` during a task and the first `Esc` over a dialog holding typed
+values are both *accepted* rather than refused — they change state and then wait,
+so a screen that does not move reports the opposite of what happened. Worse, the
+reflex each one invites is pressing the same key again, and for `Esc` the second
+press is what discards the work: an invisible guard turns a one-press loss into a
+two-press loss instead of preventing one. Both now say what they did. The rule
+this leaves is narrower than "acknowledge every key": a key that changed
+something says so, a key that was refused need not.
 
 **Every word in this document's tables is the English rendering.** All
 user-facing text — the key bar's labels, the help overlay, the verification
@@ -507,7 +555,11 @@ list has to be re-derived rather than remembered.
 
 `gauge` is the substantive one left: it implies a progress element with a real
 design question behind it, since a task's command count is not known before it
-runs. `result_fail` and the three markers are small, and waiting on a place to
+runs. That is why the running indicator counts *elapsed time* instead — seconds
+are measured where a percentage would be invented. The one place a gauge would be
+honest is the verification window, whose denominator is known exactly; it is not
+drawn there either, because the countdown already states the same number in
+words. `result_fail` and the three markers are small, and waiting on a place to
 put them rather than on a decision.
 
 `consequence` and `consequence_external` were a fourth case, and a worse one:
@@ -535,8 +587,31 @@ by name, and a grep for the constant found nothing.
 | `Tab` | Move focus between the tree and the output |
 | `o` | Fold the task description away, giving the whole right pane to the output — and back. Offered only once there is output. Nothing is discarded either way: the description is redrawn from the selected task, the transcript is untouched, and focus is left alone because the output stays drawn in both states |
 | `Ctrl-L` | Repaint every cell — except in a form, where it opens the field's list |
-| `?` | Open the help overlay |
+| `?` | Open the help overlay, over whatever is on screen — including a dialog, the verification window and the recorded changes |
 | `q` | Quit, from any level and either pane |
+| *(paste)* | Pasted text goes into the field being edited, and is dropped anywhere else |
+
+**`?` means anywhere, including the three states that most need it.** The overlay
+draws *over* what it was opened on top of rather than instead of it, which is why
+it can be asked for from a modal at all. It was unreachable from the confirmation
+dialog, the verification window and the recorded changes for as long as those
+handlers ignored the key — the dialog that is about to change the machine, the
+window with a timer running whose two answers are capitals, and the view whose
+`Enter` restores a configuration file. The states with the least room for a wrong
+guess were the three that could not ask.
+
+**Pasting is a distinct event, not a run of keystrokes.** Bracketed paste is
+enabled at startup and disabled on exit, so a paste arrives whole. Without it the
+text arrives one key at a time and a trailing newline lands on the form's `Enter`
+arm — so pasting a public key, which is how a key is entered far more often than
+it is typed, submitted the form on whatever had arrived so far, and on a
+multi-field form the remainder went into the wrong field. The text is inserted
+through the field itself, so what a value accepts decides what survives: the
+newline is filtered where every other character is, rather than being special-cased.
+Outside a field a paste is discarded — the tree and the output pane act on keys,
+and replaying a paste's characters there would run whatever they happen to be
+bound to. A terminal that does not understand the request simply never sends the
+event, and the old path still works.
 
 The arrows mean "next" and "previous" in both panes, so something has to say
 which one they address. That something is `Tab` and **nothing else**:
@@ -732,6 +807,14 @@ one is the problem.
 other key in between disarms it, so a stale prompt cannot be answered by a
 keystroke aimed at something else. An untouched form closes on the first `Esc`,
 since there is nothing to lose.
+
+**The asking is visible**, in the footer, where `Esc cancel` becomes
+`Esc again to discard`. It was not for as long as the armed state was computed
+and never drawn: the first press changed nothing on screen, which is exactly what
+a dropped keypress looks like, and the reflex that invites is pressing `Esc`
+again — the press that throws the values away. A guard nobody can see converts a
+one-press loss into a two-press loss rather than preventing one. The ports table
+draws the same hint for the same reason.
 
 A field rejects characters its kind cannot contain — a port field takes only
 digits — so a value that could never be accepted cannot be typed at all. Long
@@ -955,10 +1038,18 @@ reports where it got to under a `STOPPED` heading naming the command it stopped
 *before*; a task that finished first is reported as done, with the near miss
 said out loud rather than silently dropped.
 
-Nothing signals that a task is still alive beyond the output it produces. A
-spinner and a wall-clock timer used to ride the status border for exactly that —
-over a slow link a quiet command and a frozen screen are otherwise
-indistinguishable — and they went with it. The write cursor is what is left.
+**That a task is alive is said by the header**, which names it beside a turning
+throbber and the time it has run. A spinner and a wall-clock timer used to ride
+the status border for exactly that, and went with it when the status line was
+removed; the write cursor was what remained, and it neither moves nor counts. The
+signal is back in the header rather than in a band of its own, so it costs no
+rows — and it names *which* task, which the status line never did. See *What the
+interface says it is doing*.
+
+**Asking to stop is acknowledged too.** The key bar drops `Ctrl-C stop` for
+`stopping after this command` the moment the request lands, so the minute a
+`dnf install` may take before anything else changes is not a minute of screen
+that looks like a dropped keypress.
 
 ### Verification window (semi-modal)
 
@@ -971,8 +1062,19 @@ started until this change is settled.
 | `K` | Keep the change |
 | `R` | Put the previous configuration back now |
 | `↑` / `↓` / `PageUp` / `PageDown` | Scroll the output |
+| `?` | Open the help overlay, drawn over the window |
 | *timer* | Puts the change back on its own after 60 seconds |
 | *anything else* | Refused, restating what the two answers are |
+
+**The banner outranks the pane the operator chose.** Below 72 columns one pane is
+drawn at a time and `Tab` chooses which — and the tool never moves focus, so with
+the cursor where it starts, a narrow terminal drew an ordinary task list while a
+configuration file was already written and sixty seconds from being put back.
+Nothing on screen said so: no countdown, no `K`/`R`, and the key bar is dropped
+below 24 rows as well. At that width the window now takes the body whether or not
+the output pane holds the focus. 60×15 is inside the supported range — a phone
+SSH client, a split tmux pane — and a safety state that `Tab` can hide is one the
+operator has to already know about in order to find.
 
 `K` and `R` are **uppercase deliberately**. They were capitals because `k` was
 "move up" everywhere else, and they stay capitals now that it means nothing:
@@ -1001,12 +1103,25 @@ all. In both the change stays applied. Stating the limit is what makes the rest
 of the banner trustworthy; a promise with a silent exception teaches people to
 disbelieve all of it.
 
+**That line was written, documented here, and drawn at no terminal size for as
+long as the banner had a fixed height.** The layout gave the banner five rows for
+its top border and *five* lines, so the last one fell outside the area — measured
+at 60×15, 72×24, 80×24, 100×30 and 120×40, absent from every one. The banner
+therefore promised the revert unconditionally, which is the exact failure the
+line exists to prevent, in the one place this document argues hardest that a
+silent exception is corrosive. The height is now derived from the lines
+themselves rather than chosen beside them, because the defect was not the number
+five: it was that two things which must agree were free to be edited apart. A
+test asserts the sentence reaches the buffer at each of those sizes, since
+`Wrap` is on and a longer translation would push it out again.
+
 ### Confirmation dialog (modal)
 
 | Key | Action |
 |-----|--------|
 | `Tab` / `←` / `→` | Switch between Yes and No |
 | `↑` / `↓` / `k` / `j` | Scroll the warning, where it has more than it shows |
+| `?` | Open the help overlay, drawn over the dialog |
 | `y` | Apply |
 | `n` / `Esc` | Cancel |
 | `Enter` | Confirm the current answer |
@@ -1021,6 +1136,13 @@ grow past the terminal, where centring clamps it and the answers at the bottom
 are what disappear. So the band is capped and scrolls instead, and the scroll
 hint appears only on a dialog that has rows below the fold: a key hint for a
 key that moves nothing is how a bar stops being read.
+
+`j` and `k` scroll it although the tree no longer takes them. They were added
+here when it did, and are kept because this dialog can hold more than it shows,
+neither letter means anything else in this state, and a hand already on them
+loses nothing. `n` is deliberately not among them: it is the safe answer, and a
+key that sometimes scrolls and sometimes cancels is one nobody presses with
+confidence.
 
 ## Running a privileged task
 

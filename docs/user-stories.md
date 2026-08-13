@@ -701,21 +701,37 @@ TUI or CLI:
     read and switch panes.
   - Acceptance: a write cursor marks where the next line will land, so a quiet
     command is distinguishable from a screen that has stopped updating.
-  - Known limit: the cursor neither moves nor counts. A spinner and an elapsed
-    clock went with the status line and have no replacement, so over a slow link
-    a long silence looks the same whether the command or the connection is the
-    one that stopped. The executor's own silence deadline is what eventually
-    answers it, not anything on screen.
+  - Acceptance: the header names the running task beside a turning throbber and
+    the time it has run, so a command that has gone quiet is distinguishable
+    from a session that has stopped answering — and I can tell *which* task is
+    the one taking the time. The write cursor neither moves nor counts, which is
+    why it is not the only signal.
+  - Known limit: the count is elapsed time, not progress. A task's command count
+    is not known before it runs, so a percentage would be invented; what the
+    screen offers is evidence that something is still happening, not an estimate
+    of when it will end.
   - Acceptance: I am asked for my password once, before the interface starts,
     rather than each time a task needs root.
   - TUI exception: the CLI prints output to the terminal as it arrives and has
     no interface to keep responsive.
+- As an **administrator**, I can ask what the keys are from wherever I am stuck,
+  so that not knowing which key to press is never the thing that traps me.
+  - Acceptance: `?` opens the key list from anywhere, including on top of a
+    dialog asking me to confirm a change, the window counting down to revert
+    one, and the list of recorded changes. Those are the states where a wrong
+    guess costs the most and where the keys are least familiar.
+  - Acceptance: the overlay draws over what I was looking at rather than
+    replacing it, so I do not lose my place, and closing it returns me to the
+    same state.
+  - TUI exception: the CLI answers the same question with `--help`.
 - As an **administrator**, I can stop a running task without leaving the
   machine half-configured.
   - Acceptance: stopping takes effect between two commands, never in the middle
     of one.
   - Acceptance: until the current step finishes, the tool says it is *stopping*
-    rather than claiming it has stopped.
+    rather than claiming it has stopped — on screen, from the moment I ask. The
+    key I pressed stops being offered and the bar reads `stopping after this
+    command`, so the wait is not mistaken for a keypress that never landed.
   - Acceptance: once stopped, I am told where it got to.
   - Acceptance: I cannot quit while a task is running; I am told to stop it
     first.
@@ -736,7 +752,15 @@ TUI or CLI:
     countdown dying with it.
   - Acceptance: I am told what the automatic revert cannot survive, instead of
     being left to assume it survives everything. A killed-outright process and
-    a machine losing power both leave the change applied.
+    a machine losing power both leave the change applied. The sentence saying so
+    is on screen — it was written, and drawn outside the banner at every
+    terminal size, so the tool promised more than it could keep for as long as
+    the banner's height was fixed independently of its content.
+  - Acceptance: the window is on screen whatever the size of my terminal and
+    whichever pane I was reading. On a narrow one — a phone client, a split
+    pane — the panes are shown one at a time, and the window used to be reachable
+    only by pressing the key that switches them: I would have had to already know
+    a change was pending in order to find out that one was.
   - Acceptance: keeping the change needs a deliberate keypress that no
     navigation key can produce by accident.
   - Acceptance: I cannot quit, or start another task, while a change is
@@ -761,7 +785,12 @@ TUI or CLI:
     rather than cut, and the field's verdict keeps its place. Half a sentence
     reads as a defect, and the verdict is the part of the row I cannot work
     without.
-  - Acceptance: cancelling a form I have typed into asks before discarding it.
+  - Acceptance: cancelling a form I have typed into asks before discarding it,
+    and says so — the hint changes to `again to discard`, so the first `Esc` is
+    not mistaken for a key that was dropped and answered by pressing it again.
+  - Acceptance: I can paste a value rather than typing it. A pasted public key
+    fills the field whole, including when what I pasted ends in a newline, which
+    does not submit the form.
   - TUI exception: the CLI supplies these values as arguments instead, and
     refuses `initd run` for such a task, naming the values it needs.
 - As an **administrator**, I can change the port SSH listens on so that the
@@ -872,9 +901,10 @@ TUI or CLI:
   - Acceptance: when the task ends, its report is on screen. A task that
     narrates more lines than the pane is tall would otherwise finish with the
     outcome below the last visible row, showing me the middle of the run.
-  - Known limit: nothing tells me a task is still alive except the output it
-    produces. Over a slow link a command that has gone quiet and a session that
-    has stopped answering look the same.
+  - Acceptance: the header tells me the task is still alive independently of
+    what it prints — a throbber that turns, the task's id, and how long it has
+    been going. Over a slow link a quiet command and a stalled session no longer
+    look the same.
   - Platform exception: the TUI shows it in a scrollable pane; the CLI prints
     it as it arrives.
 - As an **administrator**, I can install a task's dependencies on a host whose
