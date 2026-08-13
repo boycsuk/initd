@@ -242,15 +242,16 @@ mod tests {
     #[test]
     fn changing_the_port_writes_and_validates() {
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"),   // read
-            Reply::ok(""),            // test -e
-            Reply::ok(""),            // cp
-            Reply::ok(""),            // tee
-            Reply::ok("600"),         // stat -c %a
-            Reply::ok(""),            // chmod
-            Reply::ok(""),            // mv
-            Reply::ok(""),            // sshd -t
-            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::ok("Port 22\n"),        // read
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp
+            Reply::ok(""),                 // tee
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv
+            Reply::ok(""),                 // sshd -t
+            Reply::ok("port 2222\n"),      // sshd -T: what the daemon would do
             // Recording the change. Refused rather than answered, which is a
             // state the tool has to handle anyway: no record is kept and the
             // task carries on. Scripted explicitly so the replies below still
@@ -282,15 +283,16 @@ mod tests {
         // daemon may bind, so a reload onto an unlabelled port leaves a daemon
         // that will not start — from a file `sshd -t` approved.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"),   // read
-            Reply::ok(""),            // test -e
-            Reply::ok(""),            // cp
-            Reply::ok(""),            // tee
-            Reply::ok("600"),         // stat -c %a
-            Reply::ok(""),            // chmod
-            Reply::ok(""),            // mv
-            Reply::ok(""),            // sshd -t
-            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::ok("Port 22\n"),        // read
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp
+            Reply::ok(""),                 // tee
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv
+            Reply::ok(""),                 // sshd -t
+            Reply::ok("port 2222\n"),      // sshd -T: what the daemon would do
             // Recording the change. Refused rather than answered, which is a
             // state the tool has to handle anyway: no record is kept and the
             // task carries on. Scripted explicitly so the replies below still
@@ -335,15 +337,16 @@ mod tests {
         // policy that is not managed — reported as an error the administrator
         // would have to interpret, over a port that needed no label.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"),   // read
-            Reply::ok(""),            // test -e
-            Reply::ok(""),            // cp
-            Reply::ok(""),            // tee
-            Reply::ok("600"),         // stat -c %a
-            Reply::ok(""),            // chmod
-            Reply::ok(""),            // mv
-            Reply::ok(""),            // sshd -t
-            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::ok("Port 22\n"),        // read
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp
+            Reply::ok(""),                 // tee
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv
+            Reply::ok(""),                 // sshd -t
+            Reply::ok("port 2222\n"),      // sshd -T: what the daemon would do
             // Recording the change. Refused rather than answered, which is a
             // state the tool has to handle anyway: no record is kept and the
             // task carries on. Scripted explicitly so the replies below still
@@ -375,15 +378,16 @@ mod tests {
         // The four families that have no policy answer from a constant, so
         // the task's question costs them nothing — no command, no process.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"),   // read
-            Reply::ok(""),            // test -e
-            Reply::ok(""),            // cp
-            Reply::ok(""),            // tee
-            Reply::ok("600"),         // stat -c %a
-            Reply::ok(""),            // chmod
-            Reply::ok(""),            // mv
-            Reply::ok(""),            // sshd -t
-            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::ok("Port 22\n"),        // read
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp
+            Reply::ok(""),                 // tee
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv
+            Reply::ok(""),                 // sshd -t
+            Reply::ok("port 2222\n"),      // sshd -T: what the daemon would do
             // Recording the change. Refused rather than answered, which is a
             // state the tool has to handle anyway: no record is kept and the
             // task carries on. Scripted explicitly so the replies below still
@@ -427,15 +431,16 @@ mod tests {
         // Debian's ssh.socket owns the port; editing sshd_config alone would
         // silently do nothing.
         let mock = MockExecutor::with_replies([
-            Reply::ok("Port 22\n"),   // read
-            Reply::ok(""),            // test -e
-            Reply::ok(""),            // cp
-            Reply::ok(""),            // tee
-            Reply::ok("600"),         // stat -c %a
-            Reply::ok(""),            // chmod
-            Reply::ok(""),            // mv
-            Reply::ok(""),            // sshd -t
-            Reply::ok("port 2222\n"), // sshd -T: what the daemon would do
+            Reply::ok("Port 22\n"),        // read
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp
+            Reply::ok(""),                 // tee
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv
+            Reply::ok(""),                 // sshd -t
+            Reply::ok("port 2222\n"),      // sshd -T: what the daemon would do
             // Recording the change, refused rather than answered — a state the
             // tool handles by keeping no record and carrying on. Scripted so
             // the replies below still answer the questions they name.

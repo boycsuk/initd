@@ -12,7 +12,7 @@ use super::form::Form;
 use super::history::History;
 use super::output::OutputPane;
 use super::ports::PortTable;
-use super::probe::{InstalledState, Probe};
+use super::probe::{InstalledState, Probe, RequirementState};
 use super::search::Search;
 use super::signals::Hangup;
 use super::verify::Verification;
@@ -225,6 +225,15 @@ pub struct App {
     /// holds no executor by construction, and this is what keeps that true
     /// while still letting a row show the verb the machine justifies.
     pub(super) presence: InstalledState,
+
+    /// Whether each task's stated requirements already hold.
+    ///
+    /// Cached beside `presence` and for the same reason, and read by the tree
+    /// so a row whose precondition is unmet says so *before* `Enter` rather
+    /// than refusing after it. Advisory: the task's own guard is still the
+    /// barrier, and a requirement the probe could not measure leaves the row
+    /// exactly as it was.
+    pub(super) readiness: RequirementState,
     /// A measurement in flight, if one is.
     ///
     /// Dropped when a task starts: the probe is read-only, but its answers
@@ -313,6 +322,7 @@ impl App {
         let probe = Probe::start(
             distro.clone(),
             super::probe::subjects_in(tasks::tree().as_slice()),
+            super::probe::requirements_in(tasks::tree().as_slice(), backend.as_ref()),
         );
 
         Self {
@@ -335,6 +345,7 @@ impl App {
             ran_with: ParamValues::new(),
             running: None,
             presence: InstalledState::default(),
+            readiness: RequirementState::default(),
             probe: Some(probe),
             verification: None,
             help: None,
@@ -1294,6 +1305,7 @@ mod tests {
                      deploy:x:1001:1001::/home/deploy:/bin/bash\n",
                 ),
                 crate::exec::mock::Reply::ok("cosmin sudo"),
+                crate::exec::mock::Reply::ok(""), // sudo grants cosmin something
                 crate::exec::mock::Reply::failure(1, ""), // cosmin: no key
                 crate::exec::mock::Reply::ok("cosmin:$6$a$b:19000:0:99999:7:::"),
                 crate::exec::mock::Reply::ok("deploy users"), // deploy: cannot escalate
@@ -3599,6 +3611,49 @@ mod tests {
 
         press(&mut app, KeyCode::Esc);
         assert!(app.form.is_none(), "the second press discards");
+    }
+
+    #[test]
+    fn a_row_says_what_must_run_first_before_enter_is_pressed() {
+        // The case that prompted the mechanism. `firewall.manage-ports` refuses
+        // without a policy and names `firewall.enable` — a good refusal, and
+        // one an operator only meets by pressing Enter. From the tree the row
+        // was drawn exactly like one that would work.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "firewall.manage-ports");
+
+        // Nothing measured yet: `Unknown` must say nothing at all, since the
+        // probe has no privilege broker and "could not ask" is its ordinary
+        // answer rather than an edge case.
+        let unmeasured = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            !unmeasured.contains("Not ready yet"),
+            "an unmeasured requirement must not be drawn as unmet:\n{unmeasured}"
+        );
+
+        app.readiness.record(
+            "firewall.manage-ports",
+            crate::tui::probe::Readiness::Blocked {
+                missing: "firewall.enable",
+            },
+        );
+
+        let blocked = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            blocked.contains("firewall.enable"),
+            "the row must name the task that unblocks it:\n{blocked}"
+        );
+
+        // And once the host meets it, the sentence goes away rather than
+        // lingering as a warning about something already done.
+        app.readiness
+            .record("firewall.manage-ports", crate::tui::probe::Readiness::Ready);
+
+        let ready = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            !ready.contains("Not ready yet"),
+            "a satisfied requirement must say nothing:\n{ready}"
+        );
     }
 
     #[test]

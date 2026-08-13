@@ -215,6 +215,8 @@ pub enum Msg {
     DockerEngineAbsent,
     /// A Caddy task was asked for on a host with no Caddy.
     CaddyAbsent,
+    /// An `sshd_config` task was asked for on a host with no sshd.
+    SshdAbsent,
     /// Validation was asked for against a Caddyfile that does not exist.
     CaddyfileAbsent {
         path: String,
@@ -601,6 +603,14 @@ pub enum Msg {
     // the sentences the pane wraps around them do.
     /// Why a task the host cannot run is refused. The reason is the task's,
     /// measured per family, and is interpolated as written.
+    /// A task supported here whose precondition this host does not meet yet.
+    ///
+    /// Names the task that satisfies it rather than describing the state, so
+    /// the sentence is an instruction: the operator's next keystroke is running
+    /// what it names.
+    DetailRequires {
+        task: String,
+    },
     DetailUnsupported {
         family: String,
         reason: String,
@@ -1021,6 +1031,18 @@ pub enum Msg {
         user: String,
         group: String,
     },
+    /// One account in the group that `sudo` itself grants nothing.
+    ///
+    /// Separate from the line above, which describes what the *distribution*
+    /// ships. This is what an administrator did to this host: the group's rule
+    /// was taken out of `sudoers`, so membership reads back true and buys
+    /// nothing. Asked of sudo rather than parsed out of the file, and by exit
+    /// code rather than by reading its answer — `sudo -l -U <user> <command>`
+    /// exits non-zero where nothing is granted, which is a verdict rather than
+    /// a sentence in somebody else's language.
+    TaskAccountSudoGrantsNothing {
+        user: String,
+    },
     /// One account that can escalate and holds no credential at all.
     TaskAccountCannotAuthenticate {
         user: String,
@@ -1217,6 +1239,15 @@ pub enum Msg {
     TaskFishNotForRoot,
     TaskMiseUseShims,
     TaskGitNeedsIdentity,
+    /// A git setting was written on a host with no git.
+    ///
+    /// A note rather than a refusal, and the distinction is what the write
+    /// does: these tasks put lines in a configuration file, which is harmless
+    /// and correct ahead of the install — the file is read when git arrives.
+    /// What was wrong was saying nothing: "identity set" on a host with no git
+    /// is a true sentence that reads as a working setup, and nothing else on
+    /// screen would have contradicted it.
+    TaskGitNotInstalledYet,
     TaskGithubCliNeedsToken,
     TaskGitIdentitySet {
         user: String,

@@ -472,7 +472,33 @@ fn detail(frame: &mut Frame, app: &App, area: Rect) {
                     reason: reason.to_owned(),
                 })
             ),
-            None => task.description().to_owned(),
+            // Supported here, and possibly not yet *possible* here. A
+            // precondition the host does not meet is said in the same place and
+            // the same shape as a refusal by family, because they answer the
+            // same question — why pressing Enter will not do what the row
+            // offers — and differ only in whether the operator can fix it.
+            //
+            // Below the description rather than in the flag column: the column
+            // shows one marker, and `firewall.manage-ports` already spends it
+            // on `!`. Losing "this can lock you out" to make room for "run
+            // firewall.enable first" would trade the more urgent sentence for
+            // the more actionable one.
+            None => match app.readiness.of(task.id()) {
+                super::probe::Readiness::Blocked { missing } => format!(
+                    "{}\n\n{}",
+                    task.description(),
+                    app.lang.render(&Msg::DetailRequires {
+                        task: missing.to_owned(),
+                    })
+                ),
+                // `Unknown` says nothing, deliberately: the probe has no
+                // privilege broker, so a check it could not run is the expected
+                // answer rather than an edge case, and drawing it as unmet
+                // would put a sentence on screen nobody measured.
+                super::probe::Readiness::Ready | super::probe::Readiness::Unknown => {
+                    task.description().to_owned()
+                }
+            },
         }
     } else if let Some(Node::Category(category)) = app.selected_node() {
         app.lang.render(&Msg::DetailCategoryContents {

@@ -13,6 +13,33 @@ use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Progress, Task, report, supported_everywhere};
 
+/// The program every task in this file configures.
+const GIT_BINARY: &str = "git";
+
+/// Says so when git is not here yet, without refusing the write.
+///
+/// The three configuration tasks write files rather than running `git config`
+/// — deliberately, since it is the same write with one fewer program involved
+/// and keeps root from following a symlinked `~/.gitconfig`. The cost of that
+/// choice is that none of them can *discover* git is missing: they wrote their
+/// line, reported "identity set", and were entirely inert on a host with no
+/// git. A true sentence that reads as a working setup.
+///
+/// A note rather than a refusal, because writing ahead of the install is
+/// harmless and may be deliberate — the file is read when git arrives. What was
+/// wrong was the silence, not the write.
+fn note_if_git_is_absent(
+    executor: &dyn Executor,
+    backend: &dyn Backend,
+    progress: Progress<'_>,
+) -> Result<()> {
+    if !backend.binaries().is_installed(executor, GIT_BINARY)? {
+        report(progress, &Msg::TaskGitNotInstalledYet);
+    }
+
+    Ok(())
+}
+
 /// Installs git.
 pub struct InstallGit;
 impl Task for InstallGit {
@@ -160,12 +187,14 @@ impl Task for SetGitIdentity {
         )?;
 
         report(
-            progress,
+            &mut *progress,
             &Msg::TaskGitIdentitySet {
                 user: user.clone(),
                 email,
             },
         );
+
+        note_if_git_is_absent(executor, backend, progress)?;
 
         Ok(Outcome::Done)
     }
@@ -239,7 +268,9 @@ impl Task for SetGitSafeDirectory {
 
         backend.files().write(executor, config, &contents)?;
 
-        report(progress, &Msg::TaskGitDirectoryTrusted { path });
+        report(&mut *progress, &Msg::TaskGitDirectoryTrusted { path });
+
+        note_if_git_is_absent(executor, backend, progress)?;
 
         Ok(Outcome::Done)
     }
@@ -297,7 +328,9 @@ impl Task for SetGitDefaultBranch {
 
         backend.files().write(executor, config, &contents)?;
 
-        report(progress, &Msg::TaskGitDefaultBranchSet { branch });
+        report(&mut *progress, &Msg::TaskGitDefaultBranchSet { branch });
+
+        note_if_git_is_absent(executor, backend, progress)?;
 
         Ok(Outcome::Done)
     }

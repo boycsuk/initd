@@ -12,7 +12,9 @@ use crate::domain::sysctl::Setting;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
 use crate::i18n::{Msg, SysctlHolding};
-use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
+use crate::tasks::consequence::{
+    Check, Consequence, External, Protocol as WarnProtocol, Reason, Requirement,
+};
 use crate::tasks::params::{LiveDefault, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
@@ -511,6 +513,31 @@ impl Task for ManagePorts {
                 .with_hint("port/protocol, space separated"),
             Param::new(Self::PORTS_WERE, "Previously open", ParamKind::PortList).optional(),
         ]
+    }
+
+    /// A policy to add rules to, which `firewall.enable` is what creates.
+    ///
+    /// The guard in `run` already refuses without one and names that task; this
+    /// is the same fact where the *tree* can read it, so the row says so before
+    /// a key is pressed rather than after. It was the case that prompted the
+    /// mechanism: on a host with no firewall this row is drawn exactly like one
+    /// that would work.
+    fn requires(&self, backend: &dyn Backend) -> Vec<Requirement> {
+        // No front-end at all is a different refusal — `NoFirewallFrontEnd` —
+        // and not one another task fixes, so there is nothing to require.
+        let Some(firewall) = backend.firewalls().first() else {
+            return Vec::new();
+        };
+
+        let (command, needle) = firewall.active_check();
+
+        vec![Requirement {
+            task: EnableFirewall::ID,
+            check: Check {
+                command,
+                resolved_when_stdout_contains: needle,
+            },
+        }]
     }
 
     supported_everywhere!();

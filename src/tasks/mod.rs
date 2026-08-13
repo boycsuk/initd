@@ -260,6 +260,35 @@ pub trait Task {
         None
     }
 
+    /// What must already be true before this task is worth running.
+    ///
+    /// The inverse of [`consequence::Consequence::Invalidates`], and the edge
+    /// that lets the interface say so *before* a key is pressed. Every guard in
+    /// this tree lives inside a `run`, so the tree drew a row that would refuse
+    /// exactly like one that would work: `firewall.manage-ports` on a host with
+    /// no policy looks, from the tree, like any other runnable row.
+    ///
+    /// **Advisory.** The guard inside `run` stays the barrier — this only
+    /// decides what the row says. Two reasons it cannot be the gate: a check
+    /// costs a command, and one per row per frame would put a second of
+    /// `fork`/`exec` in the path of every keypress; and a check that cannot
+    /// reach the host answers nothing, which must never read as "unsatisfied".
+    /// A row greyed out by a failed probe is one the operator can neither run
+    /// nor explain.
+    ///
+    /// Most tasks require nothing of another task and inherit the empty
+    /// default. What belongs here is a dependency on *this tool's own* tasks,
+    /// not on the world: "the package I install must exist" is a support
+    /// question, and "a token must be issued" is a consequence.
+    /// Takes the backend for the reason [`Self::consequences`] does: the
+    /// command that answers "is this already true" is spelled per family, and a
+    /// task writing it directly would have to pick one. The firewall is the
+    /// case that proves it — `nft list table inet initd` names a table that
+    /// does not exist on RHEL, where the rules live in a firewalld zone.
+    fn requires(&self, _backend: &dyn Backend) -> Vec<consequence::Requirement> {
+        Vec::new()
+    }
+
     /// Which reversible pairs this task's success may have changed.
     ///
     /// Named rather than "everything": re-probing all of them after every task
@@ -737,6 +766,39 @@ mod tests {
         unique.dedup();
 
         assert_eq!(ids.len(), unique.len(), "duplicate task ids: {ids:?}");
+    }
+
+    #[test]
+    fn a_requirement_points_at_a_task_that_exists() {
+        // Same property the consequences have, and for the same reason: a
+        // requirement naming a task is an instruction, and one naming something
+        // that is not in the tree sends the operator looking for a row nobody
+        // built. `mise.activate` is what that costs when nothing checks.
+        let backend = crate::backend::for_family(Family::Debian);
+
+        for task in all_tasks() {
+            for requirement in task.requires(backend.as_ref()) {
+                assert!(
+                    find(requirement.task).is_some(),
+                    "{} requires `{}`, which is not a task in the tree",
+                    task.id(),
+                    requirement.task
+                );
+
+                // A requirement must not name the task that states it: the
+                // sentence it produces is "run X first", and a row telling the
+                // operator to run itself first is one they cannot act on. This
+                // is where a requirement and a consequence differ — a
+                // consequence naming itself is honest, because it is reporting
+                // something no task can do.
+                assert_ne!(
+                    requirement.task,
+                    task.id(),
+                    "{} requires itself, which names no step the operator can take",
+                    task.id()
+                );
+            }
+        }
     }
 
     #[test]

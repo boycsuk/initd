@@ -320,6 +320,55 @@ mod tests {
     }
 
     #[test]
+    fn configuring_git_on_a_host_without_it_says_so() {
+        // The three configuration tasks write files rather than running `git
+        // config`, so none of them can discover git is missing: they wrote
+        // their line, reported "identity set", and were inert. A true sentence
+        // that reads as a working setup, with nothing on screen to contradict
+        // it.
+        //
+        // A note rather than a refusal — writing ahead of the install is
+        // harmless, and the file is read once git arrives. The silence was the
+        // defect, not the write.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("dev:x:1001:1001::/home/dev:/bin/sh"), // getent, for `exists`
+            Reply::ok("dev:x:1001:1001::/home/dev:/bin/sh"), // getent again, for `home_dir`
+            Reply::failure(1, ""),                           // no ~/.gitconfig yet
+            Reply::ok(""),                                   // the owned-directory write
+            Reply::failure(1, ""),                           // git is not installed
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let mut values = ParamValues::new();
+        values.set(SetGitIdentity::USER, "dev".to_owned());
+        values.set(SetGitIdentity::NAME, "Ada Lovelace".to_owned());
+        values.set(SetGitIdentity::EMAIL, "ada@example.com".to_owned());
+
+        let mut reported = String::new();
+
+        SetGitIdentity
+            .run(&mock, backend.as_ref(), &values, &mut |line| {
+                reported.push_str(&line.text);
+                reported.push('\n');
+            })
+            .expect("the write itself still succeeds");
+
+        assert!(
+            reported.contains("git is not installed"),
+            "the absence must be reported: {reported:?}"
+        );
+
+        // The setting is still written: it is read when git arrives.
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line.contains("/home/dev/.gitconfig")),
+            "the file must still be written: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
     fn an_identity_is_written_into_the_accounts_own_file() {
         // `--global` rather than `--system`, and the difference is the whole
         // point: one `user.email` for the machine would attribute every

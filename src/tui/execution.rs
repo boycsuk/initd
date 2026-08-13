@@ -172,9 +172,15 @@ impl App {
             return;
         };
 
-        for measurement in probe.drain() {
-            self.presence
-                .record(measurement.forward_id, measurement.presence);
+        for answer in probe.drain() {
+            match answer {
+                super::probe::Answer::Presence(measurement) => self
+                    .presence
+                    .record(measurement.forward_id, measurement.presence),
+                super::probe::Answer::Readiness(measured) => {
+                    self.readiness.record(measured.task_id, measured.readiness)
+                }
+            }
         }
 
         // Dropped once it has nothing left to say, so `probe.is_some()` means
@@ -199,9 +205,33 @@ impl App {
             return;
         };
 
+        // Requirements are re-measured after *every* task, unlike presences,
+        // which are re-measured only where the task named a pair. A precondition
+        // is a fact about the machine rather than about a row, and the task that
+        // satisfies one rarely belongs to the same pair as the task that needs
+        // it: `firewall.enable` names no pair that `firewall.manage-ports`
+        // belongs to, and it is exactly the run that unblocks it. Keyed off
+        // `affects` here, the one requirement in the tree would never update.
+        //
+        // Forgetting rather than re-measuring inline, for the reason the doc
+        // above records: until the new answer lands the row says nothing, which
+        // is the honest state — `Unknown` draws no warning.
+        self.readiness = super::probe::RequirementState::default();
+
         let affected = task.affects();
 
         if affected.is_empty() {
+            // Still worth a probe: the requirements were just dropped, and
+            // nothing else would ask for them again.
+            self.probe = Some(Probe::start(
+                self.distro.clone(),
+                Vec::new(),
+                super::probe::requirements_in(
+                    crate::tasks::tree().as_slice(),
+                    self.backend.as_ref(),
+                ),
+            ));
+
             return;
         }
 
@@ -225,7 +255,11 @@ impl App {
         // is measuring the machine as it was, so its remaining answers are
         // stale by definition — and the one it is part-way through may be about
         // the very row this task changed.
-        self.probe = Some(Probe::start(self.distro.clone(), subjects));
+        self.probe = Some(Probe::start(
+            self.distro.clone(),
+            subjects,
+            super::probe::requirements_in(crate::tasks::tree().as_slice(), self.backend.as_ref()),
+        ));
     }
 
     /// Records how a finished task ended.

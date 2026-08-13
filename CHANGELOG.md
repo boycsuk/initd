@@ -90,6 +90,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinction deciding whether anything can close it.
 
 ### Fixed
+- **`users.lock-root` took group membership as proof of escalation.** An
+  administrator who takes `%sudo` out of `/etc/sudoers` leaves an account that
+  reads back as a member of a group granting it nothing — so the guard counted
+  it as a way back in and would have approved locking root on a machine nobody
+  can administer. The mechanism for this existed and was applied to one case
+  only: `admin_group_grants_alone` was added for openSUSE, where the
+  distribution ships `%wheel` commented out. This is the same end state reached
+  by a local edit rather than by how the distribution ships, so it is a separate
+  refusal that names sudo and the command to check it with.
+
+  Asked by exit code rather than by reading sudo's answer. Measured on
+  `debian:13`: `sudo -l -U <user>` exits 0 whether or not anything is granted
+  and puts the verdict in a sentence, while `sudo -l -U <user> /bin/true` exits
+  0 or 1. Reading the sentence would mean matching another program's
+  user-facing text, and sudo ships translations for `es`, `ja` and `nl`.
+
+  **Only the refusal is believed**, which openSUSE is why: it ships
+  `ALL ALL=(ALL) ALL` with `Defaults targetpw`, so every account is granted
+  everything *using root's password* — measured on `opensuse/tumbleweed`, where
+  an account in no administrative group at all answers 0. Counting that as a way
+  back in would approve the lockout on the strength of a credential the lockout
+  itself removes. A host with no `sudo` answers "nothing learnt" and leaves the
+  earlier checks as the verdict, rather than refusing a `doas` machine for the
+  absence of a program it does not use.
+
+- **Four SSH tasks wrote `sshd_config` on hosts with no SSH server.** The write
+  is validated by running `sshd -t` over the result — correct, since what
+  matters is the file the daemon will read — but that is also the only thing
+  that would have noticed the daemon was missing, and it notices by failing to
+  run a program that is not there. `ProgramNotFound` then travelled past the
+  branch that restores the backup, so the host was left holding an edited
+  configuration nothing had checked, for a server it does not have. Checked once
+  in `write_validated`, which all four reach through.
+
+- **The three git configuration tasks reported success on hosts with no git.**
+  They write files rather than running `git config` — deliberately, since it is
+  the same write with one fewer program involved and keeps root from following a
+  symlinked `~/.gitconfig` — and the cost of that choice is that none of them
+  can discover git is missing. "identity set" on a host with no git is a true
+  sentence that reads as a working setup. A note rather than a refusal: writing
+  ahead of the install is harmless and the file is read once git arrives, so the
+  silence was the defect and not the write.
+
 - **`fail2ban.install` watched port 22 whatever port SSH was on.** The field
   carried a compiled-in `22` and never read the host, so on a machine where
   `ssh.change-port` had moved the daemon the jail installed, wrote its
@@ -211,6 +254,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a test that asserts what a task refuses proves nothing about what it does.
 
 ### Added
+- **A task can state what must already be true, and the row says so before
+  `Enter` is pressed.** `Task::requires` declares a precondition as a task id
+  and a runnable check — the inverse edge of `Consequence::Invalidates`, and
+  deliberately the same shape. The detail pane reads it: `firewall.manage-ports`
+  on a host with no policy now says *"Not ready yet: run firewall.enable
+  first."* instead of being drawn exactly like a row that would work.
+
+  Every guard in this tree lives inside a `run`, which is why this was needed:
+  the refusals are good — that one names the task and changes nothing — but an
+  operator met them one keystroke at a time.
+
+  **Advisory, never a gate.** The task's own guard stays the barrier. A check
+  costs a command, and one per row per frame would put a second of `fork`/`exec`
+  in the path of every keypress; and the background probe that runs these has no
+  privilege escalation by design, so "could not ask" is its ordinary answer for
+  anything privileged. That state draws nothing, because a row greyed out by a
+  probe that failed is one the operator can neither run nor explain.
+
+  `FirewallManager::active_check` is new for the same reason `open_port_check`
+  exists: the question is spelled per front-end, and a task asking it directly
+  would pick `nft` — which names a table that does not exist on RHEL, where the
+  rules live in a firewalld zone. Both needles were measured rather than
+  assumed; `nft list table inet initd` prints `table inet initd` for an empty
+  table as well as a populated one, so a freshly enabled firewall reads as
+  active.
+
+  A test asserts every requirement resolves to a real task and that none names
+  the task stating it — a row telling the operator to run itself first names no
+  step they can take.
+
 - **The help overlay explains the row markers.** `!`, `…`, `·`, `•` and `?` now
   have a legend under the tree's key list, each drawn in the colour it has on
   the row.

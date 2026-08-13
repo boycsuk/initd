@@ -32,6 +32,31 @@ pub enum Validation {
 /// Markers that mean "sshd could not run", not "the config is wrong".
 const NON_SYNTAX_FAILURES: [&str; 2] = ["no hostkeys available", "unable to load host key"];
 
+/// The daemon's own binary, which is what every task here configures.
+///
+/// `sshd` rather than `ssh`, for the reason `tui::probe` records about the same
+/// name: the client is a separate package on RHEL, so a host with `ssh` on its
+/// `PATH` may have no server at all.
+const SSHD_BINARY: &str = "sshd";
+
+/// Whether this host has an SSH server to configure.
+///
+/// Asked of the binary rather than of a package: the daemon may have arrived
+/// from the distribution or been built, and `sshd` is what both put on the
+/// path. A package query would answer "absent" for a server that is plainly
+/// running.
+///
+/// `is_installed` rather than `is_installed_here`, which is the distinction
+/// that matters and the one this first got wrong. The second asks whether the
+/// binary is in *this tool's own* install directory, which is the right
+/// question before removing something and the wrong one here: `sshd` lives in
+/// `/usr/sbin` on every family, so every SSH task refused on a host that plainly
+/// had a server. Caught by the container suite, which runs the tasks against a
+/// real `openssh-server`.
+fn sshd_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
+    backend.binaries().is_installed(executor, SSHD_BINARY)
+}
+
 /// Runs `sshd -t` and classifies the outcome.
 pub fn validate(executor: &dyn Executor) -> Result<Validation> {
     // `-t` is test mode: parse the config and exit without serving.
@@ -331,6 +356,22 @@ pub fn write_validated(
     contents: &str,
     progress: Progress<'_>,
 ) -> Result<Option<Backup>> {
+    // Before the write, and the only place it needs to be: all four tasks that
+    // edit `sshd_config` reach it through here, which is the shape
+    // `ensure_config_present` already records — fixing it in each is where the
+    // fifth is the one that forgets.
+    //
+    // Ordering below rather than above `write` was the defect. The validation
+    // that follows is what would have noticed the daemon was missing, and it
+    // notices by failing to run a program that is not there: `ProgramNotFound`
+    // then travelled past the branch that restores the backup, leaving the host
+    // holding an edited configuration nothing had checked, for a daemon it does
+    // not have. Writing to `sshd_config` on a machine with no sshd is not a
+    // recoverable near miss — it is a file nobody will ever read.
+    if !sshd_is_present(executor, backend)? {
+        return Err(Error::SshdAbsent);
+    }
+
     let path = backend.path_for(Capability::Ssh);
     let backup = backend.files().write(executor, path, contents)?;
 
@@ -662,6 +703,47 @@ mod tests {
     }
 
     #[test]
+    fn no_config_is_written_for_a_daemon_this_host_does_not_have() {
+        // The validation that follows the write is what would have noticed the
+        // daemon was missing, and it notices by failing to run a program that
+        // is not there — `ProgramNotFound`, raised past the branch that
+        // restores the backup. So the host was left holding an edited
+        // `sshd_config` that nothing had checked, for a server it does not
+        // have, under an error naming `PATH`.
+        //
+        // Exact replies, for the reason the rollback test below records: the
+        // refusal has to land on the presence check and nowhere else.
+        let mock = MockExecutor::with_exact_replies([Reply::failure(1, "")]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        let err = write_validated(
+            &mock,
+            backend.as_ref(),
+            "ssh.harden",
+            "PermitRootLogin no\n",
+            &mut |_| {},
+        )
+        .expect_err("a host with no sshd must be refused");
+
+        assert!(
+            matches!(err, Error::SshdAbsent),
+            "the refusal must name the missing server: {err:?}"
+        );
+
+        // The point of checking before the write rather than after: nothing
+        // may reach the file.
+        let commands = mock.recorded_lines();
+        assert!(
+            !commands.iter().any(|line| line.contains("tee")),
+            "nothing may be written: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|line| line.contains("cp -p")),
+            "and no backup taken of a file about to be left alone: {commands:?}"
+        );
+    }
+
+    #[test]
     fn an_invalid_config_is_rolled_back_and_never_committed() {
         // Strict, because the failing reply has to land on `sshd -t` and
         // nothing but a comment used to say that it did. Insert a command
@@ -670,14 +752,15 @@ mod tests {
         // back, and this test goes on asserting a rollback it caused by
         // accident. The queue is now the claim.
         let mock = MockExecutor::with_exact_replies([
-            Reply::ok(""),                                        // test -e
-            Reply::ok(""),                                        // cp -p: backup
-            Reply::ok(""),                                        // tee: stage
-            Reply::ok("600"),                                     // stat -c %a
-            Reply::ok(""),                                        // chmod
-            Reply::ok(""),                                        // mv: publish
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp -p: backup
+            Reply::ok(""),                 // tee: stage
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv: publish
             Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
-            Reply::ok(""),                                        // cp -p: restore
+            Reply::ok(""),                 // cp -p: restore
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
@@ -711,14 +794,15 @@ mod tests {
         // `?` did here — left an operator reading "command failed" over a
         // config that `sshd -t` had refused, with nothing saying why.
         let mock = MockExecutor::with_exact_replies([
-            Reply::ok(""),                                        // test -e
-            Reply::ok(""),                                        // cp -p: backup
-            Reply::ok(""),                                        // tee: stage
-            Reply::ok("600"),                                     // stat -c %a
-            Reply::ok(""),                                        // chmod
-            Reply::ok(""),                                        // mv: publish
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp -p: backup
+            Reply::ok(""),                 // tee: stage
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv: publish
             Reply::failure(255, "Bad configuration option: Prt"), // sshd -t
-            Reply::failure(1, "cp: cannot create regular file"),  // cp -p: restore
+            Reply::failure(1, "cp: cannot create regular file"), // cp -p: restore
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
@@ -760,6 +844,7 @@ mod tests {
         // `.initd.bak` is reused by the next write to the same path, so a copy
         // left there is the copy the second change destroys.
         let mock = MockExecutor::with_replies([
+            Reply::ok("/usr/sbin/sshd\n"),               // sshd is installed
             Reply::ok(""),                               // test -e: the file exists
             Reply::ok(""),                               // cp -p (write's own backup)
             Reply::ok(""),                               // tee
@@ -813,6 +898,7 @@ mod tests {
         // name a file that no longer exists — in the one message that matters
         // most. Reproduced on alpine:3.23 before it was fixed.
         let mock = MockExecutor::with_replies([
+            Reply::ok("/usr/sbin/sshd\n"),               // sshd is installed
             Reply::ok(""),                               // test -e
             Reply::ok(""),                               // cp -p
             Reply::ok(""),                               // tee
@@ -862,13 +948,14 @@ mod tests {
         // `write` reports no backup for a file it created, and a record
         // claiming a previous version would offer to restore an empty file.
         let mock = MockExecutor::with_replies([
-            Reply::failure(1, ""),  // test -e: no such file
-            Reply::ok(""),          // tee
-            Reply::ok("600"),       // stat
-            Reply::ok(""),          // chmod
-            Reply::ok(""),          // mv
-            Reply::ok(""),          // sshd -t
-            Reply::ok("port 22\n"), // sshd -T
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::failure(1, ""),         // test -e: no such file
+            Reply::ok(""),                 // tee
+            Reply::ok("600"),              // stat
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv
+            Reply::ok(""),                 // sshd -t
+            Reply::ok("port 22\n"),        // sshd -T
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
@@ -936,6 +1023,7 @@ mod tests {
         // saying `passwordauthentication yes`, and `sshd -t` approves. The
         // task reported hardening that had not happened.
         let mock = MockExecutor::with_replies([
+            Reply::ok("/usr/sbin/sshd\n"),             // sshd is installed
             Reply::ok(""),                             // test -e
             Reply::ok(""),                             // cp -p
             Reply::ok(""),                             // tee
@@ -1056,12 +1144,13 @@ mod tests {
     fn missing_host_keys_do_not_roll_back_a_valid_file() {
         // The Arch case: the write must survive an inconclusive validation.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),    // test -e
-            Reply::ok(""),    // cp -p: backup
-            Reply::ok(""),    // tee: stage
-            Reply::ok("600"), // stat -c %a
-            Reply::ok(""),    // chmod
-            Reply::ok(""),    // mv: publish
+            Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
+            Reply::ok(""),                 // test -e
+            Reply::ok(""),                 // cp -p: backup
+            Reply::ok(""),                 // tee: stage
+            Reply::ok("600"),              // stat -c %a
+            Reply::ok(""),                 // chmod
+            Reply::ok(""),                 // mv: publish
             Reply::failure(1, "no hostkeys available -- exiting."),
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Arch);

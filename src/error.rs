@@ -322,6 +322,16 @@ pub enum Error {
     /// modified and nothing to say what had happened.
     CaddyAbsent,
 
+    /// A task that edits `sshd_config` was asked for on a host with no sshd.
+    ///
+    /// The write is validated by running `sshd -t` over the result, which is
+    /// also the only thing that would have noticed the daemon was missing — and
+    /// it notices *after* the file has been written, by failing to start a
+    /// program that is not there. `ProgramNotFound` then travelled past the
+    /// branch that restores the backup, so the host was left holding an edited
+    /// configuration that nothing had checked, for a daemon it does not have.
+    SshdAbsent,
+
     /// Validation was asked for against a Caddyfile that is not there.
     ///
     /// Separate from [`Self::InvalidCaddyfile`] because the two call for
@@ -559,6 +569,7 @@ impl Error {
             Self::NoSubordinateIds { user } => Msg::NoSubordinateIds { user: user.clone() },
             Self::DockerEngineAbsent => Msg::DockerEngineAbsent,
             Self::CaddyAbsent => Msg::CaddyAbsent,
+            Self::SshdAbsent => Msg::SshdAbsent,
             Self::NoUserSession { user } => Msg::NoUserSession { user: user.clone() },
             Self::ChecksumMismatch { program, version } => Msg::ChecksumMismatch {
                 program: program.clone(),
@@ -827,6 +838,7 @@ impl Error {
             // sentence naming the task to run first.
             | Self::DockerEngineAbsent
             | Self::CaddyAbsent
+            | Self::SshdAbsent
             | Self::LockoutRisk { .. } => Vec::new(),
         }
     }

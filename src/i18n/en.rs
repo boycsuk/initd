@@ -211,6 +211,12 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::CaddyAbsent => {
             "caddy is not installed on this host — run caddy.install first".to_owned()
         }
+        // Names the task rather than the binary: `sshd` missing from `PATH` is
+        // what the tool saw, and "install the SSH server" is what the operator
+        // has to do about it.
+        Msg::SshdAbsent => "the SSH server is not installed on this host, so there is no \
+             configuration to change — run ssh.install first"
+            .to_owned(),
         // Says there is nothing to validate rather than that validation failed:
         // the file may never have been written, and "invalid" would send the
         // operator to edit something that is not there.
@@ -589,6 +595,11 @@ pub(super) fn render(message: &Msg) -> String {
         // Both sit under the task's own description, separated from it by a
         // blank line the call site writes: the description is the task's
         // words, and running the two together would read as one sentence.
+        // "not yet" rather than "cannot": the difference from an unsupported
+        // task is that this one becomes possible, and the sentence says how.
+        Msg::DetailRequires { task } => {
+            format!("Not ready yet: run {task} first.")
+        }
         Msg::DetailUnsupported { family, reason } => {
             format!("Not available on {family}: {reason}.")
         }
@@ -1001,6 +1012,13 @@ pub(super) fn render(message: &Msg) -> String {
              /usr/etc/sudoers. Creating an administrator with initd writes a \
              drop-in instead, which is the route that survives an upgrade"
         ),
+        // Names sudo as the thing that answered, because that is what makes the
+        // claim checkable: an operator who disagrees can run the same question.
+        Msg::TaskAccountSudoGrantsNothing { user } => format!(
+            "  {user} — in the administrative group, but sudo grants it nothing \
+             on this host: check `sudo -l -U {user}` and the rules in \
+             /etc/sudoers"
+        ),
         Msg::TaskAccountCannotAuthenticate { user } => {
             format!("  {user} — no authorised key and no usable password")
         }
@@ -1179,6 +1197,14 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskGitNeedsIdentity => {
             "git will refuse to commit until an account has a name and an email \
              — set them with git.identity"
+                .to_owned()
+        }
+        // States what was written and what is missing, in that order: the
+        // setting is real and will be read, and the reason nothing happens yet
+        // is that there is nothing to read it.
+        Msg::TaskGitNotInstalledYet => {
+            "git is not installed on this host, so nothing reads this yet — \
+             run git.install"
                 .to_owned()
         }
         // The headless flow, named exactly, because the default one cannot work

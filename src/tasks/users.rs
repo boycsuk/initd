@@ -9,7 +9,7 @@
 use crate::backend::Backend;
 use crate::domain::account_writer::{LockMethod, PasswordPolicy};
 use crate::error::{Error, Result};
-use crate::exec::Executor;
+use crate::exec::{Command, Executor};
 use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, Reason};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
@@ -77,6 +77,15 @@ pub enum NotAWayIn {
     NotAnAdministrator { group: String },
     /// In the group, on a family where the group grants nothing on its own.
     GroupGrantsNothing { group: String },
+    /// In the group, and `sudo` itself says the account may escalate nothing.
+    ///
+    /// Distinct from [`Self::GroupGrantsNothing`], which is a property of how
+    /// the *distribution* ships: this is a property of this host, where an
+    /// administrator has edited `sudoers` and taken the group's grant out.
+    /// Membership then reads back true and buys nothing, which is the same
+    /// end state by a different route — and the two send an operator to
+    /// different places, so they are separate refusals.
+    SudoGrantsNothing { user: String },
     /// Able to escalate, and holding neither a key nor a usable password.
     CannotAuthenticate,
 }
@@ -135,6 +144,11 @@ impl From<&Examined> for Msg {
                 user,
                 group: group.clone(),
             },
+            Err(NotAWayIn::SudoGrantsNothing { user: named }) => {
+                Self::TaskAccountSudoGrantsNothing {
+                    user: named.clone(),
+                }
+            }
             Err(NotAWayIn::CannotAuthenticate) => Self::TaskAccountCannotAuthenticate { user },
         }
     }
@@ -198,6 +212,52 @@ fn scan_for_a_way_back_in(executor: &dyn Executor, backend: &dyn Backend) -> Res
 /// Existence is not among them, unlike the guard this replaces: every name here
 /// came out of `/etc/passwd`, so an account that did not exist could not be in
 /// the list to be asked about.
+/// A command every host has, asked about only so sudo answers by exit code.
+///
+/// `sudo -l -U <user>` on its own exits 0 whatever the answer and puts the
+/// verdict in a sentence — measured on `debian:13`, where a granted account and
+/// a refused one both exit 0. Naming a command makes the exit code the answer:
+/// 0 where it is allowed, 1 where it is not. Reading the sentence instead would
+/// mean matching another program's user-facing text, which this project has
+/// refused before; sudo ships translations for `es`, `ja` and `nl`, so the
+/// English wording is not a property to rely on.
+const SUDO_PROBE_COMMAND: &str = "/bin/true";
+
+/// Whether `sudo` grants this account anything at all on this host.
+///
+/// Measured across families rather than assumed, and the results differ enough
+/// that only the negative is load-bearing:
+///
+/// - `debian:13` and `rockylinux:9` — 0 for an account the group grants, 1 for
+///   one it does not, and 1 once `%sudo`/`%wheel` is commented out. The case
+///   this check exists for.
+/// - `archlinux` — 1 even for a `wheel` member, because Arch ships `%wheel`
+///   commented out.
+/// - `opensuse/tumbleweed` — **0 for every account**, including one in no
+///   administrative group, because it ships `ALL ALL=(ALL) ALL` with
+///   `Defaults targetpw`: anyone may escalate using *root's* password.
+///
+/// So a positive answer proves nothing — on openSUSE it is granted through the
+/// very password `users.lock-root` is about to remove. Only the refusal is
+/// used, which is why the caller treats this as a veto rather than as a vote.
+///
+/// A host with no `sudo` answers `true`: nothing was learnt, and the checks
+/// that already ran are the verdict. Reporting "sudo grants nothing" on a
+/// `doas` machine would refuse a lockout for the absence of a program that
+/// machine does not use.
+fn sudo_grants_anything(executor: &dyn Executor, user: &str) -> Result<bool> {
+    let command = Command::new("sudo")
+        .args(["-l", "-U", user, SUDO_PROBE_COMMAND])
+        .privileged();
+
+    match executor.run(&command) {
+        Ok(output) => Ok(output.success()),
+        // `sudo` is not installed, or could not be run at all. Not an answer,
+        // and not this check's to turn into one.
+        Err(_) => Ok(true),
+    }
+}
+
 fn examine(
     executor: &dyn Executor,
     backend: &dyn Backend,
@@ -224,6 +284,25 @@ fn examine(
     if !grants_alone {
         return Ok(Err(NotAWayIn::GroupGrantsNothing {
             group: group.to_owned(),
+        }));
+    }
+
+    // Membership says the distribution's rule *should* apply; this asks the
+    // program that decides. An administrator who took `%sudo` out of
+    // `/etc/sudoers` leaves an account that reads back as a member and can
+    // escalate nothing, which the two checks above cannot see: the first asks
+    // the group database and the second is a fact about how the family ships.
+    //
+    // Only a refusal is believed. A "yes" is not evidence, and openSUSE is why:
+    // it ships `ALL ALL=(ALL) ALL` alongside `Defaults targetpw` — measured on
+    // `opensuse/tumbleweed`, where an account in no administrative group at all
+    // is granted everything *with root's password*. Locking root removes that
+    // password, so counting the yes would approve the lockout using a route the
+    // lockout itself closes. Where the answer is positive the earlier checks
+    // remain the verdict.
+    if !sudo_grants_anything(executor, user)? {
+        return Ok(Err(NotAWayIn::SudoGrantsNothing {
+            user: user.to_owned(),
         }));
     }
 
@@ -1488,18 +1567,22 @@ mod tests {
         let mock = MockExecutor::with_replies(vec![
             Reply::ok(passwd(&["alice", "deploy"])),
             Reply::ok("alice sudo"),
-            Reply::failure(1, ""),                            // alice: no key
+            Reply::ok(""),         // sudo grants it something
+            Reply::failure(1, ""), // alice: no key
             Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // alice: a password
             Reply::ok("deploy sudo"),
+            Reply::ok(""),                                   // sudo grants it something
             Reply::failure(1, ""),                           // deploy: no key
             Reply::ok("deploy:$6$xyz$w:19000:0:99999:7:::"), // deploy: a password too
             Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"),   // root is not locked
             // ...and the recheck scans the whole host again.
             Reply::ok(passwd(&["alice", "deploy"])),
             Reply::ok("alice sudo"),
+            Reply::ok(""), // sudo grants it something
             Reply::failure(1, ""),
             Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"),
             Reply::ok("deploy sudo"),
+            Reply::ok(""), // sudo grants it something
             Reply::failure(1, ""),
             Reply::ok("deploy:$6$xyz$w:19000:0:99999:7:::"),
             Reply::ok(""), // the lock itself
@@ -1538,16 +1621,18 @@ mod tests {
                      git:x:998:998::/var/lib/git:/bin/bash\n",
                 ),
                 Reply::ok("git sudo"),
+                Reply::ok(""), // sudo grants it something
                 Reply::ok("git:x:998:998::/var/lib/git:/bin/bash"), // home
-                Reply::ok(""),                                      // the file exists
-                Reply::ok(TEST_KEY),                                // and holds a key
-                Reply::ok("git:!:19000:0:99999:7:::"),              // no password behind it
-                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"),      // root is not locked
+                Reply::ok(""), // the file exists
+                Reply::ok(TEST_KEY), // and holds a key
+                Reply::ok("git:!:19000:0:99999:7:::"), // no password behind it
+                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"), // root is not locked
                 Reply::ok(
                     "root:x:0:0:root:/root:/bin/bash\n\
                      git:x:998:998::/var/lib/git:/bin/bash\n",
                 ),
                 Reply::ok("git sudo"),
+                Reply::ok(""), // sudo grants it something
                 Reply::ok("git:x:998:998::/var/lib/git:/bin/bash"),
                 Reply::ok(""),
                 Reply::ok(TEST_KEY),
@@ -1566,6 +1651,55 @@ mod tests {
     }
 
     #[test]
+    fn membership_is_not_taken_as_proof_that_sudo_grants_anything() {
+        // The case the group check cannot see: an administrator took `%sudo`
+        // out of `/etc/sudoers`, so the account reads back as a member of a
+        // group that now grants it nothing. Counting it would approve locking
+        // root on a machine nobody can administer — which is the one outcome
+        // this guard exists to prevent, reached by a route it could not see.
+        //
+        // Measured on `debian:13`: with `%sudo` commented out,
+        // `sudo -l -U alice /bin/true` exits 1 while `id -nG alice` still
+        // lists `sudo`.
+        // Asserted on the verdict rather than on the whole task's outcome, so
+        // sudo's answer is the only thing under test. Driving `LockRoot` here
+        // makes the reply queue the variable instead: the scan runs out of
+        // replies and refuses for *that* reason, and the test then passes
+        // whether or not the check exists — which the first version of this
+        // did, and which is the shape this project has been caught by before.
+        let refused = MockExecutor::with_replies([
+            Reply::ok("alice sudo"), // the group lists her
+            Reply::failure(1, ""),   // and sudo grants her nothing
+        ]);
+        let backend = crate::backend::for_family(Family::Debian);
+
+        let verdict = examine(&refused, backend.as_ref(), "alice", "sudo", true)
+            .expect("examining an account must not fail");
+
+        assert!(
+            matches!(verdict, Err(NotAWayIn::SudoGrantsNothing { .. })),
+            "membership must not stand in for what sudo grants: {verdict:?}"
+        );
+
+        // The same account with sudo answering yes *is* a way back in, which is
+        // what makes the assertion above about sudo rather than about the queue.
+        let granted = MockExecutor::with_replies([
+            Reply::ok("alice sudo"),                          // the group lists her
+            Reply::ok(""),                                    // and sudo grants her something
+            Reply::failure(1, ""),                            // no authorised key
+            Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // but a password
+        ]);
+
+        let verdict = examine(&granted, backend.as_ref(), "alice", "sudo", true)
+            .expect("examining an account must not fail");
+
+        assert!(
+            matches!(verdict, Ok(Credentials { password: true, .. })),
+            "with sudo granting, the same account is a way back in: {verdict:?}"
+        );
+    }
+
+    #[test]
     fn a_password_is_a_way_back_in_even_without_a_key() {
         // The case this guard used to refuse, and the common one: an account
         // the distribution's installer made carries a password, and no key
@@ -1579,6 +1713,7 @@ mod tests {
             vec![
                 Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"), // can escalate
+                Reply::ok(""),           // sudo grants it something
                 Reply::failure(1, ""),   // no authorized_keys
                 Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // but a usable hash
                 Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"), // root is not locked
@@ -1587,6 +1722,7 @@ mod tests {
                 // guard asked.
                 Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"),
+                Reply::ok(""),         // sudo grants it something
                 Reply::failure(1, ""), // recheck: still no key
                 Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // recheck: still a hash
                 Reply::ok(""),         // the lock itself
@@ -1666,6 +1802,7 @@ mod tests {
             vec![
                 Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"),
+                Reply::ok(""), // sudo grants it something
                 // The home comes from passwd rather than from `/home/{user}`,
                 // so each key check spends a lookup before reading the file.
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
@@ -1678,11 +1815,12 @@ mod tests {
                 Reply::ok("Account expires\t: never"),   // not yet locked
                 Reply::ok(passwd(&["alice"])),           // re-check: the scan again
                 Reply::ok("alice sudo"),
+                Reply::ok(""), // sudo grants it something
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // re-check: passwd
-                Reply::ok(""),                                         // re-check: exists
-                Reply::ok(TEST_KEY),                                   // re-check: still there
+                Reply::ok(""), // re-check: exists
+                Reply::ok(TEST_KEY), // re-check: still there
                 Reply::ok("alice:!:19000:0:99999:7:::"), // re-check: still no password
-                Reply::ok(""),                           // usermod
+                Reply::ok(""), // usermod
             ],
             &ParamValues::new(),
         );
@@ -1745,6 +1883,7 @@ mod tests {
             vec![
                 Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice sudo"),
+                Reply::ok(""), // sudo grants it something
                 Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
                 Reply::ok(""),
                 Reply::ok(TEST_KEY),
