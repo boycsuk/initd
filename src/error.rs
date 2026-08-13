@@ -155,6 +155,20 @@ pub enum Error {
     /// a refusal, which is an answer.
     AuthenticationUnavailable { mechanism: String },
 
+    /// A prompt was coming and this caller has no terminal to draw it on.
+    ///
+    /// Distinct from both of the above, and the difference is what the operator
+    /// should do. Those two mean a request was made and went unanswered; this
+    /// one means no request could be made at all — the interface's own threads
+    /// hold the alternate screen and cannot give it up, so a helper about to
+    /// ask for a password is refused rather than allowed to prompt where the
+    /// prompt is invisible and the keystrokes answering it are not echoed.
+    ///
+    /// The remedy is not to retry: it is to give the helper a live timestamp
+    /// (`sudo -v`, or `doas` with `persist`) before the interface needs it, so
+    /// the command names itself here rather than reporting a mechanism.
+    NoTerminalForPrompt { command: String },
+
     /// `sshd -t` rejected the configuration over a genuine syntax error.
     InvalidSshdConfig { details: String },
 
@@ -537,6 +551,9 @@ impl Error {
             Self::AuthenticationUnavailable { mechanism } => Msg::AuthenticationUnavailable {
                 mechanism: mechanism.clone(),
             },
+            Self::NoTerminalForPrompt { command } => Msg::NoTerminalForPrompt {
+                command: command.clone(),
+            },
             Self::InvalidSshdConfig { details } => Msg::InvalidSshdConfig {
                 details: details.clone(),
             },
@@ -689,7 +706,9 @@ impl Error {
                 (ErrorField::Command, command.clone()),
                 (ErrorField::Cause, source.to_string()),
             ],
-            Self::CommandTerminatedBySignal { command } | Self::Cancelled { before: command } => {
+            Self::CommandTerminatedBySignal { command }
+            | Self::Cancelled { before: command }
+            | Self::NoTerminalForPrompt { command } => {
                 vec![(ErrorField::Command, command.clone())]
             }
 

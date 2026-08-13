@@ -212,12 +212,16 @@ impl Probe {
 
         thread::spawn(move || {
             let backend = crate::backend::for_distro(&distro);
-            // No broker, no cancel token, no observer. Every query here is
-            // unprivileged, and without a broker a privileged one fails rather
-            // than waiting for a terminal nobody will hand over — which is the
-            // guarantee wanted: a probe must never raise a password prompt
-            // over an operator who is reading the tree.
-            let executor = crate::exec::local::LocalExecutor::new(crate::exec::privilege::detect());
+            // No broker, no cancel token, no observer. Not every query here is
+            // unprivileged — `is_persisted` and the firewall's `state` both are
+            // — so the guarantee has to be asked for rather than assumed. This
+            // comment used to assert both that they were all unprivileged and
+            // that a brokerless executor refused; neither was true, and
+            // `LocalExecutor::new` inherited the terminal, so on a host whose
+            // helper had no live timestamp the probe prompted underneath the
+            // tree the operator was reading.
+            let executor =
+                crate::exec::local::LocalExecutor::silent(crate::exec::privilege::detect());
 
             for (forward_id, capability) in subjects {
                 let presence = measure(&executor, backend.as_ref(), forward_id, capability);

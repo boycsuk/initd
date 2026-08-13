@@ -53,15 +53,45 @@ const SILENT_STRETCHES_ALLOWED: u32 = 3;
 /// the precedence rules of a libc this tool does not choose.
 const INVARIANT_LOCALE: [(&str, &str); 2] = [("LC_ALL", "C"), ("LANG", "C")];
 
+/// What an executor does when a privileged helper is about to prompt.
+///
+/// Named rather than inferred from whether a broker is present. The two
+/// brokerless cases are opposites — one wants the prompt, one cannot survive it
+/// — and conflating them is what let a `doas` prompt reach the alternate screen
+/// with echo disabled, where the interface looks hung and the keystrokes
+/// answering the prompt are invisible.
+enum Prompting {
+    /// The terminal is ordinary: let the helper prompt on it.
+    ///
+    /// The command line, where `sudo` drawing its own prompt is the whole
+    /// mechanism and there is no screen to take away.
+    Direct,
+    /// Ask for the terminal first, and run once it has been handed over.
+    ///
+    /// The interface's task thread, which can leave the alternate screen and
+    /// restore it afterwards.
+    ViaBroker(Box<dyn TerminalBroker>),
+    /// Refuse rather than prompt.
+    ///
+    /// The interface's main and probe threads, which hold the alternate screen
+    /// and have nothing that can hand it over. Refusing names the command; the
+    /// alternative is a prompt nobody can see or answer.
+    Refuse,
+}
+
 /// Runs commands on the machine `initd` is running on.
 pub struct LocalExecutor {
     escalator: Box<dyn PrivilegeEscalator>,
-    /// Where to ask for the terminal when a helper is about to prompt.
+    /// What to do when a helper is about to prompt.
     ///
-    /// `None` on the command line, where the terminal is already ordinary and
-    /// `sudo` can draw its own prompt — the interface is the only caller that
-    /// has taken the screen away.
-    broker: Option<Box<dyn TerminalBroker>>,
+    /// Three states rather than an `Option`, because "no broker" meant two
+    /// opposite things and the executor could not tell them apart: on the
+    /// command line the terminal is ordinary and `sudo` *should* draw its own
+    /// prompt, while under the interface the screen has been taken away and a
+    /// prompt is invisible. Both were spelled `None`, so the interface's own
+    /// main thread and its probe thread — neither of which carries a broker —
+    /// skipped the `auth_need` check entirely and inherited the terminal.
+    prompting: Prompting,
     /// Raised by the interface to stop the task between two commands.
     ///
     /// `None` on the command line: there is no interface to press a key, and a
@@ -81,11 +111,15 @@ pub struct LocalExecutor {
 }
 
 impl LocalExecutor {
-    /// Builds an executor using the given escalation mechanism.
+    /// Builds an executor for an ordinary terminal, where a helper may prompt.
+    ///
+    /// The command line. Not the interface: under the alternate screen a prompt
+    /// drawn here is invisible, which is what [`LocalExecutor::silent`] exists
+    /// to refuse.
     pub fn new(escalator: Box<dyn PrivilegeEscalator>) -> Self {
         Self {
             escalator,
-            broker: None,
+            prompting: Prompting::Direct,
             cancel: None,
             observer: None,
             silence: SILENCE_DEADLINE,
@@ -99,7 +133,25 @@ impl LocalExecutor {
     ) -> Self {
         Self {
             escalator,
-            broker: Some(broker),
+            prompting: Prompting::ViaBroker(broker),
+            cancel: None,
+            observer: None,
+            silence: SILENCE_DEADLINE,
+        }
+    }
+
+    /// Builds an executor that refuses a command which would prompt.
+    ///
+    /// For the threads that hold the alternate screen without being able to
+    /// give it up: the interface's main thread, which runs a privileged read
+    /// when the history overlay is opened, and the probe thread. Both used
+    /// [`LocalExecutor::new`] and so inherited the terminal, so on a host whose
+    /// helper has no live timestamp — `doas` without `persist`, or `sudo` after
+    /// Arch's five minutes — the prompt landed under the interface.
+    pub fn silent(escalator: Box<dyn PrivilegeEscalator>) -> Self {
+        Self {
+            escalator,
+            prompting: Prompting::Refuse,
             cancel: None,
             observer: None,
             silence: SILENCE_DEADLINE,
@@ -286,10 +338,11 @@ impl LocalExecutor {
             return Ok(());
         }
 
-        let Some(broker) = self.broker.as_ref() else {
-            return Ok(());
-        };
-
+        // Asked before the mode is consulted, not inside one branch of it. It
+        // used to sit under `if let Some(broker)`, so an executor without one
+        // never reached the question at all and ran the command with the
+        // terminal inherited — which is the whole failure on a helper with no
+        // live timestamp.
         match self.escalator.auth_need() {
             AuthNeed::Never => return Ok(()),
             AuthNeed::Probe { program, args } => {
@@ -299,6 +352,24 @@ impl LocalExecutor {
             }
             AuthNeed::Always => {}
         }
+
+        // A prompt is coming. What that means depends on whose terminal it is.
+        let broker = match &self.prompting {
+            // The command line: the helper prompts on the terminal the operator
+            // is already looking at, which is how it is supposed to work.
+            Prompting::Direct => return Ok(()),
+            Prompting::ViaBroker(broker) => broker,
+            // The alternate screen is held and nothing here can give it up, so
+            // the command is refused by name. The caller reports it; a prompt
+            // drawn under the interface cannot be seen or answered, and on the
+            // hangup path there is no terminal at all — the revert would fail
+            // silently and leave the change it promised to undo.
+            Prompting::Refuse => {
+                return Err(Error::NoTerminalForPrompt {
+                    command: command.to_string(),
+                });
+            }
+        };
 
         let (program, args) = match self.escalator.preauth_command() {
             Some(pair) => pair,
@@ -1245,11 +1316,52 @@ mod tests {
     fn without_a_broker_a_privileged_command_behaves_as_it_always_did() {
         // The command line has an ordinary terminal, so sudo can prompt on its
         // own and nothing should change there.
+        //
+        // Note this passes with `NoEscalation`, which answers `Never` and so
+        // returns before any of the prompting logic is reached — which is why
+        // it went on passing while the interface's own executors skipped the
+        // `auth_need` check entirely. The two tests below use `AlwaysPrompts`
+        // precisely so they reach the branch this one does not.
         let executor = LocalExecutor::new(Box::new(NoEscalation));
 
         let out = executor
             .run(&Command::new("echo").arg("hello").privileged())
             .expect("echo must run");
+
+        assert_eq!(out.stdout.trim(), "hello");
+    }
+
+    #[test]
+    fn a_silent_executor_refuses_rather_than_prompting_under_the_screen() {
+        // The interface's main and probe threads hold the alternate screen and
+        // have no broker to hand it over. A helper about to ask for a password
+        // must be refused by name: the prompt would be drawn where it cannot be
+        // read and answered with keystrokes that are not echoed.
+        let executor = LocalExecutor::silent(Box::new(AlwaysPrompts));
+
+        let err = executor
+            .run(&Command::new("echo").arg("hello").privileged())
+            .expect_err("a prompt with no terminal must refuse");
+
+        // The command, not the mechanism: the operator acts on which step
+        // stopped, and `sudo` is not the thing they change.
+        assert!(
+            matches!(&err, Error::NoTerminalForPrompt { command } if command.contains("echo")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_silent_executor_still_runs_what_needs_no_password() {
+        // The refusal is about prompting, not about privilege: a helper with a
+        // live timestamp answers `Never`, and the command goes ahead. Otherwise
+        // the history overlay would refuse on every host rather than only where
+        // authentication is actually needed.
+        let executor = LocalExecutor::silent(Box::new(NoEscalation));
+
+        let out = executor
+            .run(&Command::new("echo").arg("hello").privileged())
+            .expect("a command needing no password must run");
 
         assert_eq!(out.stdout.trim(), "hello");
     }

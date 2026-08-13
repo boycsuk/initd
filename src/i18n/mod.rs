@@ -163,6 +163,12 @@ pub enum Msg {
     AuthenticationUnavailable {
         mechanism: String,
     },
+    /// Names the command rather than the mechanism, because the mechanism is
+    /// not what the operator acts on: the fix is to authenticate before the
+    /// interface needs to, and the command says which step stopped.
+    NoTerminalForPrompt {
+        command: String,
+    },
     /// Written to the output pane just before the terminal is handed over, so
     /// the gap the prompt leaves in the transcript is explained.
     AuthenticationRequested {
@@ -899,7 +905,7 @@ pub enum Msg {
     // left the narration itself untouched.
     //
     // The generic ones come first: "installing X" is the same sentence
-    // whichever task says it, and a variant per task would be fifty
+    // whichever task says it, and a variant per task would be fifty-two
     // spellings of one string to keep in step.
     /// A package or program is being installed.
     TaskInstalling {

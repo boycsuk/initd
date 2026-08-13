@@ -129,6 +129,10 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::AuthenticationUnavailable { mechanism } => {
             format!("nothing answered the request to authenticate with {mechanism}")
         }
+        Msg::NoTerminalForPrompt { command } => format!(
+            "`{command}` needs a password and this screen cannot ask for one; \
+             authenticate first (`sudo -v`) and try again"
+        ),
         Msg::AuthenticationRequested { mechanism } => {
             format!("{mechanism} needs a password — the interface is standing aside for it")
         }

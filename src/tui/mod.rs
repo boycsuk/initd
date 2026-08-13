@@ -189,7 +189,14 @@ pub fn run() -> Result<()> {
     // the fast path rather than the only one.
     preauthenticate(escalator.as_ref());
 
-    let executor = crate::exec::local::LocalExecutor::new(escalator);
+    // `silent`, because this one runs on the main thread while the alternate
+    // screen is held: the history overlay reads the backup index privileged,
+    // and the verification window reverts through it. Neither can hand the
+    // terminal over — only the task thread's broker can — so a helper about to
+    // prompt is refused by name rather than left to draw where nothing can be
+    // read. The claim above is about the executor the tasks run on; this one
+    // had been built with `new` and quietly inherited the terminal instead.
+    let executor = crate::exec::local::LocalExecutor::silent(escalator);
 
     // Installed before the screen is taken, so a panic between here and the
     // restore below still lands on a terminal somebody can read.
@@ -211,5 +218,42 @@ pub fn run() -> Result<()> {
     match (outcome, restore()) {
         (Err(app_error), _) => Err(app_error),
         (Ok(()), restore_result) => restore_result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every executor built under the alternate screen refuses to prompt.
+    ///
+    /// Asserted against the source rather than against behaviour, because the
+    /// defect is a *choice of constructor* and no runtime test can see one: the
+    /// unit tests beside `LocalExecutor` prove that `silent` refuses and that
+    /// `new` inherits the terminal, and both went on passing while these two
+    /// call sites used the wrong one. What went wrong was never the executor.
+    ///
+    /// `docs/cli.md` is checked the same way in `tasks::mod`, for the same
+    /// reason: a contract no type expresses is one a test has to read.
+    #[test]
+    fn the_interface_builds_no_executor_that_can_prompt_under_the_screen() {
+        // Only the production half is searched. A test module naming the
+        // constructor it forbids is a match against itself — this one did
+        // exactly that and failed against correct code, which is the shape of
+        // guard that gets deleted rather than fixed.
+        const TEST_MODULE: &str = "#[cfg(test)]\nmod tests {";
+
+        for (module, source) in [
+            ("tui/mod.rs", include_str!("mod.rs")),
+            ("tui/probe.rs", include_str!("probe.rs")),
+        ] {
+            let production = source.split(TEST_MODULE).next().unwrap_or(source);
+
+            assert!(
+                !production.contains("LocalExecutor::new("),
+                "{module} builds a LocalExecutor with `new`, which lets a helper \
+                 prompt on a terminal this thread is holding as the alternate \
+                 screen — use `silent`, or `with_broker` if it can hand the \
+                 terminal over"
+            );
+        }
     }
 }
