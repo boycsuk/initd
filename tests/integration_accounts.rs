@@ -10,7 +10,9 @@
 
 mod common;
 
-use common::{Image, admin_group, create_account, run_in_container, stdout_of};
+use common::{
+    Image, admin_group, create_account, create_account_with_home, run_in_container, stdout_of,
+};
 
 /// Runs a task and returns everything it printed, out and err together.
 ///
@@ -248,11 +250,7 @@ for_each_image! {
                 } else {
                     ""
                 },
-                create = if image.name.contains("alpine") {
-                    "adduser -D"
-                } else {
-                    "useradd -m"
-                },
+                create = create_account_with_home(image),
                 join = if image.name.contains("alpine") {
                     format!("addgroup initdadmin {group}")
                 } else {
