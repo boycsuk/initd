@@ -163,8 +163,14 @@ both. Task identifiers stay globally unique and independent of position, so
 ### `initd run <task-id> [name=value ...]`
 
 Runs any task, supplying the values it declared. Task identifiers come from
-`initd list`; running one with no values prints what it accepts, with defaults
-and hints.
+`initd list`.
+
+Running one **without a value it requires** prints what the task accepts, with
+defaults and hints, and exits `2`. That is not the same as "running one with no
+values": a task whose parameters all carry defaults has nothing missing, so it
+**runs**. `initd run zellij.install` installs zellij rather than describing it.
+There is no dry-run form — a script that means to ask what a task takes should
+give it no arguments only when it knows the task requires one.
 
 **Arguments:** `<task-id>` — required, e.g. `ssh.install`. Then zero or more
 `name=value` pairs, in any order. A parameter with a default may be omitted; an
@@ -191,14 +197,21 @@ unsupported on the running distribution exits `1`.
 `authorize-key` and `change-port` remain as their own subcommands, since both
 predate this and scripts use them.
 
-**Two tasks are refused here whatever arguments are given:** `ssh.allow-users`
-and `users.lock-root`. Both apply a change that can end the session applying
-it, and the interactive interface holds such a change open until the
+**Three tasks are refused here whatever arguments are given:**
+`ssh.allow-users`, `users.lock-root` and `users.delete`. The first two apply a
+change that can end the session applying it, and the interactive interface
+holds such a change open until the
 administrator proves from a second session that they can still get in,
 reverting on its own when they cannot. The CLI exits immediately, so it has no
 window to offer and nothing rolls a mistake back.
 
-Both exit `2`, not `1`: the request was never going to run, which is an
+`users.delete` is refused for a different reason: it cannot be held open at
+all. With `home=delete` there is nothing to put back, and the interactive
+confirmation is the only place the path *and its measured size* are stated
+before it happens — so `initd run users.delete home=delete` in a script would
+destroy a directory nobody looked at.
+
+All three exit `2`, not `1`: the request was never going to run, which is an
 invocation error rather than a task that tried and failed. A script that
 retries on `1` must not retry these.
 
@@ -356,9 +369,12 @@ installing git on a build server has no business being shown GitHub.
 | `updates.unattended-security` | `run updates.unattended-security` | no | Applies security updates automatically, never rebooting. Debian only. |
 | `updates.unattended-security.disable` | `run <id> name=value` | no | Removes unattended-upgrades. Security updates stop being applied without anyone asking — the machine goes on looking exactly the same, which is why the task says so. |
 
-### Two tasks have no CLI form
+### Three tasks have no CLI form
 
-Deliberate, not an oversight, and for the same reason in both cases.
+Deliberate, not an oversight. Two of them for one reason and the third for
+another, which is worth separating: the first two need a session to confirm
+them, and `users.delete` needs a confirmation that states what is about to be
+destroyed.
 
 `users.lock-root` expires the root account. Every other change this tool makes
 is recoverable from a console; this one can require the hosting provider's
@@ -387,9 +403,18 @@ backup path to a session that may already be the last one open.
 The task's own guards still apply wherever it runs: every named account must
 exist, and at least one must hold an authorised key.
 
-Both refusals exit `2`. The distinction this file sells to scripts holds here:
-`1` is a task that ran and failed, `2` is a request the CLI would not accept —
-and one of these never reached a command.
+`users.delete` is the third, and it is refused for the opposite reason to the
+other two. They can be held open; this one cannot. With `home=delete` there is
+nothing to put back afterwards, and the interactive confirmation is the only
+place the home directory's path *and its measured size* are stated before it
+goes. A script running `initd run users.delete home=delete` would destroy a
+directory nobody had looked at, which no window could undo. Deleting the
+account while keeping its home is still a change with no inverse, so the whole
+task stays interactive rather than only its destructive half.
+
+All three refusals exit `2`. The distinction this file sells to scripts holds
+here: `1` is a task that ran and failed, `2` is a request the CLI would not
+accept — and these never reached a command.
 
 ### Partially applied directives
 

@@ -1337,8 +1337,15 @@ mod tests {
             "the ruleset must be written somewhere the boot reads: {lines:?}"
         );
 
+        // `contains("enable")` stood here and cannot fail in the direction it
+        // matters: "disable" contains "enable", so a regression turning the
+        // boot-persistence step into its inverse satisfied it. The same shape
+        // as the `is-active`/`inactive` case this project documents, in test
+        // code rather than production. Matched as a whole word instead.
         assert!(
-            lines.iter().any(|line| line.contains("enable")),
+            lines
+                .iter()
+                .any(|line| line.split_whitespace().any(|word| word == "enable")),
             "and something must replay it: {lines:?}"
         );
     }

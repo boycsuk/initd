@@ -506,6 +506,31 @@ impl App {
         if self.verification.is_some() {
             self.revert_change();
         }
+
+        // A task still running is told to stop, on the same flag `Ctrl-C` sets.
+        // This looked at `verification` alone, so a hangup arriving mid-task
+        // broke the event loop and returned from `run`, and the process exited
+        // with the worker unjoined and the task's next commands still to come.
+        //
+        // What this does and does not buy is worth being exact about, because
+        // the cancellation contract is cooperative by design: the executor
+        // refuses the *next* command rather than interrupting the one running,
+        // since a task killed mid-command leaves the step it was performing
+        // half applied and nothing can say which half. So the command in flight
+        // still finishes and the child is not killed. What stops is the task
+        // going on to run further privileged commands against a machine whose
+        // administrator has just lost the session — which, for a tree of tasks
+        // that install packages and rewrite configuration, is the half worth
+        // stopping.
+        //
+        // Left deliberately: the process exits immediately after this, so
+        // whether the worker observes the flag is a race this cannot win. The
+        // flag is set because it costs nothing and is correct if it is seen.
+        if let Some(running) = self.running.as_mut()
+            && !running.is_cancelling()
+        {
+            running.cancel();
+        }
     }
     /// Puts the change back if its window has run out.
     ///
