@@ -211,6 +211,12 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::CaddyAbsent => {
             "caddy is not installed on this host — run caddy.install first".to_owned()
         }
+        // Names the task rather than the binary: `sshd` missing from `PATH` is
+        // what the tool saw, and "install the SSH server" is what the operator
+        // has to do about it.
+        Msg::SshdAbsent => "the SSH server is not installed on this host, so there is no \
+             configuration to change — run ssh.install first"
+            .to_owned(),
         // Says there is nothing to validate rather than that validation failed:
         // the file may never have been written, and "invalid" would send the
         // operator to edit something that is not there.

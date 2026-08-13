@@ -215,6 +215,8 @@ pub enum Msg {
     DockerEngineAbsent,
     /// A Caddy task was asked for on a host with no Caddy.
     CaddyAbsent,
+    /// An `sshd_config` task was asked for on a host with no sshd.
+    SshdAbsent,
     /// Validation was asked for against a Caddyfile that does not exist.
     CaddyfileAbsent {
         path: String,
