@@ -47,9 +47,6 @@ pub(super) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Lines a page key moves the output by.
 pub(super) const PAGE_SCROLL: usize = 10;
 
-/// Rows the verification banner occupies: its top border and four lines.
-pub(super) const VERIFY_BANNER_ROWS: u16 = 5;
-
 /// Tallest the description is drawn when it shares the pane with the output.
 ///
 /// A ceiling rather than a share, because a description is a sentence or two
@@ -1347,6 +1344,54 @@ mod tests {
                 },
                 service: "ssh.service",
             },
+        );
+    }
+
+    #[test]
+    fn the_banner_states_the_limit_of_what_it_promises() {
+        // The caveat is the line saying the revert only holds while this
+        // process lives — a `SIGKILL` or a power cut leave the change applied.
+        // It was drawn outside the banner's area at every terminal size for as
+        // long as the height was a constant chosen beside the lines rather than
+        // from them, so the banner promised the revert unconditionally.
+        //
+        // Asserted at the narrowest supported width too, where `Wrap` is most
+        // likely to take a second row and push the last line back out.
+        for (width, height) in [(60, 15), (72, 24), (80, 24), (100, 30), (120, 40)] {
+            let mut app = test_app(Family::Debian);
+            open_verification(&mut app);
+
+            let screen = render_to_rows(&mut app, width, height).join("\n");
+
+            assert!(
+                screen.contains("Reverts while this session lives"),
+                "the session-scope caveat must be drawn at {width}x{height}, got:\n{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_terminal_still_shows_an_unkept_change() {
+        // Below the split threshold one pane is drawn at a time, chosen by
+        // focus — and the tool never moves focus. So with the cursor where it
+        // starts, a narrow terminal drew an ordinary task list while a
+        // configuration file was already written and reverting on a timer.
+        // Nothing on screen said so: no countdown, no `K`/`R`, and the key bar
+        // is dropped below 24 rows as well.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        assert_eq!(app.focus, Pane::Tree, "the window must not move focus");
+
+        let screen = render_to_rows(&mut app, 60, 15).join("\n");
+
+        assert!(
+            screen.contains("reverting in"),
+            "the countdown must be on screen at 60x15, got:\n{screen}"
+        );
+        assert!(
+            screen.contains("keep"),
+            "the answers must be on screen at 60x15, got:\n{screen}"
         );
     }
 

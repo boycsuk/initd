@@ -36,9 +36,7 @@ use ratatui::widgets::{
     Wrap,
 };
 
-use super::app::{
-    App, DETAIL_MAX_ROWS, Mode, OUTPUT_MIN_ROWS, Pane, SPLIT_MIN_ROWS, VERIFY_BANNER_ROWS, VERSION,
-};
+use super::app::{App, DETAIL_MAX_ROWS, Mode, OUTPUT_MIN_ROWS, Pane, SPLIT_MIN_ROWS, VERSION};
 use super::probe::{InstalledState, Presence};
 use super::verify::Verification;
 use super::{help, layout, search, style};
@@ -202,6 +200,22 @@ fn body(frame: &mut Frame, app: &mut App, area: Rect) {
     // both would leave one written over the other. One is shown at a time
     // and `Tab` chooses which.
     if split == layout::BodyLayout::Single {
+        // An unkept change outranks the pane the operator chose. The banner is
+        // the only thing on screen saying a configuration file is already
+        // written and reverting on a timer, and at this width it used to be
+        // reachable only by pressing `Tab`: with focus on the tree — where it
+        // starts, and where the tool deliberately leaves it — a narrow terminal
+        // drew an ordinary task list while `sshd_config` was modified and
+        // sixty seconds from being put back. A safety state that `Tab` can hide
+        // is one the operator has to already know about to find.
+        //
+        // Drawn over the whole body rather than beside a pane, because there is
+        // no second column here to put it in.
+        if app.verification.is_some() {
+            right(frame, app, area);
+            return;
+        }
+
         match app.focus {
             Pane::Tree => tree(frame, app, tree_area),
             Pane::Output => right(frame, app, right_area),
@@ -281,9 +295,11 @@ fn right(frame: &mut Frame, app: &App, right_area: Rect) {
     if let Some(ref window) = app.verification {
         // The countdown takes the top of the pane and the output keeps the
         // rest: what the change did is the evidence for the decision.
-        let [banner, log] =
-            Layout::vertical([Constraint::Length(VERIFY_BANNER_ROWS), Constraint::Min(3)])
-                .areas(right_area);
+        let [banner, log] = Layout::vertical([
+            Constraint::Length(verification_rows(window, app.lang)),
+            Constraint::Min(3),
+        ])
+        .areas(right_area);
 
         verification(frame, banner, window, app.lang);
         app.output
@@ -607,13 +623,16 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Draws the banner over an applied change that has not been kept.
+/// The lines the verification banner draws, in order.
 ///
-/// It states three things in order: that the change is applied but not yet
-/// permanent, how long is left, and what to press. The countdown is red
-/// because it is the one number on screen that acts on its own.
-fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang) {
-    let lines = vec![
+/// Built here rather than inline so that [`verification_rows`] can count them:
+/// the banner is given a fixed height by the layout above it, and a height
+/// chosen independently of the content is one that stops matching it. It did:
+/// the constant said five for five lines plus a border, so the last line — the
+/// one stating the limit of the promise — was drawn outside the area and never
+/// reached the screen at any terminal size.
+fn verification_lines<'a>(window: &Verification, lang: Lang) -> Vec<Line<'a>> {
+    vec![
         Line::from(vec![
             Span::styled(lang.render(&Msg::VerifyBadge), style::BADGE_BUSY),
             Span::raw("  "),
@@ -653,10 +672,29 @@ fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang
             lang.render(&Msg::VerifySessionScopeCaveat),
             style::CONSEQUENCE_EXTERNAL,
         ),
-    ];
+    ]
+}
 
+/// Rows the banner needs: its lines and the top border above them.
+///
+/// Derived from the lines themselves so the two cannot disagree. It does not
+/// account for a line long enough to wrap — `Wrap` is on, and a translation
+/// wider than the pane would take a second row — which is what
+/// [`verification_fits`] is asserted against in the tests.
+pub(super) fn verification_rows(window: &Verification, lang: Lang) -> u16 {
+    const TOP_BORDER_ROWS: u16 = 1;
+
+    u16::try_from(verification_lines(window, lang).len()).unwrap_or(u16::MAX) + TOP_BORDER_ROWS
+}
+
+/// Draws the banner over an applied change that has not been kept.
+///
+/// It states three things in order: that the change is applied but not yet
+/// permanent, how long is left, and what to press. The countdown is red
+/// because it is the one number on screen that acts on its own.
+fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang) {
     frame.render_widget(
-        Paragraph::new(lines)
+        Paragraph::new(verification_lines(window, lang))
             .block(
                 Block::default()
                     .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
