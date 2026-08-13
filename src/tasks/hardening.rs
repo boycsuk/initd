@@ -754,6 +754,7 @@ mod tests {
             Reply::ok(""),        // install
             Reply::ok(""),        // the policy file exists?
             Reply::ok(""),        // back it up
+            Reply::ok(""),        // create the staging file at its mode
             Reply::ok(""),        // stage it
             Reply::ok("644"),     // stat -c %a
             Reply::ok(""),        // chmod

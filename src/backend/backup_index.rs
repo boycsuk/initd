@@ -268,8 +268,29 @@ pub fn append(executor: &dyn Executor, files: &dyn FileEditor, record: &BackupRe
     // The line reaches the shell through stdin rather than as an argument, the
     // same rule every other write here follows: an argument would need
     // escaping, and a flaw in that escaping is a root-level injection.
+    // The file is created at its mode *before* anything is written into it,
+    // rather than chmodded afterwards — the rule every other write here
+    // follows, and the one this append had been breaking. `install -m` on
+    // `/dev/null` makes an empty file with the mode already set, and an empty
+    // file discloses nothing; the shell redirect alone created it under the
+    // process umask, so on a first append the index sat at `0644` for one
+    // subprocess round-trip holding every path this tool has touched and the
+    // digests of their contents. A `chmod` afterwards does not close a
+    // descriptor somebody already opened in that window.
+    //
+    // Guarded by `[ -e ]` rather than run unconditionally: `install` truncates,
+    // and this file is append-only. Both run in one shell so the whole thing is
+    // still a single privileged command.
     let command = Command::new("sh")
-        .args(["-c", &format!("cat >> {INDEX_PATH}")])
+        .args([
+            "-c",
+            &format!(
+                "if [ ! -e {INDEX_PATH} ]; then \
+                   install -m {INDEX_MODE:o} /dev/null {INDEX_PATH} || exit 1; \
+                 fi; \
+                 cat >> {INDEX_PATH}"
+            ),
+        ])
         .privileged()
         .stdin(format!("{}\n", record.to_line()));
 
@@ -281,15 +302,11 @@ pub fn append(executor: &dyn Executor, files: &dyn FileEditor, record: &BackupRe
         return false;
     }
 
-    // After the append, because the file may not have existed before it, and
-    // `chmod` on a path that is not there fails. Every append re-applies it,
-    // which costs one command and covers an index restored from a backup or
-    // created by an older build that did not set it.
-    //
-    // Measured rather than assumed: without this the shell's redirect creates
-    // the file under the process umask and it lands `0644` on `debian:13` and
-    // `alpine:3.23` alike — world-readable, holding every path this tool has
-    // touched and the digests of their contents.
+    // Kept, though the create above now sets the mode on a file this tool
+    // makes: this covers the ones it did not — an index restored from a backup,
+    // copied by hand, or written by an older build that chmodded after the
+    // first append and so published it for a round-trip. Re-applying costs one
+    // command and is the only thing that repairs those.
     files.set_mode(executor, INDEX_PATH, INDEX_MODE).is_ok()
 }
 
@@ -847,6 +864,40 @@ mod tests {
                 .iter()
                 .any(|line| line == "chmod 600 /var/lib/initd/backups.jsonl"),
             "{:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn the_index_is_created_at_its_mode_rather_than_narrowed_afterwards() {
+        // The `chmod` above repairs an index this tool did not create; it does
+        // not save the one it does. Between a shell redirect creating the file
+        // under the umask and the chmod that follows, the index is world
+        // readable — one subprocess round-trip, and long enough for any account
+        // on the box to open it and keep the descriptor after the mode changes.
+        //
+        // So the create is asserted to carry the mode itself, and to come
+        // first. The file holds every path this tool has touched and the
+        // digests of their contents.
+        let mock = MockExecutor::new();
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        append(&mock, &files, &a_record());
+
+        let creating = mock
+            .recorded_lines()
+            .iter()
+            .position(|line| line.contains("install -m 600 /dev/null"))
+            .expect("the index must be created at its mode");
+        let appending = mock
+            .recorded_lines()
+            .iter()
+            .position(|line| line.contains("cat >>"))
+            .expect("the record must be appended");
+
+        assert!(
+            creating <= appending,
+            "the mode must be set before anything is written: {:?}",
             mock.recorded_lines()
         );
     }

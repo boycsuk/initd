@@ -32,6 +32,26 @@ const BACKUP_SUFFIX: &str = ".initd.bak";
 /// interrupted write is never mistaken for the backup a revert would restore.
 const STAGING_SUFFIX: &str = ".initd.new";
 
+/// Mode the staging file is created at, before anything is written into it.
+///
+/// Deliberately the narrowest thing that works rather than the target's mode:
+/// the staging file is written by root and read by nobody, so it needs no
+/// wider access, and starting narrow means a secret is never briefly exposed
+/// while the right mode is being determined. Whatever the target should end up
+/// at is applied afterwards, which may widen it.
+const STAGING_MODE: u32 = 0o600;
+
+/// Mode a file this tool creates is given, when there is no existing one to
+/// keep.
+///
+/// What `tee` produced on its own before the staging file was created
+/// explicitly: measured at `644` on `debian:13` under root's default `0022`
+/// umask. Stated rather than inherited now, because the staging file is
+/// deliberately narrower than any target should be — inheriting it would give
+/// a freshly created `sshd_config` mode `0600` and stop every non-root reader,
+/// which is a change this was never meant to make.
+const NEW_FILE_MODE: u32 = 0o644;
+
 /// Exit code the owned-directory script uses for a link it would have followed.
 ///
 /// Apart from the codes the utilities themselves produce, so "somebody planted
@@ -267,6 +287,24 @@ chown -h "$owner:$owner" "$file"
         // mounts.
         let staged = Self::staging_path(path);
 
+        // The staging file is created empty and restrictive before anything is
+        // written into it. `tee` alone creates it under the process umask, so
+        // the contents existed at `0644` until the chmod below — and that chmod
+        // only runs when `keep_mode` is set, which is the case `wg0.conf` does
+        // *not* take on a rewrite: the target already exists at `0600`, so the
+        // key sat world-readable in `wg0.conf.initd.new` instead of in
+        // `wg0.conf`. The same bug as the one this file's comment below records,
+        // moved one filename along.
+        //
+        // `install -m` rather than `touch` and `chmod`: it creates at the mode
+        // in one step, so there is no window at all, and it is what
+        // `owned_dir_script` already uses for this.
+        let stage = Command::new("install")
+            .args(["-m", &format!("{STAGING_MODE:o}"), "/dev/null", &staged])
+            .privileged();
+
+        run_checked(executor, &stage)?;
+
         // Contents travel on stdin, never as an argument: an argument would
         // need shell escaping, and a flaw in that escaping is a root-level
         // command injection.
@@ -289,16 +327,26 @@ chown -h "$owner:$owner" "$file"
         // answers `644` — the same lesson `diff`, `cmp` and `pgrep` each taught
         // once, which is that a tool present on Debian is not thereby present
         // everywhere.
-        if keep_mode {
+        // A new file is given the default outright rather than left at whatever
+        // the staging file was created as. That used to be the umask's doing
+        // and is now `STAGING_MODE`, which is far too narrow to inherit: a
+        // `sshd_config` this tool created would arrive at `0600` and stop being
+        // readable by anything that is not root. The narrow staging mode exists
+        // to keep a secret off the disk while the real mode is worked out, not
+        // to become the real mode.
+        let target_mode = if keep_mode {
             let mode = Command::new("stat").args(["-c", "%a", path]).privileged();
-            let output = run_capturing(executor, &mode)?;
 
-            let apply = Command::new("chmod")
-                .args([output.stdout.trim(), &staged])
-                .privileged();
+            run_capturing(executor, &mode)?.stdout.trim().to_owned()
+        } else {
+            format!("{NEW_FILE_MODE:o}")
+        };
 
-            run_checked(executor, &apply)?;
-        }
+        let apply = Command::new("chmod")
+            .args([&target_mode, &staged])
+            .privileged();
+
+        run_checked(executor, &apply)?;
 
         let install = Command::new("mv")
             .args([&staged, &path.to_owned()])
@@ -574,6 +622,7 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),    // test -e
             Reply::ok(""),    // cp -p
+            Reply::ok(""),    // install (staging)
             Reply::ok(""),    // tee (staging)
             Reply::ok("600"), // stat -c %a
             Reply::ok(""),    // chmod
@@ -591,6 +640,7 @@ mod tests {
             [
                 format!("test -e {CONFIG}"),
                 format!("cp -p {CONFIG} {CONFIG}{BACKUP_SUFFIX}"),
+                format!("install -m 600 /dev/null {CONFIG}{STAGING_SUFFIX}"),
                 format!("tee {CONFIG}{STAGING_SUFFIX}"),
                 format!("stat -c %a {CONFIG}"),
                 format!("chmod 600 {CONFIG}{STAGING_SUFFIX}"),
@@ -608,6 +658,7 @@ mod tests {
         // and the one task using this path deliberately writes no index entry.
         let mock = MockExecutor::with_replies([
             Reply::ok("1"),   // test -e
+            Reply::ok(""),    // install (staging)
             Reply::ok(""),    // tee (staging)
             Reply::ok("600"), // stat -c %a
             Reply::ok(""),    // chmod
@@ -625,6 +676,10 @@ mod tests {
             mock.recorded_lines(),
             [
                 format!("test -e {CONFIG}"),
+                // The staging file is created at 600 before the key is written
+                // into it, so the key never exists at the umask's mode even for
+                // the round-trip the chmod below takes.
+                format!("install -m 600 /dev/null {CONFIG}{STAGING_SUFFIX}"),
                 format!("tee {CONFIG}{STAGING_SUFFIX}"),
                 format!("stat -c %a {CONFIG}"),
                 format!("chmod 600 {CONFIG}{STAGING_SUFFIX}"),
@@ -642,7 +697,9 @@ mod tests {
         // anyway would turn creating a file into an error.
         let mock = MockExecutor::with_replies([
             Reply::failure(1, "No such file or directory"), // test -e
+            Reply::ok(""),                                  // install (staging)
             Reply::ok(""),                                  // tee (staging)
+            Reply::ok(""),                                  // chmod (the default)
             Reply::ok(""),                                  // mv
         ]);
 
@@ -654,7 +711,11 @@ mod tests {
             mock.recorded_lines(),
             [
                 format!("test -e {CONFIG}"),
+                format!("install -m 600 /dev/null {CONFIG}{STAGING_SUFFIX}"),
                 format!("tee {CONFIG}{STAGING_SUFFIX}"),
+                // 644 outright, not `stat` on a path that is not there. The
+                // staging file's own 600 is deliberately too narrow to keep.
+                format!("chmod 644 {CONFIG}{STAGING_SUFFIX}"),
                 format!("mv {CONFIG}{STAGING_SUFFIX} {CONFIG}"),
             ],
             "a file that does not exist yet has no mode to carry over"
@@ -702,12 +763,12 @@ mod tests {
 
     #[test]
     fn an_existing_files_mode_survives_being_rewritten() {
-        // A staging file is created with the process umask, so moving it over a
-        // 0600 file would publish it at 0644. Read with `stat -c` and applied
-        // with `chmod` rather than in one step: `chmod --reference` and
-        // `cp --preserve=mode` are GNU extensions, and both fail on busybox —
-        // measured on alpine:3.23.
+        // Moving a staging file over a 0600 file must not publish it at the
+        // staging mode. Read with `stat -c` and applied with `chmod` rather
+        // than in one step: `chmod --reference` and `cp --preserve=mode` are
+        // GNU extensions, and both fail on busybox — measured on alpine:3.23.
         let mock = MockExecutor::with_replies([
+            Reply::ok(""),
             Reply::ok(""),
             Reply::ok(""),
             Reply::ok(""),

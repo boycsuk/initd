@@ -755,6 +755,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp -p: backup
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee: stage
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
@@ -797,6 +798,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp -p: backup
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee: stage
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
@@ -847,6 +849,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"),               // sshd is installed
             Reply::ok(""),                               // test -e: the file exists
             Reply::ok(""),                               // cp -p (write's own backup)
+            Reply::ok(""),                               // install the staging file
             Reply::ok(""),                               // tee
             Reply::ok("600"),                            // stat -c %a
             Reply::ok(""),                               // chmod
@@ -901,6 +904,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"),               // sshd is installed
             Reply::ok(""),                               // test -e
             Reply::ok(""),                               // cp -p
+            Reply::ok(""),                               // install the staging file
             Reply::ok(""),                               // tee
             Reply::ok("600"),                            // stat
             Reply::ok(""),                               // chmod
@@ -950,6 +954,7 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::failure(1, ""),         // test -e: no such file
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee
             Reply::ok("600"),              // stat
             Reply::ok(""),                 // chmod
@@ -986,6 +991,7 @@ mod tests {
         let mock = MockExecutor::with_replies([
             Reply::ok(""),                                        // test -e
             Reply::ok(""),                                        // cp -p
+            Reply::ok(""),                                        // install the staging file
             Reply::ok(""),                                        // tee
             Reply::ok("600"),                                     // stat
             Reply::ok(""),                                        // chmod
@@ -1026,6 +1032,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"),             // sshd is installed
             Reply::ok(""),                             // test -e
             Reply::ok(""),                             // cp -p
+            Reply::ok(""),                             // install the staging file
             Reply::ok(""),                             // tee
             Reply::ok("600"),                          // stat
             Reply::ok(""),                             // chmod
@@ -1147,6 +1154,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp -p: backup
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee: stage
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
