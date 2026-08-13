@@ -155,14 +155,7 @@ impl Task for HardenSsh {
         let backup =
             sshd_config::write_validated(executor, backend, self.id(), &hardened, progress)?;
 
-        if let Some(ref backup) = backup {
-            report(
-                progress,
-                &Msg::TaskSshBackupSaved {
-                    path: backup.copy.clone(),
-                },
-            );
-        }
+        super::report_backup(backup.as_ref(), progress);
 
         reload_ssh(executor, backend, progress)?;
 
@@ -310,14 +303,7 @@ impl Task for HardenSshStrict {
         let backup =
             sshd_config::write_validated(executor, backend, self.id(), &hardened, progress)?;
 
-        if let Some(ref backup) = backup {
-            report(
-                progress,
-                &Msg::TaskSshBackupSaved {
-                    path: backup.copy.clone(),
-                },
-            );
-        }
+        super::report_backup(backup.as_ref(), progress);
 
         reload_ssh(executor, backend, progress)?;
 

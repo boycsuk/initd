@@ -111,6 +111,31 @@ fn revertible(backup: Option<Backup>, backend: &dyn Backend) -> Outcome {
     })
 }
 
+/// Names the copy a change left behind, as soon as the change is written.
+///
+/// Called immediately after `write_validated` and before anything else, which
+/// is a constraint rather than a preference: the file is already modified by
+/// that point, and every step that follows can fail — a reload, a socket check,
+/// an SELinux probe. A task that ends in an error returns no `Outcome`, so the
+/// backup never reaches the operator through [`revertible`], and the changes
+/// documented as able to cost an administrator their own way in would report a
+/// failed command over a modified `sshd_config` without naming what to restore.
+///
+/// A function because that ordering was previously held by a comment in
+/// `port.rs` and by imitation in the three tasks beside it. The one that
+/// forgets is the one nobody notices, and what it costs is the recovery path
+/// for the tasks most likely to need one.
+fn report_backup(backup: Option<&Backup>, progress: Progress<'_>) {
+    if let Some(backup) = backup {
+        report(
+            progress,
+            &Msg::TaskSshBackupSaved {
+                path: backup.copy.clone(),
+            },
+        );
+    }
+}
+
 /// Whether the named user has at least one authorised key.
 ///
 /// Read through the file editor rather than `std::fs` so it works under

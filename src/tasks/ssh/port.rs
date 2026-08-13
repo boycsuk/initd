@@ -158,23 +158,13 @@ impl Task for ChangePort {
         let backup =
             sshd_config::write_validated(executor, backend, self.id(), &updated, progress)?;
 
-        // Said before the steps below rather than after them: the file is
-        // already written by this point, and each of the three that follow can
-        // fail — the socket check, the SELinux probe and the labelling. A task
-        // that ends there returns an error rather than an `Outcome`, so the
-        // backup never reaches the operator through `revertible`, and the one
-        // change documented as able to cost the session its own way back in
-        // would report a failed command over a modified `sshd_config` without
-        // naming what to restore. The two sibling tasks say it here for the
-        // same reason.
-        if let Some(ref backup) = backup {
-            report(
-                progress,
-                &Msg::TaskSshBackupSaved {
-                    path: backup.copy.clone(),
-                },
-            );
-        }
+        // Before the three steps below, each of which can fail: the socket
+        // check, the SELinux probe and the labelling. `report_backup` documents
+        // why that ordering is the helper's whole reason for existing — this is
+        // the task with the most that can go wrong after the file is written,
+        // and the one whose change is documented as able to cost the session
+        // its own way back in.
+        super::report_backup(backup.as_ref(), progress);
 
         // Debian ships ssh.socket alongside ssh.service. When it is active the
         // socket owns the listening port, so editing sshd_config alone changes
@@ -256,6 +246,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
@@ -297,6 +288,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
@@ -351,6 +343,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
@@ -392,6 +385,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
@@ -445,6 +439,7 @@ mod tests {
             Reply::ok("/usr/sbin/sshd\n"), // sshd is installed
             Reply::ok(""),                 // test -e
             Reply::ok(""),                 // cp
+            Reply::ok(""),                 // install the staging file
             Reply::ok(""),                 // tee
             Reply::ok("600"),              // stat -c %a
             Reply::ok(""),                 // chmod
