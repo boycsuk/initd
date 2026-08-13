@@ -156,13 +156,7 @@ impl Task for InstallRust {
                 .packages()
                 .install(executor, backend.package_for(Capability::Rust))?;
         } else {
-            let release = crate::backend::release_installer::release_for(
-                Self::RELEASES,
-                Self::RELEASES
-                    .first()
-                    .map(|release| release.version)
-                    .unwrap_or_default(),
-            )?;
+            let release = crate::backend::release_installer::newest(Self::RELEASES)?;
 
             report(
                 progress,

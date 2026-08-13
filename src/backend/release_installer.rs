@@ -8,6 +8,7 @@
 //! by a container image missing a tool it assumed, where the missing tool made
 //! a test lie rather than fail.
 
+use super::systemd::run_capturing;
 use crate::domain::binaries::{BinaryInstaller, Payload, Release};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
@@ -389,15 +390,7 @@ impl ReleaseInstaller {
 /// `x86_64` and `aarch64` — so an artefact table reads like the URLs it holds.
 fn machine_architecture(executor: &dyn Executor) -> Result<String> {
     let command = Command::new("uname").arg("-m");
-    let output = executor.run(&command)?;
-
-    if !output.success() {
-        return Err(Error::CommandFailed {
-            command: command.to_string(),
-            code: output.code,
-            stderr: output.stderr,
-        });
-    }
+    let output = run_capturing(executor, &command)?;
 
     Ok(output.stdout.trim().to_owned())
 }
@@ -406,6 +399,28 @@ fn machine_architecture(executor: &dyn Executor) -> Result<String> {
 ///
 /// A version absent from the table is not installable, which is the intended
 /// limit: this build can only verify what it carries a digest for.
+/// The newest release a build carries a digest for.
+///
+/// Four tasks reached for this by hand as
+/// `release_for(RELEASES, RELEASES.first().map(…).unwrap_or_default())`, which
+/// on an empty table asks for the version `""` and receives
+/// `UnknownRelease { version: "", known: "" }` — an error naming neither what
+/// was wanted nor what exists. Empty is not a state any shipped table is in,
+/// and that is the point: the four spellings disagreed with `zellij.rs`, which
+/// had already been given a typed fallback and a test, so the inconsistency was
+/// between siblings rather than against reality.
+pub fn newest(releases: &'static [Release]) -> Result<&'static Release> {
+    // The tables are ordered newest first, which each one's own test enforces
+    // rather than this relying on it quietly. Sorting here would mean comparing
+    // version numbers, and `0.10.0` sorts before `0.9.0` as text — cheaper to
+    // state and to check than to compute.
+    releases.first().ok_or_else(|| Error::UnknownRelease {
+        version: String::new(),
+        known: String::new(),
+    })
+}
+
+/// Looks up a release by version, or reports which ones this build carries.
 pub fn release_for(releases: &'static [Release], version: &str) -> Result<&'static Release> {
     releases
         .iter()
@@ -475,6 +490,27 @@ mod tests {
             .expect("the archive must be extracted");
 
         assert!(checked < extracted, "verify before extracting: {script}");
+    }
+
+    #[test]
+    fn the_newest_release_is_the_first_the_table_names() {
+        // The tables are ordered newest first, and each task's own test pins
+        // that. This only has to agree with the ordering rather than compute
+        // it: comparing versions as text puts `0.10.0` before `0.9.0`.
+        let newest = newest(RELEASES).expect("a populated table has a newest");
+
+        assert_eq!(newest.version, "0.44.0");
+    }
+
+    #[test]
+    fn an_empty_table_has_no_newest_release_rather_than_an_empty_one() {
+        // What the four hand-written copies got wrong. Each asked
+        // `release_for(RELEASES, "")` on an empty table and received
+        // `UnknownRelease { version: "", known: "" }` — an error naming
+        // neither what was wanted nor what exists. No shipped table is empty;
+        // the point is that the four disagreed with `zellij.rs`, which had a
+        // typed fallback and a test for the same case.
+        assert!(newest(&[]).is_err());
     }
 
     #[test]

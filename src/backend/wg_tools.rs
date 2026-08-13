@@ -4,6 +4,7 @@
 //! commands are identical; only the package providing them and the unit that
 //! brings an interface up differ, and both come from the backend.
 
+use super::systemd::run_capturing;
 use crate::domain::wireguard::{Keypair, WireguardTools};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
@@ -35,15 +36,7 @@ impl WgTools {
     /// marking: its secret goes *in* on stdin, and what it prints is public.
     fn generate(executor: &dyn Executor, subcommand: &str) -> Result<String> {
         let command = Command::new("wg").arg(subcommand).secret_output();
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Err(Error::CommandFailed {
-                command: command.to_string(),
-                code: output.code,
-                stderr: output.stderr,
-            });
-        }
+        let output = run_capturing(executor, &command)?;
 
         // Only the newline is stripped. Trimming more would eat the `=`
         // padding, and a key short by one character is one no handshake
