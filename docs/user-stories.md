@@ -115,7 +115,13 @@ TUI or CLI:
   - Acceptance: a task's identifier does not change when it is regrouped, so
     scripts calling it keep working.
   - TUI exception: categories are opened one level at a time, with a breadcrumb
-    showing the current location and a way back to the parent.
+    showing the current location and a way back to the parent. The arrow keys
+    walk both directions — into a category and back out — so descending does not
+    need the key that also runs tasks.
+  - Acceptance: the key that walks *into* a level never starts a task. Reaching
+    a task and reaching for the next arrow are one keystroke apart, and a
+    movement key that sometimes changes the machine is one nobody can press
+    quickly.
   - CLI exception: the whole tree is printed at once, indented by level.
 - As an **administrator**, I am told why a task cannot run on this machine, so
   that I can tell a missing package from a deliberate policy from a bug.

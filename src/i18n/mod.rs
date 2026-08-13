@@ -350,6 +350,12 @@ pub enum Msg {
     HelpNextRow,
     HelpFirstLastRow,
     HelpOpenOrRun,
+    /// What `→` does in the tree.
+    ///
+    /// Named for the category alone, unlike [`Msg::HelpOpenOrRun`]: the arrow
+    /// opens a category and does nothing on a task, which is what keeps a
+    /// movement key from ever starting one.
+    HelpOpenCategory,
     HelpFind,
     HelpHistory,
     HelpBack,

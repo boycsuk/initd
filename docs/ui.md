@@ -646,6 +646,7 @@ way back.
 | `↓` | Move to the next row |
 | `Home` / `End` | Jump to the first / last row of the level |
 | `Enter` | Open the selected category, or run the selected task; anything that changes the machine opens the dialog first |
+| `→` | Open the selected category. Does nothing on a task |
 | `/` | Open search over the whole tree |
 | `h` | Open the recorded changes, with any one restorable |
 | `Esc` / `Backspace` / `←` | Go back to the parent level; at the top level it reports rather than quitting |
@@ -653,6 +654,17 @@ way back.
 Every row is selectable: a category that could not be selected could not be
 opened. `Esc` means "go back" rather than "quit", so pressing it one level too
 many cannot drop the user out of the program — `q` is the only way out.
+
+**`→` is the inverse of `←` and deliberately narrower than `Enter`.** Without it
+the arrows could walk out of a level but not into one, so descending needed
+`Enter` while ascending had three keys of its own. What it does *not* do is run
+a task: `Enter` on a task starts it, and an arrow is a movement key — an
+operator descending a level and overshooting onto a task must not find that the
+next `→` began changing the machine. On a task row it does nothing at all, which
+is why the key bar does not advertise it there. The bar does not advertise it on
+a category either: it would say what `Enter open` already says, and the bar sheds
+hints by width, so a synonym would push out something that is not one. The help
+overlay lists it, which is where every binding is enumerated.
 
 A scrollbar appears on the right edge of the tree only when the level overflows
 the pane; a track drawn against a level that fits is a permanent hint that
