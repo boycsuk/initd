@@ -226,18 +226,7 @@ impl Form {
         // so the last one does not spend it. Left in, the dialog would reserve
         // a row nothing is ever drawn on and sit one taller than it looks.
         let fields = self.fields.len() as u16;
-
-        // A warning takes a row of its own beneath the value, so the fields
-        // carrying one are counted again. Left out, the dialog would be drawn
-        // one row shorter than the lines it holds and the warning would be the
-        // thing clipped — the one line on the form that must not be.
-        let warnings = self
-            .fields
-            .iter()
-            .filter(|field| field.param.hint_warns && field.param.hint.is_some())
-            .count() as u16;
-
-        let height = CHROME_ROWS + (ROWS_PER_FIELD * fields).saturating_sub(1) + warnings;
+        let height = CHROME_ROWS + (ROWS_PER_FIELD * fields).saturating_sub(1);
 
         layout::centred(DIALOG_WIDTH, height, terminal)
     }
@@ -422,26 +411,6 @@ impl Form {
                 Span::styled(VALUE_INDENT, style::NORMAL),
                 Span::styled(value, value_style),
             ]));
-
-            // A warning gets its own row beneath the value rather than sharing
-            // the header's. On the header it competes with the label and the
-            // verdict for one line, so it has to be short enough to fit beside
-            // them and is dropped entirely when it does not — which is the
-            // wrong behaviour for the one hint that matters. Here it has the
-            // width of the dialog, and the row it occupies is the blank one
-            // that already separated this field from the next.
-            //
-            // Only for fields that asked: an ordinary hint stays on the header,
-            // where being brief is a virtue and being dropped costs nothing.
-            if field.param.hint_warns
-                && let Some(warning) = field.param.hint.as_deref()
-            {
-                lines.push(Line::from(vec![
-                    Span::styled(focus_bar(focused), style::FLAG_INPUT),
-                    Span::styled(VALUE_INDENT, style::NORMAL),
-                    Span::styled(warning.to_owned(), style::DANGER_TEXT),
-                ]));
-            }
 
             // Between fields, and only there: without it one field's value and
             // the next one's label are adjacent rows, so a stanza runs into
@@ -635,15 +604,7 @@ fn header_line(field: &Field, lang: Lang, width: usize, focused: bool) -> Line<'
     // between fitting a 24-row terminal and not. It is therefore the first
     // thing dropped when the row is tight, since a hint that pushes the verdict
     // off the edge costs more than it explains.
-    // A warning is drawn on its own row beneath the value, not here: this row
-    // shares its width with the label and the verdict, so a hint too long for
-    // what is left is dropped — acceptable for a note, wrong for the one hint
-    // that says a mistake ends the session.
-    let hint = if field.param.hint_warns {
-        ""
-    } else {
-        field.param.hint.as_deref().unwrap_or_default()
-    };
+    let hint = field.param.hint.as_deref().unwrap_or_default();
     let fixed = GUTTER_WIDTH + render::cells(label) + render::cells(&right);
     let hint = if hint.is_empty()
         || width.saturating_sub(fixed) < render::cells(hint) + HINT_MARGIN_CELLS
@@ -780,106 +741,28 @@ mod tests {
     }
 
     #[test]
-    fn a_warning_gets_a_row_of_its_own_under_the_value() {
-        // Asked for in the modal that collects the port rather than in the
-        // confirmation after it, and short. On the header row it competes with
-        // the label and the verdict for one line — so it has to be brief enough
-        // to fit beside them and is dropped entirely when it is not, which is
-        // the wrong behaviour for the one hint on the form that matters.
-        use crate::tasks::Task;
-
-        let task = crate::tasks::network::EnableFirewall;
-        let mut form = Form::new(task.title(), task.params());
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20))
-            .expect("test terminal");
-
-        terminal
-            .draw(|frame| form.render(frame, Lang::En))
-            .expect("drawing must not fail");
-
-        let buffer = terminal.backend().buffer().clone();
-        let mut warning_row = None;
-        let mut value_row = None;
-
-        for y in 0..buffer.area.height {
-            let row: String = (0..buffer.area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect();
-
-            if row.contains("your SSH port") {
-                let colour = (0..buffer.area.width).find_map(|x| {
-                    let cell = &buffer[(x, y)];
-                    cell.symbol()
-                        .chars()
-                        .next()
-                        .is_some_and(char::is_alphabetic)
-                        .then_some(cell.fg)
-                });
-                warning_row = Some((y, colour));
-            } else if row.contains(" 22") {
-                value_row = Some(y);
-            }
-        }
-
-        let (warning_y, colour) = warning_row.expect("the warning must be drawn");
-        let value_y = value_row.expect("the value must be drawn");
-
-        assert_eq!(
-            warning_y,
-            value_y + 1,
-            "the warning belongs directly under the value it warns about"
-        );
-        assert_eq!(
-            colour,
-            style::DANGER_TEXT.fg,
-            "and must be drawn in the danger colour"
-        );
-    }
-
-    #[test]
-    fn a_warning_row_is_counted_in_the_dialog_height() {
-        // The row has to be paid for, or the dialog is drawn shorter than the
-        // lines it holds and the warning is what gets clipped — the one line
-        // here that must not be.
-        use crate::tasks::Task;
-
-        let with_warning = Form::new("warned", crate::tasks::network::EnableFirewall.params());
-        let without = Form::new(
-            "plain",
-            vec![Param::new("port", "Port", ParamKind::Port).with_hint("1-65535")],
-        );
-
-        let terminal = Rect::new(0, 0, 100, 40);
-
-        assert_eq!(
-            with_warning.area(terminal).height,
-            without.area(terminal).height + 1,
-            "a field carrying a warning is one row taller than one without"
-        );
-    }
-
-    #[test]
-    fn a_warning_never_shares_the_header_row() {
-        // It used to, and being there is what made it have to be short enough
-        // to fit beside the label and the verdict — and dropped when it was
-        // not. Its row is below the value now, so the header must not carry it
-        // as well: drawn twice, the operator reads one and acts on neither.
+    fn a_warning_hint_is_drawn_in_the_danger_colour() {
+        // One field in the tree carries a hint where being wrong costs the
+        // machine rather than a retry, and it is the only one: colouring the
+        // others would spend the signal that means "this can lock you out" on
+        // "must appear in /etc/shells".
+        // A short label, so the row has room for the hint: what this test is
+        // about is the colour, and a hint dropped for width would pass the
+        // "not drawn in danger" check for the wrong reason.
         let field = Field::new(
             Param::new("port", "Port", ParamKind::Port)
-                .with_hint("if you are on SSH, this must be your SSH port")
+                .with_hint("wrong port here ends this session")
                 .warning_hint(),
         );
 
-        let header: String = header_line(&field, Lang::En, layout::DIALOG_WIDTH as usize, true)
+        let line = header_line(&field, Lang::En, layout::DIALOG_WIDTH as usize, true);
+        let hint = line
             .spans
             .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+            .find(|span| span.content.contains("ends this session"))
+            .expect("the warning must be drawn");
 
-        assert!(
-            !header.contains("your SSH port"),
-            "the warning has its own row: {header}"
-        );
+        assert_eq!(hint.style, style::DANGER_TEXT);
     }
 
     #[test]

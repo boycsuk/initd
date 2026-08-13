@@ -211,7 +211,7 @@ impl Task for EnableFirewall {
             Param::new(Self::SSH_PORT, "Port to keep open", ParamKind::Port)
                 .with_initial(DEFAULT_SSH_PORT.to_string())
                 .defaulting_to_live(LiveDefault::SshPort)
-                .with_hint("if you are on SSH, this must be your SSH port")
+                .with_hint("wrong port here ends this session")
                 .warning_hint(),
         ]
     }
