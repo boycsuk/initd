@@ -254,6 +254,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a test that asserts what a task refuses proves nothing about what it does.
 
 ### Added
+- **Nine tasks now state what must run first, not one.** The mechanism landed
+  with a single declaration; the eight tasks whose guards already refused for a
+  missing dependency — the four that edit `sshd_config`, `wireguard.add-peer`,
+  `docker.rootless`, `caddy.validate` and `caddy.security-headers` — declare it
+  too, so each row says so before `Enter` rather than after.
+
+  All eight share one shape: the thing they configure has to be installed, and
+  a task installs it. `program_check` is written once for that rather than eight
+  times, and asks the `PATH`.
+
+  **That it may ask the `PATH` at all was measured, and openSUSE nearly broke
+  it.** `command -v sshd` answers for root on all six images and for an
+  unprivileged login on four: openSUSE's `/etc/profile` sets
+  `PATH=/usr/local/bin:/usr/bin:/bin` for anyone who is not root, so `sshd` is
+  invisible there. What rescues it is that these tasks are reached through
+  `sudo`, whose `secure_path` puts `/usr/sbin` back — measured on Tumbleweed,
+  where `sudo sh -c 'command -v sshd'` answers and the same question in a login
+  shell does not. The probe thread does not escalate but inherits the
+  environment of a process that did, which is what makes it hold; a caller
+  running these checks from an unprivileged context would have to look on disk
+  instead. Recorded beside the helper rather than left to be rediscovered.
+
+  A test pins the pairing a signature cannot: every task that refuses at run
+  time for a missing dependency must also declare it. A guard and a declaration
+  are two pieces of code saying one thing, and nothing else would notice them
+  disagreeing.
+
 - **A task can state what must already be true, and the row says so before
   `Enter` is pressed.** `Task::requires` declares a precondition as a task id
   and a runnable check — the inverse edge of `Consequence::Invalidates`, and
