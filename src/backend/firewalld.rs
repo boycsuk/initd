@@ -405,6 +405,22 @@ impl FirewallManager for Firewalld {
     /// A single command cannot do the expansion. The direction of the error is
     /// the safe one: it reports unresolved what may already be handled, and the
     /// administrator is pointed at a setting that turns out to be fine.
+    fn active_check(&self) -> (Command, String) {
+        // `--state` prints `running` and exits 0 when the daemon holds the
+        // ruleset, which is the whole of what "filtering" means here: firewalld
+        // has nothing to switch on, and its default zone already rejects what
+        // it was not told to admit. That is why this differs from the nftables
+        // implementation, which asks whether this tool's own table exists.
+        //
+        // The word rather than the exit code, because a `Check` is a substring
+        // match on stdout: a stopped daemon exits 252 and a failed one 251, and
+        // neither prints `running`.
+        (
+            Command::new("firewall-cmd").arg("--state"),
+            "running".to_owned(),
+        )
+    }
+
     fn open_port_check(&self, port: u32, protocol: Protocol) -> (Command, String) {
         (
             Command::new("firewall-cmd").args(["--zone", ZONE, "--list-ports"]),

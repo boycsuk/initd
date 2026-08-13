@@ -207,4 +207,14 @@ pub trait FirewallManager {
     /// correct, forever, on the one family where the tool installs a different
     /// front-end than the others.
     fn open_port_check(&self, port: u32, protocol: Protocol) -> (Command, String);
+
+    /// How to ask this front-end, later, whether it is filtering at all.
+    ///
+    /// Returned rather than run for the same reason as `open_port_check`, and
+    /// belonging to the front-end for the same reason too: the question is
+    /// spelled differently per implementation, and a task asking it directly
+    /// would have to pick one. It exists so `firewall.manage-ports` can declare
+    /// what it needs — a policy to add a rule to — where the interface can read
+    /// it, instead of that fact living only inside the task's own `run`.
+    fn active_check(&self) -> (Command, String);
 }

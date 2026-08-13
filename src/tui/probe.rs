@@ -119,9 +119,73 @@ pub struct Measurement {
     pub presence: Presence,
 }
 
+/// What one task's requirements were measured to be.
+///
+/// Sent over the same channel as a [`Measurement`] and kept a separate type
+/// rather than a field on it: the two are asked of different rows. Presence is
+/// asked of the rows that declare a `subject`, and readiness of those that
+/// declare a `requires` — and only three tasks do either both or neither.
+#[derive(Debug, Clone, Copy)]
+pub struct RequirementMeasurement {
+    /// The task whose requirements these are.
+    pub task_id: &'static str,
+    pub readiness: Readiness,
+}
+
+/// One answer from the probe thread.
+#[derive(Debug)]
+pub enum Answer {
+    Presence(Measurement),
+    Readiness(RequirementMeasurement),
+}
+
+/// Whether a task's stated requirements already hold on this host.
+///
+/// Three states rather than two, and the third is the important one: a check
+/// that could not be run says *nothing*, and must never be drawn as
+/// "unsatisfied". The probe deliberately has no privilege broker — so it cannot
+/// raise a password prompt over an operator reading the tree — which means a
+/// privileged check fails there rather than answering. A row greyed out on that
+/// basis would be one nobody could run and nobody could explain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Readiness {
+    /// Measured: everything the task requires is already true.
+    Ready,
+    /// Measured: at least one requirement is not met, and `missing` names the
+    /// task that satisfies it.
+    Blocked { missing: &'static str },
+    /// Never measured, or the question could not be asked.
+    #[default]
+    Unknown,
+}
+
+/// What the last requirement probe measured, keyed by task id.
+#[derive(Debug, Default)]
+pub struct RequirementState {
+    measured: HashMap<&'static str, Readiness>,
+}
+
+impl RequirementState {
+    /// What is known about `id`, defaulting to [`Readiness::Unknown`].
+    pub fn of(&self, id: &str) -> Readiness {
+        self.measured.get(id).copied().unwrap_or_default()
+    }
+
+    /// Records what was measured for `id`.
+    ///
+    /// There is no per-id `forget` beside this, unlike [`InstalledState`]: a
+    /// finished task drops the whole map rather than the entries it named,
+    /// because a precondition is a fact about the machine and the task that
+    /// satisfies one is rarely in the same reversible pair as the task that
+    /// needs it.
+    pub fn record(&mut self, id: &'static str, readiness: Readiness) {
+        self.measured.insert(id, readiness);
+    }
+}
+
 /// A probe running on its own thread.
 pub struct Probe {
-    results: Receiver<Measurement>,
+    results: Receiver<Answer>,
     /// Whether the sending thread has been observed to have gone.
     ///
     /// Remembered rather than asked, because asking costs a `try_recv` and
@@ -139,7 +203,11 @@ impl Probe {
     /// Takes the whole `Distro` for the same reason [`super::worker::Running`]
     /// does: the thread outlives this call and builds its own backend, since
     /// neither `Backend` nor `Executor` crosses a thread boundary.
-    pub fn start(distro: Distro, subjects: Vec<(&'static str, Capability)>) -> Self {
+    pub fn start(
+        distro: Distro,
+        subjects: Vec<(&'static str, Capability)>,
+        requirements: Vec<(&'static str, Vec<crate::tasks::consequence::Requirement>)>,
+    ) -> Self {
         let (sender, results) = channel();
 
         thread::spawn(move || {
@@ -158,10 +226,28 @@ impl Probe {
                 // started, or the tool is exiting. The loop stops rather than
                 // measuring the rest for nobody.
                 if sender
-                    .send(Measurement {
+                    .send(Answer::Presence(Measurement {
                         forward_id,
                         presence,
-                    })
+                    }))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+
+            // Requirements after presences, because the verb a row draws is
+            // what the operator sees first and a flag beside it is a
+            // refinement. Both are unprivileged questions asked of a host that
+            // is not changing underneath them.
+            for (task_id, required) in requirements {
+                let readiness = measure_requirements(&executor, &required);
+
+                if sender
+                    .send(Answer::Readiness(RequirementMeasurement {
+                        task_id,
+                        readiness,
+                    }))
                     .is_err()
                 {
                     return;
@@ -180,7 +266,7 @@ impl Probe {
     /// Never blocks: this runs inside the event loop's tick, and a probe that
     /// stalled the loop would cost exactly what running the queries inline
     /// would have.
-    pub fn drain(&mut self) -> Vec<Measurement> {
+    pub fn drain(&mut self) -> Vec<Answer> {
         let mut measured = Vec::new();
 
         loop {
@@ -224,6 +310,46 @@ impl Probe {
 /// capability the family packages is answered by the package manager alone; one
 /// it does not is answered by where the binary actually is, and "somewhere
 /// else" is reported as such rather than as installed.
+/// Whether every requirement a task states already holds.
+///
+/// Stops at the first one that does not, which is also the one named: a row can
+/// only say so much, and the task an operator has to run first is the first
+/// unmet one in the order the task listed them.
+///
+/// A check that cannot be run answers [`Readiness::Unknown`] for the whole
+/// task rather than being skipped. Skipping would let a task with one
+/// answerable and one unanswerable requirement report `Ready`, which is a
+/// stronger claim than was measured — and this probe has no privilege broker,
+/// so "could not be run" is the expected outcome for anything privileged rather
+/// than an edge case.
+fn measure_requirements(
+    executor: &dyn crate::exec::Executor,
+    required: &[crate::tasks::consequence::Requirement],
+) -> Readiness {
+    for requirement in required {
+        let Ok(output) = executor.run(&requirement.check.command) else {
+            return Readiness::Unknown;
+        };
+
+        if !output.success() {
+            return Readiness::Blocked {
+                missing: requirement.task,
+            };
+        }
+
+        if !output
+            .stdout
+            .contains(&requirement.check.resolved_when_stdout_contains)
+        {
+            return Readiness::Blocked {
+                missing: requirement.task,
+            };
+        }
+    }
+
+    Readiness::Ready
+}
+
 fn measure(
     executor: &dyn crate::exec::Executor,
     backend: &dyn crate::backend::Backend,
@@ -406,6 +532,49 @@ pub fn subjects_in(nodes: &[Node]) -> Vec<(&'static str, Capability)> {
     let mut found = Vec::new();
     collect_subjects(nodes, &mut found);
     found
+}
+
+/// Every task under `nodes` that states a requirement, with what it states.
+///
+/// Opt-in through `requires`, like `subjects_in` is through `subject`: this
+/// costs one query per requirement declared rather than one per task, and the
+/// tree today declares one.
+pub fn requirements_in(
+    nodes: &[Node],
+    backend: &dyn crate::backend::Backend,
+) -> Vec<(&'static str, Vec<crate::tasks::consequence::Requirement>)> {
+    let mut found = Vec::new();
+    collect_requirements(nodes, backend, &mut found);
+    found
+}
+
+/// Appends the requirements under `nodes` to `out`.
+fn collect_requirements(
+    nodes: &[Node],
+    backend: &dyn crate::backend::Backend,
+    out: &mut Vec<(&'static str, Vec<crate::tasks::consequence::Requirement>)>,
+) {
+    for node in nodes {
+        // Both halves of a reversible row are asked, unlike `subject`, which is
+        // a property of the pair. A requirement belongs to the operation: the
+        // forward one may need something the inverse does not.
+        let tasks: Vec<&dyn crate::tasks::Task> = match node {
+            Node::Task(task) => vec![task.as_ref()],
+            Node::Reversible { forward, inverse } => vec![forward.as_ref(), inverse.as_ref()],
+            Node::Category(category) => {
+                collect_requirements(&category.children, backend, out);
+                continue;
+            }
+        };
+
+        for task in tasks {
+            let required = task.requires(backend);
+
+            if !required.is_empty() {
+                out.push((task.id(), required));
+            }
+        }
+    }
 }
 
 /// Appends the subjects under `nodes` to `out`.
@@ -776,10 +945,10 @@ mod tests {
         assert!(!probe.is_finished(), "nothing has been measured yet");
 
         sender
-            .send(Measurement {
+            .send(Answer::Presence(Measurement {
                 forward_id: "caddy.install",
                 presence: Presence::Present,
-            })
+            }))
             .expect("the receiver is alive");
         drop(sender);
 
@@ -800,7 +969,14 @@ mod tests {
             1,
             "the measurement must survive being asked whether the probe ended"
         );
-        assert_eq!(measured[0].forward_id, "caddy.install");
+        assert!(
+            matches!(
+                &measured[0],
+                Answer::Presence(Measurement { forward_id, .. }) if *forward_id == "caddy.install"
+            ),
+            "the measurement must be the one that was sent: {:?}",
+            measured[0]
+        );
         assert!(
             probe.is_finished() || finished_first,
             "the disconnect must be observed"

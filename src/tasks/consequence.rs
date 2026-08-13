@@ -133,6 +133,42 @@ pub struct Check {
     pub resolved_when_stdout_contains: String,
 }
 
+/// Something that must already be true before a task is worth running.
+///
+/// The inverse edge of [`Consequence::Invalidates`], and deliberately the same
+/// shape: that variant says "my success made *your* result stale", and this one
+/// says "your result is what makes me possible". Both name a task and carry a
+/// [`Check`], so the second is what the first has been able to run since it was
+/// written.
+///
+/// It exists because a precondition was previously only discoverable by
+/// pressing `Enter`: every guard in this tree lives inside a `run`, so the tree
+/// drew a row that would refuse exactly like one that would work. The refusals
+/// themselves are good — `firewall.manage-ports` names `firewall.enable` and
+/// changes nothing — but an operator learns them one keystroke at a time.
+///
+/// **Advisory, never a gate.** The task's own guard stays the barrier, for two
+/// reasons. A check runs a command, and a tree that ran one per row per frame
+/// would spend a second of `fork`/`exec` on every keypress — the cost
+/// [`Task::affects`] already exists to avoid. And a check that cannot reach the
+/// host answers nothing, which must not read as "unsatisfied": a row greyed out
+/// because a probe failed is a row the operator cannot run and cannot explain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requirement {
+    /// The task that satisfies this, as the operator would run it.
+    ///
+    /// Named rather than described, so the interface can say `run X first` in
+    /// the words the tree and `docs/cli.md` both use — and so a test can assert
+    /// the id resolves, the way one now does for consequences.
+    pub task: &'static str,
+    /// How to ask whether it already holds.
+    ///
+    /// Always present, unlike a consequence's. A requirement nothing can
+    /// measure is a sentence for the task's description, not an edge in a graph
+    /// the interface acts on.
+    pub check: Check,
+}
+
 /// Something a task invalidates elsewhere when it succeeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Consequence {

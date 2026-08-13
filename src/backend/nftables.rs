@@ -442,6 +442,20 @@ impl FirewallManager for Nftables {
         )
     }
 
+    fn active_check(&self) -> (Command, String) {
+        // The same listing `state` reads, asked for the weaker fact: filtering
+        // here means this tool's own table exists, so the table's own name in
+        // the output is the whole answer. `initd` rather than a rule, because a
+        // policy with no rules yet is still a policy — and a needle matching a
+        // rule would report a freshly enabled firewall as absent.
+        (
+            Command::new("nft")
+                .args(["list", "table", "inet", "initd"])
+                .privileged(),
+            "table inet initd".to_owned(),
+        )
+    }
+
     fn is_allowed(&self, executor: &dyn Executor, port: u32, protocol: Protocol) -> Result<bool> {
         let command = Command::new("nft")
             .args(["list", "table", "inet", "initd"])

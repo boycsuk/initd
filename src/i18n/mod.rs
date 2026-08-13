@@ -603,6 +603,14 @@ pub enum Msg {
     // the sentences the pane wraps around them do.
     /// Why a task the host cannot run is refused. The reason is the task's,
     /// measured per family, and is interpolated as written.
+    /// A task supported here whose precondition this host does not meet yet.
+    ///
+    /// Names the task that satisfies it rather than describing the state, so
+    /// the sentence is an instruction: the operator's next keystroke is running
+    /// what it names.
+    DetailRequires {
+        task: String,
+    },
     DetailUnsupported {
         family: String,
         reason: String,

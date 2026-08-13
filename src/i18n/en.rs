@@ -595,6 +595,11 @@ pub(super) fn render(message: &Msg) -> String {
         // Both sit under the task's own description, separated from it by a
         // blank line the call site writes: the description is the task's
         // words, and running the two together would read as one sentence.
+        // "not yet" rather than "cannot": the difference from an unsupported
+        // task is that this one becomes possible, and the sentence says how.
+        Msg::DetailRequires { task } => {
+            format!("Not ready yet: run {task} first.")
+        }
         Msg::DetailUnsupported { family, reason } => {
             format!("Not available on {family}: {reason}.")
         }
