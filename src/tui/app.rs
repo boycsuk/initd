@@ -3546,6 +3546,70 @@ mod tests {
     }
 
     #[test]
+    fn the_first_escape_says_what_the_second_one_will_do() {
+        // The guard was computed and never drawn, so a form holding typed
+        // values swallowed the first `Esc` in silence. An unresponsive key
+        // invites a second press, and the second press is what discards the
+        // work — which made the guard worse than none at all.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.authorize-key");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+        app.on_paste("ssh-ed25519 AAAAC3Nzexample operator@laptop");
+
+        let before = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            before.contains("cancel"),
+            "an untouched-looking form offers the ordinary hint, got:\n{before}"
+        );
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.form.is_some(), "the first press must not discard");
+
+        let armed = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            armed.contains("again to discard"),
+            "the hint must say what the next press does, got:\n{armed}"
+        );
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.form.is_none(), "the second press discards");
+    }
+
+    #[test]
+    fn the_key_list_is_reachable_from_the_states_that_most_need_it() {
+        // `mode` ranks help above everything and `mode_under_help` exists to
+        // keep painting what it covers, both written for this — but no key in
+        // these three states ever set it, so the machinery was unreachable
+        // from the dialog that changes the machine, the window with a timer
+        // running, and the view whose `Enter` restores a file.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help.is_some(), "from the verification window");
+        assert!(
+            app.verification.is_some(),
+            "and the window is still underneath it"
+        );
+
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.harden");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.confirm.is_some(), "the dialog is open");
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help.is_some(), "from the confirmation dialog");
+        assert!(app.confirm.is_some(), "which stays open underneath");
+
+        let mut app = test_app(Family::Debian);
+        press(&mut app, KeyCode::Char('h'));
+        assert!(app.history.is_some(), "the history view is open");
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help.is_some(), "from the recorded changes");
+        assert!(app.history.is_some(), "which stays open underneath");
+    }
+
+    #[test]
     fn a_running_task_is_named_on_screen_while_it_runs() {
         // Before this the only sign of life was the output pane's write
         // cursor, which neither moves nor counts — so a command that is merely

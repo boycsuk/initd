@@ -620,7 +620,17 @@ impl PortTable {
             .chain(style::key_hint("d", &lang.render(&Msg::PortsKeyRemove)))
             .chain(style::key_hint("Enter", &lang.render(&Msg::PortsKeyEdit)))
             .chain(style::key_hint("Tab", &lang.render(&Msg::PortsKeyApply)))
-            .chain(style::key_hint("Esc", &lang.render(&Msg::FormKeyCancel)))
+            // The same guard the form draws, for the same reason: a table with
+            // edited rows asks twice, and a first `Esc` that changes nothing on
+            // screen invites the second press that discards them.
+            .chain(style::key_hint(
+                "Esc",
+                &lang.render(&if self.cancel_armed {
+                    Msg::KeyCancelArmed
+                } else {
+                    Msg::FormKeyCancel
+                }),
+            ))
             .collect()
     }
 
