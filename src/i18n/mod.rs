@@ -379,6 +379,12 @@ pub enum Msg {
     HelpMarkerInput,
     /// What `·` means on a row.
     HelpMarkerUnsupported,
+    /// What `-` means on a row.
+    ///
+    /// Beside the unsupported one because the two are told apart by what the
+    /// operator can do: neither row runs, and only this one names something
+    /// that would make it run.
+    HelpMarkerBlocked,
     /// What `•` means on a row.
     HelpMarkerPresent,
     /// What `?` means on a row.

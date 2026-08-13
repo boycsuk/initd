@@ -96,6 +96,7 @@ const SECTIONS: &[Section] = &[
             (style::MARKER_DANGER, Msg::HelpMarkerDanger),
             (style::MARKER_INPUT, Msg::HelpMarkerInput),
             (style::MARKER_UNSUPPORTED, Msg::HelpMarkerUnsupported),
+            (style::MARKER_BLOCKED, Msg::HelpMarkerBlocked),
             (style::MARKER_PRESENT, Msg::HelpMarkerPresent),
             (style::MARKER_PROBING, Msg::HelpMarkerProbing),
         ],
@@ -438,6 +439,7 @@ mod tests {
             style::MARKER_DANGER,
             style::MARKER_INPUT,
             style::MARKER_UNSUPPORTED,
+            style::MARKER_BLOCKED,
             style::MARKER_PRESENT,
             style::MARKER_PROBING,
         ] {

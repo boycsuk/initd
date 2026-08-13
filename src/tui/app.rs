@@ -624,9 +624,26 @@ impl App {
     /// A category always would — it opens. A task only where this host
     /// supports it. Categories answer `true` rather than being excluded, so a
     /// row that *is* actionable is never drawn as if it were not.
+    /// Whether pressing `Enter` on the selected row would do anything.
+    ///
+    /// Two ways it would not, and the row is drawn the same for both because
+    /// the operator's next move is the same: read the detail pane, which states
+    /// which of the two it is. The distribution refuses the task outright, or
+    /// this host has been measured not to meet a precondition it states.
+    ///
+    /// A requirement the probe could not measure does *not* make a row
+    /// unrunnable. `Readiness::Unknown` is what a check that could not be run
+    /// answers — the probe does not escalate, so that is ordinary rather than
+    /// exceptional — and greying a row on the strength of a question nobody
+    /// managed to ask would refuse a task the host may well be ready for.
     pub(super) fn selected_is_runnable(&self) -> bool {
-        self.selected_task()
-            .is_none_or(|task| task.supports(self.distro.family))
+        self.selected_task().is_none_or(|task| {
+            task.supports(self.distro.family)
+                && !matches!(
+                    self.readiness.of(task.id()),
+                    super::probe::Readiness::Blocked { .. }
+                )
+        })
     }
 
     /// Moves the cursor down one row.
@@ -2851,11 +2868,17 @@ mod tests {
             let mut state = InstalledState::default();
             state.record("caddy.install", presence.clone());
 
-            let drawn: String = row(&pair, Family::Debian, 60, &state)
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect();
+            let drawn: String = row(
+                &pair,
+                Family::Debian,
+                60,
+                &state,
+                &crate::tui::probe::RequirementState::default(),
+            )
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
 
             let would_run = crate::tui::probe::task_for(&pair, &state).expect("a pair is a task");
 
@@ -2880,20 +2903,32 @@ mod tests {
             inverse: crate::tasks::find("caddy.validate").expect("caddy.validate must exist"),
         };
 
-        let unsettled: String = row(&pair, Family::Debian, 60, &InstalledState::default())
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+        let unsettled: String = row(
+            &pair,
+            Family::Debian,
+            60,
+            &InstalledState::default(),
+            &crate::tui::probe::RequirementState::default(),
+        )
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
 
         let mut answered = InstalledState::default();
         answered.record("caddy.install", Presence::Absent);
 
-        let settled: String = row(&pair, Family::Debian, 60, &answered)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+        let settled: String = row(
+            &pair,
+            Family::Debian,
+            60,
+            &answered,
+            &crate::tui::probe::RequirementState::default(),
+        )
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
 
         assert!(
             unsettled.contains(style::MARKER_PROBING),
@@ -3170,11 +3205,17 @@ mod tests {
 
         state.record("ssh.install", crate::tui::probe::Presence::Present);
 
-        let drawn: String = row(&node, Family::Debian, 60, &state)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+        let drawn: String = row(
+            &node,
+            Family::Debian,
+            60,
+            &state,
+            &crate::tui::probe::RequirementState::default(),
+        )
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
 
         assert!(
             drawn.contains(style::MARKER_PRESENT),
@@ -3193,11 +3234,17 @@ mod tests {
 
         state.record("ssh.install", crate::tui::probe::Presence::Absent);
 
-        let drawn: String = row(&node, Family::Debian, 60, &state)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+        let drawn: String = row(
+            &node,
+            Family::Debian,
+            60,
+            &state,
+            &crate::tui::probe::RequirementState::default(),
+        )
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
 
         assert!(
             !drawn.contains(style::MARKER_PRESENT),
@@ -3212,7 +3259,13 @@ mod tests {
         let task = crate::tasks::find("users.create").expect("users.create must exist");
         let node = Node::Task(task);
 
-        let line = row(&node, Family::Debian, 60, &InstalledState::default());
+        let line = row(
+            &node,
+            Family::Debian,
+            60,
+            &InstalledState::default(),
+            &crate::tui::probe::RequirementState::default(),
+        );
         let drawn: String = line
             .spans
             .iter()
@@ -3237,7 +3290,13 @@ mod tests {
         );
 
         let node = Node::Task(task);
-        let line = row(&node, Family::Debian, 60, &InstalledState::default());
+        let line = row(
+            &node,
+            Family::Debian,
+            60,
+            &InstalledState::default(),
+            &crate::tui::probe::RequirementState::default(),
+        );
         let drawn: String = line
             .spans
             .iter()
@@ -3611,6 +3670,72 @@ mod tests {
 
         press(&mut app, KeyCode::Esc);
         assert!(app.form.is_none(), "the second press discards");
+    }
+
+    #[test]
+    fn enter_is_refused_on_a_row_whose_precondition_is_unmet() {
+        // Saying so and then opening the form anyway is the interface
+        // advertising an action it will decline: the operator was asked for a
+        // set of ports and then shown a red dialog about ending their own
+        // session, only to be refused by the guard inside `run`. Attention
+        // spent on a decision that was never available.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "firewall.manage-ports");
+
+        // Measured unmet: the key does nothing and the row says why.
+        app.readiness.record(
+            "firewall.manage-ports",
+            crate::tui::probe::Readiness::Blocked {
+                missing: "firewall.enable",
+            },
+        );
+
+        assert!(
+            !app.selected_is_runnable(),
+            "a blocked row must be drawn as refused"
+        );
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.form.is_none(), "no form may open");
+        assert!(app.confirm.is_none(), "and no confirmation");
+        assert!(app.running.is_none(), "and nothing may start");
+
+        // The bar must not promise an action the row declines.
+        let blocked = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            !blocked.contains("Enter"),
+            "the key bar must not offer Enter on a refused row:\n{blocked}"
+        );
+    }
+
+    #[test]
+    fn enter_still_works_where_the_precondition_could_not_be_measured() {
+        // `Unknown` is what a check that could not be run answers, and the
+        // probe has no privilege escalation — so that is the ordinary outcome
+        // for anything privileged rather than an edge case. Refusing on it
+        // would block a task the host may well be ready for, on the strength of
+        // a question nobody managed to ask. The guard inside `run` is still
+        // there, and it asks the host directly.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "firewall.manage-ports");
+
+        assert_eq!(
+            app.readiness.of("firewall.manage-ports"),
+            crate::tui::probe::Readiness::Unknown,
+            "nothing has been measured yet"
+        );
+        assert!(
+            app.selected_is_runnable(),
+            "an unmeasured row stays pressable"
+        );
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(
+            app.form.is_some() || app.ports.is_some(),
+            "the task must still be reachable"
+        );
     }
 
     #[test]

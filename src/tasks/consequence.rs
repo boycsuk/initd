@@ -147,12 +147,18 @@ pub struct Check {
 /// themselves are good — `firewall.manage-ports` names `firewall.enable` and
 /// changes nothing — but an operator learns them one keystroke at a time.
 ///
-/// **Advisory, never a gate.** The task's own guard stays the barrier, for two
-/// reasons. A check runs a command, and a tree that ran one per row per frame
-/// would spend a second of `fork`/`exec` on every keypress — the cost
-/// [`Task::affects`] already exists to avoid. And a check that cannot reach the
-/// host answers nothing, which must not read as "unsatisfied": a row greyed out
-/// because a probe failed is a row the operator cannot run and cannot explain.
+/// **Two barriers, not one.** The interface refuses `Enter` on a row it has
+/// measured unmet, and the task's own guard refuses again when it would act.
+/// They answer different questions — one reports the last measurement, the
+/// other asks the host at the moment of acting — and only the second is
+/// current, so it is never removed. The first exists for the operator's
+/// attention: without it a blocked row still collected values and still opened
+/// its confirmation before refusing.
+///
+/// **A check that could not be run refuses nothing.** A check costs a command,
+/// and the probe deliberately has no privilege escalation, so "could not ask"
+/// is its ordinary answer rather than an edge case. A row greyed out on that
+/// basis is one the operator can neither run nor explain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
     /// The task that satisfies this, as the operator would run it.

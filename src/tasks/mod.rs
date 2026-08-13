@@ -268,13 +268,21 @@ pub trait Task {
     /// exactly like one that would work: `firewall.manage-ports` on a host with
     /// no policy looks, from the tree, like any other runnable row.
     ///
-    /// **Advisory.** The guard inside `run` stays the barrier — this only
-    /// decides what the row says. Two reasons it cannot be the gate: a check
-    /// costs a command, and one per row per frame would put a second of
-    /// `fork`/`exec` in the path of every keypress; and a check that cannot
-    /// reach the host answers nothing, which must never read as "unsatisfied".
-    /// A row greyed out by a failed probe is one the operator can neither run
-    /// nor explain.
+    /// **The interface refuses `Enter` on a row measured unmet**, and the guard
+    /// inside `run` remains the barrier behind that. Two barriers rather than
+    /// one because they answer different questions: the interface asks what it
+    /// last measured, and the task asks the host at the moment it would act.
+    /// Only the second can be trusted to be current, so it is never removed.
+    ///
+    /// What the first buys is the operator's attention. Without it a blocked
+    /// row went the whole way — form, values, and for `firewall.manage-ports` a
+    /// red lockout dialog — before being refused, spending a sequence of
+    /// decisions on an outcome that was never available.
+    ///
+    /// **A requirement that could not be measured refuses nothing.** A check
+    /// costs a command and the probe does not escalate, so "could not ask" is
+    /// its ordinary answer rather than an edge case; a row greyed out on that
+    /// basis is one the operator can neither run nor explain.
     ///
     /// Most tasks require nothing of another task and inherit the empty
     /// default. What belongs here is a dependency on *this tool's own* tasks,

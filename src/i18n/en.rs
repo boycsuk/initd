@@ -441,6 +441,9 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpMarkerDanger => "can lock you out of this machine".to_owned(),
         Msg::HelpMarkerInput => "asks for values before it runs".to_owned(),
         Msg::HelpMarkerUnsupported => "not supported here — select it to see why".to_owned(),
+        // "waiting on" rather than "blocked": the row is not broken, and the
+        // thing it waits for is a task the operator can run.
+        Msg::HelpMarkerBlocked => "waiting on another task — select it to see which".to_owned(),
         Msg::HelpMarkerPresent => "this host already has it".to_owned(),
         Msg::HelpMarkerProbing => "still checking what this host has".to_owned(),
         Msg::HelpFilter => "filter by title or task id".to_owned(),
