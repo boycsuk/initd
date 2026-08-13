@@ -142,7 +142,7 @@ impl Task for InstallZellij {
         if backend.has_package_for(Capability::Zellij) {
             backend
                 .packages()
-                .install(executor, backend.package_for(Capability::Zellij))?;
+                .install(executor, &[backend.package_for(Capability::Zellij)])?;
 
             report(progress, &Msg::TaskZellijFromDistribution);
 

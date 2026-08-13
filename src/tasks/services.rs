@@ -1,7 +1,7 @@
 //! Workloads the server runs: a container engine and a web server.
 //!
-//! Both stop short of describing an application. `docker-rootless.install`
-//! provisions the engine and does not run containers; `caddy.*` installs,
+//! Both stop short of describing an application. `docker.install` provisions
+//! the engine and does not run containers; `caddy.*` installs,
 //! validates and hardens and does not write site configuration. Generating a
 //! `reverse_proxy` block describes an application topology, which is where the
 //! self-hosting panels live and where this tool deliberately does not go.
@@ -23,6 +23,24 @@ use crate::tasks::{
 /// The user unit a rootless engine installs.
 const DOCKER_USER_SERVICE: &str = "docker.service";
 
+/// The engine's own binary, which every family puts on the PATH under this
+/// name whichever repository the packages came from.
+const DOCKER_BINARY: &str = "docker";
+
+/// Upstream's rootless installer, for the one family that packages no script.
+///
+/// `--proto '=https' --tlsv1.2` matching how the repository managers fetch a
+/// key, and `-o` writing to a file the shell then runs rather than piping
+/// straight into `sh`: a download cut halfway through a pipe executes the half
+/// that arrived. What none of that provides is authenticity — upstream
+/// publishes no digest for this script, which is what
+/// [`External::UnverifiedRootlessInstaller`] tells the operator before it runs.
+const ROOTLESS_INSTALLER_SCRIPT: &str = "set -eu; \
+     script=$(mktemp); \
+     trap 'rm -f \"$script\"' EXIT; \
+     curl -fsSL --proto '=https' --tlsv1.2 https://get.docker.com/rootless -o \"$script\"; \
+     sh \"$script\"";
+
 /// The ports a web server needs, and the parameter that lets it bind them.
 const HTTP_PORT: u32 = 80;
 const HTTPS_PORT: u32 = 443;
@@ -34,10 +52,21 @@ pub fn category() -> Category {
         vec![
             Node::Category(Category::new(
                 "Containers",
-                vec![Node::Reversible {
-                    forward: Box::new(InstallDockerRootless),
-                    inverse: Box::new(UninstallDockerRootless),
-                }],
+                vec![
+                    // The engine first, because the rootless row below needs it
+                    // installed and refuses without it. Two rows rather than
+                    // one: an engine is installed once for the machine, and a
+                    // rootless setup is done per account, which is a difference
+                    // the single row could not express.
+                    Node::Reversible {
+                        forward: Box::new(InstallDockerEngine),
+                        inverse: Box::new(UninstallDockerEngine),
+                    },
+                    Node::Reversible {
+                        forward: Box::new(InstallDockerRootless),
+                        inverse: Box::new(UninstallDockerRootless),
+                    },
+                ],
             )),
             Node::Category(Category::new(
                 "Web server",
@@ -54,6 +83,127 @@ pub fn category() -> Category {
     )
 }
 
+/// Installs the Docker engine for the machine.
+///
+/// The system half, split from [`InstallDockerRootless`] because the two have
+/// different scopes: an engine is installed once for the host, and a rootless
+/// setup is done per account. Keeping them one task made a single capability
+/// resolve one package name for two jobs, and on three families the name it
+/// resolved was wrong — see [`Capability::DockerEngine`].
+pub struct InstallDockerEngine;
+
+impl Task for InstallDockerEngine {
+    fn id(&self) -> &'static str {
+        "docker.install"
+    }
+
+    fn title(&self) -> &'static str {
+        "Install the Docker engine"
+    }
+
+    fn description(&self) -> &'static str {
+        "Installs the container engine for the whole machine and starts it. \
+         Containers run as root this way: to give one account an engine of its \
+         own instead, run the rootless task afterwards."
+    }
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::DockerEngine)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["docker.install"]
+    }
+
+    supported_everywhere!();
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // Membership in `docker` is equivalent to root — the daemon socket
+        // takes commands that mount the host filesystem — and an operator who
+        // adds themselves to it to avoid typing `sudo` has made that trade
+        // without being told. Reported rather than done: this task installs an
+        // engine and does not decide who may drive it.
+        vec![Consequence::External {
+            note: External::DockerGroupIsRoot,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        report(progress, &Msg::TaskDockerEngineInstalling);
+
+        // Where the distribution packages no Docker, the engine comes from
+        // Docker's own repository — registered only if its signing key matches
+        // a fingerprint this build carries from sources the serving host does
+        // not control. Registered before the install rather than as part of it,
+        // so a key that does not match stops here with nothing changed.
+        if let (Some(repositories), Some(repository)) = (
+            backend.repositories(),
+            backend.repository_for(Capability::DockerEngine),
+        ) && !repositories.is_registered(executor, &repository)?
+        {
+            report(
+                progress,
+                &Msg::TaskRepositoryRegistering {
+                    repository: repository.name.to_owned(),
+                },
+            );
+
+            repositories.register(executor, &repository)?;
+        }
+
+        // Every name in one invocation, which is why `install` takes a slice:
+        // upstream's page lists five packages on the families served from its
+        // own repository, and installing them one at a time would leave a host
+        // holding two of five if the third failed.
+        let packages = engine_packages(backend);
+
+        backend.packages().install(executor, &packages)?;
+
+        let service = backend.service_for(Capability::DockerEngine);
+
+        backend.services().enable_and_start(executor, service)?;
+
+        // Read back rather than assumed, the way `ssh.install` does: `enable
+        // --now` exiting zero says the command ran, and a daemon that failed
+        // after that point would otherwise be reported as running. Both halves
+        // are shown because they are independent — a daemon running but not
+        // enabled is gone after the next reboot.
+        let state = backend.services().state(executor, service)?;
+
+        report(
+            progress,
+            &Msg::TaskUnitState {
+                unit: service.to_owned(),
+                active: state.active,
+                enabled: state.enabled,
+            },
+        );
+
+        Ok(Outcome::Done)
+    }
+}
+
+/// Every package the engine needs on this family.
+///
+/// A free function rather than a method because the fallback belongs to the
+/// caller: `packages_for` answers empty for the families whose engine is a
+/// single package, and the single name is what `package_for` already resolved.
+fn engine_packages(backend: &dyn Backend) -> Vec<&'static str> {
+    let listed = backend.packages_for(Capability::DockerEngine);
+
+    if listed.is_empty() {
+        vec![backend.package_for(Capability::DockerEngine)]
+    } else {
+        listed.to_vec()
+    }
+}
+
 /// Installs the rootless Docker engine for one account.
 pub struct InstallDockerRootless;
 
@@ -64,17 +214,18 @@ impl InstallDockerRootless {
 
 impl Task for InstallDockerRootless {
     fn id(&self) -> &'static str {
-        "docker-rootless.install"
+        "docker.rootless"
     }
 
     fn title(&self) -> &'static str {
-        "Install rootless Docker for a user"
+        "Run Docker rootless for a user"
     }
 
     fn description(&self) -> &'static str {
-        "Installs the Docker engine under one account rather than as root, so a \
+        "Sets up the engine under one account rather than as root, so a \
          container escape lands in an ordinary user rather than on the machine. \
-         The account keeps its services running after logout."
+         Needs the engine installed first. The account keeps its services \
+         running after logout."
     }
 
     fn subject(&self) -> Option<Capability> {
@@ -82,7 +233,7 @@ impl Task for InstallDockerRootless {
     }
 
     fn affects(&self) -> &'static [&'static str] {
-        &["docker-rootless.install"]
+        &["docker.rootless"]
     }
 
     fn params(&self) -> Vec<Param> {
@@ -96,14 +247,17 @@ impl Task for InstallDockerRootless {
 
     fn support(&self, family: Family) -> Support {
         match family {
-            // RHEL reaches the engine differently — Red Hat ships Podman and
-            // packages no Docker — but it gets there: the task registers
-            // Docker's own repository after checking its signing key against a
-            // fingerprint published independently of it.
-            // openSUSE packages the Moby runtime as `docker` in its own
-            // repositories, so unlike RHEL it needs no repository registered
-            // first, and systemd gives it the per-user manager Alpine lacks.
-            Family::Debian | Family::Arch | Family::Rhel | Family::Suse => Support::Yes,
+            // Four families package the setup script, whether as part of the
+            // engine or beside it, and give the account a systemd instance to
+            // install it into.
+            Family::Debian | Family::Rhel | Family::Suse => Support::Yes,
+            // Arch has the per-user manager and not the script: measured on
+            // `archlinux:latest`, `pacman -F dockerd-rootless-setuptool.sh`
+            // finds nothing and no official package lists a rootless file.
+            // Supported through upstream's installer, which the task asks about
+            // before running because it is the one route here that fetches code
+            // no digest covers.
+            Family::Arch => Support::Yes,
             Family::Alpine => Support::No(
                 "no per-user service manager at all: the engine runs under the \
                  account's own systemd instance, and OpenRC has no equivalent",
@@ -111,10 +265,10 @@ impl Task for InstallDockerRootless {
         }
     }
 
-    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+    fn consequences(&self, backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
         // Rootless containers cannot bind below 1024 without this, and the
         // failure reads as a container problem rather than a kernel setting.
-        vec![Consequence::Invalidates {
+        let mut consequences = vec![Consequence::Invalidates {
             task: "sysctl.unprivileged-ports",
             reason: Reason::RequiresSetting {
                 setting: "net.ipv4.ip_unprivileged_port_start",
@@ -123,7 +277,18 @@ impl Task for InstallDockerRootless {
                 command: Command::new("sysctl").args(["-n", "net.ipv4.ip_unprivileged_port_start"]),
                 resolved_when_stdout_contains: "80".to_owned(),
             }),
-        }]
+        }];
+
+        // Only on the family where the script cannot come from a package.
+        // Stating it everywhere would be a warning nobody can act on, which
+        // teaches people to dismiss the ones that matter.
+        if backend.family() == Family::Arch {
+            consequences.push(Consequence::External {
+                note: External::UnverifiedRootlessInstaller,
+            });
+        }
+
+        consequences
     }
 
     fn run(
@@ -137,6 +302,14 @@ impl Task for InstallDockerRootless {
 
         if !backend.accounts().exists(executor, &user)? {
             return Err(Error::NoSuchAccount { user });
+        }
+
+        // The engine before anything else. This task used to install it as a
+        // side effect, which is what made one task mean two scopes; now it
+        // depends on the other having run, and says so rather than installing
+        // a system-wide daemon from a task asked about one account.
+        if !engine_is_present(executor, backend)? {
+            return Err(Error::DockerEngineAbsent);
         }
 
         let user_services = backend.user_services();
@@ -162,29 +335,16 @@ impl Task for InstallDockerRootless {
 
         report(progress, &Msg::TaskDockerInstalling { user: user.clone() });
 
-        // Where the distribution packages no Docker, the engine comes from
-        // Docker's own repository — registered only if its signing key matches
-        // a fingerprint this build carries from three sources the serving host
-        // does not control. Registered before the install rather than as part
-        // of it, so a key that does not match stops here with nothing changed.
-        if let (Some(repositories), Some(repository)) = (
-            backend.repositories(),
-            backend.repository_for(Capability::DockerRootless),
-        ) && !repositories.is_registered(executor, &repository)?
-        {
-            report(
-                progress,
-                &Msg::TaskRepositoryRegistering {
-                    repository: repository.name.to_owned(),
-                },
-            );
-
-            repositories.register(executor, &repository)?;
+        // What the account needs beyond the engine, where the family packages
+        // it: `docker-ce-rootless-extras` on the two served by Docker's own
+        // repository, `docker-rootless-extras` on openSUSE, `rootlesskit` on
+        // Arch. The repository, where there is one, was registered by
+        // `docker.install` — which this task has already checked ran.
+        if backend.has_package_for(Capability::DockerRootless) {
+            backend
+                .packages()
+                .install(executor, &[backend.package_for(Capability::DockerRootless)])?;
         }
-
-        backend
-            .packages()
-            .install(executor, backend.package_for(Capability::DockerRootless))?;
 
         // Lingering first. Without it the engine stops when the account's last
         // session ends, and because a user unit is wanted by `default.target`
@@ -195,14 +355,7 @@ impl Task for InstallDockerRootless {
             report(progress, &Msg::TaskLingerEnabled { user: user.clone() });
         }
 
-        // The upstream setup script, run as the account rather than as root:
-        // it writes into the user's own systemd directory, and run as root it
-        // would install the engine for root.
-        let setup = Command::new("runuser")
-            .args(["-l", &user, "-c", "dockerd-rootless-setuptool.sh install"])
-            .privileged();
-
-        crate::backend::systemd::run_checked(executor, &setup)?;
+        run_rootless_setup(executor, backend, &user, progress)?;
 
         user_services.enable_and_start(executor, &user, DOCKER_USER_SERVICE)?;
 
@@ -228,6 +381,53 @@ impl Task for InstallDockerRootless {
 
         Ok(Outcome::Done)
     }
+}
+
+/// Whether the system engine is installed.
+///
+/// Asked of the binary rather than of a package name, for the reason
+/// `tui::probe` records about `sshd`: the engine may have arrived from the
+/// distribution's repositories or from Docker's, under different names, and
+/// `docker` is what both put on the PATH.
+fn engine_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
+    backend
+        .binaries()
+        .is_installed_here(executor, DOCKER_BINARY)
+}
+
+/// Runs upstream's rootless setup as the account.
+///
+/// Two routes, and which one a family takes is about whether the script can
+/// come from a package. Where it can, it is already on the PATH and this runs
+/// it. Arch is the exception the `Confirmation` above warns about: no official
+/// package ships it, so the script is fetched from `get.docker.com/rootless`,
+/// which publishes no per-artefact digest to check it against.
+fn run_rootless_setup(
+    executor: &dyn Executor,
+    backend: &dyn Backend,
+    user: &str,
+    progress: Progress<'_>,
+) -> Result<()> {
+    // Run as the account rather than as root: the script writes into that
+    // account's own systemd directory, and as root it would install an engine
+    // for root.
+    let script = if backend.family() == Family::Arch {
+        report(progress, &Msg::TaskDockerFetchingInstaller);
+
+        // `-o` on the pipeline so a failed download does not reach `sh`, and
+        // `--proto '=https' --tlsv1.2` matching how the repository managers
+        // fetch a key. What this cannot do is verify what arrives: upstream
+        // publishes no digest for it, which is what the confirmation said.
+        ROOTLESS_INSTALLER_SCRIPT
+    } else {
+        "dockerd-rootless-setuptool.sh install"
+    };
+
+    let setup = Command::new("runuser")
+        .args(["-l", user, "-c", script])
+        .privileged();
+
+    crate::backend::systemd::run_checked(executor, &setup)
 }
 
 /// Installs the Caddy web server.
@@ -338,7 +538,7 @@ impl Task for InstallCaddy {
         if backend.has_package_for(Capability::Caddy) {
             backend
                 .packages()
-                .install(executor, backend.package_for(Capability::Caddy))?;
+                .install(executor, &[backend.package_for(Capability::Caddy)])?;
 
             backend
                 .services()
@@ -625,6 +825,80 @@ fn security_snippet() -> String {
     )
 }
 
+/// Removes the Docker engine from the machine.
+///
+/// The system half's inverse, and an ordinary package removal unlike the
+/// rootless one below. What it deliberately does not touch is
+/// `/var/lib/docker`: images, volumes and containers are the operator's data,
+/// and a removal that discarded them would be doing something nobody asked for
+/// and nothing could undo.
+pub struct UninstallDockerEngine;
+
+impl Task for UninstallDockerEngine {
+    fn id(&self) -> &'static str {
+        "docker.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the Docker engine"
+    }
+
+    fn description(&self) -> &'static str {
+        "Stops the engine, disables it at boot, and removes it. Images, \
+         volumes and containers under /var/lib/docker are left alone: they are \
+         your data, and nothing here could put them back. Accounts running a \
+         rootless engine keep theirs."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::DockerEngine)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["docker.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::DockerEngine)
+    }
+
+    fn consequences(&self, _backend: &dyn Backend, _values: &ParamValues) -> Vec<Consequence> {
+        // The rootless engines are user units that run the same binaries this
+        // removes. Stated rather than checked: which accounts have one is a
+        // question no single command answers, since each lives in its own home.
+        vec![Consequence::Invalidates {
+            task: "docker.rootless",
+            reason: Reason::RequiresSetting {
+                setting: "the engine these accounts run from",
+            },
+            check: None,
+        }]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::DockerEngine,
+            "docker",
+        )
+    }
+}
+
 /// Removes the rootless Docker engine from one account.
 ///
 /// The one inverse that is not a package removal, mirroring a forward task
@@ -636,7 +910,7 @@ pub struct UninstallDockerRootless;
 
 impl Task for UninstallDockerRootless {
     fn id(&self) -> &'static str {
-        "docker-rootless.uninstall"
+        "docker.rootless-off"
     }
 
     fn title(&self) -> &'static str {
@@ -651,8 +925,8 @@ impl Task for UninstallDockerRootless {
         "Stops the account's engine, runs upstream's own uninstall as that \
          account, and stops it lingering. Containers, images and volumes under \
          the account's own directory are left: they are its data, not this \
-         tool's. The Docker package stays, since another account may be \
-         running an engine from it."
+         tool's. The engine itself stays, since the machine and other accounts \
+         may still be using it."
     }
 
     fn support(&self, family: Family) -> Support {
@@ -664,7 +938,7 @@ impl Task for UninstallDockerRootless {
     }
 
     fn affects(&self) -> &'static [&'static str] {
-        &["docker-rootless.install"]
+        &["docker.rootless"]
     }
 
     fn params(&self) -> Vec<Param> {
@@ -723,8 +997,19 @@ impl Task for UninstallDockerRootless {
         // Upstream's own script, run as the account for the same reason the
         // install is: it works inside that account's systemd directory, and as
         // root it would act on root's engine instead.
+        //
+        // Where the install fetched the script rather than finding it in a
+        // package, it left it in the account's own `~/bin` — so that is where
+        // the uninstall looks. Running the bare name there would find nothing
+        // and fail a teardown whose unit was already stopped above.
+        let teardown_script = if backend.family() == Family::Arch {
+            "$HOME/bin/dockerd-rootless-setuptool.sh uninstall"
+        } else {
+            "dockerd-rootless-setuptool.sh uninstall"
+        };
+
         let teardown = Command::new("runuser")
-            .args(["-l", &user, "-c", "dockerd-rootless-setuptool.sh uninstall"])
+            .args(["-l", &user, "-c", teardown_script])
             .privileged();
 
         crate::backend::systemd::run_checked(executor, &teardown)?;
@@ -798,8 +1083,9 @@ mod tests {
             Family::Debian,
             vec![
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
-                Reply::ok(""),         // subuid names it
-                Reply::failure(1, ""), // subgid does not
+                Reply::ok("/usr/bin/docker"), // the engine is installed
+                Reply::ok(""),                // subuid names it
+                Reply::failure(1, ""),        // subgid does not
             ],
             &user_values("deploy"),
         );
@@ -815,17 +1101,226 @@ mod tests {
 
     #[test]
     fn the_engine_package_differs_by_family() {
-        // Debian's distribution package does not carry the rootless setup
-        // script at all; Arch's `docker` does. A single name would leave one
-        // family with an install that has nothing to run.
+        // Each name measured in that family's own container rather than read
+        // off a page. This test asserted Arch's `docker` carried the rootless
+        // setup script; `pacman -F` finds no package that does, which is why
+        // the name here is `rootlesskit` and the task fetches the script.
         let debian = for_family(Family::Debian);
         let arch = for_family(Family::Arch);
+        let suse = for_family(Family::Suse);
 
         assert_eq!(
             debian.package_for(Capability::DockerRootless),
             "docker-ce-rootless-extras"
         );
-        assert_eq!(arch.package_for(Capability::DockerRootless), "docker");
+        assert_eq!(arch.package_for(Capability::DockerRootless), "rootlesskit");
+        assert_eq!(
+            suse.package_for(Capability::DockerRootless),
+            "docker-rootless-extras"
+        );
+    }
+
+    #[test]
+    fn the_engine_is_every_package_upstream_lists_not_just_the_first() {
+        // The defect the split exists to fix. `docker-ce-rootless-extras`
+        // declares `Enhances: docker-ce`, which apt honours as a suggestion:
+        // measured on `debian:13`, installing it alone brings in rootlesskit
+        // and the two scripts and leaves the host with no daemon and no client.
+        // So the engine must name all five, and asking for one would reproduce
+        // exactly the bug that shipped.
+        let debian = backend_for(Family::Debian);
+
+        assert_eq!(
+            engine_packages(debian.as_ref()),
+            vec![
+                "docker-ce",
+                "docker-ce-cli",
+                "containerd.io",
+                "docker-buildx-plugin",
+                "docker-compose-plugin",
+            ]
+        );
+
+        // And the families whose engine genuinely is one package still answer
+        // one, through the fallback rather than through a list repeated in
+        // every backend.
+        assert_eq!(
+            engine_packages(backend_for(Family::Arch).as_ref()),
+            vec!["docker"]
+        );
+    }
+
+    #[test]
+    fn the_five_engine_packages_reach_the_package_manager_together() {
+        // One transaction rather than five. A loop installing them one at a
+        // time leaves a host holding two of five when the third fails, and
+        // `install` taking a slice is what makes that unrepresentable.
+        let (outcome, commands) = run(
+            &InstallDockerEngine,
+            Family::Debian,
+            vec![
+                Reply::failure(1, ""), // repo absent
+                // What `register` installs before it can read a key at all:
+                // neither curl nor gpg is on a bare Debian image.
+                Reply::ok(""), // apt-get update
+                Reply::ok(""), // apt-get install curl gnupg
+                Reply::ok("9DC858229FC7DD38854AE2D88D81803C0EBFCD88\n"), // key checks out
+                Reply::ok(""), // install -d keyring
+                Reply::ok(""), // fetch key
+                Reply::ok(""), // write source
+                Reply::ok(""), // apt-get update (repo)
+                Reply::ok(""), // apt-get update (install)
+                Reply::ok(""), // install
+                Reply::ok(""), // enable --now
+                Reply::ok("active"), // is-active
+                Reply::ok("enabled"), // is-enabled
+            ],
+            &ParamValues::default(),
+        );
+
+        outcome.expect("the install must succeed");
+
+        // The *last* apt-get install, not the first: `register` runs one of its
+        // own for `curl` and `gnupg` before the key can be read, and matching
+        // that one would assert the five packages against a command that never
+        // names them.
+        let install = commands
+            .iter()
+            .rfind(|c| c.contains("apt-get") && c.contains("install"))
+            .expect("the engine must be installed");
+
+        for package in [
+            "docker-ce",
+            "docker-ce-cli",
+            "containerd.io",
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
+        ] {
+            assert!(
+                install.contains(package),
+                "{package} must be in the same transaction: {install}"
+            );
+        }
+    }
+
+    #[test]
+    fn arch_fetches_the_setup_script_and_every_other_family_runs_the_packaged_one() {
+        // The one family whose rootless route is not a package, and the branch
+        // nothing was asserting: every other test here runs Debian, so the Arch
+        // arm could have selected the wrong script in either direction and the
+        // suite would have agreed. That is the gap this change's own note in
+        // CLAUDE.md warns about — a test that only exercises the refusal proves
+        // nothing about what the task does.
+        //
+        // Pinned in both directions, because a branch that always fetched would
+        // be just as wrong as one that never did: Debian has the script in a
+        // package and must not reach the network for it.
+        let replies = || {
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok("/usr/bin/docker"), // the engine is installed
+                Reply::ok(""),                // subuid
+                Reply::ok(""),                // subgid
+                Reply::ok("/run/user/1001"),  // the session is reachable
+                Reply::ok(""),                // pacman -Sy / apt-get update
+                Reply::ok(""),                // install
+                Reply::ok("Linger=yes"),      // already lingering
+                Reply::ok(""),                // the setup script
+                Reply::ok(""),                // enable --now
+                Reply::ok("active"),          // is-active
+            ]
+        };
+
+        let (arch, arch_commands) = run(
+            &InstallDockerRootless,
+            Family::Arch,
+            replies(),
+            &user_values("deploy"),
+        );
+
+        arch.expect("the Arch install must succeed");
+
+        assert!(
+            arch_commands
+                .iter()
+                .any(|c| c.contains("get.docker.com/rootless")),
+            "Arch must fetch the script no package provides: {arch_commands:?}"
+        );
+
+        let (debian, debian_commands) = run(
+            &InstallDockerRootless,
+            Family::Debian,
+            replies(),
+            &user_values("deploy"),
+        );
+
+        debian.expect("the Debian install must succeed");
+
+        assert!(
+            debian_commands
+                .iter()
+                .any(|c| c.contains("dockerd-rootless-setuptool.sh install")),
+            "Debian must run the packaged script: {debian_commands:?}"
+        );
+        assert!(
+            !debian_commands.iter().any(|c| c.contains("get.docker.com")),
+            "and must not reach the network for it: {debian_commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_arch_teardown_looks_where_the_arch_install_put_the_script() {
+        // The mirror of the branch above, and the half easier to forget: on
+        // Arch the script was never in a package, so upstream's installer left
+        // it under the account's own `~/bin`. A teardown running the bare name
+        // there finds nothing and fails a removal whose unit was already
+        // stopped — reported as the uninstall being broken rather than as the
+        // script being somewhere else.
+        let (outcome, commands) = run(
+            &UninstallDockerRootless,
+            Family::Arch,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok("/run/user/1001"), // the session is reachable
+                Reply::ok(""),               // disable --now
+                Reply::ok(""),               // the teardown script
+                Reply::ok(""),               // disable-linger
+            ],
+            &user_values("deploy"),
+        );
+
+        outcome.expect("the Arch teardown must succeed");
+
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.contains("$HOME/bin/dockerd-rootless-setuptool.sh uninstall")),
+            "the teardown must look in ~/bin on Arch: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_rootless_setup_is_refused_where_no_engine_is_installed() {
+        // The dependency the split creates, and the reason it is named rather
+        // than left to upstream's script: that script reports a missing daemon
+        // in terms naming neither this tool nor the task that installs one.
+        let (outcome, commands) = run(
+            &InstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::failure(1, ""), // `command -v docker` finds nothing
+            ],
+            &user_values("deploy"),
+        );
+
+        let err = outcome.expect_err("a host with no engine must be refused");
+
+        assert!(matches!(err, Error::DockerEngineAbsent), "{err:?}");
+        assert!(
+            !commands.iter().any(|c| c.contains("setuptool")),
+            "the setup script must not run: {commands:?}"
+        );
     }
 
     #[test]
@@ -837,27 +1332,21 @@ mod tests {
             Family::Debian,
             vec![
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
-                Reply::ok(""), // subuid
-                Reply::ok(""), // subgid
+                Reply::ok("/usr/bin/docker"), // the engine is installed
+                Reply::ok(""),                // subuid
+                Reply::ok(""),                // subgid
                 // `printenv XDG_RUNTIME_DIR` as the account: a populated value
                 // is a session `systemctl --user` can address.
                 Reply::ok("/run/user/1001"),
-                // Debian reaches the engine through Docker's own repository,
-                // as RHEL does: the distribution packages `docker.io`, which
-                // carries no rootless setup script.
-                Reply::failure(1, ""), // the source is not registered yet
-                Reply::ok("9DC858229FC7DD38854AE2D88D81803C0EBFCD88\n"), // the key checks out
-                Reply::ok(""),         // install -d the keyring directory
-                Reply::ok(""),         // fetch the key
-                Reply::ok(""),         // write the source
-                Reply::ok(""),         // apt-get update, for the new source
-                Reply::ok(""),         // apt-get update, the one every install now runs
-                Reply::ok(""),         // install
+                // No repository registration here any more: `docker.install`
+                // does that, and this task refuses when it has not run.
+                Reply::ok(""),          // apt-get update, which every install runs
+                Reply::ok(""),          // install the rootless extras
                 Reply::ok("Linger=no"), // not lingering yet
-                Reply::ok(""),         // enable-linger
-                Reply::ok(""),         // setuptool
-                Reply::ok(""),         // enable --now
-                Reply::ok("active"),   // is-active
+                Reply::ok(""),          // enable-linger
+                Reply::ok(""),          // setuptool
+                Reply::ok(""),          // enable --now
+                Reply::ok("active"),    // is-active
             ],
             &user_values("deploy"),
         );
@@ -897,8 +1386,9 @@ mod tests {
             Family::Debian,
             vec![
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
-                Reply::ok(""), // subuid
-                Reply::ok(""), // subgid
+                Reply::ok("/usr/bin/docker"), // the engine is installed
+                Reply::ok(""),                // subuid
+                Reply::ok(""),                // subgid
                 // The session was never established, so `printenv` exits
                 // non-zero with nothing on stdout.
                 Reply::failure(1, ""),
@@ -986,15 +1476,16 @@ mod tests {
             Family::Debian,
             vec![
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
-                Reply::ok(""),               // subuid
-                Reply::ok(""),               // subgid
-                Reply::ok("/run/user/1001"), // the session is reachable
-                Reply::ok(""),               // apt-get update, before the install
-                Reply::ok(""),               // install
-                Reply::ok("Linger=yes"),     // already lingering
-                Reply::ok(""),               // setuptool
-                Reply::ok(""),               // enable --now
-                Reply::ok("inactive"),       // enabled, not running
+                Reply::ok("/usr/bin/docker"), // the engine is installed
+                Reply::ok(""),                // subuid
+                Reply::ok(""),                // subgid
+                Reply::ok("/run/user/1001"),  // the session is reachable
+                Reply::ok(""),                // apt-get update, before the install
+                Reply::ok(""),                // install
+                Reply::ok("Linger=yes"),      // already lingering
+                Reply::ok(""),                // setuptool
+                Reply::ok(""),                // enable --now
+                Reply::ok("inactive"),        // enabled, not running
             ],
             &user_values("deploy"),
         );

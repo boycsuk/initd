@@ -109,7 +109,7 @@ impl Task for InstallMise {
         if backend.has_package_for(Capability::Mise) {
             backend
                 .packages()
-                .install(executor, backend.package_for(Capability::Mise))?;
+                .install(executor, &[backend.package_for(Capability::Mise)])?;
         } else if backend.binaries().is_installed(executor, "mise")? {
             report(
                 progress,

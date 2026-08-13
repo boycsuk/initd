@@ -7,6 +7,14 @@
 //! checking after leaves a window in which an unverified repository is
 //! installable.
 //!
+//! One thing does run before that check, and it is the reason the sentence
+//! above says *usable* rather than *anything*: `curl`, `gpg` and the CA bundle
+//! are absent from a bare `debian:13`, so this installs them first. Without
+//! them the check cannot read a key at all and reports every one as unreadable,
+//! which reads as the key being bad rather than as the host having no tool to
+//! read it with. A refused fingerprint therefore leaves three ordinary tools
+//! and no repository — no source, no keyring, no key.
+//!
 //! Two things differ from the rpm side, both measured rather than assumed.
 //!
 //! APT expands `$(ARCH)` in a source and nothing else — `sources.list(5)` names
@@ -77,6 +85,45 @@ impl RepositoryManager for AptRepositories {
                 repository: repository.name.to_owned(),
             });
         };
+
+        // What the check below and the fetch after it are about to run with.
+        // `curl`, `gpg` and the CA bundle are the first step of Docker's own
+        // installation page for a reason: none of the three is on a bare
+        // `debian:13` — measured, `command -v` finds no curl, no gpg, no gpgv
+        // and no ca-certificates. Without them `verify_key` reports the key as
+        // unreadable, which reads as Docker having published a bad key rather
+        // than as this host having no tool to read it with.
+        //
+        // Before `verify_key` rather than after, because that is the call that
+        // needs them. Installing packages is not "nothing changed", so this is
+        // the one thing a failed registration can leave behind — three tools
+        // whose presence is unremarkable on a server, against a check that
+        // cannot run at all without them.
+        //
+        // The index first, for the reason `AptPackages::install` records: a
+        // name resolved against lists that were never fetched answers "unable
+        // to locate package", which reads as the name being wrong.
+        run_checked(
+            executor,
+            &Command::new("env")
+                .args(["DEBIAN_FRONTEND=noninteractive", "apt-get", "update"])
+                .privileged(),
+        )?;
+
+        run_checked(
+            executor,
+            &Command::new("env")
+                .args([
+                    "DEBIAN_FRONTEND=noninteractive",
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "ca-certificates",
+                    "curl",
+                    "gnupg",
+                ])
+                .privileged(),
+        )?;
 
         verify_key(executor, repository)?;
 
@@ -172,6 +219,11 @@ mod tests {
     /// A verified key, a written keyring, a written source, an `apt-get update`.
     fn registering() -> MockExecutor {
         MockExecutor::with_replies([
+            // The two calls `register` now makes before the key check:
+            // `curl` and `gpg` are absent from a bare debian:13, so it
+            // installs them rather than reporting a readable key as unreadable.
+            Reply::ok(""), // apt-get update
+            Reply::ok(""), // apt-get install ca-certificates curl gnupg
             Reply::ok("9DC858229FC7DD38854AE2D88D81803C0EBFCD88\n"),
             Reply::ok(""), // install -d
             Reply::ok(""), // curl the key
@@ -232,21 +284,39 @@ mod tests {
     #[test]
     fn a_mismatched_fingerprint_registers_nothing() {
         // The case the whole capability exists for: a key that is not the one
-        // this build expects must leave the machine as it found it.
-        let mock =
-            MockExecutor::with_replies([Reply::ok("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF\n")]);
+        // this build expects must leave no repository behind.
+        //
+        // This asserted that *nothing* ran, and that is no longer the claim:
+        // `register` installs `curl` and `gnupg` first, because neither is on a
+        // bare `debian:13` and without them the check cannot read a key at all.
+        // So the property is stated as what it protects rather than as a
+        // command count — no source, no keyring, no key on disk. Those three
+        // are what make a repository usable, and none of them is written.
+        //
+        // The weaker half is deliberate and worth naming: a refused
+        // registration can leave three tools installed. They are ordinary on a
+        // server, they grant nothing, and the alternative is a check that
+        // reports every key unreadable on a host that has no gpg.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""), // apt-get update
+            Reply::ok(""), // apt-get install ca-certificates curl gnupg
+            Reply::ok("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF\n"),
+        ]);
 
         let result = AptRepositories::new().register(&mock, &docker());
 
         assert!(matches!(result, Err(Error::RepositoryKeyMismatch { .. })));
-        assert!(
-            !mock
-                .recorded_lines()
-                .iter()
-                .any(|line| line.starts_with("tee") || line.contains("apt-get update")),
-            "nothing may be written: {:?}",
-            mock.recorded_lines()
-        );
+
+        for forbidden in ["tee", "install -d", KEYRING_DIR] {
+            assert!(
+                !mock
+                    .recorded_lines()
+                    .iter()
+                    .any(|line| line.contains(forbidden)),
+                "a refused key must leave no repository: `{forbidden}` ran: {:?}",
+                mock.recorded_lines()
+            );
+        }
     }
 
     #[test]
@@ -387,6 +457,11 @@ mod tests {
     #[test]
     fn a_fingerprint_is_compared_without_regard_to_case() {
         let mock = MockExecutor::with_replies([
+            // The two calls `register` now makes before the key check:
+            // `curl` and `gpg` are absent from a bare debian:13, so it
+            // installs them rather than reporting a readable key as unreadable.
+            Reply::ok(""), // apt-get update
+            Reply::ok(""), // apt-get install ca-certificates curl gnupg
             Reply::ok("9dc858229fc7dd38854ae2d88d81803c0ebfcd88\n"),
             Reply::ok(""),
             Reply::ok(""),
@@ -401,7 +476,14 @@ mod tests {
 
     #[test]
     fn a_key_that_cannot_be_fetched_is_an_error_not_a_registration() {
-        let mock = MockExecutor::with_replies([Reply::failure(1, "curl: (6) could not resolve")]);
+        let mock = MockExecutor::with_replies([
+            // The two calls `register` now makes before the key check:
+            // `curl` and `gpg` are absent from a bare debian:13, so it
+            // installs them rather than reporting a readable key as unreadable.
+            Reply::ok(""), // apt-get update
+            Reply::ok(""), // apt-get install ca-certificates curl gnupg
+            Reply::failure(1, "curl: (6) could not resolve"),
+        ]);
 
         let result = AptRepositories::new().register(&mock, &docker());
 

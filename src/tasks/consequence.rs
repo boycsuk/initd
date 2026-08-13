@@ -85,6 +85,28 @@ pub enum External {
 
     /// A name has to resolve to this host before a certificate can be issued.
     DnsMustResolve,
+
+    /// Membership in the `docker` group is equivalent to root.
+    ///
+    /// The daemon's socket takes commands that mount the host filesystem into a
+    /// container, so anyone who can reach it can read and write any file on the
+    /// machine. Said out loud because the usual next step after installing the
+    /// engine — adding an account to `docker` so it need not type `sudo` —
+    /// grants exactly that, and nothing about the command announces it. This
+    /// task does not do it; it says what doing it would mean.
+    DockerGroupIsRoot,
+
+    /// The rootless setup script arrives with no digest to check it against.
+    ///
+    /// Raised only where no official package ships
+    /// `dockerd-rootless-setuptool.sh` — Arch, measured — so the script comes
+    /// from `get.docker.com/rootless`. Every other route here verifies what it
+    /// fetches: repository keys are checked against fingerprints this build
+    /// carries, and release binaries against digests. This one cannot be,
+    /// because upstream publishes no per-artefact digest for it. External
+    /// rather than a check, since the whole point is that there is nothing to
+    /// verify against.
+    UnverifiedRootlessInstaller,
 }
 
 /// Transport protocol, for warnings that name a port.
@@ -229,6 +251,10 @@ impl Consequence {
                     protocol: protocol.as_str().to_owned(),
                 },
                 External::DnsMustResolve => Msg::ConsequenceDnsMustResolve,
+                External::DockerGroupIsRoot => Msg::ConsequenceDockerGroupIsRoot,
+                External::UnverifiedRootlessInstaller => {
+                    Msg::ConsequenceUnverifiedRootlessInstaller
+                }
             },
         }
     }
@@ -286,7 +312,7 @@ mod tests {
                 check: None,
             },
             Consequence::Invalidates {
-                task: "docker-rootless.install",
+                task: "docker.rootless",
                 reason: Reason::NeedsRestart {
                     service: "docker.service",
                 },

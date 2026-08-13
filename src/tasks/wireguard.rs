@@ -263,7 +263,7 @@ impl Task for InstallWireguard {
         report(progress, &Msg::TaskWireguardInstallingTools);
         backend
             .packages()
-            .install(executor, backend.package_for(Capability::Wireguard))?;
+            .install(executor, &[backend.package_for(Capability::Wireguard)])?;
 
         // 0700 before anything is written into it: the directory holds private
         // keys, and creating it world-readable even briefly is a window.

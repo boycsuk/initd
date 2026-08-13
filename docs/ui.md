@@ -389,7 +389,7 @@ the error:
 $ systemctl --user disable docker.service
 Failed to disable unit: Unit docker.service not loaded.
 
-FAILED — docker-rootless.uninstall
+FAILED — docker.rootless-off
 command       systemctl --user disable docker.service
 exit code     5
 stderr        Failed to disable unit: Unit docker.service not

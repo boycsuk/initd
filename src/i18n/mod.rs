@@ -212,6 +212,7 @@ pub enum Msg {
     NoSubordinateIds {
         user: String,
     },
+    DockerEngineAbsent,
     NoUserSession {
         user: String,
     },
@@ -318,6 +319,8 @@ pub enum Msg {
         protocol: String,
     },
     ConsequenceDnsMustResolve,
+    ConsequenceDockerGroupIsRoot,
+    ConsequenceUnverifiedRootlessInstaller,
 
     // --- Terminal ---
     Terminal {
@@ -1145,9 +1148,6 @@ pub enum Msg {
     TaskCaddyInstalledAt {
         version: String,
     },
-    TaskDockerRootlessReady {
-        user: String,
-    },
     TaskLingerEnabled {
         user: String,
     },
@@ -1210,6 +1210,8 @@ pub enum Msg {
     TaskDockerInstalling {
         user: String,
     },
+    TaskDockerEngineInstalling,
+    TaskDockerFetchingInstaller,
     TaskDockerConnectHint {
         user: String,
     },

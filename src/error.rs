@@ -303,6 +303,15 @@ pub enum Error {
     /// rather than after, since the install would otherwise be wasted.
     NoSubordinateIds { user: String },
 
+    /// The rootless setup was asked for on a host with no engine installed.
+    ///
+    /// Distinct from a failure of the setup script itself, which is what the
+    /// operator would otherwise see: upstream's script reports its own absence
+    /// or a missing daemon in terms that name neither this tool nor the task
+    /// that should have run first. Named as a separate error so the message can
+    /// say which task installs it.
+    DockerEngineAbsent,
+
     /// An account's own service manager cannot be reached.
     ///
     /// `systemctl --user` finds its bus through `XDG_RUNTIME_DIR`, which
@@ -528,6 +537,7 @@ impl Error {
             }
             Self::WireguardNotConfigured => Msg::WireguardNotConfigured,
             Self::NoSubordinateIds { user } => Msg::NoSubordinateIds { user: user.clone() },
+            Self::DockerEngineAbsent => Msg::DockerEngineAbsent,
             Self::NoUserSession { user } => Msg::NoUserSession { user: user.clone() },
             Self::ChecksumMismatch { program, version } => Msg::ChecksumMismatch {
                 program: program.clone(),
@@ -789,6 +799,9 @@ impl Error {
             | Self::NoPrivilegeEscalator
             | Self::CannotDeleteRoot
             | Self::WireguardNotConfigured
+            // Carries no field worth labelling: the whole answer is the
+            // sentence naming the task to run first.
+            | Self::DockerEngineAbsent
             | Self::LockoutRisk { .. } => Vec::new(),
         }
     }

@@ -66,6 +66,38 @@ const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 /// the name being wrong rather than as the repository being absent.
 const DOCKER_ROOTLESS_PACKAGE: &str = "docker-ce-rootless-extras";
 
+/// The engine itself, as Docker's own installation page lists it.
+///
+/// Four names rather than one, and the list is upstream's verbatim: the daemon,
+/// the client, the container runtime, and the two plugins the page installs
+/// alongside them.
+///
+/// This is the half [`DOCKER_ROOTLESS_PACKAGE`] does not bring. That package
+/// declares `Enhances: docker-ce`, which apt honours as a suggestion and not as
+/// a dependency — measured on `debian:13`, where `apt-get install -s
+/// docker-ce-rootless-extras` installs `rootlesskit`, the two scripts and
+/// `dbus-user-session`, and pulls in neither `docker-ce` nor `docker-ce-cli`.
+/// So an account could be handed a fully configured rootless wrapper around a
+/// daemon that was never installed, and the failure surfaces at
+/// `systemctl --user is-active` naming the unit rather than the missing engine.
+const DOCKER_ENGINE_PACKAGES: &[&str] = &[
+    "docker-ce",
+    "docker-ce-cli",
+    "containerd.io",
+    "docker-buildx-plugin",
+    "docker-compose-plugin",
+];
+
+/// The system engine's unit, which `docker.install` enables.
+///
+/// Not the same name as the rootless one despite both reading `docker.service`:
+/// this is a system unit and [`DOCKER_USER_UNIT`] is a user unit, and they are
+/// asked of two different managers.
+const DOCKER_SYSTEM_UNIT: &str = "docker.service";
+
+/// Where the system daemon reads its configuration.
+const DOCKER_SYSTEM_CONFIG: &str = "/etc/docker/daemon.json";
+
 /// Where Docker serves packages for Debian.
 ///
 /// Ubuntu is served from a sibling path and by the same key: the two archives
@@ -322,6 +354,11 @@ impl Backend for DebianBackend {
         match capability {
             Capability::Ssh => SSH_PACKAGE,
             Capability::Wireguard => WIREGUARD_PACKAGE,
+            // The engine is five names, so this one answers the first of them
+            // and `packages_for` carries the whole list. What this method is
+            // asked for elsewhere is whether the capability exists here at all
+            // (`has_package_for`), and `docker-ce` answers that truthfully.
+            Capability::DockerEngine => DOCKER_ENGINE_PACKAGES[0],
             Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGE,
             Capability::Caddy => CADDY_PACKAGE,
             Capability::Fish => FISH_PACKAGE,
@@ -338,10 +375,19 @@ impl Backend for DebianBackend {
         }
     }
 
+    fn packages_for(&self, capability: Capability) -> &'static [&'static str] {
+        match capability {
+            Capability::DockerEngine => DOCKER_ENGINE_PACKAGES,
+            _ => &[],
+        }
+    }
+
     fn service_for(&self, capability: Capability) -> &'static str {
         match capability {
             Capability::Ssh => SSH_SERVICE,
             Capability::Wireguard => WIREGUARD_SERVICE,
+            // The system engine's own unit, which `docker.install` enables.
+            Capability::DockerEngine => DOCKER_SYSTEM_UNIT,
             // The rootless engine is a user unit, addressed through
             // `user_services` rather than by name here.
             Capability::DockerRootless => DOCKER_USER_UNIT,
@@ -365,6 +411,9 @@ impl Backend for DebianBackend {
         match capability {
             Capability::Ssh => SSH_CONFIG,
             Capability::Wireguard => WIREGUARD_CONFIG,
+            // The system daemon reads /etc; the rootless one reads the
+            // account's own home, which is the whole difference between them.
+            Capability::DockerEngine => DOCKER_SYSTEM_CONFIG,
             Capability::DockerRootless => DOCKER_CONFIG,
             Capability::Caddy => CADDY_CONFIG,
             Capability::Fish => "/etc/fish/config.fish",
@@ -405,7 +454,11 @@ impl Backend for DebianBackend {
             // repository or not at all. Registered only after the key that
             // arrives matches a fingerprint this build took from two
             // keyservers, neither of them the host serving the packages.
-            Capability::DockerRootless => Some(Repository {
+            // Asked of the engine now rather than of the rootless extras: the
+            // repository is what carries both, and `docker.install` is the task
+            // that registers it. `docker.rootless` reaches the same repository
+            // through the engine having been installed first, which it checks.
+            Capability::DockerEngine => Some(Repository {
                 name: "docker",
                 base_url: self.docker_repo_path,
                 key_url: self.docker_key_path,
@@ -467,7 +520,7 @@ impl Backend for DebianBackend {
 pub struct AptPackages;
 
 impl PackageManager for AptPackages {
-    fn install(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn install(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // The index before the install, because `apt-get install` resolves a
         // name against whatever `/var/lib/apt/lists` happens to hold and says
         // nothing about how old that is. On a host whose lists have never been
@@ -493,13 +546,8 @@ impl PackageManager for AptPackages {
         // variable applies to this call only: an interactive debconf prompt
         // would hang a TUI that has handed the terminal over.
         let command = Command::new("env")
-            .args([
-                "DEBIAN_FRONTEND=noninteractive",
-                "apt-get",
-                "install",
-                "-y",
-                package,
-            ])
+            .args(["DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
@@ -569,7 +617,7 @@ mod tests {
         assert!(backend.repositories().is_some());
 
         let repository = backend
-            .repository_for(Capability::DockerRootless)
+            .repository_for(Capability::DockerEngine)
             .expect("the engine's repository must be declared");
 
         assert_eq!(repository.suite.as_deref(), Some("trixie"));
@@ -600,7 +648,7 @@ mod tests {
 
         let path_of = |backend: &DebianBackend| {
             backend
-                .repository_for(Capability::DockerRootless)
+                .repository_for(Capability::DockerEngine)
                 .expect("declared")
                 .base_url
         };
@@ -619,7 +667,7 @@ mod tests {
 
         assert!(
             backend
-                .repository_for(Capability::DockerRootless)
+                .repository_for(Capability::DockerEngine)
                 .expect("declared")
                 .suite
                 .is_none()
@@ -647,7 +695,7 @@ mod tests {
         let mock = MockExecutor::new();
 
         AptPackages
-            .install(&mock, DebianBackend::new().package_for(Capability::Ssh))
+            .install(&mock, &[DebianBackend::new().package_for(Capability::Ssh)])
             .expect("install must succeed");
 
         // Both commands, in this order: `apt-get install` resolves a name
@@ -717,7 +765,7 @@ mod tests {
         // refresh for the next task, which is not what the failure needs.
         let mock = MockExecutor::new();
 
-        AptPackages.install(&mock, "procps").expect("runs");
+        AptPackages.install(&mock, &["procps"]).expect("runs");
 
         let commands = mock.recorded_lines();
 
@@ -737,7 +785,9 @@ mod tests {
         // An interactive debconf prompt would hang the TUI.
         let mock = MockExecutor::new();
 
-        AptPackages.install(&mock, "openssh-server").expect("runs");
+        AptPackages
+            .install(&mock, &["openssh-server"])
+            .expect("runs");
 
         // Every command, not just the install: the refresh added in front of it
         // reaches the same `apt-get` and can raise the same prompt, and a check

@@ -143,6 +143,16 @@ pub trait RepositoryManager {
     /// repository usable. Writing first and checking after leaves a window in
     /// which an unverified repository is installable, which is the whole of
     /// what this is meant to prevent.
+    ///
+    /// "Usable" is the precise word and not a hedge. A refused key must leave
+    /// no source, no keyring and no key on disk; it may leave behind whatever
+    /// the check itself needed in order to run. [`super::super::backend::apt_repositories`]
+    /// is the case: neither `curl` nor `gpg` is present on a bare Debian image,
+    /// so it installs them first, and a mismatched fingerprint therefore ends
+    /// with three ordinary tools installed and no repository. Stated here
+    /// rather than left to the implementation, because a reader of this
+    /// contract would otherwise form the stronger belief that nothing whatever
+    /// runs before the check.
     fn register(&self, executor: &dyn Executor, repository: &Repository) -> Result<()>;
 }
 

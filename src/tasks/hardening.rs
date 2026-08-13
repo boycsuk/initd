@@ -137,7 +137,7 @@ impl Task for InstallFail2ban {
 
         backend
             .packages()
-            .install(executor, backend.package_for(Capability::Fail2ban))?;
+            .install(executor, &[backend.package_for(Capability::Fail2ban)])?;
 
         // The jail names the port explicitly rather than relying on the `ssh`
         // service name, which resolves through /etc/services and therefore
@@ -267,7 +267,7 @@ impl Task for InstallCrowdsec {
     ) -> Result<Outcome> {
         backend
             .packages()
-            .install(executor, backend.package_for(Capability::Crowdsec))?;
+            .install(executor, &[backend.package_for(Capability::Crowdsec)])?;
 
         backend
             .services()
@@ -376,7 +376,7 @@ impl Task for UnattendedUpgrades {
 
         backend.packages().install(
             executor,
-            backend.package_for(Capability::UnattendedUpgrades),
+            &[backend.package_for(Capability::UnattendedUpgrades)],
         )?;
 
         // Security only, and no automatic reboot. A tool that reboots a server

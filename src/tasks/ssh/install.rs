@@ -76,7 +76,7 @@ impl Task for InstallSsh {
                     what: package.to_owned(),
                 },
             );
-            backend.packages().install(executor, package)?;
+            backend.packages().install(executor, &[package])?;
         }
 
         report(

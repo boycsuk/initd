@@ -71,7 +71,7 @@ impl Task for InstallFish {
     ) -> Result<Outcome> {
         backend
             .packages()
-            .install(executor, backend.package_for(Capability::Fish))?;
+            .install(executor, &[backend.package_for(Capability::Fish)])?;
 
         // Registered in /etc/shells, without which `chsh` refuses it and some
         // PAM configurations refuse a session for an account that uses it.

@@ -57,6 +57,27 @@ const WIREGUARD_SERVICE: &str = "wg-quick";
 /// Where WireGuard keeps its configuration.
 const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 
+/// The Docker engine on Alpine, in `community`.
+///
+/// Alpine is not a platform Docker publishes a repository for, so this is the
+/// distribution's own package — `docker-29.5.2-r0`, measured on `alpine:3.23`.
+/// It ships an OpenRC service rather than a systemd unit, which
+/// [`ALPINE_DOCKER_SERVICE`] names.
+const DOCKER_ENGINE_PACKAGE: &str = "docker";
+
+/// The rootless extras, which Alpine does package.
+///
+/// Present here despite `docker.rootless` refusing this family: the refusal is
+/// about OpenRC having no per-user service manager, not about the package
+/// being missing, and answering `""` would state the wrong reason.
+const DOCKER_ROOTLESS_PACKAGE: &str = "docker-rootless-extras";
+
+/// The Docker init script, which is what OpenRC starts.
+const ALPINE_DOCKER_SERVICE: &str = "docker";
+
+/// Where the system daemon reads its configuration.
+const DOCKER_SYSTEM_CONFIG: &str = "/etc/docker/daemon.json";
+
 /// The nftables package on Alpine.
 const NFTABLES_PACKAGE: &str = "nftables";
 
@@ -147,15 +168,22 @@ impl Backend for AlpineBackend {
             // family where the empty name means "already there" rather than
             // "not packaged", which is why it does not share the arm below.
             Capability::Sysctl => "",
+            // Both halves are packaged here, which the previous comment denied:
+            // measured on `alpine:3.23`, `apk search -e docker` answers
+            // `docker-29.5.2-r0` and `docker-rootless-extras` exists too. What
+            // Alpine lacks is not the packages but a per-user service manager,
+            // so `docker.install` is supported and `docker.rootless` is not —
+            // a distinction the single capability could not draw.
+            Capability::DockerEngine => DOCKER_ENGINE_PACKAGE,
+            Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGE,
             // Genuinely absent rather than named differently. Alpine has no
-            // rootless Docker extras, no mise, no rustup, no CrowdSec and no
-            // unattended upgrades — an empty name is the honest answer, and the
-            // tasks that need them declare Alpine unsupported. CrowdSec is
-            // worth naming rather than leaving to the arm below it: fail2ban
-            // *is* packaged here, so the family supports one brute-force banner
-            // and not the other, which reads as an oversight until it is said.
-            Capability::DockerRootless
-            | Capability::Mise
+            // mise, no rustup, no CrowdSec and no unattended upgrades — an
+            // empty name is the honest answer, and the tasks that need them
+            // declare Alpine unsupported. CrowdSec is worth naming rather than
+            // leaving to the arm below it: fail2ban *is* packaged here, so the
+            // family supports one brute-force banner and not the other, which
+            // reads as an oversight until it is said.
+            Capability::Mise
             | Capability::Rust
             | Capability::Crowdsec
             | Capability::UnattendedUpgrades => "",
@@ -168,6 +196,8 @@ impl Backend for AlpineBackend {
             Capability::Wireguard => WIREGUARD_SERVICE,
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Caddy => CADDY_SERVICE,
+            // An init script rather than a unit, as everything here is.
+            Capability::DockerEngine => ALPINE_DOCKER_SERVICE,
             Capability::Nftables
             | Capability::Sysctl
             | Capability::DockerRootless
@@ -191,6 +221,7 @@ impl Backend for AlpineBackend {
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             // Git's system-wide file, which `git config --system` writes.
             Capability::Git => "/etc/gitconfig",
+            Capability::DockerEngine => DOCKER_SYSTEM_CONFIG,
             Capability::Nftables
             | Capability::Sysctl
             | Capability::DockerRootless
@@ -250,12 +281,13 @@ impl Backend for AlpineBackend {
 pub struct ApkPackages;
 
 impl PackageManager for ApkPackages {
-    fn install(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn install(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // `--no-cache` rather than a separate `apk update`: it fetches the
         // index for this call and keeps none of it, which is what Alpine's own
         // documentation recommends and what keeps a container image small.
         let command = Command::new("apk")
-            .args(["add", "--no-cache", package])
+            .args(["add", "--no-cache"])
+            .args(packages.iter().copied())
             .privileged();
 
         super::systemd::run_checked(executor, &command)
@@ -301,7 +333,7 @@ mod tests {
         let mock = MockExecutor::with_replies([Reply::ok("")]);
 
         ApkPackages
-            .install(&mock, "openssh")
+            .install(&mock, &["openssh"])
             .expect("install must succeed");
 
         assert_eq!(mock.recorded_lines(), ["apk add --no-cache openssh"]);
@@ -355,7 +387,6 @@ mod tests {
         let backend = AlpineBackend::new();
 
         for absent in [
-            Capability::DockerRootless,
             Capability::Mise,
             Capability::Rust,
             Capability::UnattendedUpgrades,
@@ -365,6 +396,22 @@ mod tests {
                 "{absent:?} must report as unpackaged"
             );
         }
+    }
+
+    #[test]
+    fn docker_is_packaged_here_even_though_the_rootless_task_refuses_alpine() {
+        // This listed `DockerRootless` among the capabilities Alpine lacks, and
+        // that was wrong twice over: measured on `alpine:3.23`, `apk search -e
+        // docker` answers `docker-29.5.2-r0` and `docker-rootless-extras`
+        // exists in `community`. What Alpine has no answer for is a per-user
+        // service manager, which is a fact about OpenRC rather than about
+        // packaging — so it belongs in `Task::support`, where the refusal can
+        // state that reason, and not in an empty package name that says
+        // "not packaged" about two packages that are.
+        let backend = AlpineBackend::new();
+
+        assert!(backend.has_package_for(Capability::DockerEngine));
+        assert!(backend.has_package_for(Capability::DockerRootless));
     }
 
     #[test]

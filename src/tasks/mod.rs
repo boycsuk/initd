@@ -943,13 +943,13 @@ mod tests {
         // is the count itself, which that test does not state.
         assert_eq!(
             all_tasks().len(),
-            50,
+            52,
             "the task count changed; update it in CLAUDE.md's task-areas entry \
-             and in the comments that restate it — `rg 'fifty tasks'`"
+             and in the comments that restate it — `rg 'fifty-two tasks'`"
         );
         assert_eq!(
             count_pairs(&tree()),
-            16,
+            17,
             "the reversible-row count changed; update it in CLAUDE.md and in \
              `tui/execution.rs`, `tui/app.rs` and `tasks/uninstall.rs`"
         );
