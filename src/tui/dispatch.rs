@@ -198,6 +198,16 @@ impl App {
             KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => {
                 self.leave_category();
             }
+            // The counterpart to `Left`, and deliberately narrower than
+            // `Enter`: it opens a category and does nothing at all on a task.
+            //
+            // `Enter` on a task starts it — through the form and the
+            // confirmation, but it starts it. An arrow is a movement key, and
+            // an operator arrowing down a level and overshooting onto a task
+            // must not find that the next `Right` began changing the machine.
+            // So this moves within the tree or it does nothing; running stays
+            // on the key that means "act".
+            KeyCode::Right => return self.enter_selected_category(),
             KeyCode::Down => self.select_next(),
             KeyCode::Up => self.select_previous(),
             KeyCode::Home => self.select_first(),

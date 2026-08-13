@@ -459,6 +459,30 @@ impl App {
         self.cursor.enter_category(index);
     }
 
+    /// Opens the category under the cursor, if the cursor is on one.
+    ///
+    /// The inverse of [`Self::leave_category`] and the whole of what `Right`
+    /// does. Reports whether it moved, so the key can be treated as unhandled
+    /// on a task row rather than silently swallowed — an arrow that consumes
+    /// the keypress and changes nothing is indistinguishable from one the
+    /// terminal never delivered.
+    ///
+    /// A task row is deliberately not activated here. `Enter` starts a task;
+    /// an arrow moves. Overshooting onto a task while descending must not put
+    /// the next `Right` in front of something that changes the machine.
+    pub(super) fn enter_selected_category(&mut self) -> bool {
+        let Some(index) = self.cursor.selected() else {
+            return false;
+        };
+
+        if !matches!(self.current_level().get(index), Some(Node::Category(_))) {
+            return false;
+        }
+
+        self.enter_category(index);
+        true
+    }
+
     /// Returns to the parent level, restoring the cursor it was left on.
     ///
     /// At the root there is nowhere to go, so this does nothing rather than
@@ -3575,6 +3599,42 @@ mod tests {
 
         press(&mut app, KeyCode::Esc);
         assert!(app.form.is_none(), "the second press discards");
+    }
+
+    #[test]
+    fn the_right_arrow_opens_the_category_under_the_cursor() {
+        // The inverse of `Left`, which leaves one. Without it the arrows could
+        // walk out of a level but not into one, so descending needed `Enter`
+        // while ascending had a key of its own.
+        let mut app = test_app(Family::Debian);
+        let before = app.breadcrumb();
+
+        press(&mut app, KeyCode::Right);
+
+        assert_ne!(app.breadcrumb(), before, "the level must have changed");
+        assert!(!app.cursor.at_root(), "and it must be a level deeper");
+
+        // And back out again, so the pair is symmetrical.
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.breadcrumb(), before, "`Left` undoes what `Right` did");
+    }
+
+    #[test]
+    fn the_right_arrow_never_starts_a_task() {
+        // `Enter` on a task runs it — through a form and a confirmation, but it
+        // runs it. An arrow is a movement key, and an operator descending a
+        // level and overshooting onto a task must not find that the next
+        // `Right` began changing the machine.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.harden");
+
+        let before = app.breadcrumb();
+        press(&mut app, KeyCode::Right);
+
+        assert!(app.confirm.is_none(), "no confirmation may be opened");
+        assert!(app.form.is_none(), "no form may be opened");
+        assert!(app.running.is_none(), "and nothing may be started");
+        assert_eq!(app.breadcrumb(), before, "the cursor stays where it was");
     }
 
     #[test]

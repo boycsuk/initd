@@ -75,6 +75,7 @@ const SECTIONS: &[Section] = &[
             ("↓", Msg::HelpNextRow),
             ("Home End", Msg::HelpFirstLastRow),
             ("Enter", Msg::HelpOpenOrRun),
+            ("→", Msg::HelpOpenCategory),
             ("/", Msg::HelpFind),
             ("h", Msg::HelpHistory),
             ("Esc ←", Msg::HelpBack),

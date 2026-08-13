@@ -418,6 +418,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpNextRow => "next row".to_owned(),
         Msg::HelpFirstLastRow => "first / last row".to_owned(),
         Msg::HelpOpenOrRun => "open a category, or run a task".to_owned(),
+        Msg::HelpOpenCategory => "open a category, never run a task".to_owned(),
         Msg::HelpHistory => "recorded changes, with any one restorable".to_owned(),
         Msg::HelpFind => "find a task anywhere in the tree".to_owned(),
         Msg::HelpBack => "back to the parent level".to_owned(),
