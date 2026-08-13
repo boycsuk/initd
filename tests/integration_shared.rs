@@ -133,6 +133,13 @@ for_each_image! {
             // refusal is structural and precedes argument parsing, so it must
             // hold for the invocation a script would actually write.
             "run users.lock-root",
+            // The third refusal, and the one nothing covered — which is how
+            // `docs/cli.md` came to say "two tasks" while `INTERACTIVE_ONLY`
+            // held three. Refused for the opposite reason to the other two:
+            // it cannot be held open at all, since `home=delete` leaves
+            // nothing to put back. Spelled with that argument because it is
+            // the invocation the refusal exists to stop.
+            "run users.delete user=nobody home=delete",
         ] {
             assert_eq!(
                 common::exit_code_of(image, command),

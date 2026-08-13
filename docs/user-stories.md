@@ -68,7 +68,8 @@ TUI or CLI:
 - As an **administrator**, I can see which distribution `initd` detected so
   that I know it will use the right commands for my system.
   - Acceptance: `initd detect` prints the distribution name, its id, its
-    version and the resolved family (`debian`, `arch`, `alpine` or `rhel`).
+    version and the resolved family (`debian`, `arch`, `alpine`, `rhel` or
+    `suse`).
   - Acceptance: on an unsupported distribution the command reports which
     family was missing instead of crashing.
 - As an **administrator**, I can see which privilege escalation mechanism will
@@ -282,9 +283,14 @@ TUI or CLI:
     reported instead.
   - Acceptance: writing the policy is not treated as success — the timer that
     applies it is confirmed enabled.
-  - Platform exception: Debian only. Arch and Alpine are rolling releases with
-    no equivalent, so the task is shown unsupported there rather than doing
-    something different under the same name.
+  - Platform exception: Debian only, and the other four decline for four
+    different reasons rather than one. Arch is a rolling release, where
+    upgrading unattended means pulling whatever landed today. Alpine ships no
+    equivalent at all. RHEL packages one under a name that moved between
+    releases, and SUSE's depends on how the host was installed rather than on
+    the family — so in both of those the backend, which resolves a family,
+    cannot name the right mechanism. Each is shown unsupported rather than
+    doing something different under the same name.
 - As an **administrator**, I can remove a banner or stop applying updates
   automatically, so that I can swap one protection for another or take the
   machine back under manual control.
@@ -592,13 +598,17 @@ TUI or CLI:
     about *what* is installed, and the version is what decides which hardening
     tier is safe to apply — the strict tier insists on algorithms an older
     client may never have learned.
-  - Acceptance: **there is no way to uninstall it from here**, deliberately and
-    permanently, unlike everything else the tool installs. Removing the SSH
-    server over an SSH connection ends the session that asked for it, and the
-    hold-open-and-revert mechanism cannot help: the process that would put it
-    back is being torn down by the disconnection, and putting it back means
-    reinstalling a package over a network connection that no longer exists. A
-    tool driven over SSH does not remove the SSH server.
+  - Acceptance: removing it **is** offered, and it is the one operation here
+    with no route back. Run over SSH it ends the session that asked for it
+    mid-removal, and the hold-open-and-revert mechanism cannot help: the
+    process that would put it back is being torn down by the disconnection, and
+    putting it back means reinstalling a package over a network path that no
+    longer exists. Recovery is the provider's console.
+  - Acceptance: that reasoning is why it carries the strongest confirmation the
+    interface has, and why it was absent by design until it was asked for. The
+    reasoning did not change — the answer to it did. This entry read "there is
+    no way to uninstall it from here, deliberately and permanently" for as long
+    as `ssh.uninstall` has existed.
 - As an **administrator**, I can harden the SSH configuration so that the
   server refuses root logins, password authentication, forwarding and
   tunnelling, limits how long and how often a client may try to authenticate,

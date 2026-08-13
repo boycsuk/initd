@@ -276,6 +276,15 @@ impl App {
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
             KeyCode::End | KeyCode::Char('f') => self.output.scroll_to_tail(),
+            // Folding the detail away is if anything more useful here than
+            // while browsing: a task's output is the thing being read, and
+            // giving it the whole pane is what somebody watching an install
+            // wants. The help overlay has always listed `o` under *Running*
+            // and `docs/ui.md` lists it as working anywhere, while this arm
+            // did not exist — so the key was announced in two places and did
+            // nothing, which is the shape of thing that gets reported as the
+            // interface having frozen.
+            KeyCode::Char('o') => self.detail_shown = !self.detail_shown,
             // Quitting mid-task is how a server ends up half-configured, so it
             // is refused: `Ctrl-C` is the way to actually stop.
             _ => {}

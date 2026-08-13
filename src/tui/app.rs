@@ -3497,6 +3497,31 @@ mod tests {
     }
 
     #[test]
+    fn the_detail_can_be_folded_away_while_a_task_runs() {
+        // The help overlay lists `o` under *Running* and `docs/ui.md` lists it
+        // as working anywhere, while `on_running_key` had no arm for it — so
+        // the key was announced twice and did nothing. Folding is if anything
+        // more useful here than while browsing: the output is what is being
+        // read, and giving it the whole pane is what somebody watching an
+        // install wants.
+        let mut app = test_app(Family::Debian);
+
+        app.running = Some(Running::start(
+            "ssh.install",
+            test_distro(Family::Debian),
+            ParamValues::new(),
+        ));
+
+        assert!(app.detail_shown, "the detail starts visible");
+
+        press(&mut app, KeyCode::Char('o'));
+        assert!(!app.detail_shown, "`o` must fold it away mid-task");
+
+        press(&mut app, KeyCode::Char('o'));
+        assert!(app.detail_shown, "and bring it back");
+    }
+
+    #[test]
     fn a_hangup_stops_a_task_that_is_still_running() {
         // The signal path looked only at the verification window, so a hangup
         // arriving mid-task broke the loop and returned from `run` with the

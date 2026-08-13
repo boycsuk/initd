@@ -269,17 +269,22 @@ fn cmd_run(id: Option<&str>, rest: &[String]) -> Result<()> {
         std::process::exit(2);
     };
 
-    // Some tasks stay out of reach here whatever arguments are supplied. Both
-    // apply a change that can end the session applying it, and the interactive
-    // interface holds such a change open until the administrator proves from a
-    // second session that they can still get in — reverting on its own when
-    // they cannot. The CLI exits immediately, so it has no such window to
-    // offer, and a mistake here is one nothing rolls back.
+    // Some tasks stay out of reach here whatever arguments are supplied, and
+    // not all for the same reason — see `INTERACTIVE_ONLY`. Two apply a change
+    // that can end the session applying it, which the interactive interface
+    // holds open until the administrator proves from a second session that they
+    // can still get in, reverting on its own when they cannot. The third
+    // destroys something no window could put back. The CLI exits immediately,
+    // so it can offer neither.
     if INTERACTIVE_ONLY.contains(&id) {
         eprintln!("{id} runs only in the interactive interface");
+        // Deliberately not naming the session: `users.delete` is here because
+        // it cannot be undone, not because it can lock anybody out, and a
+        // message claiming otherwise would send the operator looking for a
+        // risk that is not the one they face.
         eprintln!(
-            "it applies a change that can end this session, and only the \
-             interactive interface can hold it open for you to confirm"
+            "it applies a change this interface cannot offer to undo, and only \
+             the interactive one can confirm it properly"
         );
         std::process::exit(2);
     }

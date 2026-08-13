@@ -74,7 +74,7 @@ The body's split follows the terminal width:
 
 | Width | Split |
 |-------|-------|
-| ≥ 100 columns | Tree fixed at 46 columns; the right pane absorbs the rest |
+| ≥ 100 columns | Tree fixed at 50 columns; the right pane absorbs the rest |
 | 72–99 columns | Tree 42%, right pane 58% |
 | < 72 columns | One pane at a time |
 
@@ -83,10 +83,11 @@ natural one, so extra width belongs to the output, where lines are long and
 wrapping hurts. Giving the tree a share of a wide terminal would spend it on
 padding.
 
-**That width is measured, not chosen.** The longest task title is 40 cells and
+**That width is measured, not chosen.** The longest task title is 44 cells and
 a row spends six more — two of border, two of marker, one of flag, and the
-space separating the title from it — so 46 is the width at which no task in
-the tree is truncated. A task added with a longer name shortens the others,
+space separating the title from it — so 50 is the width at which no task in
+the tree is truncated. (46 is a different constant: the *minimum* the right
+pane is promised, which a compile-time assertion ties to this one.) A task added with a longer name shortens the others,
 silently: a truncated title still renders, it just cannot be read. A test
 compares the constant against the tree so that the day it stops being true is
 a failing build rather than a screen nobody can use.
@@ -312,6 +313,7 @@ Meaning is carried by a glyph, never by colour alone, so a monochrome or
 | `…` | The task collects parameters before it runs |
 | `·` | The task is not supported on this host |
 | `?` | The row's verb has not been settled yet |
+| `•` | The subject was already here before this session — the row offers to install something the host already has, and has no inverse verb to switch to instead |
 
 A row carries at most one flag, and they rank in that order: a task that both
 risks a lockout and takes parameters shows `!`, since the warning outranks the
@@ -407,7 +409,7 @@ command it stopped *before*, so what ran and what did not is legible) and
 - **Continuations hang under the value**, not at the left margin, so a wrapped
   path is not mistaken for another label. Below a readable minimum width the
   indent is dropped rather than squeezing the value into a few cells.
-- **Copyable.** The block is part of the transcript `Ctrl-Y` copies, whole
+- **Copyable.** The block is part of the transcript `y` copies, whole
   lines rather than the truncated window on screen.
 - **A blank line precedes the heading**, so the report reads as separate from
   the command output above it.
@@ -494,18 +496,19 @@ it there does nothing — which looks like the interface dropping the key rather
 than the host refusing the task. Colour is not carrying that alone: the same row
 already shows `·` in its flag column.
 
-Three roles are still declared and never drawn — the gauge, the result glyphs
-(`result_fail`, and `result_ok` outside the form's own summary line), and the
-tree's depth guides. They are declared here and in source so the table stays one
-readable reference, and so a new call site picks a role instead of inventing a
-colour. `search_match` was one of these until search was built, and
-`selection_disabled` until the tree began drawing it; both are drawn now, which
-is what the list is for.
+Five entries are still declared and never drawn — `gauge`, `result_fail`, and
+the `marker_ok`, `marker_fail` and `marker_cursor` glyphs. They are declared
+here and in source so the table stays one readable reference, and so a new call
+site picks a role instead of inventing a colour. `search_match` was one of these
+until search was built, `selection_disabled` until the tree began drawing it,
+and `tree_guide` and `result_ok` since this paragraph last named them as
+undrawn; all four are drawn now, which is what the list is for — and why the
+list has to be re-derived rather than remembered.
 
 `gauge` is the substantive one left: it implies a progress element with a real
 design question behind it, since a task's command count is not known before it
-runs. `tree_guide` and `result_fail` are small, and waiting on a place to put
-them rather than on a decision.
+runs. `result_fail` and the three markers are small, and waiting on a place to
+put them rather than on a decision.
 
 `consequence` and `consequence_external` were a fourth case, and a worse one:
 this table described them and nothing drew them. A consequence rides an ordinary
@@ -582,7 +585,7 @@ content is hidden when none is.
 
 ### Search (semi-modal)
 
-Opened with `/` from the tree. Twenty-eight tasks across six areas is past the
+Opened with `/` from the tree. Fifty tasks across six areas is past the
 number anybody keeps a map of, and drilling down one level at a time answers
 "what is in here" rather than "where is it" — without this the only recourse
 was `docs/cli.md`, outside the tool and possibly not on the server.
