@@ -82,7 +82,6 @@ impl ServiceManager for SystemdServices {
     }
 }
 
-/// Runs a command and turns a non-zero exit into an error.
 /// Whether systemd is reporting a unit it does not have.
 ///
 /// Matching another program's user-facing text, which this codebase avoids
@@ -102,6 +101,10 @@ pub(super) fn unit_is_absent(stderr: &str) -> bool {
     stderr.contains("does not exist") || stderr.contains("not loaded")
 }
 
+/// Runs a command and turns a non-zero exit into an error.
+///
+/// For the callers that need the command to have worked and have nothing to
+/// read from it; [`run_capturing`] is the same check for the ones that do.
 pub fn run_checked(executor: &dyn Executor, command: &Command) -> Result<()> {
     run_capturing(executor, command)?;
 

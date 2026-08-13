@@ -2,9 +2,9 @@
 //!
 //! Shared by every family that ships a full `getent`. Alpine's busybox does
 //! not, which is why this is a capability behind a trait rather than a call
-//! inlined into the task: that family will need its own implementation
-//! reading `/etc/passwd` directly, and nothing above this line has to change
-//! when it arrives.
+//! inlined into the task — and that second implementation exists:
+//! [`super::busybox_accounts::BusyboxAccounts`] reads `/etc/passwd` directly.
+//! Nothing above this line changed when it arrived, which was the claim.
 
 use crate::domain::accounts::{AccountReader, home_from_passwd_line};
 use crate::error::{Error, Result};

@@ -186,13 +186,29 @@ impl BackupRecord {
 /// checked rather than trusted.
 fn known_service(name: &str) -> Option<&'static str> {
     // Every unit any family names for a capability this tool configures.
-    const KNOWN: [&str; 7] = [
+    //
+    // Both spellings of each, because Alpine's OpenRC scripts carry no
+    // `.service` suffix. Only `sshd` had been added, so on Alpine a Caddy or
+    // fail2ban record was written to the index and then dropped on the way back
+    // in — the tool reporting a copy it could no longer find. `sshd` being
+    // present is why the SSH tasks, the ones most likely to be reverted, never
+    // showed it.
+    //
+    // Stated rather than derived from the backends: the point of the set is
+    // that a value crossing the file boundary is matched against something this
+    // build decided, and asking a backend at read time would let the index name
+    // whatever the running host happens to resolve. A test walks all five
+    // families and every capability, so a name added here is checked against
+    // what they actually resolve rather than against this comment.
+    const KNOWN: [&str; 9] = [
         "",
         "ssh.service",
         "sshd.service",
         "sshd",
         "caddy.service",
+        "caddy",
         "fail2ban.service",
+        "fail2ban",
         "crowdsec.service",
     ];
 
@@ -620,6 +636,39 @@ mod tests {
             BackupRecord::from_line(&line).is_none(),
             "a unit name from the file must be matched against what this build knows"
         );
+    }
+
+    #[test]
+    fn every_unit_a_family_resolves_survives_the_round_trip() {
+        // `known_service` is a closed set, so a name missing from it silently
+        // discards the whole record — the tool reports a copy was kept and then
+        // cannot find it. Alpine spells its units without `.service`, and only
+        // `sshd` had been added, so a Caddy or fail2ban change recorded there
+        // was invisible to every revert.
+        //
+        // Asked of the backends rather than written out, so a family that
+        // renames a unit fails here rather than losing records quietly.
+        for family in crate::distro::Family::ALL {
+            let backend = crate::backend::for_family(*family);
+
+            for capability in [
+                crate::backend::Capability::Ssh,
+                crate::backend::Capability::Caddy,
+                crate::backend::Capability::Fail2ban,
+                crate::backend::Capability::Crowdsec,
+            ] {
+                let unit = backend.service_for(capability);
+
+                let mut record = a_record();
+                record.service = unit;
+
+                assert!(
+                    BackupRecord::from_line(&record.to_line()).is_some(),
+                    "{family} names {unit} for {capability:?}, and a record \
+                     naming it must survive being read back"
+                );
+            }
+        }
     }
 
     #[test]

@@ -64,7 +64,7 @@ impl Command {
     ///
     /// `command -v` rather than `which`, which is not installed everywhere and
     /// whose exit codes differ between implementations. Stated once because
-    /// four call sites had written it out, each carrying the same decision and
+    /// five call sites had written it out, each carrying the same decision and
     /// only one of them carrying the reason — so the three that did not read
     /// like a shell invocation somebody could simplify.
     ///
@@ -137,7 +137,7 @@ impl fmt::Display for Command {
     /// Renders the command as a readable line, for logs and error messages.
     ///
     /// A `sh -c` script is summarised rather than printed. One of them is
-    /// fourteen lines, and this line is announced in the output pane before the
+    /// thirteen lines, and this line is announced in the output pane before the
     /// command runs and carried into `CommandFailed` if it does not — so
     /// spelling it out would bury the transcript under a program the operator
     /// did not write and put the same wall of text inside the error. The
@@ -153,7 +153,7 @@ impl fmt::Display for Command {
 
         // `sh -c <script> <argv0> <args…>`: the script is one argument, and
         // `-c` is what identifies it. A one-line script is printed as it is —
-        // `command -v fish` reads perfectly well and four call sites rely on
+        // `command -v fish` reads perfectly well and five call sites rely on
         // being able to see it.
         if self.program == "sh"
             && self.args.first().is_some_and(|arg| arg == "-c")
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn locating_asks_the_shell_where_a_program_is() {
-        // Pinned because four call sites now share this one line, and the
+        // Pinned because five call sites now share this one line, and the
         // choice inside it is load-bearing: `which` is absent on some of the
         // families this runs on and disagrees about exit codes on others.
         let cmd = Command::locating("fish");
@@ -435,7 +435,7 @@ mod tests {
     fn a_multi_line_script_is_summarised_rather_than_printed() {
         // This line is announced in the output pane before the command runs and
         // carried into `CommandFailed` if it fails. The owned-directory write is
-        // a fourteen-line script, so printing it would bury a transcript under a
+        // a thirteen-line script, so printing it would bury a transcript under a
         // program the operator did not write, twice.
         let script = "set -eu\nif [ -L \"$1\" ]; then exit 9; fi\nmv -f \"$2\" \"$1\"\n";
         let command = Command::new("sh").args([

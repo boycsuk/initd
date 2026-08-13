@@ -141,19 +141,6 @@ impl Nftables {
         }
     }
 
-    /// Turns on whatever replays the ruleset at boot.
-    ///
-    /// Reports whether it could, rather than failing: a host may have no
-    /// service manager to ask. `alpine:3.23` is the measured case — OpenRC
-    /// ships in its own package, so a container has neither `rc-update` nor
-    /// `/etc/init.d/nftables`, and a chroot or a minimal image is the same
-    /// situation on any family.
-    ///
-    /// Failing the task there would be the wrong trade. The ruleset is applied
-    /// and has been written to the file a boot would replay; what is missing is
-    /// the thing that replays it, on a host that may not boot at all. Refusing
-    /// would turn "the firewall is on and will need one more step" into "the
-    /// firewall did not go on", which is worse and false.
     /// Stops whatever replays the ruleset at boot.
     ///
     /// The mirror of [`enable_at_boot`](Self::enable_at_boot), including its
@@ -176,6 +163,19 @@ impl Nftables {
         }
     }
 
+    /// Turns on whatever replays the ruleset at boot.
+    ///
+    /// Reports whether it could, rather than failing: a host may have no
+    /// service manager to ask. `alpine:3.23` is the measured case — OpenRC
+    /// ships in its own package, so a container has neither `rc-update` nor
+    /// `/etc/init.d/nftables`, and a chroot or a minimal image is the same
+    /// situation on any family.
+    ///
+    /// Failing the task there would be the wrong trade. The ruleset is applied
+    /// and has been written to the file a boot would replay; what is missing is
+    /// the thing that replays it, on a host that may not boot at all. Refusing
+    /// would turn "the firewall is on and will need one more step" into "the
+    /// firewall did not go on", which is worse and false.
     fn enable_at_boot(executor: &dyn Executor, service: BootService) -> Result<bool> {
         let command = match service {
             BootService::Systemd => Command::new("systemctl")

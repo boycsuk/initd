@@ -1368,8 +1368,10 @@ mod tests {
         let report = reported.join("\n");
 
         assert!(
-            report.contains("cosmin") && report.contains("uncomment"),
-            "the distribution's own defect must name its remedy: {report}"
+            report.contains("cosmin") && report.contains("/usr/etc/sudoers"),
+            "the distribution's own defect must name its remedy, and the path \
+             has to be the one the commented line is actually in — this said \
+             /etc/sudoers, where an operator finds nothing: {report}"
         );
         assert!(
             report.contains("deploy") && report.contains("not in wheel"),

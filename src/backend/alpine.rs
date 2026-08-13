@@ -148,9 +148,12 @@ impl Backend for AlpineBackend {
             // "not packaged", which is why it does not share the arm below.
             Capability::Sysctl => "",
             // Genuinely absent rather than named differently. Alpine has no
-            // rootless Docker extras, no mise, no rustup and no unattended
-            // upgrades — an empty name is the honest answer, and the tasks
-            // that need them declare Alpine unsupported.
+            // rootless Docker extras, no mise, no rustup, no CrowdSec and no
+            // unattended upgrades — an empty name is the honest answer, and the
+            // tasks that need them declare Alpine unsupported. CrowdSec is
+            // worth naming rather than leaving to the arm below it: fail2ban
+            // *is* packaged here, so the family supports one brute-force banner
+            // and not the other, which reads as an oversight until it is said.
             Capability::DockerRootless
             | Capability::Mise
             | Capability::Rust

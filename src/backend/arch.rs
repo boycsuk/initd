@@ -64,7 +64,7 @@ const CADDY_SERVICE: &str = "caddy.service";
 
 /// Where Caddy reads its configuration on Arch.
 ///
-/// `/etc/caddy/Caddyfile` on both families today, unlike the package that
+/// `/etc/caddy/Caddyfile` on all five families today, unlike the package that
 /// provides the rootless engine.
 const CADDY_CONFIG: &str = "/etc/caddy/Caddyfile";
 

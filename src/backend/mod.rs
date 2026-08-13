@@ -185,9 +185,14 @@ pub trait Backend {
 
     /// The group that grants administrative rights on this distribution.
     ///
-    /// `sudo` on Debian, `wheel` on Arch and RHEL. The divergence matters more
+    /// `sudo` on Debian, `wheel` on the other four. The divergence matters more
     /// than most: `usermod -aG sudo` on Arch exits zero and grants nothing,
     /// leaving an account that looks provisioned and cannot escalate.
+    ///
+    /// Naming the group is not the whole answer on every family, which is what
+    /// [`Backend::admin_group_grants_alone`] exists to say: openSUSE ships
+    /// `%wheel` commented out, so membership reads back true over an account
+    /// that still cannot escalate.
     fn admin_group(&self) -> &'static str;
 
     /// Makes [`Backend::admin_group`] name a group that exists.
@@ -587,7 +592,7 @@ mod tests {
 
     #[test]
     fn every_family_resolves_a_config_path() {
-        // The two families agree on this path today, so asserting the literal
+        // All five families agree on this path today, so asserting the literal
         // would only restate the constant. What must hold is that the question
         // is answerable per family: a backend that returned an empty path
         // would have every file operation silently address the wrong file.

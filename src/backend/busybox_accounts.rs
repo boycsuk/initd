@@ -119,10 +119,12 @@ impl AccountWriter for BusyboxAccountWriter {
 
         match password {
             PasswordPolicy::Locked => args.push("-D".to_owned()),
-            // `-D` is omitted rather than replaced: without it `adduser`
-            // prompts for a password itself, and that prompt would be raised
-            // inside a captured pipe where nobody could answer it. The account
-            // is created without one and the password set immediately after.
+            // `-D` is passed here too, rather than omitted: without it
+            // `adduser` prompts for a password itself, and that prompt would be
+            // raised inside a captured pipe where nobody could answer it. The
+            // account is created without one and the password set immediately
+            // after, so both arms spell the flag the same way and differ only
+            // in what happens next.
             PasswordPolicy::Set(_) => args.push("-D".to_owned()),
         }
 
