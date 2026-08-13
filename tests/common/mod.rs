@@ -880,14 +880,25 @@ fn grants_privileged(image: &Image) -> bool {
 /// classify, so it is deliberately covered on its own terms in
 /// `integration_arch.rs` rather than smuggled into every shared scenario.
 pub fn run_with_ssh_ready(image: &Image, script: &str) -> std::process::Output {
+    // The client as well as the server. Scenarios here ask `ssh -Q` what the
+    // local build supports, and `ssh` is a separate package on Rocky and both
+    // openSUSE images — measured: absent after `install_ssh` alone. It reached
+    // them only because `preparation` bakes `install_ssh_client` into the
+    // cached image, and `cached_image` falls back to the bare image name when
+    // that build fails, by design. On that path `ssh -Q` wrote nothing and the
+    // assertion could not tell an empty answer from a passing one.
+    //
+    // Both are cheap where the package is already present: every image's
+    // installer is idempotent, and on the cached image both are no-ops.
     run_in_container(
         image,
         &format!(
             "{} >/dev/null 2>&1; \
+             {} >/dev/null 2>&1; \
              ssh-keygen -A >/dev/null 2>&1; \
              initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
              {script}",
-            image.install_ssh
+            image.install_ssh, image.install_ssh_client
         ),
     )
 }
