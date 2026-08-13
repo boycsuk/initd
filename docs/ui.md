@@ -219,7 +219,25 @@ a command that broke.
   colours unconditionally does not put raw `\x1b[` codes on the screen or into
   the transcript.
 - **Detail** — shows what the selected task does, titled with the task's own
-  name. With a category selected it shows the category name and how many tasks
+  name. A task whose stated precondition this host does not meet says so
+  here — *"Not ready yet: run firewall.enable first."* — below its description
+  and in the same shape as a refusal by family, because the two answer the same
+  question: why pressing `Enter` will not do what the row offers. They differ
+  only in whether the operator can fix it, which is why one names a task and the
+  other names a distribution.
+
+  **Not in the flag column**, which shows one marker: `firewall.manage-ports`
+  already spends it on `!`, and trading "this can lock you out" for "run
+  firewall.enable first" would give up the more urgent sentence for the more
+  actionable one.
+
+  **Silent until measured.** The check runs on the same background probe as the
+  install/uninstall verbs, which has no privilege escalation by design — it must
+  never raise a password prompt over somebody reading the tree — so a check it
+  could not run is an ordinary outcome rather than an edge case. That state says
+  nothing at all: a row warning about a precondition nobody measured is worse
+  than a row saying nothing. The task's own guard remains the barrier either
+  way; this only decides what the row *says*. With a category selected it shows the category name and how many tasks
   it holds at any depth.
 
   It **shares the right-hand pane with Output**, description above and

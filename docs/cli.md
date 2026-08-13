@@ -271,9 +271,17 @@ command line, running the subcommand *is* the confirmation.
 | `users.create` | `run <id> name=value` | no | Creates an account with a home directory and membership of the group granting sudo on this distribution. `password=` is optional: empty or absent leaves the account without one, and a value is applied through `chpasswd` on stdin. |
 | `users.set-shell` | `run <id> name=value` | yes | Sets an account's login shell. Refuses a shell absent from `/etc/shells`. |
 | `users.delete` | interactive only | yes | Deletes an account. `home=` chooses `keep` (the default, leaving the files on disk owned by a user id nothing claims) or `delete`. Interactive only: the confirmation names the home directory *and its measured size* before anything happens, and with `home=delete` there is nothing to put back afterwards. |
-| `users.lock-root` | interactive only | yes | Expires the root account so no method admits it, including the provider's rescue console. Takes no arguments: it scans every account on the host and refuses unless at least one of them can escalate *and* authenticate — by an authorised key or by a usable password. The confirmation lists each account that qualifies, with the credential it gets in by. |
+| `users.lock-root` | interactive only | yes | Expires the root account so no method admits it, including the provider's rescue console. Takes no arguments: it scans every account on the host and refuses unless at least one of them can escalate *and* authenticate — by an authorised key or by a usable password. The confirmation lists each account that qualifies, with the credential it gets in by. Refuses unless at least one account can still get in — and asks `sudo` itself rather than trusting group membership: an administrator who removes the group's rule from `sudoers` leaves an account that reads back as a member and can escalate nothing. Asked by exit code (`sudo -l -U <user> /bin/true`), never by reading sudo's wording. Only a refusal is believed: openSUSE grants every account everything through `Defaults targetpw`, using the very root password this task removes. |
 
 ### Remote Access — SSH
+
+Every task that edits `sshd_config` — `ssh.harden`, `ssh.harden-strict`,
+`ssh.change-port` and `ssh.allow-users` — refuses a host with no SSH server
+before writing anything, naming `ssh.install`. The write is validated by running
+`sshd -t` over the result, which is also what would have discovered the daemon
+was missing: it discovers it by failing to run a program that is not there,
+*after* the file has been written and past the branch that restores the backup.
+
 
 | Task id | Invocation | Lockout | Summary |
 |---------|-----------|---------|---------|
@@ -345,9 +353,9 @@ script naming `git.identity` keeps working wherever it is drawn.
 |---------|-----------|---------|---------|
 | `git.install` | `run <id>` | no | Installs git. It refuses to commit until an account has a name and an email — set those with `git.identity`. |
 | `git.uninstall` | `run <id> name=value` | no | Removes git. Repositories on this host stay where they are. |
-| `git.identity` | `run <id> name=value` | no | Writes `user.name` and `user.email` into one account's own `~/.gitconfig`. Takes `user`, `name` and `email`. |
-| `git.default-branch` | `run <id> name=value` | no | Sets `init.defaultBranch` system-wide. Takes `branch`, checked against `git check-ref-format`'s rules. |
-| `git.safe-directory` | `run <id> name=value` | no | Adds a path to `safe.directory` system-wide, for a checkout owned by another account. Takes `path`, which must be absolute — git matches this setting literally. Multi-valued: a second path is added rather than replacing the first. |
+| `git.identity` | `run <id> name=value` | no | Writes `user.name` and `user.email` into one account's own `~/.gitconfig`. Takes `user`, `name` and `email`. Says so when git is not installed yet, rather than reporting a setting nothing reads. The write still happens — the file is read once git arrives. |
+| `git.default-branch` | `run <id> name=value` | no | Sets `init.defaultBranch` system-wide. Takes `branch`, checked against `git check-ref-format`'s rules. Same note as `git.identity` where git is absent. |
+| `git.safe-directory` | `run <id> name=value` | no | Adds a path to `safe.directory` system-wide, for a checkout owned by another account. Takes `path`, which must be absolute — git matches this setting literally. Multi-valued: a second path is added rather than replacing the first. Same note as `git.identity` where git is absent. |
 
 ### Developer environment — GitHub
 
