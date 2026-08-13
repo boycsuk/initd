@@ -1013,6 +1013,10 @@ pub enum Msg {
         key: String,
         value: String,
     },
+    TaskSysctlUnset {
+        key: String,
+        still_holding: bool,
+    },
     TaskSysctlSet {
         key: String,
         value: String,

@@ -978,6 +978,21 @@ pub(super) fn render(message: &Msg) -> String {
                 .to_owned()
         }
         Msg::TaskSysctlAlready { key, value } => format!("{key} is already {value}"),
+        // Says what is now true rather than that a line was deleted, and the
+        // two cases differ in a way that matters: a parameter still holding the
+        // value is the common outcome, because something else on the host is
+        // usually also asking for it. Reporting "removed" flat would be true
+        // about the file and false about the machine.
+        Msg::TaskSysctlUnset { key, still_holding } => {
+            if *still_holding {
+                format!(
+                    "{key} is no longer declared here, and still holds its value — \
+                     something else on this host is setting it"
+                )
+            } else {
+                format!("{key} is no longer declared here")
+            }
+        }
         Msg::TaskSysctlSet { key, value } => format!("{key} = {value}, now and after a reboot"),
 
         Msg::TaskCaddyValidating { path } => format!("Validating {path}..."),

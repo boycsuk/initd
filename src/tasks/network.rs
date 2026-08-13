@@ -60,9 +60,18 @@ pub fn category() -> Category {
             )),
             Node::Category(Category::new(
                 "Kernel parameters",
+                // Pairs, so each row reports whether this tool is declaring
+                // the parameter — reported as a task with no way to tell that
+                // it had already been run.
                 vec![
-                    Node::Task(Box::new(EnableIpForward)),
-                    Node::Task(Box::new(EnableUnprivilegedPorts)),
+                    Node::Reversible {
+                        forward: Box::new(EnableIpForward),
+                        inverse: Box::new(DisableIpForward),
+                    },
+                    Node::Reversible {
+                        forward: Box::new(EnableUnprivilegedPorts),
+                        inverse: Box::new(DisableUnprivilegedPorts),
+                    },
                 ],
             )),
         ],
@@ -538,6 +547,18 @@ impl Task for EnableIpForward {
 
     supported_everywhere!();
 
+    /// The row reports whether *this tool* declares the parameter, not whether
+    /// the kernel holds the value: the probe reads the drop-in rather than
+    /// `sysctl -n`, because something else on the host may be setting it and a
+    /// row offering to undo that would undo somebody else's change.
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Sysctl)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["sysctl.ip-forward"]
+    }
+
     fn run(
         &self,
         executor: &dyn Executor,
@@ -581,6 +602,18 @@ impl Task for EnableUnprivilegedPorts {
         }]
     }
 
+    /// The row reports whether *this tool* declares the parameter, not whether
+    /// the kernel holds the value: the probe reads the drop-in rather than
+    /// `sysctl -n`, because something else on the host may be setting it and a
+    /// row offering to undo that would undo somebody else's change.
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Sysctl)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["sysctl.unprivileged-ports"]
+    }
+
     fn run(
         &self,
         executor: &dyn Executor,
@@ -594,6 +627,135 @@ impl Task for EnableUnprivilegedPorts {
 
 /// Applies a kernel parameter, saying whether it had to change anything.
 ///
+/// The parameter a kernel-parameter task declares, by its id.
+///
+/// Here rather than in the interface because the pairing of task to setting is
+/// this module's own: the two constants are private, and a copy elsewhere would
+/// be a second place to update when a third parameter is added.
+pub fn declared_setting(forward_id: &str) -> Option<Setting> {
+    match forward_id {
+        "sysctl.ip-forward" => Some(IP_FORWARD),
+        "sysctl.unprivileged-ports" => Some(UNPRIVILEGED_PORT_START),
+        _ => None,
+    }
+}
+
+/// Stops declaring IP forwarding.
+pub struct DisableIpForward;
+
+impl Task for DisableIpForward {
+    fn id(&self) -> &'static str {
+        "sysctl.ip-forward.undo"
+    }
+
+    fn title(&self) -> &'static str {
+        "Stop declaring IP forwarding"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes this tool's declaration of net.ipv4.ip_forward. The running \
+         value is left alone: a kernel parameter has no unset state, and another \
+         component — Docker, a VPN — may be relying on it. What changes is that \
+         nothing here asserts it any more."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Sysctl)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["sysctl.ip-forward"]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        unset_and_report(executor, backend, IP_FORWARD, progress)
+    }
+}
+
+/// Stops declaring the unprivileged port floor.
+pub struct DisableUnprivilegedPorts;
+
+impl Task for DisableUnprivilegedPorts {
+    fn id(&self) -> &'static str {
+        "sysctl.unprivileged-ports.undo"
+    }
+
+    fn title(&self) -> &'static str {
+        "Stop declaring the unprivileged port floor"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes this tool's declaration of net.ipv4.ip_unprivileged_port_start. \
+         The running value is left alone, so a rootless container already bound \
+         to 80 keeps serving until something restarts it."
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Sysctl)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["sysctl.unprivileged-ports"]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        unset_and_report(executor, backend, UNPRIVILEGED_PORT_START, progress)
+    }
+}
+
+/// Removes this tool's declaration of a parameter and says what that did.
+///
+/// The mirror of [`set_and_report`], and shared for the same reason: the two
+/// inverses differ only in the setting they name.
+fn unset_and_report(
+    executor: &dyn Executor,
+    backend: &dyn Backend,
+    setting: Setting,
+    progress: Progress<'_>,
+) -> Result<Outcome> {
+    let sysctl = backend.sysctl();
+
+    if !sysctl.is_available(executor)? {
+        return Err(Error::ProgramNotFound {
+            program: "sysctl".to_owned(),
+        });
+    }
+
+    sysctl.unset(executor, setting)?;
+
+    // Read back rather than assumed, because the answer is usually "still set"
+    // and that is the point: this removed a declaration, not a value. Saying
+    // "removed" over a parameter that still reads 1 would be true about the
+    // file and false about the machine.
+    let still = sysctl.holds(executor, setting).unwrap_or(false);
+
+    report(
+        progress,
+        &Msg::TaskSysctlUnset {
+            key: setting.key.to_owned(),
+            still_holding: still,
+        },
+    );
+
+    Ok(Outcome::Done)
+}
+
 /// Shared by both parameter tasks: they differ only in which setting they name,
 /// and duplicating the sequence would let the two drift over what "already set"
 /// means.

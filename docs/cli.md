@@ -290,7 +290,9 @@ command line, running the subcommand *is* the confirmation.
 | `firewall.disable` | `run <id>` | no | Removes the inbound filtering this tool applied and stops it returning at boot: on nftables it deletes the `inet initd` table, empties the saved ruleset and disables the boot unit; on firewalld it stops and disables the daemon. Rules written by anything else are untouched — this never flushes a ruleset it did not create. Shares a row with `firewall.enable` in the TUI, which shows whichever the host justifies. |
 | `firewall.allow-port` | `run <id> name=value` | no | Admits inbound traffic on one port, for one protocol. Saved across reboots on the same terms as `firewall.enable`. Refuses when nothing is being filtered, since against no default-deny policy every port is already reachable and there is no table to add the rule to — the error names `firewall.enable` as the missing step. |
 | `sysctl.ip-forward` | `run sysctl.ip-forward` | no | Enables IP forwarding, now and across reboots. |
+| `sysctl.ip-forward.undo` | `run <id>` | no | Removes this tool's declaration of `net.ipv4.ip_forward` from `/etc/sysctl.d/99-initd.conf`. The running value is left alone: a kernel parameter has no unset state, and another component — Docker sets this one and declares it in no file — may be relying on it. The task says whether the parameter still holds its value afterwards. Shares a row with `sysctl.ip-forward` in the TUI. |
 | `sysctl.unprivileged-ports` | `run sysctl.unprivileged-ports` | no | Lets an unprivileged process bind 80 and 443. |
+| `sysctl.unprivileged-ports.undo` | `run <id>` | no | Removes this tool's declaration of `net.ipv4.ip_unprivileged_port_start`, on the same terms as `sysctl.ip-forward.undo`: the declaration goes, the running value stays. Shares a row with `sysctl.unprivileged-ports` in the TUI. |
 
 ### Services
 

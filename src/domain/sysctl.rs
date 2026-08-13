@@ -81,4 +81,24 @@ pub trait SysctlManager {
     /// it: `net.ipv4.ip_forward` is already `1` in every container, so the
     /// task did nothing and said it was done.
     fn is_persisted(&self, executor: &dyn Executor, setting: Setting) -> Result<bool>;
+
+    /// Removes this tool's own declaration of a parameter.
+    ///
+    /// The inverse of [`set`](Self::set), and narrower than "put the parameter
+    /// back": a `sysctl` has no unset state — `net.ipv4.ip_forward` is 0 or 1,
+    /// and 0 is a policy rather than an absence — so there is no previous value
+    /// to restore to. What can be undone is the *declaration*, which is the
+    /// only part this tool created.
+    ///
+    /// Writing the opposite value was rejected for a reason that is measurable
+    /// rather than theoretical: on a host running Docker, `ip_forward` is 1
+    /// because Docker set it and declared it nowhere — verified on `debian:13`,
+    /// where the running value is 1 and `/etc/sysctl.d` names it in no file. An
+    /// inverse that wrote 0 would take a setting away from whoever else was
+    /// relying on it, under the name of undoing this tool's own change.
+    ///
+    /// So the line goes and the running value is left alone. The task says as
+    /// much: the parameter may well keep the value, and what changed is that
+    /// nothing here is asserting it any more.
+    fn unset(&self, executor: &dyn Executor, setting: Setting) -> Result<()>;
 }

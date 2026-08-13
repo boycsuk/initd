@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The kernel-parameter rows report whether this tool declares the parameter,
+  and offer to stop.** Reported as tasks with no way to tell they had already
+  been run: `Enable IP forwarding` read the same before and after running it.
+
+  What is measured is deliberately *not* the running value. Something else on
+  the host is often setting it — measured on `debian:13`, `net.ipv4.ip_forward`
+  is 1 because Docker set it and declared it in no file — so a row reading the
+  kernel would offer to undo a change this tool never made. The probe reads
+  `/etc/sysctl.d/99-initd.conf` instead, which is the only part that is ours.
+
+  For the same reason the inverse removes the declaration and leaves the
+  running value alone. A `sysctl` has no unset state: `ip_forward` is 0 or 1,
+  and 0 is a policy rather than an absence, so there is nothing to restore to.
+  Writing the opposite would take a setting away from whoever else was relying
+  on it under the name of undoing our own change. The task says whether the
+  parameter still holds its value afterwards, because usually it does.
+
+  Both rows name `Capability::Sysctl`, which cannot tell them apart — it would
+  answer "is `sysctl` installed" for two rows asking which *parameter* is
+  declared. The probe takes the row's id for that reason, and a test asserts one
+  row never reads the other's parameter as its own.
+
 - **The firewall's confirmation names the port and what getting it wrong
   costs.** It showed the generic lockout sentence — "this operation can lock
   you out of a server you reach over SSH, make sure you have another way in" —

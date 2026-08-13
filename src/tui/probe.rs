@@ -152,7 +152,7 @@ impl Probe {
             let executor = crate::exec::local::LocalExecutor::new(crate::exec::privilege::detect());
 
             for (forward_id, capability) in subjects {
-                let presence = measure(&executor, backend.as_ref(), capability);
+                let presence = measure(&executor, backend.as_ref(), forward_id, capability);
 
                 // A send failure means the interface moved on — a task was
                 // started, or the tool is exiting. The loop stops rather than
@@ -227,8 +227,26 @@ impl Probe {
 fn measure(
     executor: &dyn crate::exec::Executor,
     backend: &dyn crate::backend::Backend,
+    forward_id: &str,
     capability: Capability,
 ) -> Presence {
+    // Two rows share `Capability::Sysctl` and ask about different parameters,
+    // so the capability alone cannot answer either: it would report the same
+    // thing for forwarding and for the unprivileged port floor. The row's own
+    // id is what separates them, which is why this takes one.
+    if let Some(setting) = sysctl_setting_for(forward_id) {
+        return match backend.sysctl().is_persisted(executor, setting) {
+            // "Declared by this tool", not "the kernel holds this value". The
+            // running value is often set by something else — Docker sets
+            // `ip_forward` and declares it nowhere, measured on `debian:13` —
+            // and a row reading that would offer to undo a change it never
+            // made.
+            Ok(true) => Presence::Present,
+            Ok(false) => Presence::Absent,
+            Err(_) => Presence::Unknown,
+        };
+    }
+
     // The one capability where "present" is not a question about software. `nft`
     // being installed says nothing about whether this host is filtering, and a
     // row that offered to *disable* a firewall on the strength of a package
@@ -292,6 +310,17 @@ fn measure(
         },
         Err(_) => Presence::Unknown,
     }
+}
+
+/// The kernel parameter a row is about, where it is about one.
+///
+/// Keyed on the task id rather than on the capability, which is what the rest
+/// of this module measures by. Both kernel-parameter rows name
+/// `Capability::Sysctl` — the tool that reads and writes them — and asking
+/// about that would answer "is `sysctl` installed" for two rows whose question
+/// is which *parameter* this tool declares.
+fn sysctl_setting_for(forward_id: &str) -> Option<crate::domain::sysctl::Setting> {
+    crate::tasks::network::declared_setting(forward_id)
 }
 
 /// The program a binary-installed capability puts on the machine.
@@ -428,14 +457,24 @@ mod tests {
         let backend = for_family(Family::Debian);
 
         assert_eq!(
-            measure(&present, backend.as_ref(), Capability::Fail2ban),
+            measure(
+                &present,
+                backend.as_ref(),
+                "ssh.install",
+                Capability::Fail2ban
+            ),
             Presence::Present
         );
 
         let absent = MockExecutor::with_replies([Reply::failure(1, "")]);
 
         assert_eq!(
-            measure(&absent, backend.as_ref(), Capability::Fail2ban),
+            measure(
+                &absent,
+                backend.as_ref(),
+                "ssh.install",
+                Capability::Fail2ban
+            ),
             Presence::Absent
         );
     }
@@ -456,6 +495,7 @@ mod tests {
         let presence = measure(
             &mock,
             for_family(Family::Debian).as_ref(),
+            "ssh.install",
             Capability::Zellij,
         );
 
@@ -479,6 +519,7 @@ mod tests {
         let presence = measure(
             &mock,
             for_family(Family::Debian).as_ref(),
+            "ssh.install",
             Capability::Zellij,
         );
 
@@ -495,7 +536,12 @@ mod tests {
         let mock = MockExecutor::with_replies([Reply::ok("zellij 0.44.0-1")]);
 
         assert_eq!(
-            measure(&mock, for_family(Family::Arch).as_ref(), Capability::Zellij),
+            measure(
+                &mock,
+                for_family(Family::Arch).as_ref(),
+                "ssh.install",
+                Capability::Zellij
+            ),
             Presence::Present
         );
         assert_eq!(mock.recorded_lines(), ["pacman -Q zellij"]);
@@ -517,6 +563,7 @@ mod tests {
         let presence = measure(
             &mock,
             for_family(Family::Debian).as_ref(),
+            "ssh.install",
             Capability::Fail2ban,
         );
 
@@ -591,7 +638,7 @@ mod tests {
         ]);
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
-        let presence = measure(&mock, backend.as_ref(), Capability::Ssh);
+        let presence = measure(&mock, backend.as_ref(), "ssh.install", Capability::Ssh);
 
         // `Foreign`, not `Present`: this tool did not install that copy, so the
         // row keeps its forward verb rather than offering to remove something
@@ -621,8 +668,61 @@ mod tests {
         let backend = crate::backend::for_family(crate::distro::Family::Debian);
 
         assert_eq!(
-            measure(&mock, backend.as_ref(), Capability::Ssh),
+            measure(&mock, backend.as_ref(), "ssh.install", Capability::Ssh),
             Presence::Absent
+        );
+    }
+
+    #[test]
+    fn a_kernel_parameter_row_reports_what_this_tool_declares() {
+        // Reported as a task with no way to tell it had already been run. The
+        // measurement is deliberately *not* the running value: something else
+        // on the host may be setting it — Docker sets `ip_forward` and declares
+        // it in no file, measured on `debian:13` — and a row reading the kernel
+        // would offer to undo a change this tool never made.
+        //
+        // Two replies: the drop-in exists, and it names the key with the value.
+        let declared = crate::exec::mock::MockExecutor::with_replies([
+            crate::exec::mock::Reply::ok(""),
+            crate::exec::mock::Reply::ok("net.ipv4.ip_forward = 1\n"),
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        assert_eq!(
+            measure(
+                &declared,
+                backend.as_ref(),
+                "sysctl.ip-forward",
+                Capability::Sysctl,
+            ),
+            Presence::Present,
+            "a parameter this tool declares must offer the inverse"
+        );
+    }
+
+    #[test]
+    fn the_two_kernel_parameter_rows_are_measured_apart() {
+        // Both name `Capability::Sysctl`, so the capability alone cannot
+        // answer either — it would report the same thing for forwarding and
+        // for the unprivileged port floor. The row's id is what separates
+        // them, and this asserts the drop-in is read for the right key.
+        let mock = crate::exec::mock::MockExecutor::with_replies([
+            crate::exec::mock::Reply::ok(""),
+            crate::exec::mock::Reply::ok("net.ipv4.ip_forward = 1\n"),
+        ]);
+        let backend = crate::backend::for_family(crate::distro::Family::Debian);
+
+        // The drop-in declares forwarding and says nothing about ports, so the
+        // ports row must read as absent over the very same file.
+        assert_eq!(
+            measure(
+                &mock,
+                backend.as_ref(),
+                "sysctl.unprivileged-ports",
+                Capability::Sysctl,
+            ),
+            Presence::Absent,
+            "a row must not read another row's parameter as its own"
         );
     }
 

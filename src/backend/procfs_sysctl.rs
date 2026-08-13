@@ -71,6 +71,29 @@ impl ProcfsSysctl {
         format!("{}\n", lines.join("\n"))
     }
 
+    /// The drop-in's contents with one setting removed.
+    ///
+    /// The first half of [`merged`](Self::merged) without its second: that
+    /// filters the key out before appending the new value, and this stops at
+    /// the filter. Written as its own function rather than as a flag on the
+    /// other, because a `merged(.., None)` reads as "merge nothing" at every
+    /// call site that does not open the definition.
+    fn without(existing: &str, key: &str) -> String {
+        let lines: Vec<&str> = existing
+            .lines()
+            .filter(|line| !Self::declares(line, key))
+            .collect();
+
+        // An empty result is an empty file rather than a lone newline: the
+        // drop-in holding no settings is the state this leaves behind when the
+        // last one is removed, and `sysctl` reads it either way.
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        format!("{}\n", lines.join("\n"))
+    }
+
     /// Whether a line assigns the named key.
     ///
     /// Compares the text before `=` rather than searching for the key anywhere
@@ -169,6 +192,33 @@ impl SysctlManager for ProcfsSysctl {
         files.write(executor, DROP_IN, &Self::merged(&existing, setting))?;
         files.set_mode(executor, DROP_IN, DROP_IN_MODE)?;
 
+        Ok(())
+    }
+
+    fn unset(&self, executor: &dyn Executor, setting: Setting) -> Result<()> {
+        use crate::domain::FileEditor as _;
+
+        let files = crate::backend::unix_files::UnixFiles::new();
+
+        // No drop-in is nothing to remove, which is success rather than an
+        // error: the state being asked for is the one the host is already in.
+        if !files.exists(executor, DROP_IN)? {
+            return Ok(());
+        }
+
+        let existing = files.read(executor, DROP_IN)?;
+        let remaining = Self::without(&existing, setting.key);
+
+        // Rewritten rather than deleted even when nothing is left. The file is
+        // this tool's own, so an empty one is a true statement — "initd
+        // declares no kernel parameters here" — where a missing one says the
+        // same thing less clearly to whoever reads the directory next.
+        files.write(executor, DROP_IN, &remaining)?;
+        files.set_mode(executor, DROP_IN, DROP_IN_MODE)?;
+
+        // The running value is deliberately untouched. See the trait: there is
+        // no previous value to restore to, and forcing the opposite would take
+        // a setting away from whoever else is relying on it.
         Ok(())
     }
 
