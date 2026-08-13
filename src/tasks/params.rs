@@ -468,6 +468,21 @@ fn validate_branch_name(value: &str) -> std::result::Result<(), String> {
         return Err(format!("a branch name cannot contain {bad}"));
     }
 
+    // Also git's rule — `check-ref-format` refuses whitespace and control
+    // characters — and the same omission `validate_email` had: the interactive
+    // filter refused both, so only a CLI argument could carry one, and this is
+    // the barrier a CLI argument passes through. It matters here for the same
+    // reason: the value is written as `defaultBranch = <value>` into an INI
+    // file, where a newline ends the setting and what follows is configuration
+    // nobody asked for.
+    if let Some(bad) = value.chars().find(|c| c.is_whitespace() || c.is_control()) {
+        return Err(if bad == ' ' {
+            "a branch name cannot contain a space".to_owned()
+        } else {
+            "a branch name cannot span lines".to_owned()
+        });
+    }
+
     Ok(())
 }
 
@@ -515,6 +530,23 @@ fn validate_email(value: &str) -> std::result::Result<(), String> {
 
     if value.matches('@').count() > 1 {
         return Err("an email has one @".to_owned());
+    }
+
+    // The same refusal `validate_person_name` already makes, and for a sharper
+    // reason: this value is written as `email = <value>` into an account's own
+    // `~/.gitconfig`, which is an INI file where a newline ends the setting.
+    // Measured rather than reasoned about — `ada@example.com\n[core]\n\teditor
+    // = sh -c 'id'` passed every rule above and rendered as a `[core]` section
+    // with an editor in it, and `core.editor` is a program git runs as the
+    // account the task was pointed at.
+    //
+    // Not a privilege escalation: whoever runs this task can already edit that
+    // file. It is a value doing something its field does not describe, in a
+    // file the operator is not looking at — an address pasted from a ticket
+    // configures somebody else's account. The name field refusing this while
+    // the address beside it did not was the asymmetry that gave it away.
+    if value.contains(['\n', '\r']) {
+        return Err("an email cannot span lines".to_owned());
     }
 
     Ok(())
@@ -1203,6 +1235,47 @@ mod tests {
         );
         assert!(ParamKind::UsernameList.validate("alice\rbob").is_err());
         assert!(ParamKind::UsernameList.validate("alice #bob").is_err());
+    }
+
+    #[test]
+    fn an_email_rejects_a_value_that_would_forge_a_setting() {
+        // `gitconfig::with_identity` writes this as `email = <value>` with no
+        // escaping, so a newline ends the setting and whatever follows is more
+        // configuration. Measured before this rule existed: the second value
+        // below satisfied every other check and rendered a `[core]` section
+        // with `editor = sh -c 'id'` in it — a program git runs as the account
+        // the task was pointed at.
+        //
+        // The interactive filter already refused control characters here
+        // (`accepts`), so the way in was the CLI, where `validate` is the only
+        // barrier between an argument and a system file. `validate_person_name`
+        // beside it had made this refusal all along.
+        assert!(ParamKind::Email.validate("ada@example.com\nx = y").is_err());
+        assert!(
+            ParamKind::Email
+                .validate("ada@example.com\n[core]\n\teditor = sh -c 'id'")
+                .is_err()
+        );
+        assert!(ParamKind::Email.validate("ada\r@example.com").is_err());
+
+        // Still accepts what an address legitimately looks like on a server.
+        assert!(ParamKind::Email.validate("ada+git@localhost").is_ok());
+    }
+
+    #[test]
+    fn a_branch_name_rejects_whitespace_and_control_characters() {
+        // `git check-ref-format` refuses both, and the doc above this validator
+        // said "no space" while nothing checked for one — the same gap the
+        // email had, found by asking every validator the same question. The
+        // value lands in `defaultBranch = <value>` in an INI file, so a newline
+        // forges a setting exactly as it did there.
+        assert!(ParamKind::BranchName.validate("main\nx = y").is_err());
+        assert!(ParamKind::BranchName.validate("my branch").is_err());
+        assert!(ParamKind::BranchName.validate("main\tx").is_err());
+
+        // The names people actually use are untouched.
+        assert!(ParamKind::BranchName.validate("main").is_ok());
+        assert!(ParamKind::BranchName.validate("feature/thing-2").is_ok());
     }
 
     #[test]

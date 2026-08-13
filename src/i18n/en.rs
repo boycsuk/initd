@@ -1,6 +1,6 @@
 //! English message catalogue — the default and fallback language.
 
-use super::{ErrorField, Msg};
+use super::{ErrorField, Msg, SysctlHolding};
 
 /// Width the field labels are padded to, in columns.
 ///
@@ -24,9 +24,23 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::UnsupportedDistro { id, id_like } => {
             let like = id_like.as_deref().unwrap_or("(none)");
+            // Derived from `Family::ALL` rather than written out. The literal
+            // that stood here said "debian, arch, alpine, rhel" and was never
+            // updated when SUSE landed, so an operator on SLES whose
+            // `/etc/os-release` did not resolve — a derivative, an unexpected
+            // `ID_LIKE` — read that their distribution was unsupported when the
+            // backend, two container images and the whole test matrix say
+            // otherwise. A list of what a program supports is exactly the kind
+            // of sentence that cannot be maintained by hand.
+            let families = crate::distro::Family::ALL
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+
             format!(
                 "unsupported distribution: ID={id}, ID_LIKE={like}. \
-                 Supported families: debian, arch, alpine, rhel"
+                 Supported families: {families}"
             )
         }
         Msg::RepositoryKeyMismatch {
@@ -1021,6 +1035,10 @@ pub(super) fn render(message: &Msg) -> String {
         // Counts rather than a list: the ports themselves were on the screen
         // the operator just left, and a batch repeating them says less than the
         // two numbers that changed.
+        // Named rather than counted, and said before the closing half runs: if
+        // that half fails, this line is the only record that the firewall
+        // already admits these.
+        Msg::TaskFirewallPortsOpened { specs } => format!("opened: {specs}"),
         Msg::TaskFirewallPortsApplied { opened, closed } => match (opened, closed) {
             (0, 0) => "the open ports already matched what was declared".to_owned(),
             (opened, 0) => format!("opened {opened} port(s), now and after a reboot"),
@@ -1067,16 +1085,20 @@ pub(super) fn render(message: &Msg) -> String {
         // value is the common outcome, because something else on the host is
         // usually also asking for it. Reporting "removed" flat would be true
         // about the file and false about the machine.
-        Msg::TaskSysctlUnset { key, still_holding } => {
-            if *still_holding {
-                format!(
-                    "{key} is no longer declared here, and still holds its value — \
-                     something else on this host is setting it"
-                )
-            } else {
-                format!("{key} is no longer declared here")
-            }
-        }
+        Msg::TaskSysctlUnset { key, holding } => match holding {
+            SysctlHolding::Yes => format!(
+                "{key} is no longer declared here, and still holds its value — \
+                 something else on this host is setting it"
+            ),
+            SysctlHolding::No => format!("{key} is no longer declared here"),
+            // Says what was done and what could not be checked, rather than
+            // borrowing either of the answers above. The declaration is gone
+            // either way; what is unknown is what the kernel does now.
+            SysctlHolding::Unknown => format!(
+                "{key} is no longer declared here — whether the kernel still \
+                 holds its value could not be read back"
+            ),
+        },
         Msg::TaskSysctlSet { key, value } => format!("{key} = {value}, now and after a reboot"),
 
         Msg::TaskCaddyValidating { path } => format!("Validating {path}..."),

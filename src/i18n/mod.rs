@@ -76,6 +76,23 @@ impl Lang {
     }
 }
 
+/// What the kernel does with a parameter whose declaration was removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysctlHolding {
+    /// The kernel no longer holds the value.
+    No,
+    /// It still does, so something else on the host is setting it.
+    Yes,
+    /// The read-back failed, so neither answer can be given.
+    ///
+    /// Its own state rather than folded into [`No`](Self::No), which is the
+    /// reading that sounds finished: "no longer declared here" over a host
+    /// whose kernel was never asked is a claim about a machine nobody checked.
+    /// The two call for different actions, which is this project's stated test
+    /// for whether a distinction is worth carrying.
+    Unknown,
+}
+
 /// A user-facing message, as structured data rather than text.
 ///
 /// Variants carry the values to interpolate; the wording lives in the
@@ -1066,6 +1083,15 @@ pub enum Msg {
     TaskFirewallEnabledNotPersisted {
         port: u32,
     },
+    /// Ports admitted, said before any is closed.
+    ///
+    /// The set is applied in two halves and either can fail partway. A task
+    /// that ended on the second half's error reported a failed `nft` command
+    /// over a firewall that had already gained ports, which reads as "nothing
+    /// happened" — so what the first half did is said while it is still true.
+    TaskFirewallPortsOpened {
+        specs: String,
+    },
     /// What a declared set of ports changed.
     TaskFirewallPortsApplied {
         opened: usize,
@@ -1089,9 +1115,14 @@ pub enum Msg {
         key: String,
         value: String,
     },
+    /// A declaration was removed, and what the kernel does about it.
+    ///
+    /// Three states rather than the boolean this replaced. The read-back can
+    /// fail, and a failure is not "no longer holds it" — that is the reading
+    /// that sounds finished, and it was what a `unwrap_or(false)` chose.
     TaskSysctlUnset {
         key: String,
-        still_holding: bool,
+        holding: SysctlHolding,
     },
     TaskSysctlSet {
         key: String,
@@ -1300,6 +1331,26 @@ pub enum ErrorField {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unsupported_distro_message_names_every_family() {
+        // The literal this replaced said "debian, arch, alpine, rhel" and went
+        // stale when SUSE landed, so the one message an operator on an
+        // unresolved SLES host reads told them their distribution was not
+        // supported. Asserted against `Family::ALL` rather than against a
+        // second list, which would be the same mistake one layer along.
+        let rendered = Lang::En.render(&Msg::UnsupportedDistro {
+            id: "sles".to_owned(),
+            id_like: None,
+        });
+
+        for family in crate::distro::Family::ALL {
+            assert!(
+                rendered.contains(&family.to_string()),
+                "{family} must be named as supported: {rendered}"
+            );
+        }
+    }
 
     #[test]
     fn unknown_locale_falls_back_to_english() {

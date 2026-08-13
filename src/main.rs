@@ -112,6 +112,19 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
         &executor,
         backend.as_ref(),
         values,
+        // `OutputLine::sensitive` is deliberately not consulted here, and the
+        // asymmetry with the interface is the point rather than an oversight.
+        // There it marks a line the pane draws and the *clipboard copy* must
+        // not carry: the copy is an extra journey the operator did not ask for,
+        // back across the SSH hop into a history that keeps it. Here stdout is
+        // not an extra copy, it is the delivery — `docs/cli.md` says
+        // `wireguard.add-peer` "prints the client configuration once", and the
+        // user story it serves is getting that configuration so a device can
+        // connect. Redacting it would leave the command doing nothing useful.
+        //
+        // What follows from that is a property of the invocation rather than of
+        // this code: a secret printed to stdout is redirectable, so the caller
+        // decides where it lands. That is the same contract `wg genkey` has.
         &mut |line| match line.stream {
             exec::Stream::Stdout => println!("{}", line.text),
             exec::Stream::Stderr => eprintln!("{}", line.text),

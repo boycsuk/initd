@@ -665,6 +665,17 @@ and replace it with nothing.
   reply, and terminals that refuse it are real — some ship with it disabled,
   since a program that can write the clipboard can also overwrite it. Claiming
   success the tool cannot observe is how a message stops being believed.
+- **A line holding a secret is replaced in the copy, not omitted from it.** The
+  pane still draws it — `wireguard.add-peer` prints a client configuration the
+  operator has to read — but the clipboard receives a stand-in saying the value
+  was left on screen. The copy is an extra journey nobody asked for: it crosses
+  back over the SSH connection into a clipboard history that keeps it, which is
+  the disclosure the task already refuses on disk by writing `wg0.conf` without
+  a backup. Replacing rather than omitting, because a copy silently missing
+  what was on screen reads as a complete record and gets pasted into a bug
+  report as one. The CLI prints the same configuration to stdout unredacted,
+  which is not the same decision reversed: there the output *is* the delivery,
+  and the caller chooses where it lands.
 
 ### The key bar
 
