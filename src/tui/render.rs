@@ -314,11 +314,15 @@ fn tree(frame: &mut Frame, app: &mut App, tree_area: Rect) {
     // cursor, and a reversible row needs what the probe measured to know which
     // of its two verbs to draw.
     let presence = &app.presence;
+    // Borrowed out alongside it and for the same reason: a row whose
+    // precondition the host does not meet is drawn as refused, and the
+    // renderer holds no executor to ask the host itself.
+    let readiness = &app.readiness;
     let items: Vec<ListItem> = app
         .cursor
         .current_level()
         .iter()
-        .map(|node| ListItem::new(row(node, family, row_width, presence)))
+        .map(|node| ListItem::new(row(node, family, row_width, presence, readiness)))
         .collect();
 
     let tree_focused = app.focus == Pane::Tree;
@@ -573,12 +577,19 @@ fn tree_keys(app: &App) -> Vec<(&'static str, Msg)> {
     // was pressed to ask — has this tool changed anything here — and "no" is
     // an answer. Testing that would also mean reading the host's index to
     // draw a frame, which is the cost `History` is built to avoid.
-    let mut keys = vec![
-        ("↑↓", Msg::KeyBarMove),
-        ("Enter", enter_hint),
-        ("/", Msg::KeyBarFind),
-        ("h", Msg::KeyBarHistory),
-    ];
+    let mut keys = vec![("↑↓", Msg::KeyBarMove)];
+
+    // `Enter` is offered only where it does something. A row the host cannot
+    // run — because the distribution refuses it, or because a precondition it
+    // states is measured unmet — refuses the key, and a bar promising `run`
+    // over one of those is the interface advertising an action it will decline.
+    // The detail pane carries the reason either way, which is where an operator
+    // who pressed it anyway is sent.
+    if app.selected_is_runnable() {
+        keys.push(("Enter", enter_hint));
+    }
+
+    keys.extend([("/", Msg::KeyBarFind), ("h", Msg::KeyBarHistory)]);
 
     // Going back is only offered where there is somewhere to go back to.
     if !app.cursor.at_root() {
@@ -844,6 +855,7 @@ pub(super) fn row(
     family: crate::distro::Family,
     width: usize,
     presence: &InstalledState,
+    readiness: &super::probe::RequirementState,
 ) -> Line<'static> {
     let RowParts {
         marker,
@@ -879,7 +891,7 @@ pub(super) fn row(
                 forward
             };
 
-            let mut parts = task_row_parts(drawn.as_ref(), family);
+            let mut parts = task_row_parts(drawn.as_ref(), family, readiness.of(drawn.id()));
 
             // Ahead of the task's own flag, and only while the answer is
             // outstanding. A row showing "Install" because nothing has been
@@ -910,7 +922,7 @@ pub(super) fn row(
         // to whatever the task's own row already carries — a lockout warning
         // outranks a note that the package is present.
         Node::Task(task) => {
-            let mut parts = task_row_parts(task.as_ref(), family);
+            let mut parts = task_row_parts(task.as_ref(), family, readiness.of(task.id()));
             let measured = presence.of(task.id());
 
             if parts.trailing.is_empty() {
@@ -968,8 +980,13 @@ struct RowParts {
 /// Extracted so a reversible pair draws through exactly the same precedence as
 /// a lone task: the flag column answers "what should stop me acting on this
 /// row", and a second copy of that rule would be the one that drifted.
-fn task_row_parts(task: &dyn Task, family: crate::distro::Family) -> RowParts {
+fn task_row_parts(
+    task: &dyn Task,
+    family: crate::distro::Family,
+    readiness: super::probe::Readiness,
+) -> RowParts {
     let supported = task.supports(family);
+    let blocked = matches!(readiness, super::probe::Readiness::Blocked { .. });
     // Destructive outranks input: a task that asks for a port before
     // wiping something is first of all the one that wipes something,
     // and only one flag fits the column.
@@ -979,6 +996,19 @@ fn task_row_parts(task: &dyn Task, family: crate::distro::Family) -> RowParts {
             style::MARKER_UNSUPPORTED,
             style::FLAG_UNSUPPORTED,
         )
+    // Above the danger flag, which is the ordering that looks wrong and is
+    // not: `!` warns that acting on the row could end the session, and a row
+    // whose precondition is unmet will not act at all. Pressing `Enter` there
+    // is refused, so the warning describes something that cannot happen while
+    // the marker describes why the key does nothing — and the second is what
+    // the operator needs in front of them.
+    //
+    // Dimmed like an unsupported row, and for the same reason: both are rows
+    // `Enter` refuses, and the detail pane is where they are told apart. One
+    // says the distribution will never run this; the other names a task that
+    // makes it possible.
+    } else if blocked {
+        (style::DISABLED, style::MARKER_BLOCKED, style::FLAG_BLOCKED)
     // `Lockout` alone, not every task that asks. Almost all of them
     // ask now, and a danger flag on almost every row marks nothing —
     // the column exists to say which handful can end the session

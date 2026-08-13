@@ -258,6 +258,22 @@ pub const MARKER_UNSUPPORTED: &str = "·";
 /// on.
 pub const MARKER_PROBING: &str = "?";
 
+/// Precedes a task whose stated precondition this host does not meet.
+///
+/// Distinct from [`MARKER_UNSUPPORTED`], and the difference is what the
+/// operator can do about it: that one says the distribution will never run this
+/// task, and this one says the machine is not ready *yet*. Both rows refuse
+/// `Enter`, which is why both are dimmed; the detail pane is what tells them
+/// apart, naming the task to run first.
+///
+/// ASCII, like every marker here: these are one cell in the fonts a server
+/// console is likely to have, and the ellipsis-like characters are exactly the
+/// ones terminals disagree about the width of.
+pub const MARKER_BLOCKED: &str = "-";
+
+/// The `-` marker on a task whose precondition is unmet.
+pub const FLAG_BLOCKED: Style = fg_mod(Color::White, Modifier::DIM);
+
 /// Marks a task that succeeded during this session.
 pub const MARKER_OK: &str = "✓";
 

@@ -882,6 +882,29 @@ impl App {
             return None;
         }
 
+        // A precondition the host is *measured* not to meet refuses here too,
+        // and for the same reason the family check does: the detail pane
+        // already names the task to run first, so the answer is on screen
+        // before the key is pressed and the refusal changes nothing.
+        //
+        // Without this the row went the whole way — form, values, and the
+        // lockout confirmation — before the guard inside `run` refused. Asking
+        // an operator for a set of ports and then a red dialog about ending
+        // their own session, to arrive at "run firewall.enable first", spends
+        // their attention on a decision that was never available.
+        //
+        // Only `Blocked` refuses. `Unknown` means the check could not be run —
+        // the probe has no privilege escalation, so that is an ordinary answer
+        // rather than an edge case — and a row that could not be measured must
+        // stay pressable: the guard inside `run` is still the barrier, and it
+        // asks the host directly.
+        if matches!(
+            self.readiness.of(task.id()),
+            super::probe::Readiness::Blocked { .. }
+        ) {
+            return None;
+        }
+
         // Values first, then consent, then the work: the confirmation states
         // what will happen, and it cannot do that before it knows the values.
         // `params_here` rather than `params`: a field whose answer this host

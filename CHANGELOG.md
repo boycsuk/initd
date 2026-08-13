@@ -254,6 +254,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a test that asserts what a task refuses proves nothing about what it does.
 
 ### Added
+- **A row whose precondition is unmet now refuses `Enter`, rather than only
+  saying so.** It is dimmed and carries `-` in the flag column, exactly as a
+  task the distribution cannot run is dimmed and carries `·`, and the key bar
+  drops its `Enter` hint instead of promising an action the row will decline.
+
+  Advisory was the first version and was worse than either choice:
+  `firewall.manage-ports` on a host with no policy still collected a set of
+  ports and still opened its red lockout dialog before the guard inside the task
+  refused — a sequence of decisions spent on an outcome that was never
+  available.
+
+  The marker outranks `!`, which looks wrong and is not. `!` warns that acting
+  on the row could end the session; a row whose precondition is unmet will not
+  act, so the warning describes something that cannot happen while the marker
+  describes why the key does nothing.
+
+  **A requirement the probe could not measure still refuses nothing.** The
+  probe has no privilege escalation by design, so "could not ask" is its
+  ordinary answer rather than an edge case, and a row greyed out on the strength
+  of a question nobody managed to ask is one the operator can neither run nor
+  explain. The guard inside `run` remains the barrier behind both: it asks the
+  host at the moment it would act, where the interface reports what was last
+  measured.
+
 - **Nine tasks now state what must run first, not one.** The mechanism landed
   with a single declaration; the eight tasks whose guards already refused for a
   missing dependency — the four that edit `sshd_config`, `wireguard.add-peer`,
