@@ -48,16 +48,31 @@ pub fn category() -> Category {
                 forward: Box::new(InstallRust),
                 inverse: Box::new(UninstallRust),
             },
-            // Two categories rather than one, because they are two tools.
-            // Grouping them together would be grouping by the word they share:
-            // git is a program that runs on this machine and needs configuring
-            // before it will commit, and `gh` is a client for somebody else's
-            // service that needs a token. An operator installing git on a
-            // build server has no business being shown GitHub.
+            // Flat rather than a category of its own, unlike Git below it. The
+            // reason to nest is a row count that crowds its neighbours, and one
+            // row crowds nobody: a category holding a single task costs a
+            // keystroke to open and shows exactly what its own title already
+            // said. Git keeps its category because it contributes five.
+            Node::Reversible {
+                forward: Box::new(InstallGithubCli),
+                inverse: Box::new(UninstallGithubCli),
+            },
+            // Last, because it is the only category here and categories go
+            // below the rows that run something. A folder sitting between two
+            // tasks makes the list read as though it were one of them until it
+            // is opened, and this one sat between `Install the Rust toolchain`
+            // and `Install the GitHub CLI`.
             //
-            // Each is a category rather than five flat rows for the reason the
-            // SSH and WireGuard split exists: git alone contributes five, three
-            // of which configure rather than install, and flat they crowded out
+            // Kept apart from GitHub rather than folded in with it, despite the
+            // word they share: git is a program that runs on this machine and
+            // needs configuring before it will commit, and `gh` is a client for
+            // somebody else's service that needs a token. An operator
+            // installing git on a build server has no business being shown
+            // GitHub.
+            //
+            // A category rather than five flat rows for the reason the SSH and
+            // WireGuard split exists: git alone contributes five, three of
+            // which configure rather than install, and flat they crowded out
             // the four tools above and read as though "set a git identity" were
             // a peer of "install the fish shell".
             Node::Category(Category::new(
@@ -76,15 +91,6 @@ pub fn category() -> Category {
                     Node::Task(Box::new(SetGitSafeDirectory)),
                 ],
             )),
-            // Flat rather than a category of its own, unlike Git beside it. The
-            // reason to nest is a row count that crowds its neighbours, and one
-            // row crowds nobody: a category holding a single task costs a
-            // keystroke to open and shows exactly what its own title already
-            // said. Git keeps its category because it contributes five.
-            Node::Reversible {
-                forward: Box::new(InstallGithubCli),
-                inverse: Box::new(UninstallGithubCli),
-            },
         ],
     )
 }

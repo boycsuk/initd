@@ -29,6 +29,13 @@ pub fn category() -> Category {
     Category::new(
         "Hardening",
         vec![
+            Node::Reversible {
+                forward: Box::new(UnattendedUpgrades),
+                inverse: Box::new(DisableUnattendedUpgrades),
+            },
+            // Below the task, like every other category in the tree: a folder
+            // between two rows that run something reads as one of them until it
+            // is opened.
             Node::Category(Category::new(
                 "Brute-force protection",
                 vec![
@@ -42,10 +49,6 @@ pub fn category() -> Category {
                     },
                 ],
             )),
-            Node::Reversible {
-                forward: Box::new(UnattendedUpgrades),
-                inverse: Box::new(DisableUnattendedUpgrades),
-            },
         ],
     )
 }

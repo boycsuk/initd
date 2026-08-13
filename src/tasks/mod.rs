@@ -615,6 +615,50 @@ mod tests {
     }
 
     #[test]
+    fn categories_come_after_the_rows_that_run_something() {
+        // Reported for `Developer environment`, where `Git` sat between
+        // `Install the Rust toolchain` and `Install the GitHub CLI`. A folder
+        // among tasks reads as one of them until it is opened — the marker
+        // distinguishes them, and a marker is one cell against a title that
+        // looks like every other title.
+        //
+        // Checked over every level rather than the two that were wrong: the
+        // rule is cheap to state and easy to break by adding a category to a
+        // list that already has tasks in it, which is exactly how both of these
+        // came about.
+        fn check(nodes: &[Node], path: &str) {
+            let mut seen_category = false;
+
+            for node in nodes {
+                match node {
+                    Node::Category(category) => {
+                        seen_category = true;
+                        check(&category.children, &format!("{path} › {}", category.title));
+                    }
+                    Node::Task(task) => {
+                        assert!(
+                            !seen_category,
+                            "{path}: {} is listed after a category; \
+                             folders belong below the rows that run something",
+                            task.id()
+                        );
+                    }
+                    Node::Reversible { forward, .. } => {
+                        assert!(
+                            !seen_category,
+                            "{path}: {} is listed after a category; \
+                             folders belong below the rows that run something",
+                            forward.id()
+                        );
+                    }
+                }
+            }
+        }
+
+        check(&tree(), "root");
+    }
+
+    #[test]
     fn a_lockout_is_reserved_for_what_can_end_the_session() {
         // The distinction the two levels exist for. If everything drifted to
         // `Lockout` the red frame would mark every row and distinguish none,
