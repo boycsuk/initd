@@ -25,7 +25,8 @@ use crate::tasks::consequence::{
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{
-    Category, Confirmation, Node, Progress, Task, report, report_verbatim, supported_everywhere,
+    Category, Confirmation, Node, Progress, Task, report, report_secret, report_verbatim,
+    supported_everywhere,
 };
 
 /// The interface this tool manages.
@@ -428,7 +429,7 @@ impl Task for AddPeer {
             },
         );
         report_verbatim(progress, String::new());
-        report_verbatim(
+        report_secret(
             progress,
             client_config(
                 &keys.private,
@@ -702,6 +703,7 @@ mod tests {
     use super::*;
     use crate::backend::for_family;
     use crate::distro::Family;
+    use crate::exec::OutputLine;
     use crate::exec::mock::{MockExecutor, Reply};
 
     /// A syntactically valid key, for tests that do not care which one.
@@ -1010,6 +1012,47 @@ mod tests {
 
         assert_eq!(external.len(), 1, "{consequences:?}");
         assert!(external[0].check().is_none());
+    }
+
+    #[test]
+    fn the_printed_peer_configuration_is_marked_as_a_secret() {
+        // It holds a private key and a preshared key, and it is printed because
+        // the operator has to read it. Marking is what keeps the transcript
+        // copy from carrying it back across the SSH hop into a clipboard
+        // history — the disclosure `write_uncopied` refuses on disk.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(format!("[Interface]\nPrivateKey = {KEY}\n")), // existing config
+            Reply::ok(format!("{KEY}\n")),                           // genkey
+            Reply::ok(format!("{KEY}\n")),                           // pubkey
+            Reply::ok(format!("{KEY}\n")),                           // genpsk
+            Reply::ok(format!("{KEY}\n")),                           // server pubkey
+            Reply::ok(""),                                           // write
+            Reply::ok(""),                                           // reload
+        ]);
+
+        let mut values = ParamValues::new();
+        values.set(AddPeer::NAME, "phone".to_owned());
+        values.set(AddPeer::ADDRESS, "10.89.0.9".to_owned());
+        values.set(AddPeer::ENDPOINT, "203.0.113.7:51820".to_owned());
+
+        let mut lines: Vec<OutputLine> = Vec::new();
+        let _ = AddPeer.run(
+            &mock,
+            for_family(Family::Debian).as_ref(),
+            &values,
+            &mut |line| lines.push(line),
+        );
+
+        let holding_key: Vec<_> = lines.iter().filter(|l| l.text.contains(KEY)).collect();
+
+        assert!(
+            !holding_key.is_empty(),
+            "the configuration must be printed: {lines:?}"
+        );
+        assert!(
+            holding_key.iter().all(|l| l.sensitive),
+            "every line carrying the key must be marked: {holding_key:?}"
+        );
     }
 
     #[test]

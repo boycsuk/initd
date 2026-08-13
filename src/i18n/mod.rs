@@ -392,6 +392,12 @@ pub enum Msg {
     // The pane's title, payload-free: it names one pane.
     OutputTitle,
 
+    // What a copied transcript carries in place of a secret. The pane draws
+    // the value; this stands in its place in the clipboard, so a transcript
+    // pasted elsewhere says where the value went rather than appearing to be
+    // a complete record of a screen that showed more.
+    TranscriptRedacted,
+
     // --- Interface: forms ---
     //
     // The dialog's own chrome. What a field is called, what it currently holds

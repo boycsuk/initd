@@ -224,6 +224,21 @@ pub struct OutputLine {
     /// one, and `main.rs` matches `Stream` exhaustively to decide between
     /// stdout and stderr, a question emphasis has no bearing on.
     pub emphasis: Option<Emphasis>,
+    /// Whether the line holds a secret, so the clipboard must not carry it.
+    ///
+    /// Separate from [`Emphasis`], which says why a line stands out on screen:
+    /// a line can be sensitive without being emphasised and the reverse, and
+    /// folding the two would make a styling decision able to widen disclosure.
+    ///
+    /// The pane still draws it. What this bounds is the *copy*: the peer
+    /// configuration exists to be read off the screen, while
+    /// [`OutputPane::transcript`](crate::tui::output::OutputPane::transcript)
+    /// sends whatever it holds to the operator's own machine over OSC 52, where
+    /// it lands in clipboard history and anything syncing it. The task that
+    /// produces such a line already refuses to let a copy of the same key reach
+    /// `/var/lib/initd` or a `.initd.bak` sidecar; a copy travelling the other
+    /// way, across the SSH hop, is the same disclosure through a different door.
+    pub sensitive: bool,
 }
 
 impl OutputLine {
@@ -233,6 +248,7 @@ impl OutputLine {
             stream,
             text: text.into(),
             emphasis: None,
+            sensitive: false,
         }
     }
 
@@ -240,6 +256,18 @@ impl OutputLine {
     #[must_use]
     pub const fn emphasised(mut self, emphasis: Emphasis) -> Self {
         self.emphasis = Some(emphasis);
+        self
+    }
+
+    /// The same line, marked as holding a secret the clipboard must not carry.
+    ///
+    /// Opt-in rather than inferred from the text. A rule guessing at what looks
+    /// like a key would have to be right about every format a task might print,
+    /// and the one it did not recognise would be disclosed silently — whereas a
+    /// line wrongly marked is merely absent from a copy, which is visible.
+    #[must_use]
+    pub const fn sensitive(mut self) -> Self {
+        self.sensitive = true;
         self
     }
 }

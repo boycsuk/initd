@@ -71,6 +71,17 @@ pub(crate) fn report_verbatim(progress: Progress<'_>, text: impl Into<String>) {
     progress(OutputLine::new(Stream::Stdout, text.into()));
 }
 
+/// Reports data the screen may show but the clipboard may not carry.
+///
+/// The peer configuration is the case: it holds a private key and a preshared
+/// key, and it exists to be read off the screen and typed into a client. The
+/// pane draws it unchanged. What this bounds is the transcript copy, which
+/// crosses back to the operator's own machine and persists there — the same
+/// disclosure `write_uncopied` refuses on disk, through a different door.
+pub(crate) fn report_secret(progress: Progress<'_>, text: impl Into<String>) {
+    progress(OutputLine::new(Stream::Stdout, text.into()).sensitive());
+}
+
 /// What the operator is asked before a task runs.
 ///
 /// Three answers rather than the boolean this replaced, because that boolean
