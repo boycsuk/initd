@@ -629,6 +629,50 @@ mod tests {
     }
 
     #[test]
+    fn both_halves_of_a_pair_name_the_row_they_change() {
+        // The forward half declaring `affects` is not enough, and this is the
+        // omission that made it obvious: `firewall.disable` did not, so after
+        // disabling the firewall the interface re-probed nothing and the row
+        // went on offering to disable a firewall that was already off. It
+        // corrected itself on the next start, which is the worst kind of wrong
+        // — right often enough that nobody reports it as a bug in the tree.
+        //
+        // Asserted over both halves rather than trusting a convention: the
+        // default is an empty list, so an inverse gets this wrong by saying
+        // nothing at all.
+        let tree = crate::tasks::tree();
+        let mut pairs = Vec::new();
+        collect_pairs(&tree, &mut pairs);
+
+        for (forward, inverse) in pairs {
+            for (task, role) in [(forward, "forward"), (inverse, "inverse")] {
+                assert!(
+                    !task.affects().is_empty(),
+                    "the {role} half of the pair, {}, must name the row its \
+                     success changes, or the interface never re-measures it",
+                    task.id()
+                );
+            }
+        }
+    }
+
+    /// Both halves of every reversible pair in a forest.
+    fn collect_pairs<'a>(
+        nodes: &'a [Node],
+        out: &mut Vec<(&'a dyn crate::tasks::Task, &'a dyn crate::tasks::Task)>,
+    ) {
+        for node in nodes {
+            match node {
+                Node::Task(_) => {}
+                Node::Reversible { forward, inverse } => {
+                    out.push((forward.as_ref(), inverse.as_ref()));
+                }
+                Node::Category(category) => collect_pairs(&category.children, out),
+            }
+        }
+    }
+
+    #[test]
     fn every_reversible_row_declares_what_to_measure() {
         // A pair whose forward task returns `None` from `subject` is a row that
         // can never learn which verb it should show: the probe would skip it

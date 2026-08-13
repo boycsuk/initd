@@ -169,7 +169,7 @@ pub struct EnableFirewall;
 
 impl Task for EnableFirewall {
     fn id(&self) -> &'static str {
-        "firewall.enable"
+        Self::ID
     }
 
     fn title(&self) -> &'static str {
@@ -329,6 +329,15 @@ impl Task for EnableFirewall {
 impl EnableFirewall {
     /// Name of the parameter holding the port to keep open.
     pub const SSH_PORT: &'static str = "ssh_port";
+
+    /// Id, named because the interface reaches for it when building the
+    /// confirmation this task needs and no other does.
+    ///
+    /// A constant rather than a literal at the match site, for the reason
+    /// `LockRoot::ID` records: matching on a literal puts the id in two places
+    /// with nothing tying them together, and a rename would leave the dialog
+    /// silently falling back to the generic warning.
+    pub const ID: &'static str = "firewall.enable";
 }
 
 /// Opens one inbound port.
@@ -483,6 +492,17 @@ impl Task for DisableFirewall {
     }
 
     supported_everywhere!();
+
+    /// The row this task's success changes, which is the pair it belongs to.
+    ///
+    /// Inverses have to declare this as much as their forward halves do, and
+    /// the default of "nothing" is why they can forget: the interface re-probes
+    /// only what a finished task names, so an inverse that names nothing leaves
+    /// its own row showing the verb it just stopped being true. Reported as
+    /// disabling the firewall and watching the row go on offering to disable it.
+    fn affects(&self) -> &'static [&'static str] {
+        &["firewall.enable"]
+    }
 
     fn run(
         &self,

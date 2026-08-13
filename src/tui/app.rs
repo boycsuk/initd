@@ -2720,6 +2720,83 @@ mod tests {
     }
 
     #[test]
+    fn disabling_the_firewall_puts_the_row_back_to_enable() {
+        // The reported defect: after disabling, the row went on offering to
+        // disable. `refresh_presence_after` re-probes only what a finished task
+        // names in `affects`, and the inverse named nothing — so the interface
+        // kept the measurement taken before the task ran, and corrected itself
+        // only at the next start.
+        //
+        // Asserted through the state rather than by running the probe, which is
+        // asynchronous: a test that waited for the thread would assert on a
+        // race. What is checked is the part that was wrong — that finishing the
+        // task forgets the answer that is now stale.
+        let mut app = test_app(Family::Debian);
+
+        app.presence
+            .record("firewall.enable", crate::tui::probe::Presence::Present);
+        assert!(
+            app.presence.of("firewall.enable").calls_for_the_inverse(),
+            "the premise: the row is offering to disable"
+        );
+
+        app.refresh_presence_after("firewall.disable");
+
+        assert!(
+            !app.presence.of("firewall.enable").calls_for_the_inverse(),
+            "the stale answer must be forgotten, so the row falls back to its \
+             forward verb until the fresh probe lands"
+        );
+    }
+
+    #[test]
+    fn the_firewall_confirmation_names_the_port_and_what_it_costs() {
+        // The generic lockout sentence — "this can lock you out, make sure you
+        // have another way in" — is true here and unactionable: it names no
+        // port, and this dialog is the last place the value can be changed.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::EnableFirewall::SSH_PORT,
+            "22".to_owned(),
+        );
+
+        let warning = app.firewall_warning();
+
+        assert!(
+            warning.contains("22/tcp stops answering"),
+            "the warning must name the port: {warning}"
+        );
+        assert!(
+            warning.contains("connected over SSH"),
+            "and say what it costs a session that arrived that way: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_port_the_daemon_does_not_serve_is_named_as_such() {
+        // The case that ends the session: admitting a port nothing listens on
+        // while closing the one carrying the connection. The mock answers
+        // nothing for `sshd -T`, so `effective_port` falls back to 22 — which
+        // is the disagreement being tested.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::EnableFirewall::SSH_PORT,
+            "80".to_owned(),
+        );
+
+        let warning = app.firewall_warning();
+
+        assert!(
+            warning.contains("listening on 22, not 80"),
+            "the disagreement must be stated: {warning}"
+        );
+        assert!(
+            warning.contains("Use 22"),
+            "and the port to use named: {warning}"
+        );
+    }
+
+    #[test]
     fn a_one_verb_task_says_when_the_host_already_has_its_subject() {
         // Reported as the tool not detecting an SSH server that was installed.
         // It detected it fine when run — `openssh-server is already installed`

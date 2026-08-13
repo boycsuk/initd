@@ -41,6 +41,16 @@ impl Task for InstallSsh {
         Some(Capability::Ssh)
     }
 
+    /// The row this task's success changes — its own.
+    ///
+    /// Missing until a guard went looking, because this was a lone task until
+    /// it gained an inverse: a row with one verb never changed what it offered,
+    /// so nothing re-measured it and nothing needed to. Pairing it made the
+    /// omission matter without making it visible.
+    fn affects(&self) -> &'static [&'static str] {
+        &["ssh.install"]
+    }
+
     fn run(
         &self,
         executor: &dyn Executor,
