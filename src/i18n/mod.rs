@@ -665,7 +665,33 @@ pub enum Msg {
     KeyBarOutput,
     KeyBarHideDetail,
     KeyBarShowDetail,
+    /// Names the running task and how long it has been going.
+    ///
+    /// The elapsed count is the honest half of a progress report: a task's
+    /// command count is not known before it runs, so a percentage would be
+    /// invented, while seconds are measured. It answers the question a silent
+    /// `apt-get` raises over a slow link — whether anything is still happening.
+    HeaderRunning {
+        task: String,
+        elapsed: String,
+    },
+    /// Replaces `Esc cancel` once a first `Esc` has armed the discard.
+    ///
+    /// A dialog holding typed values asks twice before throwing them away, and
+    /// the first press changed nothing on screen — so the key read as dropped,
+    /// and the natural response is to press it again, which is exactly what
+    /// discards the work. Saying what the second press will do is what makes
+    /// the guard a guard rather than a delay.
+    KeyCancelArmed,
     KeyBarStop,
+    /// Replaces `Ctrl-C stop` once a stop has been asked for.
+    ///
+    /// Carries the contract rather than the intent: cancellation is refused
+    /// between commands rather than interrupting the running one, so a task
+    /// mid-`dnf` keeps going for as long as that command takes. "stopping"
+    /// alone would read as "killed", which is the one thing this must not
+    /// claim — the command in flight is still changing the machine.
+    KeyBarStopping,
     KeyBarScroll,
     /// What `y` does in the output pane.
     KeyBarCopy,

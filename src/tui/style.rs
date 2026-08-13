@@ -214,6 +214,17 @@ pub const KEYBAR_LABEL: Style = fg_mod(Color::White, Modifier::DIM);
 /// `title_bottom`, and the form pushes them onto a vector it is already
 /// building.
 pub fn key_hint(glyph: &str, label: &str) -> [ratatui::text::Span<'static>; 2] {
+    // An empty glyph is a label with no key behind it — the bar saying what is
+    // happening rather than what to press. Drawn without the key column, since
+    // the space reserved for a glyph that does not exist reads as a binding
+    // whose key failed to render.
+    if glyph.is_empty() {
+        return [
+            ratatui::text::Span::raw(" "),
+            ratatui::text::Span::styled(format!("{label} "), KEYBAR_LABEL),
+        ];
+    }
+
     [
         ratatui::text::Span::styled(format!(" {glyph}"), KEYBAR_KEY),
         ratatui::text::Span::styled(format!(" {label} "), KEYBAR_LABEL),

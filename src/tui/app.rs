@@ -3461,6 +3461,63 @@ mod tests {
     }
 
     #[test]
+    fn a_running_task_is_named_on_screen_while_it_runs() {
+        // Before this the only sign of life was the output pane's write
+        // cursor, which neither moves nor counts — so a command that is merely
+        // slow looked exactly like a session that had stopped answering, and
+        // the reflex that follows raises `SIGHUP` and reverts an unrelated
+        // unkept change.
+        let mut app = test_app(Family::Debian);
+
+        let idle = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            !idle.contains("ssh.install"),
+            "no task is named while none runs, got:\n{idle}"
+        );
+
+        pretend_running(&mut app);
+
+        let running = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            running.contains("ssh.install"),
+            "the running task must be named, got:\n{running}"
+        );
+        assert!(
+            running.contains("0:00"),
+            "and how long it has been going, got:\n{running}"
+        );
+    }
+
+    #[test]
+    fn asking_a_task_to_stop_is_acknowledged_on_screen() {
+        // The request is refused between commands rather than interrupting the
+        // one in flight, so nothing else on screen changes for as long as that
+        // command takes. The bar kept offering `Ctrl-C stop` throughout, which
+        // reads as the keypress having been dropped — and pressing it again is
+        // silently ignored, so the next escalation is closing the terminal.
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        let before = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            before.contains("stop"),
+            "the key is offered while it is still worth pressing, got:\n{before}"
+        );
+
+        app.cancel_running();
+
+        let after = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            after.contains("stopping after this command"),
+            "the request must be acknowledged, got:\n{after}"
+        );
+        assert!(
+            !after.contains("Ctrl-C"),
+            "and the key that asked for it stops being offered, got:\n{after}"
+        );
+    }
+
+    #[test]
     fn a_cancelled_task_reports_where_it_stopped() {
         // A tool that says only "cancelled" leaves the operator guessing what
         // ran and what did not, so the command it stopped before is named.
