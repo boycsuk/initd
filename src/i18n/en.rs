@@ -1007,6 +1007,13 @@ pub(super) fn render(message: &Msg) -> String {
              /usr/etc/sudoers. Creating an administrator with initd writes a \
              drop-in instead, which is the route that survives an upgrade"
         ),
+        // Names sudo as the thing that answered, because that is what makes the
+        // claim checkable: an operator who disagrees can run the same question.
+        Msg::TaskAccountSudoGrantsNothing { user } => format!(
+            "  {user} — in the administrative group, but sudo grants it nothing \
+             on this host: check `sudo -l -U {user}` and the rules in \
+             /etc/sudoers"
+        ),
         Msg::TaskAccountCannotAuthenticate { user } => {
             format!("  {user} — no authorised key and no usable password")
         }

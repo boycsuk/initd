@@ -1023,6 +1023,18 @@ pub enum Msg {
         user: String,
         group: String,
     },
+    /// One account in the group that `sudo` itself grants nothing.
+    ///
+    /// Separate from the line above, which describes what the *distribution*
+    /// ships. This is what an administrator did to this host: the group's rule
+    /// was taken out of `sudoers`, so membership reads back true and buys
+    /// nothing. Asked of sudo rather than parsed out of the file, and by exit
+    /// code rather than by reading its answer — `sudo -l -U <user> <command>`
+    /// exits non-zero where nothing is granted, which is a verdict rather than
+    /// a sentence in somebody else's language.
+    TaskAccountSudoGrantsNothing {
+        user: String,
+    },
     /// One account that can escalate and holds no credential at all.
     TaskAccountCannotAuthenticate {
         user: String,

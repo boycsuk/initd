@@ -1294,6 +1294,7 @@ mod tests {
                      deploy:x:1001:1001::/home/deploy:/bin/bash\n",
                 ),
                 crate::exec::mock::Reply::ok("cosmin sudo"),
+                crate::exec::mock::Reply::ok(""), // sudo grants cosmin something
                 crate::exec::mock::Reply::failure(1, ""), // cosmin: no key
                 crate::exec::mock::Reply::ok("cosmin:$6$a$b:19000:0:99999:7:::"),
                 crate::exec::mock::Reply::ok("deploy users"), // deploy: cannot escalate
