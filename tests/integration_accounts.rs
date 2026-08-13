@@ -10,7 +10,9 @@
 
 mod common;
 
-use common::{Image, admin_group, create_account, run_in_container, stdout_of};
+use common::{
+    Image, admin_group, create_account, create_account_with_home, run_in_container, stdout_of,
+};
 
 /// Runs a task and returns everything it printed, out and err together.
 ///
@@ -38,7 +40,9 @@ for_each_image! {
         // openSUSE is the exception, and it is the tool's job rather than this
         // test's: `wheel` comes from `system-group-wheel`, which only the
         // desktop patterns require, so a minimally installed server has no such
-        // group. The backend creates it in `grant_admin` — measured, because
+        // group. The backend creates it in `ensure_admin_group`, which runs
+        // `groupadd -f`; `grant_admin` is the separate step writing the sudoers
+        // drop-in that makes the group grant anything — measured, because
         // `usermod -aG` against a missing group exits 6 and `users.create`
         // would fail outright on a stock host.
         //
@@ -248,11 +252,7 @@ for_each_image! {
                 } else {
                     ""
                 },
-                create = if image.name.contains("alpine") {
-                    "adduser -D"
-                } else {
-                    "useradd -m"
-                },
+                create = create_account_with_home(image),
                 join = if image.name.contains("alpine") {
                     format!("addgroup initdadmin {group}")
                 } else {

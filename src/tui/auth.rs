@@ -7,7 +7,7 @@
 //! request, and whoever drains the channel must answer it.
 //!
 //! The one group of `App`'s behaviour that is genuinely self-contained: it
-//! reads three of the struct's twenty-one fields, and `pending_auth` is its
+//! reads three of the struct's twenty-seven fields, and `pending_auth` is its
 //! own.
 
 use super::Tui;

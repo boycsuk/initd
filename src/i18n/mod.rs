@@ -392,6 +392,12 @@ pub enum Msg {
     // The pane's title, payload-free: it names one pane.
     OutputTitle,
 
+    // What a copied transcript carries in place of a secret. The pane draws
+    // the value; this stands in its place in the clipboard, so a transcript
+    // pasted elsewhere says where the value went rather than appearing to be
+    // a complete record of a screen that showed more.
+    TranscriptRedacted,
+
     // --- Interface: forms ---
     //
     // The dialog's own chrome. What a field is called, what it currently holds
@@ -799,7 +805,7 @@ pub enum Msg {
     // left the narration itself untouched.
     //
     // The generic ones come first: "installing X" is the same sentence
-    // whichever task says it, and a variant per task would be thirty-nine
+    // whichever task says it, and a variant per task would be fifty
     // spellings of one string to keep in step.
     /// A package or program is being installed.
     TaskInstalling {

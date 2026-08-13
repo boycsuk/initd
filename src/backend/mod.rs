@@ -50,8 +50,11 @@ use crate::exec::Executor;
 pub enum Capability {
     /// The OpenSSH server.
     Ssh,
-    /// WireGuard, whose tools and kernel module ship together on both families
-    /// implemented today but under different package names.
+    /// WireGuard, whose tools and kernel module ship together on every family
+    /// implemented today, and under the same package name: all five resolve
+    /// `wireguard-tools`. It stays a capability rather than a literal because
+    /// the agreement is a fact about these five distributions and not a
+    /// property of WireGuard — the same reasoning `config_for` records below.
     Wireguard,
     /// The rootless Docker engine.
     DockerRootless,
@@ -145,9 +148,11 @@ pub trait Backend {
 
     /// The configuration file a capability reads on this distribution.
     ///
-    /// Both families implemented today agree on `/etc/ssh/sshd_config`, so
+    /// All five families implemented today agree on `/etc/ssh/sshd_config`, so
     /// this method looks redundant. It is not: the agreement is a fact about
-    /// these two distributions rather than a property of the capability, and a
+    /// those distributions rather than a property of the capability — SUSE
+    /// already ships a second copy under `/usr/etc` that the tool has to know
+    /// about — and a
     /// path held in a task is a path no backend can correct. Package and unit
     /// names already resolve here; paths were the one system-specific name
     /// still living above this layer.

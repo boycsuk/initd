@@ -26,13 +26,15 @@ use crate::i18n::Msg;
 /// carries data instead of text: the catalogue renders it in the resolved
 /// locale, and a missing translation fails at compile time.
 ///
-/// Some variants have no producer yet: the tasks that raise them arrive with
-/// the components they describe. They are declared together because the set is
-/// what the interface must know how to render, and finding a new shape of
-/// warning while wiring up a task is how one ends up rendered as a bare string.
-/// Each is constructed and rendered in this module's tests, so a variant the
-/// catalogue cannot word still fails the build.
-#[allow(dead_code, reason = "variants land with the tasks that raise them")]
+/// Declared together because the set is what the interface must know how to
+/// render, and finding a new shape of warning while wiring up a task is how one
+/// ends up rendered as a bare string. Each is constructed and rendered in this
+/// module's tests, so a variant the catalogue cannot word still fails the build.
+///
+/// Every variant has a producer now. They were declared ahead of the tasks that
+/// raise them and carried an allow saying so, which stayed after the tasks
+/// landed — an allow outliving its reason is how the next genuinely dead
+/// variant would have gone unnoticed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
     /// A port was changed, and something else still refers to the old one.
@@ -58,9 +60,8 @@ pub enum Reason {
 
 /// What two tasks would contend for.
 ///
-/// Constructed in this module's tests, which is what proves the catalogue can
-/// word it before a task depends on that.
-#[allow(dead_code, reason = "raised first by the brute-force banners")]
+/// Raised by the two brute-force banners, which both ship: `hardening.rs`
+/// constructs it for fail2ban and for CrowdSec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Conflict {
     /// Both write ban rules through the firewall. A host running two of them
@@ -70,7 +71,6 @@ pub enum Conflict {
 }
 
 /// Something outside this machine that the tool cannot inspect.
-#[allow(dead_code, reason = "variants land with the tasks that raise them")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum External {
     /// A hosting provider's own firewall, upstream of this host.
@@ -88,7 +88,6 @@ pub enum External {
 }
 
 /// Transport protocol, for warnings that name a port.
-#[allow(dead_code, reason = "UDP lands with WireGuard")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     Tcp,
@@ -129,9 +128,7 @@ pub enum Consequence {
     /// Another task occupies the same ground and should not also be applied.
     ///
     /// Distinct from `Invalidates`: nothing is broken yet. Running both is what
-    /// would break it. Raised first by the two brute-force banners, neither of
-    /// which exists yet.
-    #[allow(dead_code, reason = "raised first by the brute-force banners")]
+    /// would break it. Raised by the two brute-force banners, which both ship.
     Conflicts { task: &'static str, over: Conflict },
 
     /// Something beyond this machine needs attention.

@@ -24,8 +24,10 @@
 
 mod common;
 
+use std::sync::LazyLock;
+
 use common::tui::Tui;
-use common::{admin_group, create_account};
+use common::{TEST_KEY, admin_group, create_account};
 
 /// The state the interface reports while a change is applied but not kept.
 const VERIFY: &str = "VERIFY";
@@ -71,19 +73,29 @@ macro_rules! tui {
 /// keeps those ten reading a file that exists on all six images; without it
 /// they receive an empty string, and `starts_with('0')` on nothing is a failure
 /// that names the task rather than the missing file.
-const PREPARE_FOR_HARDENING: &str = concat!(
-    "initd authorize-key root 'ssh-ed25519 ",
-    "AAAAC3NzaC1lZDI1NTE5AAAAIKj8VQqPmVxOKGVkGYhAaKcHVDkPAeSlZLnQFDKmvXYZ test@initd",
-    "' >/dev/null 2>&1; \
-     [ -f /etc/ssh/sshd_config ] || cp /usr/etc/ssh/sshd_config /etc/ssh/sshd_config \
-       2>/dev/null; \
-     systemctl start ssh sshd >/dev/null 2>&1; \
-     for _ in $(seq 30); do \
-       systemctl is-active --quiet ssh sshd && break; \
-       sleep 0.2; \
-     done; \
-     cp /etc/ssh/sshd_config /tmp/before"
-);
+///
+/// The key comes from [`common::TEST_KEY`] rather than being written out here.
+/// It was inlined because `concat!` takes literals and nothing else, and the
+/// two spellings agreed — but only by hand. The lockout guard these scenarios
+/// walk past is tested against the shared constant, so a changed key would have
+/// left the interface authorising a different one and the guard refusing to
+/// proceed. That surfaces as the verification window never opening: a TUI
+/// failure report for a drifted constant, in the file least likely to be
+/// suspected. `LazyLock` costs one allocation per binary and removes the
+/// possibility.
+static PREPARE_FOR_HARDENING: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+         [ -f /etc/ssh/sshd_config ] || cp /usr/etc/ssh/sshd_config /etc/ssh/sshd_config \
+           2>/dev/null; \
+         systemctl start ssh sshd >/dev/null 2>&1; \
+         for _ in $(seq 30); do \
+           systemctl is-active --quiet ssh sshd && break; \
+           sleep 0.2; \
+         done; \
+         cp /etc/ssh/sshd_config /tmp/before"
+    )
+});
 
 /// Walks from the root of the tree to the hardening task and runs it.
 ///
@@ -218,7 +230,7 @@ for_each_image! {
     /// The tree has no other guard: without the dialog, one Enter on a
     /// highlighted row would harden a live server.
     fn a_destructive_task_asks_before_it_runs(image) {
-        let tui = tui!(image, "confirm", PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "confirm", &*PREPARE_FOR_HARDENING);
 
         run_hardening(&tui);
 
@@ -246,7 +258,7 @@ for_each_image! {
     /// yet kept, and an administrator who cannot get back in does nothing and
     /// gets it back. This is the state a mock cannot produce.
     fn confirming_applies_the_change_and_holds_it_open(image) {
-        let tui = tui!(image, "window", PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "window", &*PREPARE_FOR_HARDENING);
 
         run_hardening(&tui);
         confirm_dialog(&tui);
@@ -277,7 +289,7 @@ for_each_image! {
     /// recorded — which cannot say whether the file that came back is the one
     /// that went away. This compares them.
     fn reverting_restores_the_previous_configuration(image) {
-        let tui = tui!(image, "revert", PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "revert", &*PREPARE_FOR_HARDENING);
 
         run_hardening(&tui);
         confirm_dialog(&tui);
@@ -320,7 +332,7 @@ for_each_image! {
     /// covered above; this is the third path, and the only one an operator
     /// never chooses.
     fn losing_the_session_puts_the_configuration_back(image) {
-        let tui = tui!(image, "hangup", PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "hangup", &*PREPARE_FOR_HARDENING);
 
         run_hardening(&tui);
         confirm_dialog(&tui);
@@ -391,7 +403,7 @@ for_each_image! {
     /// The other half, and the one that proves the window is a real choice
     /// rather than a delayed rollback: after keeping, the change must survive.
     fn keeping_leaves_the_change_in_place(image) {
-        let tui = tui!(image, "keep", PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "keep", &*PREPARE_FOR_HARDENING);
 
         run_hardening(&tui);
         confirm_dialog(&tui);

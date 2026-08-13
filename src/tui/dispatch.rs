@@ -7,7 +7,7 @@
 //! every handler has to remember.
 //!
 //! Separated from `app.rs` for navigation rather than for independence. This is
-//! the group that reaches furthest into `App` — sixteen of its twenty-one
+//! the group that reaches furthest into `App` — sixteen of its twenty-seven
 //! fields — so the file boundary does not buy any decoupling. It buys a reader
 //! who wants to know what `Esc` does somewhere to look in one place.
 
@@ -136,7 +136,7 @@ impl App {
                 self.help = Some(0);
                 return true;
             }
-            // Thirty-nine tasks across six areas is past what anybody keeps a
+            // Fifty tasks across six areas is past what anybody keeps a
             // map of, and drilling down one level at a time answers "what is
             // in here" rather than "where is it".
             KeyCode::Char('/') => {

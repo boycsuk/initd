@@ -7,7 +7,7 @@
 
 use crate::domain::{ServiceManager, ServiceState};
 use crate::error::{Error, Result};
-use crate::exec::{Command, Executor};
+use crate::exec::{Command, Executor, Output};
 
 /// Manages services through `systemctl`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -103,10 +103,29 @@ pub(super) fn unit_is_absent(stderr: &str) -> bool {
 }
 
 pub fn run_checked(executor: &dyn Executor, command: &Command) -> Result<()> {
+    run_capturing(executor, command)?;
+
+    Ok(())
+}
+
+/// Runs a command, returning its stdout, and turns a failure into an error.
+///
+/// What [`run_checked`] does, for the callers that need what the command said.
+/// Eight of them wrote the same nine lines out by hand — `unix_files`,
+/// `posix_accounts` twice over, `nftables`, `wg_tools`, `release_installer` —
+/// because the checked helper beside them discards stdout and there was no
+/// other. Each copy built `Error::CommandFailed` from the same three fields,
+/// which is the shape that stays identical until one of them learns something
+/// the others do not.
+///
+/// Returns the whole [`Output`] rather than the string: `wg_tools` wants stdout
+/// trimmed, `nftables` wants it parsed, and a helper that trimmed for everyone
+/// would be wrong for the caller that cares about a trailing newline.
+pub fn run_capturing(executor: &dyn Executor, command: &Command) -> Result<Output> {
     let output = executor.run(command)?;
 
     if output.success() {
-        return Ok(());
+        return Ok(output);
     }
 
     Err(Error::CommandFailed {

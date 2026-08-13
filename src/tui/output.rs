@@ -125,15 +125,24 @@ impl OutputPane {
     /// error the transcript is usually being copied for, and separating them
     /// would put the failure somewhere other than after the command that
     /// caused it.
+    ///
+    /// Lines marked sensitive are replaced rather than omitted. A copy silently
+    /// missing what was on screen reads as the pane having shown nothing, and
+    /// the operator pastes it into a bug report believing it complete; a line
+    /// saying where the value went sends them back to the screen, which is the
+    /// only place it exists. The value itself does not cross the SSH hop into a
+    /// clipboard history the same way `write_uncopied` keeps it out of a backup.
     pub fn transcript(&self) -> String {
-        let mut text =
-            self.lines
-                .iter()
-                .fold(String::new(), |mut text, OutputLine { text: line, .. }| {
-                    text.push_str(line);
-                    text.push('\n');
-                    text
-                });
+        let redacted = Lang::from_env().render(&Msg::TranscriptRedacted);
+        let mut text = self.lines.iter().fold(String::new(), |mut text, line| {
+            text.push_str(if line.sensitive {
+                &redacted
+            } else {
+                &line.text
+            });
+            text.push('\n');
+            text
+        });
 
         // A transcript that does not end in a newline concatenates with
         // whatever it is pasted before.
@@ -805,6 +814,43 @@ mod tests {
         assert_eq!(field_indent("    already indented"), None);
         assert_eq!(field_indent(""), None);
         assert_eq!(field_indent("no double space here"), None);
+    }
+
+    #[test]
+    fn a_secret_reaches_the_screen_but_not_the_clipboard() {
+        // The disclosure this closes: `wireguard.add-peer` prints a private
+        // key for the operator to read, and the copy key sent whatever the
+        // pane held over OSC 52 to their own machine, where it persists in
+        // clipboard history. The task already refuses to let the same key
+        // reach a `.initd.bak` sidecar or the backup index; a copy crossing
+        // the SSH hop is that disclosure through a different door.
+        let mut pane = OutputPane::new();
+        pane.push(line("[Interface]"));
+        pane.push(OutputLine::new(Stream::Stdout, "PrivateKey = wO3n1x=".to_owned()).sensitive());
+
+        let transcript = pane.transcript();
+
+        assert!(!transcript.contains("wO3n1x="), "{transcript}");
+        assert!(
+            pane.lines()
+                .iter()
+                .any(|held| held.text.contains("wO3n1x=")),
+            "the pane must still hold what it draws"
+        );
+    }
+
+    #[test]
+    fn a_redacted_line_says_so_rather_than_vanishing() {
+        // Omitting it would make the copy read as a complete record of a
+        // screen that showed more, which is how somebody pastes it into a bug
+        // report and concludes the task printed nothing.
+        let mut pane = OutputPane::new();
+        pane.push(OutputLine::new(Stream::Stdout, "PresharedKey = k7=".to_owned()).sensitive());
+
+        let transcript = pane.transcript();
+
+        assert_eq!(transcript.lines().count(), 1, "{transcript}");
+        assert!(!transcript.trim().is_empty(), "{transcript}");
     }
 
     #[test]

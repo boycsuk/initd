@@ -1,8 +1,8 @@
 //! WireGuard key material and peer administration.
 //!
 //! Behind a trait for the same reason as the rest: `wg` and `wg-quick` come
-//! from the `wireguard-tools` package on both families implemented today, but
-//! bringing an interface up is `wg-quick@wg0.service` under systemd and a
+//! from the `wireguard-tools` package on all five families implemented today,
+//! but bringing an interface up is `wg-quick@wg0.service` under systemd and a
 //! different mechanism everywhere else, and Alpine has neither.
 //!
 //! Key generation is a capability rather than a detail because private keys

@@ -2,7 +2,7 @@
 //!
 //! The tree browses one level at a time, which is the right shape for reading
 //! what a category holds and the wrong one for reaching a task whose category
-//! you cannot remember. Thirty-nine tasks across six areas is past the number
+//! you cannot remember. Fifty tasks across six areas is past the number
 //! anybody keeps a map of, and the only recourse was `docs/cli.md` — outside
 //! the tool, on a server that may not have it.
 //!
@@ -74,7 +74,7 @@ impl Search {
     ///
     /// An empty query matches everything rather than nothing: opening search
     /// shows the whole tree flattened, which is itself useful — it is the one
-    /// view that lists all thirty-nine tasks with their areas.
+    /// view that lists all fifty tasks with their areas.
     pub fn new(tree: &[Node]) -> Self {
         let mut search = Self {
             query: String::new(),

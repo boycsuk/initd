@@ -11,7 +11,8 @@
 //! Free functions rather than default methods on the trait, because neither
 //! answer needs `&self`: they ask the host, not the implementation.
 
-use crate::error::{Error, Result};
+use super::systemd::{run_capturing, run_checked};
+use crate::error::Result;
 use crate::exec::{Command, Executor};
 
 /// The list of shells a login is allowed to use.
@@ -119,15 +120,7 @@ pub fn list_accounts(executor: &dyn Executor) -> Result<Vec<String>> {
 /// would report a host as stranded while somebody was logged into it.
 pub fn list_ranked_accounts(executor: &dyn Executor) -> Result<Vec<RankedAccount>> {
     let command = Command::new("cat").arg(PASSWD_FILE);
-    let output = executor.run(&command)?;
-
-    if !output.success() {
-        return Err(Error::CommandFailed {
-            command: command.to_string(),
-            code: output.code,
-            stderr: output.stderr,
-        });
-    }
+    let output = run_capturing(executor, &command)?;
 
     let mut accounts: Vec<RankedAccount> = output
         .stdout
@@ -209,15 +202,7 @@ fn parse_passwd_entry(entry: &str) -> Option<RankedAccount> {
 /// escalation and, later, over a remote transport.
 pub fn valid_shells(executor: &dyn Executor) -> Result<Vec<String>> {
     let command = Command::new("cat").arg(SHELLS_FILE);
-    let output = executor.run(&command)?;
-
-    if !output.success() {
-        return Err(Error::CommandFailed {
-            command: command.to_string(),
-            code: output.code,
-            stderr: output.stderr,
-        });
-    }
+    let output = run_capturing(executor, &command)?;
 
     Ok(output
         .stdout
@@ -270,17 +255,7 @@ pub fn set_password(executor: &dyn Executor, user: &str, password: &str) -> Resu
         .stdin(format!("{user}:{password}\n"))
         .privileged();
 
-    let output = executor.run(&command)?;
-
-    if !output.success() {
-        return Err(Error::CommandFailed {
-            command: command.to_string(),
-            code: output.code,
-            stderr: output.stderr,
-        });
-    }
-
-    Ok(())
+    run_checked(executor, &command)
 }
 
 /// Whether an account holds a password that can authenticate.

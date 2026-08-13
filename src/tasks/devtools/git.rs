@@ -302,7 +302,7 @@ impl Task for SetGitDefaultBranch {
         Ok(Outcome::Done)
     }
 }
-/// Removes the mise version manager.
+/// Removes git.
 pub struct UninstallGit;
 impl Task for UninstallGit {
     fn id(&self) -> &'static str {

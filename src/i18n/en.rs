@@ -449,6 +449,9 @@ pub(super) fn render(message: &Msg) -> String {
 
         // --- Interface: output ---
         Msg::OutputTitle => "output".to_owned(),
+        Msg::TranscriptRedacted => {
+            "<secret omitted from the copy — shown on screen only>".to_owned()
+        }
 
         // --- Interface: forms ---
         //

@@ -406,13 +406,40 @@ pub fn admin_group(image: &Image) -> &'static str {
     }
 }
 
-/// The command that creates an account on an image.
+/// The command that creates an account on an image, without a home directory.
 ///
 /// `useradd` comes from the shadow suite; busybox provides `adduser` instead,
 /// and its flags differ in meaning rather than in spelling.
+///
+/// For scenarios that read `/etc/shadow` or `id -nG`, where a home directory is
+/// beside the point. Anything asserting about a home — or authorising a key,
+/// which needs one — wants [`create_account_with_home`], because the two
+/// families disagree about whether they make one by default and this spelling
+/// answers no on both.
 pub fn create_account(image: &Image) -> &'static str {
     if image.name.contains("alpine") {
         "adduser -D -H"
+    } else {
+        "useradd"
+    }
+}
+
+/// The command that creates an account together with its home directory.
+///
+/// Kept apart from [`create_account`] rather than folded into it, because the
+/// difference is one an assertion can depend on and the shared spelling had
+/// already drifted: this was written out inline in `integration_accounts.rs`
+/// as `adduser -D`/`useradd -m` while the helper beside it said
+/// `adduser -D -H`, and the scenario using the inline copy asserts
+/// `test -d /home/initdadmin`. Substituting the helper there would have made a
+/// passing scenario fail for a reason that has nothing to do with the tool.
+///
+/// `-m` is what makes the families agree: Debian's `login.defs` sets
+/// `CREATE_HOME` and Arch's does not, so the flag is what removes the
+/// disagreement rather than an over-specification.
+pub fn create_account_with_home(image: &Image) -> &'static str {
+    if image.name.contains("alpine") {
+        "adduser -D"
     } else {
         "useradd -m"
     }

@@ -48,7 +48,7 @@ pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
 ///
 /// The rendering happens here rather than in each task because this is the one
 /// place every line already passes through: a `Lang` threaded into `Task::run`
-/// would be a parameter thirty-nine implementations carry and one forgets.
+/// would be a parameter fifty implementations carry and one forgets.
 pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
     // Resolved per line, which is affordable here in a way it is not in the
     // interface: a task reports a handful of steps over seconds, where a key
@@ -69,6 +69,17 @@ pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
 /// reached for.
 pub(crate) fn report_verbatim(progress: Progress<'_>, text: impl Into<String>) {
     progress(OutputLine::new(Stream::Stdout, text.into()));
+}
+
+/// Reports data the screen may show but the clipboard may not carry.
+///
+/// The peer configuration is the case: it holds a private key and a preshared
+/// key, and it exists to be read off the screen and typed into a client. The
+/// pane draws it unchanged. What this bounds is the transcript copy, which
+/// crosses back to the operator's own machine and persists there — the same
+/// disclosure `write_uncopied` refuses on disk, through a different door.
+pub(crate) fn report_secret(progress: Progress<'_>, text: impl Into<String>) {
+    progress(OutputLine::new(Stream::Stdout, text.into()).sensitive());
 }
 
 /// What the operator is asked before a task runs.
@@ -913,6 +924,35 @@ mod tests {
         // meaningful instead of merely passing.
         let pairs = count_pairs(&tree());
         assert_eq!(counted + pairs, all_tasks().len());
+    }
+
+    #[test]
+    fn the_tree_holds_the_number_of_tasks_the_prose_claims() {
+        // The sibling above asserts the *relation* between rows, pairs and
+        // tasks, which holds at any size — so the tree grew from thirty-nine
+        // tasks to fifty and eleven pairs to sixteen without anything
+        // objecting, while eight comments and `CLAUDE.md` went on stating the
+        // old figures. Prose is where those numbers are read, and prose is the
+        // one thing no test was watching.
+        //
+        // So this pins the absolutes. It is *meant* to fail when a task is
+        // added: the failure is the reminder to update the sentences that
+        // quote it, and the message names them. `docs/cli.md` is already
+        // covered in both directions by
+        // `docs_cli_lists_exactly_the_tasks_the_tree_offers`; what this adds
+        // is the count itself, which that test does not state.
+        assert_eq!(
+            all_tasks().len(),
+            50,
+            "the task count changed; update it in CLAUDE.md's task-areas entry \
+             and in the comments that restate it — `rg 'fifty tasks'`"
+        );
+        assert_eq!(
+            count_pairs(&tree()),
+            16,
+            "the reversible-row count changed; update it in CLAUDE.md and in \
+             `tui/execution.rs`, `tui/app.rs` and `tasks/uninstall.rs`"
+        );
     }
 
     /// Number of reversible pairs anywhere in a forest.

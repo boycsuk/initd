@@ -23,8 +23,8 @@
 //! keyserver, so registering either would be trusting a document to vouch for
 //! itself.
 
-use crate::error::Result;
-use crate::exec::Executor;
+use crate::error::{Error, Result};
+use crate::exec::{Command, Executor};
 
 /// A repository this build knows how to register, and can prove it registered.
 ///
@@ -63,6 +63,74 @@ pub struct Repository {
     pub fingerprint: &'static str,
 }
 
+/// Fetches a repository's signing key and reports the fingerprint it has.
+///
+/// Derived on the host rather than trusted from anywhere: the point of the
+/// comparison is that the value in this binary came from somewhere the serving
+/// host does not control, so the other side of it has to be computed from the
+/// bytes that arrived.
+///
+/// Shared by every packaging front-end rather than implemented per family. The
+/// two copies this replaces were byte-identical, and a check deciding where a
+/// machine's software comes from is the one place where drift between copies is
+/// a vulnerability rather than a defect: hardening one and forgetting the other
+/// leaves a family verifying nothing while the trait's contract still says it
+/// does. What differs per family is the definition written *after* the key is
+/// established, which is why that half stays in the backends.
+///
+/// The first `fpr` is the primary key's, which the APT side learned matters:
+/// Docker signs its `InRelease` with a subkey, so a check comparing the
+/// signature's issuer against this value would refuse a correct key. Pinning
+/// the primary and letting `gpg` walk the binding signature is what makes the
+/// subkey a detail rather than a special case.
+pub fn fingerprint_of(executor: &dyn Executor, repository: &Repository) -> Result<String> {
+    // One script, because the key must not survive the check: a key file left
+    // behind after a mismatch is one a later run could import.
+    let script = format!(
+        "set -eu\n\
+         key=$(mktemp)\n\
+         trap 'rm -f \"$key\"' EXIT\n\
+         curl -fsSL --proto '=https' --tlsv1.2 -o \"$key\" '{url}'\n\
+         gpg --show-keys --with-fingerprint --with-colons \"$key\" \
+           | awk -F: '$1 == \"fpr\" {{ print $10; exit }}'\n",
+        url = repository.key_url
+    );
+
+    let command = Command::new("sh").args(["-c", &script]);
+    let output = executor.run(&command)?;
+
+    if !output.success() {
+        return Err(Error::RepositoryKeyUnverifiable {
+            repository: repository.name.to_owned(),
+        });
+    }
+
+    Ok(output.stdout.trim().to_ascii_uppercase())
+}
+
+/// Checks a repository's key against the fingerprint compiled in for it.
+///
+/// Refused rather than warned about. A warning about a key that is not the
+/// expected one is a warning nobody can act on, and the packages it would sign
+/// are the ones this check exists to keep off the machine.
+///
+/// Callers must reach this before writing anything that makes the repository
+/// usable — the ordering the [`RepositoryManager::register`] contract requires.
+pub fn verify_key(executor: &dyn Executor, repository: &Repository) -> Result<()> {
+    let found = fingerprint_of(executor, repository)?;
+    let expected = repository.fingerprint.to_ascii_uppercase();
+
+    if found != expected {
+        return Err(Error::RepositoryKeyMismatch {
+            repository: repository.name.to_owned(),
+            expected,
+            found,
+        });
+    }
+
+    Ok(())
+}
+
 /// Registers package repositories, having verified whose they are.
 pub trait RepositoryManager {
     /// Whether this repository is already registered.
@@ -76,4 +144,63 @@ pub trait RepositoryManager {
     /// which an unverified repository is installable, which is the whole of
     /// what this is meant to prevent.
     fn register(&self, executor: &dyn Executor, repository: &Repository) -> Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Error;
+    use crate::exec::mock::{MockExecutor, Reply};
+
+    /// A repository standing in for any: the values are what the comparison
+    /// uses, and none of them is specific to a packaging front-end.
+    fn repository() -> Repository {
+        Repository {
+            name: "docker",
+            base_url: "https://download.docker.com/linux/debian",
+            suite: Some("trixie".to_owned()),
+            key_url: "https://download.docker.com/linux/debian/gpg",
+            fingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+        }
+    }
+
+    #[test]
+    fn a_key_that_cannot_be_fetched_is_unverifiable_rather_than_mismatched() {
+        // The two are different actions for the operator — a network that
+        // refused the key says retry, a wrong key says stop — so a failed
+        // fetch must not fall through to the comparison and be reported as
+        // whatever the empty output happens not to equal.
+        let mock =
+            MockExecutor::with_replies([Reply::failure(6, "curl: (6) could not resolve host")]);
+
+        let result = verify_key(&mock, &repository());
+
+        assert!(matches!(
+            result,
+            Err(Error::RepositoryKeyUnverifiable { .. })
+        ));
+    }
+
+    #[test]
+    fn a_fingerprint_is_compared_without_regard_to_case() {
+        // `gpg` answers uppercase and a fingerprint published in documentation
+        // is often lowercase. A comparison sensitive to that would refuse the
+        // right key, which is the failure that teaches people to skip the check.
+        let mock =
+            MockExecutor::with_replies([Reply::ok("9dc858229fc7dd38854ae2d88d81803c0ebfcd88\n")]);
+
+        assert!(verify_key(&mock, &repository()).is_ok());
+    }
+
+    #[test]
+    fn a_mismatched_fingerprint_is_refused() {
+        // The case the capability exists for. Both front-ends now reach this
+        // one function, so the refusal is asserted here rather than twice.
+        let mock =
+            MockExecutor::with_replies([Reply::ok("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF\n")]);
+
+        let result = verify_key(&mock, &repository());
+
+        assert!(matches!(result, Err(Error::RepositoryKeyMismatch { .. })));
+    }
 }

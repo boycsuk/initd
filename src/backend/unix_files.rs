@@ -4,7 +4,7 @@
 //! behave the same everywhere `initd` runs, and all are resolved through
 //! `PATH` rather than by absolute location.
 
-use super::systemd::run_checked;
+use super::systemd::{run_capturing, run_checked};
 use crate::domain::files::{Backup, FileEditor, OwnedDirWrite};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
@@ -71,15 +71,7 @@ impl FileEditor for UnixFiles {
     fn read(&self, executor: &dyn Executor, path: &str) -> Result<String> {
         // Reading is privileged: sshd_config is mode 600 on some systems.
         let command = Command::new("cat").arg(path).privileged();
-        let output = executor.run(&command)?;
-
-        if !output.success() {
-            return Err(Error::CommandFailed {
-                command: command.to_string(),
-                code: output.code,
-                stderr: output.stderr,
-            });
-        }
+        let output = run_capturing(executor, &command)?;
 
         Ok(output.stdout)
     }
@@ -299,15 +291,7 @@ chown -h "$owner:$owner" "$file"
         // everywhere.
         if keep_mode {
             let mode = Command::new("stat").args(["-c", "%a", path]).privileged();
-            let output = executor.run(&mode)?;
-
-            if !output.success() {
-                return Err(Error::CommandFailed {
-                    command: mode.to_string(),
-                    code: output.code,
-                    stderr: output.stderr,
-                });
-            }
+            let output = run_capturing(executor, &mode)?;
 
             let apply = Command::new("chmod")
                 .args([output.stdout.trim(), &staged])

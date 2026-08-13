@@ -10,7 +10,7 @@
 //! how a rule ends up invisible to the tool that did not write it. Where `ufw`
 //! is active, this implementation reports itself unavailable.
 
-use super::systemd::run_checked;
+use super::systemd::{run_capturing, run_checked};
 use crate::domain::firewall::{AllowedPort, FirewallManager, FirewallState, Protocol};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
@@ -394,15 +394,7 @@ impl FirewallManager for Nftables {
         // so writing only `inet initd` into it would silently drop every rule
         // the distribution or another tool had put in `filter`.
         let dump = Command::new("nft").args(["list", "ruleset"]).privileged();
-        let output = executor.run(&dump)?;
-
-        if !output.success() {
-            return Err(Error::CommandFailed {
-                command: dump.to_string(),
-                code: output.code,
-                stderr: output.stderr,
-            });
-        }
+        let output = run_capturing(executor, &dump)?;
 
         let (rules_file, service) = Self::persistence_target(executor)?;
 

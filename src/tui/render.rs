@@ -10,14 +10,18 @@
 //! rather than methods on it. [`all`] is the entry point; everything else is
 //! reached from it.
 //!
-//! Two functions here take `&mut App`, for unrelated reasons, both of which
-//! read as accidents and are not:
+//! Three functions here take `&mut App`, for reasons that read as accidents
+//! and are not:
 //!
 //! - [`tree`], because `render_stateful_widget` *writes* the scroll offset
 //!   back into the `ListState` it is handed, so the cursor has to be lent
 //!   mutably in order to be drawn.
 //! - [`all`], because a form draws its own scroll position and `Form::render`
 //!   takes `&mut self` to do it.
+//! - [`body`], which needs none of its own and forwards the borrow to
+//!   [`tree`]. Worth naming rather than leaving implied: it is the one that
+//!   looks gratuitous at its signature, so a reader tidying it to `&App`
+//!   discovers why only from the error two calls away.
 //!
 //! Everything else only reads.
 
