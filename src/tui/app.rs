@@ -2750,6 +2750,71 @@ mod tests {
     }
 
     #[test]
+    fn the_firewall_warning_is_drawn_in_the_danger_colour() {
+        // Reported as the wrong kind of red message: what the operator had seen
+        // was the form's hint, which is one line beside a label. The block asked
+        // for is this one — the confirmation, shaped like `users.lock-root`'s,
+        // reached by pressing Enter on the form.
+        //
+        // Asserted on the rendered buffer rather than on the string, because
+        // the warning being *present* was never in doubt: what makes it the
+        // thing that was asked for is that it is drawn apart from the
+        // description and in the danger colour.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::EnableFirewall::SSH_PORT,
+            "22".to_owned(),
+        );
+
+        let warning = app.firewall_warning();
+        let task = crate::tasks::find("firewall.enable").expect("firewall.enable must exist");
+        app.confirm = Some(
+            crate::tui::confirm::Confirm::new(task.title(), task.description())
+                .with_warning(warning),
+        );
+
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| render::all(frame, &mut app))
+            .expect("drawing must not fail");
+        let buffer = terminal.backend().buffer().clone();
+
+        // The colour of the first letter on the row carrying the warning, and
+        // of the one carrying the description, so the two are asserted to
+        // differ rather than merely to exist.
+        let colour_of = |needle: &str| -> Option<ratatui::style::Color> {
+            (0..30u16).find_map(|y| {
+                let row: String = (0..100u16).map(|x| buffer[(x, y)].symbol()).collect();
+
+                if !row.contains(needle) {
+                    return None;
+                }
+
+                (16..100u16).find_map(|x| {
+                    let cell = &buffer[(x, y)];
+                    cell.symbol()
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_alphabetic)
+                        .then_some(cell.fg)
+                })
+            })
+        };
+
+        assert_eq!(
+            colour_of("stops answering"),
+            Some(style::DANGER_TEXT.fg.expect("the danger role sets a colour")),
+            "the warning must be drawn in the danger colour"
+        );
+        assert_ne!(
+            colour_of("Closes every inbound"),
+            colour_of("stops answering"),
+            "and the description above it must not be, or the block marks nothing"
+        );
+    }
+
+    #[test]
     fn the_firewall_confirmation_names_the_port_and_what_it_costs() {
         // The generic lockout sentence — "this can lock you out, make sure you
         // have another way in" — is true here and unactionable: it names no
