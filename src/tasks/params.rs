@@ -172,11 +172,19 @@ const CONFIG_UNSAFE: [char; 3] = ['\n', '\r', '#'];
 pub enum LiveDefault {
     /// The port the SSH daemon is actually listening on.
     ///
-    /// Read rather than assumed because both fields that ask for it are
-    /// dangerous when wrong in the same direction: `firewall.enable` admits
-    /// this port through a default-deny policy, so a stale `22` closes the port
-    /// the operator is connected on, and `ssh.change-port` uses it to say what
-    /// is changing.
+    /// Read rather than assumed because every field that asks for it is
+    /// dangerous when wrong: `firewall.enable` admits this port through a
+    /// default-deny policy, so a stale `22` closes the port the operator is
+    /// connected on; `ssh.change-port` uses it to say what is changing; and
+    /// `fail2ban.install` points a jail at it.
+    ///
+    /// The jail is the case that shows why a compiled-in default is not a safe
+    /// starting value. The other two fail loudly — a closed port drops the
+    /// session, a wrong "changing from" is read before `Enter`. A jail watching
+    /// a port nothing listens on installs, writes, starts and reports success
+    /// while protecting nothing, and no later task disagrees with it. It had
+    /// that default for as long as it existed, and this comment named two
+    /// fields while three asked.
     SshPort,
     /// The ports the host currently admits inbound.
     ///

@@ -740,6 +740,68 @@ mod tests {
     }
 
     #[test]
+    fn a_consequence_points_at_a_task_that_exists() {
+        // A consequence naming a task is an instruction: it tells the operator
+        // what to run to resolve what the task just invalidated. One naming a
+        // task that does not exist sends them looking through the tree for a
+        // row that was never built — and nothing checked, so `mise.install`
+        // pointed at `mise.activate` for as long as it shipped, with a unit
+        // test asserting the broken pointer rather than the property.
+        //
+        // A task naming *itself* is allowed and is not an oversight: `gh` needs
+        // a token this tool cannot supply, so the row that installs it is the
+        // honest place to say so. What is refused is naming something that is
+        // not a row at all.
+        for task in all_tasks() {
+            let backend = crate::backend::for_family(Family::Debian);
+
+            for consequence in task.consequences(backend.as_ref(), &ParamValues::new()) {
+                let Some(named) = consequence.task() else {
+                    continue;
+                };
+
+                assert!(
+                    find(named).is_some(),
+                    "{} names `{named}`, which is not a task in the tree",
+                    task.id()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_asking_for_the_ssh_port_reads_it_from_the_host() {
+        // A compiled-in `22` is a safe *starting* value only where being wrong
+        // fails loudly. `fail2ban.install` is where it does not: a jail pointed
+        // at a port nothing listens on installs, writes its jail, starts its
+        // service and reports success while protecting nothing, and no later
+        // task disagrees with it. It shipped with a fixed `22` for as long as it
+        // existed, on a host where `ssh.change-port` had moved the daemon.
+        //
+        // Asserted over the tree rather than on the one task, so a fourth field
+        // asking the same question inherits the requirement rather than
+        // repeating the defect.
+        for task in all_tasks() {
+            for param in task.params() {
+                let asks_for_the_ssh_port = param.kind == params::ParamKind::Port
+                    && (param.name.contains("ssh") || param.label.to_lowercase().contains("ssh"));
+
+                if !asks_for_the_ssh_port {
+                    continue;
+                }
+
+                assert_eq!(
+                    param.live_default,
+                    Some(params::LiveDefault::SshPort),
+                    "{}'s `{}` asks for the SSH port and must read it from the host",
+                    task.id(),
+                    param.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_task_supports_at_least_one_family() {
         // A task supported nowhere is a row that can never be run. The
         // compiler cannot catch this: `No` on every arm type-checks.
