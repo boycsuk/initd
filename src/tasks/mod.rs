@@ -48,7 +48,7 @@ pub type Progress<'a> = &'a mut dyn FnMut(OutputLine);
 ///
 /// The rendering happens here rather than in each task because this is the one
 /// place every line already passes through: a `Lang` threaded into `Task::run`
-/// would be a parameter fifty implementations carry and one forgets.
+/// would be a parameter fifty-two implementations carry and one forgets.
 pub(crate) fn report(progress: Progress<'_>, message: &Msg) {
     // Resolved per line, which is affordable here in a way it is not in the
     // interface: a task reports a handful of steps over seconds, where a key
@@ -1115,17 +1115,29 @@ mod tests {
         // covered in both directions by
         // `docs_cli_lists_exactly_the_tasks_the_tree_offers`; what this adds
         // is the count itself, which that test does not state.
+        // The search has to be for the *old* spelling, not the new one. This
+        // message used to say `rg 'fifty-two tasks'`, which finds the sentences
+        // already correct and none of the stale ones — and it also misses the
+        // count worn as an adjective, as in "fifty implementations". Both holes
+        // were collected on: seven comments still said "fifty" and "sixteen"
+        // after the constants here had been updated to 52 and 17.
         assert_eq!(
             all_tasks().len(),
             52,
             "the task count changed; update it in CLAUDE.md's task-areas entry \
-             and in the comments that restate it — `rg 'fifty-two tasks'`"
+             and in the comments that restate it — `rg -w fifty-two` for the \
+             spelling this replaces, since the count is worn as an adjective \
+             ('fifty-two implementations') as well as a noun"
         );
         assert_eq!(
             count_pairs(&tree()),
             17,
             "the reversible-row count changed; update it in CLAUDE.md and in \
-             `tui/execution.rs`, `tui/app.rs` and `tasks/uninstall.rs`"
+             `tui/execution.rs`, `tui/app.rs` and `tasks/uninstall.rs` — and \
+             `rg -w seventeen` for any other, since those three were named the \
+             last time and were not the only ones. `tasks/uninstall.rs` also \
+             states this count minus its twelve callers; that subtraction \
+             drifts with it"
         );
     }
 

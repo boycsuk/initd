@@ -74,7 +74,7 @@ impl Search {
     ///
     /// An empty query matches everything rather than nothing: opening search
     /// shows the whole tree flattened, which is itself useful — it is the one
-    /// view that lists all fifty tasks with their areas.
+    /// view that lists all fifty-two tasks with their areas.
     pub fn new(tree: &[Node]) -> Self {
         let mut search = Self {
             query: String::new(),

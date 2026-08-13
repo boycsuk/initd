@@ -915,8 +915,10 @@ impl Param {
     ///
     /// For a field whose validator names its own answers. The list and that
     /// validator must agree, which is why
-    /// [`a_closed_choice_offers_exactly_what_it_accepts`] checks the two
-    /// against each other rather than trusting them to be edited together.
+    /// `a_closed_choice_offers_exactly_what_it_accepts` checks the two against
+    /// each other rather than trusting them to be edited together. Not a doc
+    /// link: the test module is behind `#[cfg(test)]`, so the path resolves
+    /// only in a configuration `cargo doc` does not build under.
     #[must_use]
     pub const fn offering(mut self, values: &'static [&'static str]) -> Self {
         self.suggestions = Some(Suggestions::Fixed(values));

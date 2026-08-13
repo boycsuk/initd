@@ -29,7 +29,7 @@ impl App {
     pub(super) fn run_selected(&mut self, values: ParamValues) {
         // Through `selected_task` rather than by matching `Node::Task` here.
         // That match accepted a lone task and silently dropped every
-        // reversible row — sixteen of them, each the *undo* half of an install
+        // reversible row — seventeen of them, each the *undo* half of an install
         // — so a confirmed uninstall returned without running, clearing, or
         // reporting anything. Nothing distinguished it from a keypress that
         // never arrived. Which half a shared row means is a question the probe

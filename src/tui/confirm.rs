@@ -44,7 +44,7 @@ fn warning_rows(warning: &str, width: usize) -> u16 {
 /// a question with no visible answers.
 ///
 /// Eight rows is a heading and roughly six accounts, which fits inside
-/// [`layout::MIN_HEIGHT`] alongside a description. Beyond that the band stops
+/// [`super::layout::MIN_HEIGHT`] alongside a description. Beyond that the band stops
 /// growing and scrolls, so no account is hidden with no way to reach it — the
 /// one thing this dialog must not do.
 const WARNING_MAX_ROWS: u16 = 8;

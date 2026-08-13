@@ -68,7 +68,7 @@ pub(super) const OUTPUT_MIN_ROWS: u16 = 7;
 ///
 /// Above the two minima rather than exactly their sum, and the difference was
 /// measured rather than reasoned about: the sum is 14, the interface refuses to
-/// draw below [`layout::MIN_HEIGHT`] of 15, and the pane at that height is 13
+/// draw below [`super::layout::MIN_HEIGHT`] of 15, and the pane at that height is 13
 /// rows — so a threshold of 14 could never be reached and the branch guarding
 /// it was dead code that read as covering the short-terminal case.
 ///
@@ -993,7 +993,7 @@ mod tests {
     fn a_reversible_row_actually_starts_its_task() {
         // Reported from a real session: `zellij.uninstall` was confirmed and
         // nothing happened — no output, no status, no command. `run_selected`
-        // matched `Node::Task` alone, so every one of the sixteen rows that
+        // matched `Node::Task` alone, so every one of the seventeen rows that
         // share an install with its undo fell through to a silent `return`.
         // A lone task worked, which is why the whole feature looked fine.
         let mut app = test_app(Family::Debian);

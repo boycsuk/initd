@@ -6,9 +6,9 @@
 //! is exactly the shape that produces twelve near-copies where the one that
 //! drifts is the one nobody notices.
 //!
-//! Not the same count as the tree's reversible rows, which is sixteen: a row is
-//! reversible when it pairs two tasks, and four of those inverses do something
-//! this helper does not describe.
+//! Not the same count as the tree's reversible rows, which is seventeen: a row
+//! is reversible when it pairs two tasks, and five of those inverses do
+//! something this helper does not describe.
 //!
 //! The order is the mirror of installing. A unit is stopped and disabled
 //! *before* the package goes, because the reverse leaves a moment where the
