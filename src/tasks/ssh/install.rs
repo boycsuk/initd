@@ -7,9 +7,9 @@ use crate::backend::{Backend, Capability};
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 use crate::i18n::Msg;
-use crate::tasks::params::ParamValues;
+use crate::tasks::params::{Param, ParamValues};
 use crate::tasks::revert::Outcome;
-use crate::tasks::{Progress, Task, report, supported_everywhere};
+use crate::tasks::{Confirmation, Progress, Task, report, supported_everywhere};
 
 /// Installs the OpenSSH server and enables it at boot.
 pub struct InstallSsh;
@@ -99,6 +99,82 @@ impl Task for InstallSsh {
         // Installing and enabling a service cannot cost the administrator
         // their way in, so there is nothing worth offering to undo.
         Ok(Outcome::Done)
+    }
+}
+
+/// Removes the OpenSSH server.
+///
+/// **The one task in this tool that can leave a machine unreachable with no way
+/// back.** Every other lockout risk has a route out: `ssh.harden` can be
+/// reverted inside its verification window, a firewall that closed the wrong
+/// port can be undone from a console. This cannot. Removing the daemon over its
+/// own connection ends the session mid-operation, and the mechanism that would
+/// undo it dies with that session — reinstalling needs a package manager, which
+/// needs a network path, which was the connection that just closed.
+///
+/// It was deliberately absent for exactly that reason, and is present now
+/// because it was asked for. What that changes is what the tool refuses to do,
+/// not what is true about the operation: the confirmation says so in the
+/// strongest terms the interface has, and `docs/user-stories.md` records the
+/// reversal rather than quietly dropping the old promise.
+pub struct UninstallSsh;
+
+impl Task for UninstallSsh {
+    fn id(&self) -> &'static str {
+        "ssh.uninstall"
+    }
+
+    fn title(&self) -> &'static str {
+        "Uninstall the SSH server"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes the OpenSSH server. If you are connected over SSH, this ends \
+         that connection and nothing can restore it: putting the package back \
+         needs a way in, and this was it. Only run it from a console, or on a \
+         host you can reach another way."
+    }
+
+    /// The strongest the interface has, and it understates this one: a lockout
+    /// warning elsewhere means "you may lose the session". Here it means the
+    /// machine may need the provider's console to be reachable again.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Lockout
+    }
+
+    supported_everywhere!();
+
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Ssh)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["ssh.install"]
+    }
+
+    fn params(&self) -> Vec<Param> {
+        vec![crate::tasks::uninstall::removal_param()]
+    }
+
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        crate::tasks::uninstall::removal_param_here(backend, Capability::Ssh)
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        crate::tasks::uninstall::undo(
+            executor,
+            backend,
+            values,
+            progress,
+            Capability::Ssh,
+            "the SSH server",
+        )
     }
 }
 

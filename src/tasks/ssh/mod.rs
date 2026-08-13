@@ -14,7 +14,7 @@ pub mod port;
 
 pub use allow_users::RestrictUsers;
 pub use harden::{HardenSsh, HardenSshStrict};
-pub use install::InstallSsh;
+pub use install::{InstallSsh, UninstallSsh};
 pub use keys::{AuthorizeKey, is_valid_public_key};
 pub use port::ChangePort;
 
@@ -64,7 +64,14 @@ pub fn category() -> Category {
         vec![
             Node::Category(Category::new(
                 "Service",
-                vec![Node::Task(Box::new(InstallSsh))],
+                // A pair rather than a lone task, so the row reports what this
+                // host already has. The inverse is the most dangerous operation
+                // in the tree — see `UninstallSsh` — and it is reached only
+                // once the probe has confirmed a server is actually installed.
+                vec![Node::Reversible {
+                    forward: Box::new(InstallSsh),
+                    inverse: Box::new(UninstallSsh),
+                }],
             )),
             Node::Category(Category::new(
                 "Configuration",
