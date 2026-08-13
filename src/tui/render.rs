@@ -25,7 +25,7 @@
 //!
 //! Everything else only reads.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -36,9 +36,7 @@ use ratatui::widgets::{
     Wrap,
 };
 
-use super::app::{
-    App, DETAIL_MAX_ROWS, Mode, OUTPUT_MIN_ROWS, Pane, SPLIT_MIN_ROWS, VERIFY_BANNER_ROWS, VERSION,
-};
+use super::app::{App, DETAIL_MAX_ROWS, Mode, OUTPUT_MIN_ROWS, Pane, SPLIT_MIN_ROWS, VERSION};
 use super::probe::{InstalledState, Presence};
 use super::verify::Verification;
 use super::{help, layout, search, style};
@@ -127,6 +125,46 @@ pub(super) fn all(frame: &mut Frame, app: &mut App) {
     }
 }
 
+/// The frames the running throbber cycles through.
+///
+/// Braille rather than an ASCII spinner because every cell is one column wide,
+/// so the spans beside it do not shift as it turns. A terminal without the
+/// glyphs draws a replacement character in a single cell and the layout still
+/// holds — and the words beside it carry the meaning either way, which is what
+/// keeps this from being a signal made of animation alone.
+const THROBBER_FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+
+/// How long each throbber frame is held.
+///
+/// Slower than the event loop's tick so the animation reads as motion rather
+/// than as flicker, and derived from elapsed time rather than a counter: the
+/// loop redraws on a timeout it already has, so this costs no extra wakeups
+/// and no state.
+const THROBBER_FRAME_MS: u128 = 120;
+
+/// The throbber frame for a task that has been running `elapsed`.
+fn throbber(elapsed: Duration) -> &'static str {
+    let index = (elapsed.as_millis() / THROBBER_FRAME_MS) as usize % THROBBER_FRAMES.len();
+
+    THROBBER_FRAMES[index]
+}
+
+/// How long a task has been running, as `m:ss`.
+///
+/// The same shape as the verification countdown, so the two numbers on screen
+/// that measure time are read the same way.
+fn elapsed_display(elapsed: Duration) -> String {
+    const SECONDS_PER_MINUTE: u64 = 60;
+
+    let seconds = elapsed.as_secs();
+
+    format!(
+        "{}:{:02}",
+        seconds / SECONDS_PER_MINUTE,
+        seconds % SECONDS_PER_MINUTE
+    )
+}
+
 /// Draws the one-line header naming the tool and the machine.
 ///
 /// Borderless: at 24 rows a bordered header would spend three of them on
@@ -137,6 +175,10 @@ pub(super) fn all(frame: &mut Frame, app: &mut App) {
 /// am I about to change?* — and the privilege mechanism is stated up front
 /// so that "this will need a password" is known before a task is started
 /// rather than when one fails.
+///
+/// While a task runs it says so instead of naming the distribution: what is
+/// happening now outranks two facts that do not change, and both come back
+/// when the task ends.
 fn header(frame: &mut Frame, app: &App, area: Rect) {
     let separator = || Span::styled("  ·  ", style::BLOCK_SUBTITLE);
 
@@ -157,6 +199,39 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(app.lang.render(&Msg::HeaderPaneTree), tree),
             Span::styled(" / ", style::BLOCK_SUBTITLE),
             Span::styled(app.lang.render(&Msg::HeaderPaneOutput), output),
+        ]
+    } else if let Some(running) = app.running.as_ref() {
+        // While a task runs the header trades the host facts for what is
+        // happening, which is the more urgent of the two: the distribution and
+        // the privilege mechanism do not change, and both are back the moment
+        // the task ends.
+        //
+        // Nothing said a task was alive before this. The only signal was the
+        // output pane's write cursor, which neither moves nor counts, so a
+        // command that is simply slow — `apt-get` resolving mirrors over a
+        // laggy link — was indistinguishable from a session that had stopped
+        // answering. The reflex that follows is closing the terminal, and
+        // closing the terminal raises `SIGHUP`, which reverts an unrelated
+        // unkept change. The task's name is here for the same reason the
+        // hostname is: it answers *what* is running, not just *that*
+        // something is.
+        let elapsed = running.elapsed(Instant::now());
+
+        vec![
+            Span::styled(app.lang.render(&Msg::HeaderTitle), style::HEADING),
+            Span::styled(format!(" {VERSION}"), style::BLOCK_SUBTITLE),
+            separator(),
+            Span::styled(app.host.hostname.as_str(), style::EMPHASIS),
+            separator(),
+            Span::styled(throbber(elapsed).to_owned(), style::RESULT_OK),
+            Span::raw(" "),
+            Span::styled(
+                app.lang.render(&Msg::HeaderRunning {
+                    task: running.task_id.to_owned(),
+                    elapsed: elapsed_display(elapsed),
+                }),
+                style::EMPHASIS,
+            ),
         ]
     } else {
         vec![
@@ -202,6 +277,22 @@ fn body(frame: &mut Frame, app: &mut App, area: Rect) {
     // both would leave one written over the other. One is shown at a time
     // and `Tab` chooses which.
     if split == layout::BodyLayout::Single {
+        // An unkept change outranks the pane the operator chose. The banner is
+        // the only thing on screen saying a configuration file is already
+        // written and reverting on a timer, and at this width it used to be
+        // reachable only by pressing `Tab`: with focus on the tree — where it
+        // starts, and where the tool deliberately leaves it — a narrow terminal
+        // drew an ordinary task list while `sshd_config` was modified and
+        // sixty seconds from being put back. A safety state that `Tab` can hide
+        // is one the operator has to already know about to find.
+        //
+        // Drawn over the whole body rather than beside a pane, because there is
+        // no second column here to put it in.
+        if app.verification.is_some() {
+            right(frame, app, area);
+            return;
+        }
+
         match app.focus {
             Pane::Tree => tree(frame, app, tree_area),
             Pane::Output => right(frame, app, right_area),
@@ -281,9 +372,11 @@ fn right(frame: &mut Frame, app: &App, right_area: Rect) {
     if let Some(ref window) = app.verification {
         // The countdown takes the top of the pane and the output keeps the
         // rest: what the change did is the evidence for the decision.
-        let [banner, log] =
-            Layout::vertical([Constraint::Length(VERIFY_BANNER_ROWS), Constraint::Min(3)])
-                .areas(right_area);
+        let [banner, log] = Layout::vertical([
+            Constraint::Length(verification_rows(window, app.lang)),
+            Constraint::Min(3),
+        ])
+        .areas(right_area);
 
         verification(frame, banner, window, app.lang);
         app.output
@@ -518,8 +611,14 @@ const SHED_ORDER: [Msg; 4] = [
 fn fitted(mut keys: Vec<(&'static str, Msg)>, lang: Lang, width: u16) -> Vec<(&'static str, Msg)> {
     // The spaces each pair is drawn with, counted here so the measurement
     // matches what reaches the screen.
-    let pair_width =
-        |(key, label): &(&'static str, Msg)| cells(key) + 1 + cells(&lang.render(label)) + 2;
+    // A pair with no key glyph loses that column rather than reserving it, the
+    // way `style::key_hint` draws it — measured the same way here so the budget
+    // matches what reaches the screen.
+    let pair_width = |(key, label): &(&'static str, Msg)| {
+        let glyph = if key.is_empty() { 0 } else { cells(key) + 1 };
+
+        glyph + cells(&lang.render(label)) + 2
+    };
     let total = |keys: &Vec<(&'static str, Msg)>| keys.iter().map(pair_width).sum::<usize>();
 
     for sheddable in SHED_ORDER {
@@ -546,6 +645,26 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
     // asks the same `mode` the dispatcher does, rather than re-deriving
     // which state wins and drifting from it.
     let mut keys = match app.mode() {
+        // Once a stop has been asked for, the key that asked for it stops
+        // being offered and the bar says what is now happening instead.
+        //
+        // Cancellation is refused between commands rather than interrupting
+        // the one in flight, so a task mid-`dnf install` can absorb a minute
+        // before anything else changes on screen. For that minute the display
+        // was byte-identical to before the keypress, and still advertised
+        // `Ctrl-C stop` — so the reasonable conclusion was that the key had
+        // been dropped. Pressing it again hits an early return and is also
+        // silent, and the next escalation is closing the terminal, which
+        // raises `SIGHUP` and reverts an unrelated pending change. The state
+        // was already tracked; it simply never reached the screen.
+        Mode::Running
+            if app
+                .running
+                .as_ref()
+                .is_some_and(super::worker::Running::is_cancelling) =>
+        {
+            vec![("", Msg::KeyBarStopping), ("↑↓", Msg::KeyBarScroll)]
+        }
         Mode::Running => vec![
             ("Ctrl-C", Msg::KeyBarStop),
             ("↑↓", Msg::KeyBarScroll),
@@ -607,13 +726,16 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Draws the banner over an applied change that has not been kept.
+/// The lines the verification banner draws, in order.
 ///
-/// It states three things in order: that the change is applied but not yet
-/// permanent, how long is left, and what to press. The countdown is red
-/// because it is the one number on screen that acts on its own.
-fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang) {
-    let lines = vec![
+/// Built here rather than inline so that [`verification_rows`] can count them:
+/// the banner is given a fixed height by the layout above it, and a height
+/// chosen independently of the content is one that stops matching it. It did:
+/// the constant said five for five lines plus a border, so the last line — the
+/// one stating the limit of the promise — was drawn outside the area and never
+/// reached the screen at any terminal size.
+fn verification_lines<'a>(window: &Verification, lang: Lang) -> Vec<Line<'a>> {
+    vec![
         Line::from(vec![
             Span::styled(lang.render(&Msg::VerifyBadge), style::BADGE_BUSY),
             Span::raw("  "),
@@ -653,10 +775,29 @@ fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang
             lang.render(&Msg::VerifySessionScopeCaveat),
             style::CONSEQUENCE_EXTERNAL,
         ),
-    ];
+    ]
+}
 
+/// Rows the banner needs: its lines and the top border above them.
+///
+/// Derived from the lines themselves so the two cannot disagree. It does not
+/// account for a line long enough to wrap — `Wrap` is on, and a translation
+/// wider than the pane would take a second row — which is what
+/// [`verification_fits`] is asserted against in the tests.
+pub(super) fn verification_rows(window: &Verification, lang: Lang) -> u16 {
+    const TOP_BORDER_ROWS: u16 = 1;
+
+    u16::try_from(verification_lines(window, lang).len()).unwrap_or(u16::MAX) + TOP_BORDER_ROWS
+}
+
+/// Draws the banner over an applied change that has not been kept.
+///
+/// It states three things in order: that the change is applied but not yet
+/// permanent, how long is left, and what to press. The countdown is red
+/// because it is the one number on screen that acts on its own.
+fn verification(frame: &mut Frame, area: Rect, window: &Verification, lang: Lang) {
     frame.render_widget(
-        Paragraph::new(lines)
+        Paragraph::new(verification_lines(window, lang))
             .block(
                 Block::default()
                     .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
@@ -949,6 +1090,37 @@ mod tests {
     /// The keys the bar offers from the tree, as an operator reads them.
     fn tree_glyphs(app: &App) -> Vec<&'static str> {
         tree_keys(app).into_iter().map(|(key, _)| key).collect()
+    }
+
+    #[test]
+    fn the_throbber_turns_and_keeps_its_width() {
+        // It has to actually move — a still frame is the signal it replaces —
+        // and every frame has to occupy one column, or the task name beside it
+        // shifts sideways as it turns.
+        let first = throbber(Duration::from_millis(0));
+        let second = throbber(Duration::from_millis(THROBBER_FRAME_MS as u64));
+
+        assert_ne!(first, second, "the throbber must advance between frames");
+
+        for frame in THROBBER_FRAMES {
+            assert_eq!(cells(frame), 1, "{frame:?} must be one column wide");
+        }
+
+        // It cycles rather than running off the end.
+        let wrapped = throbber(Duration::from_millis(
+            THROBBER_FRAME_MS as u64 * THROBBER_FRAMES.len() as u64,
+        ));
+        assert_eq!(wrapped, first, "the frames must cycle");
+    }
+
+    #[test]
+    fn elapsed_is_read_the_way_the_countdown_is() {
+        // The same `m:ss` shape as the verification countdown, so the two
+        // numbers on screen that measure time are not read two ways.
+        assert_eq!(elapsed_display(Duration::from_secs(0)), "0:00");
+        assert_eq!(elapsed_display(Duration::from_secs(7)), "0:07");
+        assert_eq!(elapsed_display(Duration::from_secs(61)), "1:01");
+        assert_eq!(elapsed_display(Duration::from_secs(600)), "10:00");
     }
 
     #[test]

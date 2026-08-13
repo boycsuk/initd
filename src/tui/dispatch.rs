@@ -339,6 +339,14 @@ impl App {
         match key.code {
             KeyCode::Char('K') => self.keep_change(),
             KeyCode::Char('R') => self.revert_change(),
+            // The overlay draws over this window rather than replacing it, and
+            // this is the state that most needs it: the two answers are
+            // capitals, an unrecognised key does nothing, and there is a timer
+            // running. `mode` has always ranked help above everything for
+            // exactly this, and `mode_under_help` exists to keep painting what
+            // it covers — but no key here ever set it, so the machinery was
+            // built and unreachable from the three states that most need it.
+            KeyCode::Char('?') => self.help = Some(0),
             KeyCode::Down => self.output.scroll_down(1),
             KeyCode::Up => self.output.scroll_up(1),
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
@@ -390,6 +398,11 @@ impl App {
             KeyCode::Home => history.select_first(),
             KeyCode::End => history.select_last(),
             KeyCode::Enter => self.confirm_selected_restore(),
+            // Reachable here for the same reason as anywhere else, and with
+            // more cause than most: `Enter` in this view puts a configuration
+            // file back, and the keys that reach it are stated nowhere inside
+            // the view itself.
+            KeyCode::Char('?') => self.help = Some(0),
             _ => {}
         }
     }
@@ -784,7 +797,14 @@ impl App {
             // names every account that keeps access, and a host with a dozen
             // administrators has more of them than the band can show. Up and
             // down rather than left and right, which already answer the
-            // question; `j` and `k` beside them, as the tree has them.
+            // question.
+            //
+            // `j` and `k` are kept beside them although the tree no longer has
+            // them: this dialog can hold more than it shows, a hand already on
+            // them loses nothing by their being here, and neither letter means
+            // anything else in this state. The comment used to justify them by
+            // the tree, which stopped being true when the vim movement keys
+            // were retired.
             //
             // `n` is not among these even though `j`/`k` are: it is the safe
             // answer, and a key that sometimes scrolls and sometimes cancels
@@ -795,6 +815,9 @@ impl App {
             // out of something lands on it whichever key it reaches for.
             KeyCode::Esc | KeyCode::Char('n' | 'N') => self.cancel_confirmation(),
             KeyCode::Char('y' | 'Y') => return self.accept_confirmation(),
+            // Asked for from wherever the operator is stuck — which includes
+            // the dialog that is about to change the machine.
+            KeyCode::Char('?') => self.help = Some(0),
             KeyCode::Enter => {
                 if confirm.accepted {
                     return self.accept_confirmation();

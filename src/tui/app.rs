@@ -47,9 +47,6 @@ pub(super) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Lines a page key moves the output by.
 pub(super) const PAGE_SCROLL: usize = 10;
 
-/// Rows the verification banner occupies: its top border and four lines.
-pub(super) const VERIFY_BANNER_ROWS: u16 = 5;
-
 /// Tallest the description is drawn when it shares the pane with the output.
 ///
 /// A ceiling rather than a share, because a description is a sentence or two
@@ -533,15 +530,48 @@ impl App {
 
         let event = event::read().map_err(|source| crate::error::Error::Terminal { source })?;
 
-        // Key release events would otherwise trigger every action twice on
-        // terminals that report them.
-        if let Event::Key(key) = event
-            && key.kind == KeyEventKind::Press
-        {
-            self.on_key(key);
+        match event {
+            // Key release events would otherwise trigger every action twice on
+            // terminals that report them.
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
+            Event::Paste(text) => self.on_paste(&text),
+            _ => {}
         }
 
         Ok(())
+    }
+
+    /// Inserts pasted text into whichever field is collecting a value.
+    ///
+    /// Without this a paste arrives as one key event per character and the
+    /// trailing newline lands on the form's `Enter` arm, which submits — so
+    /// pasting a public key, the way a key is actually entered, sent the form
+    /// on whatever had arrived before the newline. Routed through the field's
+    /// own `insert`, so what a value accepts is decided in one place: the
+    /// newline is filtered there rather than being special-cased here.
+    ///
+    /// Anywhere that is not collecting a value, a paste is dropped. The tree
+    /// and the output pane act on keys rather than text, and replaying a
+    /// paste's characters as keystrokes there would run whatever those
+    /// characters happen to be bound to.
+    fn on_paste(&mut self, text: &str) {
+        if self.options_at.is_some() {
+            return;
+        }
+
+        if let Some(field) = self.form.as_mut().and_then(Form::focused_mut) {
+            for character in text.chars() {
+                field.insert(character);
+            }
+
+            return;
+        }
+
+        if let Some(field) = self.ports.as_mut().and_then(PortTable::editing_field) {
+            for character in text.chars() {
+                field.insert(character);
+            }
+        }
     }
 
     /// The task currently under the cursor, if the cursor is on one.
@@ -1094,6 +1124,58 @@ mod tests {
     }
 
     #[test]
+    fn pasting_a_key_fills_the_field_rather_than_submitting_the_form() {
+        // A public key is pasted far more often than it is typed, and what a
+        // terminal pastes usually ends in a newline. Without bracketed paste
+        // that newline arrives as `Enter`, which submits — so the form went in
+        // on whatever had been delivered before it, and on a multi-field form
+        // the remainder landed in the wrong field.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.authorize-key");
+        press(&mut app, KeyCode::Enter);
+
+        // Past the account, which is prefilled, onto the key itself — the
+        // field the paste is actually aimed at.
+        press(&mut app, KeyCode::Tab);
+
+        let pasted = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB1nGqQ8example operator@laptop\n";
+        app.on_paste(pasted);
+
+        assert!(
+            app.form.is_some(),
+            "the trailing newline must not submit the form"
+        );
+
+        let value = app
+            .form
+            .as_mut()
+            .and_then(Form::focused_mut)
+            .map(|field| field.value())
+            .expect("the key field holds what was pasted");
+
+        assert_eq!(
+            value,
+            pasted.trim_end(),
+            "the whole key arrives, without the newline"
+        );
+    }
+
+    #[test]
+    fn a_paste_outside_a_field_is_dropped_rather_than_replayed() {
+        // The tree acts on keys, not text. Replaying a paste's characters
+        // there would run whatever they happen to be bound to — a pasted `q`
+        // would quit, and a pasted `h` would open the list that rewrites
+        // configuration files.
+        let mut app = test_app(Family::Debian);
+
+        app.on_paste("qh/");
+
+        assert!(!app.should_quit, "a pasted `q` must not quit");
+        assert!(app.history.is_none(), "a pasted `h` must not open history");
+        assert!(app.search.is_none(), "a pasted `/` must not open search");
+    }
+
+    #[test]
     fn a_destructive_task_with_values_confirms_after_the_form() {
         // Consent has to state what will happen, which it cannot do before it
         // knows the values.
@@ -1347,6 +1429,54 @@ mod tests {
                 },
                 service: "ssh.service",
             },
+        );
+    }
+
+    #[test]
+    fn the_banner_states_the_limit_of_what_it_promises() {
+        // The caveat is the line saying the revert only holds while this
+        // process lives — a `SIGKILL` or a power cut leave the change applied.
+        // It was drawn outside the banner's area at every terminal size for as
+        // long as the height was a constant chosen beside the lines rather than
+        // from them, so the banner promised the revert unconditionally.
+        //
+        // Asserted at the narrowest supported width too, where `Wrap` is most
+        // likely to take a second row and push the last line back out.
+        for (width, height) in [(60, 15), (72, 24), (80, 24), (100, 30), (120, 40)] {
+            let mut app = test_app(Family::Debian);
+            open_verification(&mut app);
+
+            let screen = render_to_rows(&mut app, width, height).join("\n");
+
+            assert!(
+                screen.contains("Reverts while this session lives"),
+                "the session-scope caveat must be drawn at {width}x{height}, got:\n{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_terminal_still_shows_an_unkept_change() {
+        // Below the split threshold one pane is drawn at a time, chosen by
+        // focus — and the tool never moves focus. So with the cursor where it
+        // starts, a narrow terminal drew an ordinary task list while a
+        // configuration file was already written and reverting on a timer.
+        // Nothing on screen said so: no countdown, no `K`/`R`, and the key bar
+        // is dropped below 24 rows as well.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+
+        assert_eq!(app.focus, Pane::Tree, "the window must not move focus");
+
+        let screen = render_to_rows(&mut app, 60, 15).join("\n");
+
+        assert!(
+            screen.contains("reverting in"),
+            "the countdown must be on screen at 60x15, got:\n{screen}"
+        );
+        assert!(
+            screen.contains("keep"),
+            "the answers must be on screen at 60x15, got:\n{screen}"
         );
     }
 
@@ -3412,6 +3542,127 @@ mod tests {
         assert!(
             running.is_cancelling(),
             "the request is recorded rather than acted on immediately"
+        );
+    }
+
+    #[test]
+    fn the_first_escape_says_what_the_second_one_will_do() {
+        // The guard was computed and never drawn, so a form holding typed
+        // values swallowed the first `Esc` in silence. An unresponsive key
+        // invites a second press, and the second press is what discards the
+        // work — which made the guard worse than none at all.
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.authorize-key");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+        app.on_paste("ssh-ed25519 AAAAC3Nzexample operator@laptop");
+
+        let before = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            before.contains("cancel"),
+            "an untouched-looking form offers the ordinary hint, got:\n{before}"
+        );
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.form.is_some(), "the first press must not discard");
+
+        let armed = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            armed.contains("again to discard"),
+            "the hint must say what the next press does, got:\n{armed}"
+        );
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.form.is_none(), "the second press discards");
+    }
+
+    #[test]
+    fn the_key_list_is_reachable_from_the_states_that_most_need_it() {
+        // `mode` ranks help above everything and `mode_under_help` exists to
+        // keep painting what it covers, both written for this — but no key in
+        // these three states ever set it, so the machinery was unreachable
+        // from the dialog that changes the machine, the window with a timer
+        // running, and the view whose `Enter` restores a file.
+        let mut app = test_app(Family::Debian);
+        open_verification(&mut app);
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help.is_some(), "from the verification window");
+        assert!(
+            app.verification.is_some(),
+            "and the window is still underneath it"
+        );
+
+        let mut app = test_app(Family::Debian);
+        select_task(&mut app, "ssh.harden");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.confirm.is_some(), "the dialog is open");
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help.is_some(), "from the confirmation dialog");
+        assert!(app.confirm.is_some(), "which stays open underneath");
+
+        let mut app = test_app(Family::Debian);
+        press(&mut app, KeyCode::Char('h'));
+        assert!(app.history.is_some(), "the history view is open");
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help.is_some(), "from the recorded changes");
+        assert!(app.history.is_some(), "which stays open underneath");
+    }
+
+    #[test]
+    fn a_running_task_is_named_on_screen_while_it_runs() {
+        // Before this the only sign of life was the output pane's write
+        // cursor, which neither moves nor counts — so a command that is merely
+        // slow looked exactly like a session that had stopped answering, and
+        // the reflex that follows raises `SIGHUP` and reverts an unrelated
+        // unkept change.
+        let mut app = test_app(Family::Debian);
+
+        let idle = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            !idle.contains("ssh.install"),
+            "no task is named while none runs, got:\n{idle}"
+        );
+
+        pretend_running(&mut app);
+
+        let running = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            running.contains("ssh.install"),
+            "the running task must be named, got:\n{running}"
+        );
+        assert!(
+            running.contains("0:00"),
+            "and how long it has been going, got:\n{running}"
+        );
+    }
+
+    #[test]
+    fn asking_a_task_to_stop_is_acknowledged_on_screen() {
+        // The request is refused between commands rather than interrupting the
+        // one in flight, so nothing else on screen changes for as long as that
+        // command takes. The bar kept offering `Ctrl-C stop` throughout, which
+        // reads as the keypress having been dropped — and pressing it again is
+        // silently ignored, so the next escalation is closing the terminal.
+        let mut app = test_app(Family::Debian);
+        pretend_running(&mut app);
+
+        let before = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            before.contains("stop"),
+            "the key is offered while it is still worth pressing, got:\n{before}"
+        );
+
+        app.cancel_running();
+
+        let after = render_to_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            after.contains("stopping after this command"),
+            "the request must be acknowledged, got:\n{after}"
+        );
+        assert!(
+            !after.contains("Ctrl-C"),
+            "and the key that asked for it stops being offered, got:\n{after}"
         );
     }
 

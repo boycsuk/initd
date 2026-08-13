@@ -512,6 +512,7 @@ pub(super) fn render(message: &Msg) -> String {
         // operator who has just pressed Enter is looking for.
         Msg::FormKeyIncomplete => "(fill every field)".to_owned(),
         Msg::FormKeyCancel => "cancel".to_owned(),
+        Msg::KeyCancelArmed => "again to discard".to_owned(),
 
         // --- Interface: the ports table ---
         Msg::PortsOpenCount { count } => format!(" {count} open "),
@@ -562,6 +563,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HeaderPaneTree => "tasks".to_owned(),
         Msg::HeaderPaneOutput => "output".to_owned(),
         Msg::HeaderPrivilege { mechanism } => format!("root via {mechanism}"),
+        Msg::HeaderRunning { task, elapsed } => format!("{task}  {elapsed}"),
         // The `?` is the key to press, so it leads: the hint is read as an
         // instruction rather than as a label for a key named elsewhere.
         Msg::HeaderHelpHint => "? help".to_owned(),
@@ -642,6 +644,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarHideDetail => "hide detail".to_owned(),
         Msg::KeyBarShowDetail => "show detail".to_owned(),
         Msg::KeyBarStop => "stop".to_owned(),
+        Msg::KeyBarStopping => "stopping after this command".to_owned(),
         Msg::KeyBarScroll => "scroll".to_owned(),
         Msg::KeyBarCopy => "copy".to_owned(),
         Msg::KeyBarKeys => "keys".to_owned(),

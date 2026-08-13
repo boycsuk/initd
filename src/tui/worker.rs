@@ -17,7 +17,7 @@
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::distro::Distro;
 use crate::error::Error;
@@ -121,6 +121,12 @@ pub struct Running {
     cancel: CancelToken,
     /// Whether cancellation has been asked for but not yet taken effect.
     cancelling: bool,
+    /// When the task was started, for the interface to say how long it has run.
+    ///
+    /// Held rather than derived from the output, because a quiet command
+    /// produces no lines to derive it from — and a quiet command is exactly
+    /// the case an elapsed count exists to distinguish from a frozen session.
+    started: Instant,
 }
 
 impl Running {
@@ -181,7 +187,16 @@ impl Running {
             updates,
             cancel,
             cancelling: false,
+            started: Instant::now(),
         }
+    }
+
+    /// How long the task has been running, as of `now`.
+    ///
+    /// Taken as a parameter rather than read here so a test can state the
+    /// elapsed time it is asserting about.
+    pub fn elapsed(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started)
     }
 
     /// Takes whatever the task has reported since the last call.

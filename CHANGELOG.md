@@ -90,6 +90,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinction deciding whether anything can close it.
 
 ### Fixed
+- **The verification banner never drew the one line stating the limit of its
+  promise.** `"Reverts while this session lives."` was written, documented, and
+  outside the drawn area at every terminal size — measured absent at 60×15,
+  72×24, 80×24, 100×30 and 120×40. The layout reserved five rows for a top
+  border and *five* lines, so the last fell off. The banner therefore promised
+  the revert unconditionally, in the one screen where this project argues
+  hardest that a promise with a silent exception teaches people to disbelieve
+  all of it — and `SIGKILL` and a power cut are real exceptions it cannot cover.
+
+  The height is now derived from the lines rather than chosen beside them. The
+  defect was not the number five: it was that two things which must agree were
+  free to be edited apart, and a translation long enough to wrap would have
+  reintroduced it. A test asserts the sentence reaches the buffer at each of
+  those sizes.
+
+- **Below 72 columns an applied, unkept change was invisible.** At that width
+  one pane is drawn at a time and `Tab` chooses which — and the tool never moves
+  focus, so with the cursor where it starts, a narrow terminal drew an ordinary
+  task list while `sshd_config` was already written and sixty seconds from being
+  put back. No countdown, no `K`/`R`, and the key bar is dropped below 24 rows
+  as well, so nothing on screen said a change was pending at all. 60×15 is
+  inside the supported range — a phone SSH client, a split tmux pane. The
+  window now takes the body regardless of which pane holds focus, because a
+  safety state that `Tab` can hide is one the operator has to already know about
+  in order to find.
+
+- **Pasting a public key submitted the form.** Bracketed paste was never
+  enabled, so pasted text arrived one key event at a time and its trailing
+  newline landed on the form's `Enter` arm — sending the form on whatever had
+  been delivered so far, and on a multi-field form putting the remainder in the
+  wrong field. A key is pasted far more often than it is typed, which the
+  parameter's own comment already said. The paste now arrives whole and is
+  inserted through the field, so the newline is filtered where every other
+  character is rather than being special-cased; outside a field it is discarded,
+  since replaying its characters over the tree would run whatever they happen to
+  be bound to. Disabled again on exit, so the shell the operator returns to does
+  not receive its pastes wrapped in escape sequences.
+
+- **`?` did nothing in the three states that most need it.** The confirmation
+  dialog, the verification window and the recorded changes each swallowed it,
+  although `mode` has always ranked help above everything and `mode_under_help`
+  exists to keep painting what the overlay covers — the machinery was built and
+  unreachable from the dialog that is about to change the machine, the window
+  with a timer running whose two answers are capitals, and the view whose
+  `Enter` restores a configuration file.
+
+- **The first `Esc` over a dialog holding typed values changed nothing on
+  screen.** The armed state was computed and never drawn, so the press looked
+  like a dropped keystroke — and the reflex that invites is pressing `Esc`
+  again, which is the press that discards the work. An invisible guard converts
+  a one-press loss into a two-press loss instead of preventing one. The footer
+  now reads `Esc again to discard`, in the parameter form and the ports table.
+
 - **RHEL's Docker repository served no metadata.** The `baseurl` was the
   archive root, with no `$releasever/$basearch/stable` tail, so every install
   failed at `dnf install` reporting a repository it could not download.
@@ -111,6 +164,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a test that asserts what a task refuses proves nothing about what it does.
 
 ### Added
+- **The header says a task is alive, and which one.** While a task runs it
+  trades the distribution and the privilege mechanism — two facts that do not
+  change, and both back when the task ends — for a turning throbber, the task's
+  id and an elapsed `m:ss`.
+
+  Nothing had signalled liveness since the status line was removed: a spinner
+  and a wall-clock timer went with it, leaving the output pane's write cursor,
+  which neither moves nor counts. So a command that is merely slow — an
+  `apt-get` resolving mirrors over a laggy link — was indistinguishable from a
+  session that had stopped answering, and the reflex that follows is closing the
+  terminal, which raises `SIGHUP` and reverts an unrelated unkept change. The
+  failure was self-inflicted by the absence of the signal.
+
+  Elapsed time rather than progress, because a task's command count is not known
+  before it runs and a percentage would be invented. The throbber is indexed off
+  elapsed time rather than a counter, so it animates on the redraw the event
+  loop already performs — no extra wakeups, no new state beyond one `Instant`.
+  The words beside it carry the meaning, so a terminal without the braille
+  glyphs loses nothing.
+
+- **A stop that has been asked for is acknowledged.** The key bar drops
+  `Ctrl-C stop` for `stopping after this command` as soon as the request lands.
+  Cancellation is refused between commands rather than interrupting the one in
+  flight, so a task mid-`dnf install` can absorb a minute before anything else
+  changes — a minute during which the screen was byte-identical to before the
+  keypress and still advertised the key. Pressing it again is silently ignored,
+  and the next escalation is closing the terminal, which raises `SIGHUP`. The
+  state was already tracked; it simply never reached the screen. The label says
+  `stopping after this command` rather than `stopping`, which would read as
+  "killed" — the command in flight is still changing the machine.
+
 - **`docker.install` and `docker.uninstall`, the engine as a machine-wide
   thing.** Installs the container engine and starts it, enabling it at boot,
   and reads both back rather than trusting a command that exited zero. It

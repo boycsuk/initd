@@ -35,6 +35,7 @@ pub mod worker;
 
 use std::io::{self, Stdout};
 
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -48,9 +49,19 @@ use crate::error::{Error, Result};
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 /// Puts the terminal into raw mode on the alternate screen.
+///
+/// Bracketed paste is asked for because a pasted value arrives as ordinary key
+/// events otherwise, and one of those events is the trailing newline. That
+/// newline reaches the form's `Enter` arm, so pasting a public key — which is
+/// how a key is entered, far more often than it is typed — submitted the form
+/// on whatever had arrived so far. With this on, the paste is delivered whole
+/// as one event and its newline is filtered by the field rather than acted on.
+///
+/// A terminal that does not support it simply never sends the event and the
+/// old path still works, so this costs nothing where it is not understood.
 pub fn init() -> Result<Tui> {
     enable_raw_mode().map_err(terminal_error)?;
-    execute!(io::stdout(), EnterAlternateScreen).map_err(terminal_error)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste).map_err(terminal_error)?;
 
     Terminal::new(CrosstermBackend::new(io::stdout())).map_err(terminal_error)
 }
@@ -62,7 +73,12 @@ pub fn init() -> Result<Tui> {
 /// from the failure path.
 pub fn restore() -> Result<()> {
     disable_raw_mode().map_err(terminal_error)?;
-    execute!(io::stdout(), LeaveAlternateScreen).map_err(terminal_error)
+    // Bracketed paste is turned off with the rest of it: left on, it outlives
+    // the process and the shell the operator returns to receives its pastes
+    // wrapped in escape sequences it never asked for. Disabling a mode that
+    // was never enabled is a no-op, which is what keeps this safe on the
+    // failure path and on a terminal that ignored the request.
+    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen).map_err(terminal_error)
 }
 
 /// Restores the terminal before a panic prints its message.

@@ -473,7 +473,21 @@ impl Form {
                 Msg::FormKeyIncomplete
             }),
         ));
-        keys.extend(style::key_hint("Esc", &lang.render(&Msg::FormKeyCancel)));
+        // Once a first `Esc` has armed the discard, the hint says what the
+        // next one does. The state was tracked and never drawn, so the first
+        // press changed nothing on screen — indistinguishable from a key that
+        // never arrived, and the reflex it invites is pressing `Esc` again,
+        // which is precisely what throws the typed values away. A guard that
+        // is invisible converts a one-press loss into a two-press loss instead
+        // of preventing one.
+        keys.extend(style::key_hint(
+            "Esc",
+            &lang.render(&if self.cancel_armed {
+                Msg::KeyCancelArmed
+            } else {
+                Msg::FormKeyCancel
+            }),
+        ));
 
         lines.push(Line::from(keys));
 
