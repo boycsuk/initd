@@ -1181,6 +1181,14 @@ pub(super) fn render(message: &Msg) -> String {
              — set them with git.identity"
                 .to_owned()
         }
+        // States what was written and what is missing, in that order: the
+        // setting is real and will be read, and the reason nothing happens yet
+        // is that there is nothing to read it.
+        Msg::TaskGitNotInstalledYet => {
+            "git is not installed on this host, so nothing reads this yet — \
+             run git.install"
+                .to_owned()
+        }
         // The headless flow, named exactly, because the default one cannot work
         // here: `gh auth login` without arguments wants a browser. Upstream
         // documents `--with-token` and the environment variables as "most

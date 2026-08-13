@@ -1217,6 +1217,15 @@ pub enum Msg {
     TaskFishNotForRoot,
     TaskMiseUseShims,
     TaskGitNeedsIdentity,
+    /// A git setting was written on a host with no git.
+    ///
+    /// A note rather than a refusal, and the distinction is what the write
+    /// does: these tasks put lines in a configuration file, which is harmless
+    /// and correct ahead of the install — the file is read when git arrives.
+    /// What was wrong was saying nothing: "identity set" on a host with no git
+    /// is a true sentence that reads as a working setup, and nothing else on
+    /// screen would have contradicted it.
+    TaskGitNotInstalledYet,
     TaskGithubCliNeedsToken,
     TaskGitIdentitySet {
         user: String,
