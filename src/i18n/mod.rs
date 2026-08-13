@@ -336,6 +336,8 @@ pub enum Msg {
     HelpTitle,
     HelpSectionAnywhere,
     HelpSectionTree,
+    /// Heading for the legend of row markers.
+    HelpSectionMarkers,
     HelpSectionSearch,
     HelpSectionRunning,
     HelpSectionOutput,
@@ -359,6 +361,24 @@ pub enum Msg {
     HelpFind,
     HelpHistory,
     HelpBack,
+    /// What `!` means on a row.
+    ///
+    /// Names the lockout tier rather than "destructive": almost every task
+    /// confirms, and a marker on almost every row names none of them. This one
+    /// marks the handful that can end the session reading it.
+    HelpMarkerDanger,
+    /// What `…` means on a row.
+    HelpMarkerInput,
+    /// What `·` means on a row.
+    HelpMarkerUnsupported,
+    /// What `•` means on a row.
+    HelpMarkerPresent,
+    /// What `?` means on a row.
+    ///
+    /// The transient one: it is gone within a few hundred milliseconds of
+    /// startup on most hosts, which is exactly why it needs explaining — it is
+    /// seen rarely enough that nobody learns it by repetition.
+    HelpMarkerProbing,
     HelpFilter,
     HelpBetweenResults,
     HelpGoToTask,

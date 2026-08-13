@@ -729,6 +729,10 @@ TUI or CLI:
   - Acceptance: the overlay draws over what I was looking at rather than
     replacing it, so I do not lose my place, and closing it returns me to the
     same state.
+  - Acceptance: it also explains the marks the rows carry, in the colours they
+    are drawn in. A mark is the one thing on screen with no word beside it, so
+    it is the one thing I can see and have no way to look up — and the answer
+    being in a document is no answer on a server that does not have it.
   - TUI exception: the CLI answers the same question with `--help`.
 - As an **administrator**, I can stop a running task without leaving the
   machine half-configured.

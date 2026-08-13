@@ -164,6 +164,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a test that asserts what a task refuses proves nothing about what it does.
 
 ### Added
+- **The help overlay explains the row markers.** `!`, `…`, `·`, `•` and `?` now
+  have a legend under the tree's key list, each drawn in the colour it has on
+  the row.
+
+  A flag is the only thing on screen carrying meaning with no word beside it.
+  Every other glyph either names a key that was pressed or sits next to text
+  explaining it, so the markers were the one thing an operator could see and
+  have no way to look up from inside the tool — `docs/ui.md` had the table, and
+  that file is not on the server being administered. `?` is the worst of the
+  five: it is transient, usually gone a few hundred milliseconds after startup,
+  so it is seen too rarely to be learnt by repetition.
+
+  The colour is part of the answer, not decoration: someone asking about a red
+  `!` is asking about the red. `›` is left out — it opens a level, which
+  pressing `Enter` on it demonstrates faster than a line of text can.
+
+  A test asserts every marker the tree draws appears in the legend, so one added
+  later and forgotten fails the build rather than shipping unexplained; it was
+  confirmed to catch a removed entry by name.
+
 - **`→` opens the selected category in the task tree.** The inverse of `←`,
   which leaves one. Without it the arrows could walk out of a level but not into
   one: descending needed `Enter` while ascending had `Esc`, `Backspace` and `←`.
