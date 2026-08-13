@@ -476,10 +476,12 @@ for_each_image! {
 
     /// `firewall.allow-port` refuses where nothing is filtering yet.
     fn allowing_a_port_before_anything_filters_is_refused(image) {
-        // A rule added to a front-end that is not the one filtering is a rule
-        // nothing enforces, so the task resolves rather than assuming. On a
-        // host with no front-end at all there is nothing to resolve, and
-        // reporting success would describe a port as open that is not.
+        // Against no default-deny policy every port is already reachable, so a
+        // rule admitting one enforces nothing — and on a host where
+        // `firewall.enable` has never run there is no table to add it to
+        // either. Reported from a Debian 13 host as `nft` failing with
+        // `Could not process rule: No such file or directory`, which names a
+        // file for a table nobody created and reads as a defect in the rule.
         let observed = observe(
             image,
             "initd run firewall.allow-port port=8080 protocol=tcp >/tmp/o 2>&1; \
@@ -491,14 +493,20 @@ for_each_image! {
             "{}: opening a port needs a front-end: {observed}",
             image.name
         );
-        // Measured rather than assumed: the refusal names the *program* that is
-        // missing rather than the abstraction, because resolving the front-end
-        // is what fails first on a host carrying neither. That is the more
-        // useful message of the two — `nft` names something installable, where
-        // "no front-end" would leave the operator working out what to install.
+        // The refusal names the *step* that is missing rather than a program,
+        // and that is a change from what this test used to assert. It expected
+        // `nft` to be named, because resolving the front-end was what failed
+        // first on a host carrying neither — a true message about the second
+        // problem. The first is that a port opened against no default-deny
+        // policy admits nothing it did not already, so the task now refuses
+        // before it goes looking for a front-end at all.
+        //
+        // Naming `firewall.enable` is what makes the refusal actionable: an
+        // operator told `nft` is missing installs `nft` and is refused again,
+        // this time for the reason that was true all along.
         assert!(
-            observed.contains("nft") || observed.contains("firewall-cmd"),
-            "{}: and must name the program it could not find: {observed}",
+            observed.contains("firewall.enable"),
+            "{}: and must name the step that is missing: {observed}",
             image.name
         );
     }
