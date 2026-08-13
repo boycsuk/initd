@@ -699,10 +699,24 @@ impl Task for UninstallWireguard {
         // regenerating it does not restore a tunnel, it invalidates every
         // client. A field whose two values sit one character apart is not
         // where that should be decided, so neither value decides it.
-        let purging = values
+        let asked_to_purge = values
             .get(crate::tasks::uninstall::REMOVAL)
             .unwrap_or(crate::tasks::uninstall::KEEP_CONFIGURATION)
             == crate::tasks::uninstall::WITH_CONFIGURATION;
+
+        // Gated on the backend for the reason `uninstall::undo` documents at
+        // length, and this copy had dropped: RHEL and SUSE have no purge, both
+        // package WireGuard, and on either of them `removal=purge` performed a
+        // plain removal and said nothing — so an operator who asked for the
+        // configuration to go would find it back after reinstalling. The rest
+        // of this task cannot delegate to that helper, since the unit is a
+        // `wg-quick@` template instance rather than a plain name, but the
+        // refusal to purge is not the part that differs.
+        let purging = asked_to_purge && backend.has_purge_for();
+
+        if asked_to_purge && !purging {
+            report(progress, &Msg::TaskPurgeUnavailable);
+        }
 
         report(
             progress,
@@ -743,6 +757,40 @@ mod tests {
         values.set(InstallWireguard::SUBNET, subnet.to_owned());
         values.set(InstallWireguard::PORT, port.to_string());
         values
+    }
+
+    #[test]
+    fn a_family_that_cannot_purge_says_so_rather_than_ignoring_the_answer() {
+        // The sibling of this test lives beside `uninstall::undo` and pins the
+        // same property for every task that delegates to it. This one does not
+        // delegate — the unit is a `wg-quick@` instance — and the copy had lost
+        // the `has_purge_for` gate, so on RHEL and SUSE, both of which package
+        // WireGuard and neither of which has a purge, `removal=purge` quietly
+        // performed a plain removal.
+        //
+        // Rhel rather than Debian: Debian answers `true` and would pass this
+        // whether or not the gate is consulted.
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok(""), Reply::ok("")]);
+        let mut values = ParamValues::new();
+        values.set(
+            crate::tasks::uninstall::REMOVAL,
+            crate::tasks::uninstall::WITH_CONFIGURATION.to_owned(),
+        );
+        let mut said = Vec::new();
+
+        UninstallWireguard
+            .run(
+                &mock,
+                for_family(Family::Rhel).as_ref(),
+                &values,
+                &mut |line| said.push(line.text),
+            )
+            .expect("the removal must succeed");
+
+        assert!(
+            said.iter().any(|line| line.contains(".rpmsave")),
+            "the operator must be told their choice could not be honoured: {said:?}"
+        );
     }
 
     #[test]
@@ -872,10 +920,17 @@ mod tests {
             Reply::ok(KEY),        // wg genpsk
             Reply::ok(KEY),        // wg pubkey
             Reply::failure(1, ""), // test -e, opening the empty write
+            Reply::ok(""),         // install: stage it at 600
             Reply::ok(""),         // tee: stage the empty file
-            Reply::ok(""),         // mv: publish it
-            Reply::ok(""),         // chmod 600, before any secret exists
-            Reply::ok(""),         // test -e, opening the real write
+            // 644, the mode a file this tool creates gets when there is no
+            // existing one to preserve. Harmless here and only here: what is
+            // being published is the *empty* file, which discloses nothing, and
+            // the chmod below narrows it before any key is written.
+            Reply::ok(""), // chmod 644: the default for a new file
+            Reply::ok(""), // mv: publish it
+            Reply::ok(""), // chmod 600, before any secret exists
+            Reply::ok(""), // test -e, opening the real write
+            Reply::ok(""), // install: stage it at 600
             // No `cp -p` here, and its absence is the assertion: by this point
             // the path exists, so an ordinary `write` would copy it to
             // `wg0.conf.initd.bak` before writing the private key into it —
