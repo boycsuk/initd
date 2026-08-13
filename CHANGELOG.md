@@ -7,7 +7,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING: `firewall.allow-port` is now `firewall.manage-ports`, and it
+  declares a set rather than adding one rule.** Scripts calling
+  `initd run firewall.allow-port port=8080 protocol=tcp` must become
+  `initd run firewall.manage-ports ports="…"`, naming every port that should be
+  open rather than the one being added.
+
+  The old task could add a rule and never remove one — `FirewallManager` had
+  `allow` and no per-port inverse at all, so the only way to close a port was
+  `firewall.disable`, which turns the whole firewall off. Asked for as a table
+  of ports, which is a declaration by its nature: a row deleted is a port
+  closed.
+
+  The value is one parameter spelled the way every front-end spells a port,
+  `ports="22/tcp 443/tcp"`, which is what keeps the CLI able to say the same
+  thing as the table without a second grammar. It defaults to what the host
+  currently admits, in both interfaces — so an invocation naming nothing is a
+  no-op rather than "close everything", which is what the empty set does mean
+  when it is written out.
+
+  Ports are opened before any is closed. A set moving a service from one port
+  to another must have the new one admitted first, or the session dies in the
+  window between the two commands — the same reasoning that makes
+  `firewall.enable` build its ruleset in one transaction.
+
+  It carries a lockout confirmation where the old task carried none, and the
+  warning asks the inverse question `firewall.enable`'s does: there the risk is
+  naming the wrong port to keep, here it is a row left out of a table, and
+  nothing about deleting a row announces that the row was the one carrying the
+  session. Where the closing set holds the port `sshd -T` reports, the dialog
+  says so in red. Where it does not, it still declines to promise safety — a
+  jump host or a forwarded port arrives by a route nothing here can see.
+
+  Four tasks that name a firewall task as the remedy for a port they need —
+  `ssh.change-port`, two in WireGuard, and Caddy — were updated with it. They
+  are display-only, so a stale id would not have broken a jump; it would have
+  told an operator to run something that no longer exists.
+
+- **`firewall.status` says how each port came to be open.** A port admitted by
+  a *service* now reads `22/tcp is open (admitted by ssh)`, because that is the
+  distinction deciding whether anything can close it.
+
 ### Added
+- **A port can be closed through the front-end that opened it.**
+  `FirewallManager::close` is the per-port inverse of `allow`, and it answers
+  whether the port is closed *afterwards* rather than whether the command
+  succeeded. The two are different claims, and on firewalld they routinely
+  disagree.
+
+  On nftables, `nft` deletes a rule by handle and by nothing else — there is no
+  "delete the rule that says this". The handles are re-read with `nft -a` at
+  the moment of deletion rather than remembered, since a cached handle names
+  whatever rule holds that identity now. Measured on `debian:13`: handles are
+  stable identities rather than positions, so removing one leaves the others
+  answering to the same numbers, and the table and chain carry `# handle` of
+  their own — which a looser parse would collect and go on to delete a chain.
+  Every duplicate of a rule is deleted rather than the first, because a
+  hand-edited ruleset can hold two and closing one leaves the port open under a
+  task reporting it closed.
+
+  On firewalld it is `--remove-port` twice, runtime and permanent, never
+  `--reload` — the mirror of how a port is added and for a sharper reason: a
+  reload standing between an opening and a closing would discard the opening.
+
+- **The ports table, the first dialog here whose contents are a list.** Every
+  other task collects a fixed run of fields; a set of ports has a length
+  nothing declares in advance. Rows are added with `a`, removed with `d`,
+  edited with `Enter`, and the set is applied with `Tab`. Cell editing reuses
+  the form's own field wholesale, so the readline bindings, live validation and
+  the scrolling window over a long value are the ones that already existed.
+
+  **A row the host admits by a route this tool cannot undo is drawn and
+  refused, not hidden.** firewalld's `--list-ports` and its services are two
+  different things that `FirewallState.allowed` had been reporting as one, and
+  `--remove-port 22/tcp` against the `ssh` service exits zero having closed
+  nothing. So `AllowedPort` now carries a `PortOrigin`, service rows are dimmed
+  with the service named in a `SOURCE` column, and `d` on one answers with a
+  sentence rather than a deletion. Hiding them was the alternative and is worse
+  in both directions: the operator leaves believing a port closed, and the
+  table disagrees with `firewall.status` on the same host.
+
+  A range stays one row rather than being expanded into the ports it covers.
+  `--remove-port 8000-8080/tcp` closes it wholesale, so the range as written is
+  both the honest description and the closeable unit; expanding it would offer
+  eighty-one removals, none of which work.
+
+  **The table is ruled** — three columns divided by vertical lines, with a rule
+  above the heading, below it, and under the last row — and drawn at 88 columns
+  rather than the 72 every other dialog shares. Both are about what it holds:
+  three columns of left-aligned text read as one ragged block, and the shared
+  width is a floor set by the parameter form's footer, for dialogs whose content
+  is prose and reads worse the wider it gets.
+
+  **The same rule cannot be listed twice**, and it is the *pair* that must be
+  unique rather than the number: `443/tcp` and `443/udp` are two rules and both
+  are legitimate, so refusing the second by port alone would refuse a set an
+  operator legitimately wants. The typed value stays and the cell stays open,
+  since taking back what somebody typed while telling them it collided leaves
+  them nothing to correct — the first attempt reverted it, and on a row just
+  added that meant the port simply disappeared.
+
+  **Every defect in the drawing was found by dumping the rendered screen and
+  reading it**, which is worth recording because none of them was something an
+  assertion in this suite was watching for: a row reserved for a rule this
+  dialog does not draw, a refusal that inherited an area with no gutter and ran
+  into the border ending mid-word, a closing rule pinned to the foot of the
+  frame and left hanging three lines under the last port, and a right-hand rule
+  a cell outside it. The height constant was wrong three times in three
+  directions — eight left a band of empty space, six dropped the last port off
+  the bottom, seven is what the screen shows. Space is the thing no test looks
+  at unless it is told to; all of them have tests now.
+
+- **A port opened while the operator was deciding is reported rather than
+  closed.** The table carries what the host admitted when it opened, so the
+  task can tell "the operator removed this" from "this appeared since". Without
+  it the two are the same difference, and the second would be silently undone.
+
+
 - **The kernel-parameter rows report whether this tool declares the parameter,
   and offer to stop.** Reported as tasks with no way to tell they had already
   been run: `Enable IP forwarding` read the same before and after running it.

@@ -528,12 +528,39 @@ TUI or CLI:
     packaged separately on every family, so going straight to enabling fails
     with a missing binary over a host whose only problem is a package nobody
     installed yet.
-- As an **administrator**, I can open a port, naming its protocol.
+- As an **administrator**, I can see every port the host admits and declare
+  which of them should stay open — adding ports, removing ports, or both at
+  once.
+  - Acceptance: a set is a *declaration*, so anything listed is opened and
+    anything the host admits and the list omits is closed. Running it twice
+    with the same set changes nothing the second time. This replaces the
+    earlier "open one port" task, which could add a rule and never remove one;
+    `firewall.allow-port` no longer exists.
   - Acceptance: a rule for TCP does not admit UDP. WireGuard is UDP, and a
     TCP rule for its port admits none of its traffic.
-  - Acceptance: the rule survives a restart, and opening a port while nothing
-    is being filtered says so — against no policy, every port is already
-    reachable, so "open" would read as "only this is admitted".
+  - Acceptance: ports are opened before any is closed, so a set that moves a
+    service from one port to another does not drop the session in the window
+    between the two commands.
+  - Acceptance: the changes survive a restart, and declaring a set while
+    nothing is being filtered is refused — against no policy every port is
+    already reachable, so "open" would read as "only this is admitted".
+  - Acceptance: a port the front-end admits by a route this tool cannot undo is
+    shown and refused rather than hidden, naming what admits it. firewalld
+    admits SSH on a stock RHEL host as the *service* `ssh`, where removing the
+    port succeeds and closes nothing — so a tool that accepted the removal
+    would report a closed port over a session that is still reachable.
+  - Acceptance: a port that appeared after the set was read — opened by
+    somebody else while the operator was deciding — is reported and left alone
+    rather than silently closed.
+  - Acceptance: the confirmation names the ports about to close, and says
+    plainly when one of them is the port this host's sshd is listening on.
+    Where none of them is, it still declines to promise safety: `sshd -T` says
+    what the daemon serves, not how the operator reached it, and a jump host or
+    a forwarded port arrives by a route nothing here can see.
+  - TUI: the set is edited as a table, one row per port.
+  - CLI: `ports="22/tcp 443/tcp"`, which defaults to what the host currently
+    admits — so an invocation naming nothing changes nothing, while an
+    explicitly empty set closes everything.
 - As an **administrator**, I can enable IP forwarding and unprivileged port
   binding, so that a VPN can route and a rootless container engine can serve.
   - Acceptance: applied immediately *and* across reboots. Either alone reports
