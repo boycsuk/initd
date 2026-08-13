@@ -405,8 +405,12 @@ fn engine_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<b
 /// all, so `caddy.install` there fetches a release binary that no package
 /// manager knows about. A presence check reading the package database would
 /// answer "absent" on a host serving traffic.
+///
+/// `is_installed` rather than `is_installed_here`: the latter asks about this
+/// tool's own install directory, which would refuse a Caddy the distribution
+/// packaged into `/usr/bin`.
 fn caddy_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
-    backend.binaries().is_installed_here(executor, CADDY_BINARY)
+    backend.binaries().is_installed(executor, CADDY_BINARY)
 }
 
 /// Runs upstream's rootless setup as the account.
