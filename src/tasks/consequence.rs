@@ -308,6 +308,43 @@ impl Consequence {
 ///
 /// `None` where no front-end is present: the consequence is still worth stating
 /// and there is nothing on this host to ask.
+/// A requirement satisfied by having a program on the `PATH`.
+///
+/// The shape eight of the nine requirements in this tree have: a task that
+/// configures something needs the thing itself installed, and the task that
+/// installs it is what the operator has to run first. Written once because
+/// eight call sites spelling `command -v` themselves would be eight chances to
+/// spell it differently.
+///
+/// **Asked of the `PATH`, which is sound only because `initd` runs with
+/// privilege.** Measured across all six images: `command -v sshd` answers
+/// `/usr/sbin/sshd` for root on every one, and for an *unprivileged* login on
+/// four — openSUSE's `/etc/profile` sets `PATH=/usr/local/bin:/usr/bin:/bin`
+/// for anyone who is not root, so `sshd` is invisible there. What rescues it is
+/// that the operator reaches these tasks through `sudo`, whose `secure_path`
+/// puts `/usr/sbin` back: measured on Tumbleweed, `sudo sh -c 'command -v sshd'`
+/// answers while the same question in a login shell does not.
+///
+/// The probe thread does not escalate, but it inherits the environment of a
+/// process that did, which is what makes this hold. A future caller running
+/// these checks from an unprivileged context would need to look on disk
+/// instead — so this is a property of *how the tool is started*, recorded here
+/// rather than left to be rediscovered.
+pub fn program_check(program: &'static str, installed_by: &'static str) -> Requirement {
+    Requirement {
+        task: installed_by,
+        check: Check {
+            command: Command::locating(program),
+            // `command -v` prints the path it found, so the program's own name
+            // is always a substring of a successful answer. Matched as well as
+            // the exit code because a `Check` is defined by both, and a shell
+            // that exits zero having printed nothing would otherwise read as a
+            // program that exists.
+            resolved_when_stdout_contains: program.to_owned(),
+        },
+    }
+}
+
 pub fn firewall_check(
     backend: &dyn crate::backend::Backend,
     port: u32,

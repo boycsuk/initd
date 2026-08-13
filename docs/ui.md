@@ -231,6 +231,11 @@ a command that broke.
   firewall.enable first" would give up the more urgent sentence for the more
   actionable one.
 
+  Nine tasks declare one today: `firewall.manage-ports` needs a policy, the four
+  that edit `sshd_config` need an SSH server, and `wireguard.add-peer`,
+  `docker.rootless`, `caddy.validate` and `caddy.security-headers` each need the
+  thing they configure.
+
   **Silent until measured.** The check runs on the same background probe as the
   install/uninstall verbs, which has no privilege escalation by design — it must
   never raise a password prompt over somebody reading the tree — so a check it

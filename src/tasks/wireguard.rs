@@ -20,7 +20,8 @@ use crate::error::{Error, Result};
 use crate::exec::Executor;
 use crate::i18n::Msg;
 use crate::tasks::consequence::{
-    Check, Consequence, External, Protocol as WarnProtocol, Reason, firewall_check,
+    Check, Consequence, External, Protocol as WarnProtocol, Reason, Requirement, firewall_check,
+    program_check,
 };
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
@@ -374,6 +375,14 @@ impl Task for AddPeer {
         ]
     }
 
+    /// A peer is recorded in a server configuration that has to exist first.
+    ///
+    /// The guard in `run` already refuses without it and names the same task;
+    /// this is that fact where the tree can read it, so the row says so before
+    /// a key is pressed rather than after.
+    fn requires(&self, _backend: &dyn Backend) -> Vec<Requirement> {
+        vec![program_check("wg", "wireguard.install")]
+    }
     supported_everywhere!();
 
     fn run(

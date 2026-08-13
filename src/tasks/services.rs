@@ -13,7 +13,9 @@ use crate::domain::firewall::Protocol as FirewallProtocol;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 use crate::i18n::Msg;
-use crate::tasks::consequence::{Check, Consequence, External, Protocol, Reason, firewall_check};
+use crate::tasks::consequence::{
+    Check, Consequence, External, Protocol, Reason, Requirement, firewall_check, program_check,
+};
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{
@@ -248,6 +250,14 @@ impl Task for InstallDockerRootless {
         ]
     }
 
+    /// The rootless setup configures an engine; the engine is installed once for the machine.
+    ///
+    /// The guard in `run` already refuses without it and names the same task;
+    /// this is that fact where the tree can read it, so the row says so before
+    /// a key is pressed rather than after.
+    fn requires(&self, _backend: &dyn Backend) -> Vec<Requirement> {
+        vec![program_check("docker", "docker.install")]
+    }
     fn support(&self, family: Family) -> Support {
         match family {
             // Four families package the setup script, whether as part of the
@@ -686,6 +696,14 @@ impl Task for ValidateCaddy {
          Changes nothing."
     }
 
+    /// Asking Caddy whether a file parses needs Caddy.
+    ///
+    /// The guard in `run` already refuses without it and names the same task;
+    /// this is that fact where the tree can read it, so the row says so before
+    /// a key is pressed rather than after.
+    fn requires(&self, _backend: &dyn Backend) -> Vec<Requirement> {
+        vec![program_check("caddy", "caddy.install")]
+    }
     supported_everywhere!();
 
     fn run(
@@ -764,6 +782,14 @@ impl Task for CaddySecurityHeaders {
         Confirmation::Change
     }
 
+    /// The snippet is validated by Caddy itself, so the server has to be here.
+    ///
+    /// The guard in `run` already refuses without it and names the same task;
+    /// this is that fact where the tree can read it, so the row says so before
+    /// a key is pressed rather than after.
+    fn requires(&self, _backend: &dyn Backend) -> Vec<Requirement> {
+        vec![program_check("caddy", "caddy.install")]
+    }
     supported_everywhere!();
 
     fn run(
