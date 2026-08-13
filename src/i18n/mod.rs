@@ -1333,6 +1333,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_unsupported_distro_message_names_every_family() {
+        // The literal this replaced said "debian, arch, alpine, rhel" and went
+        // stale when SUSE landed, so the one message an operator on an
+        // unresolved SLES host reads told them their distribution was not
+        // supported. Asserted against `Family::ALL` rather than against a
+        // second list, which would be the same mistake one layer along.
+        let rendered = Lang::En.render(&Msg::UnsupportedDistro {
+            id: "sles".to_owned(),
+            id_like: None,
+        });
+
+        for family in crate::distro::Family::ALL {
+            assert!(
+                rendered.contains(&family.to_string()),
+                "{family} must be named as supported: {rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn unknown_locale_falls_back_to_english() {
         assert_eq!(Lang::from_locale("de_DE.UTF-8"), Lang::En);
         assert_eq!(Lang::from_locale(""), Lang::En);

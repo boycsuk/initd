@@ -24,9 +24,23 @@ pub(super) fn render(message: &Msg) -> String {
         }
         Msg::UnsupportedDistro { id, id_like } => {
             let like = id_like.as_deref().unwrap_or("(none)");
+            // Derived from `Family::ALL` rather than written out. The literal
+            // that stood here said "debian, arch, alpine, rhel" and was never
+            // updated when SUSE landed, so an operator on SLES whose
+            // `/etc/os-release` did not resolve — a derivative, an unexpected
+            // `ID_LIKE` — read that their distribution was unsupported when the
+            // backend, two container images and the whole test matrix say
+            // otherwise. A list of what a program supports is exactly the kind
+            // of sentence that cannot be maintained by hand.
+            let families = crate::distro::Family::ALL
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+
             format!(
                 "unsupported distribution: ID={id}, ID_LIKE={like}. \
-                 Supported families: debian, arch, alpine, rhel"
+                 Supported families: {families}"
             )
         }
         Msg::RepositoryKeyMismatch {

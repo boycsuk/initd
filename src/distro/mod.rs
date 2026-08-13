@@ -52,10 +52,15 @@ impl Family {
     /// `match` below is what keeps this honest — adding a variant fails to
     /// compile there, and the array is checked against it.
     ///
-    /// Nothing in the running program iterates families — each execution
-    /// resolves exactly one — so this is test-only by nature, like
-    /// [`crate::backend::Backend::family`] above it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Almost nothing in the running program iterates families — each
+    /// execution resolves exactly one — so this was test-only for as long as
+    /// the tree had one family per run and nothing to say about the others.
+    ///
+    /// The exception is the message that names them. `UnsupportedDistro` used
+    /// to list them as a literal, which went stale the moment SUSE landed and
+    /// told operators on a supported distribution that it was not one. A list
+    /// of what this program supports has exactly one correct source, and it is
+    /// this.
     pub const ALL: &'static [Self] = &[
         Self::Debian,
         Self::Arch,
