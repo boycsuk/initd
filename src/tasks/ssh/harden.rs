@@ -18,6 +18,7 @@ use crate::error::{Error, Lockout, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::i18n::Msg;
 use crate::tasks::algorithms;
+use crate::tasks::consequence::{Requirement, program_check};
 use crate::tasks::params::ParamValues;
 use crate::tasks::revert::Outcome;
 use crate::tasks::sshd_config;
@@ -106,6 +107,14 @@ impl Task for HardenSsh {
         Confirmation::Lockout
     }
 
+    /// There is no configuration to harden without a daemon that reads one.
+    ///
+    /// The guard in `run` already refuses without it and names the same task;
+    /// this is that fact where the tree can read it, so the row says so before
+    /// a key is pressed rather than after.
+    fn requires(&self, _backend: &dyn Backend) -> Vec<Requirement> {
+        vec![program_check("sshd", "ssh.install")]
+    }
     supported_everywhere!();
 
     fn run(
@@ -204,6 +213,14 @@ impl Task for HardenSshStrict {
         Confirmation::Lockout
     }
 
+    /// There is no configuration to harden without a daemon that reads one.
+    ///
+    /// The guard in `run` already refuses without it and names the same task;
+    /// this is that fact where the tree can read it, so the row says so before
+    /// a key is pressed rather than after.
+    fn requires(&self, _backend: &dyn Backend) -> Vec<Requirement> {
+        vec![program_check("sshd", "ssh.install")]
+    }
     fn support(&self, family: Family) -> Support {
         match family {
             // openSUSE carries the same crypto-policies mechanism RHEL does —

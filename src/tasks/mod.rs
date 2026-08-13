@@ -769,6 +769,48 @@ mod tests {
     }
 
     #[test]
+    fn a_task_that_refuses_for_a_missing_dependency_declares_it() {
+        // The list is written out rather than derived, because what it pins is
+        // a pairing no signature carries: a guard inside `run` and a
+        // declaration the tree reads are two separate pieces of code saying one
+        // thing. Every task here refuses at run time when its dependency is
+        // absent, naming the task that supplies it; each must also say so
+        // *before* Enter, which is the whole point of the mechanism.
+        //
+        // A task added to this list without a `requires` fails here. One that
+        // grows a guard and is never added is the case this cannot catch —
+        // which is why the list names the error each guard raises, so a reader
+        // adding a tenth has somewhere obvious to look.
+        let backend = crate::backend::for_family(Family::Debian);
+
+        for id in [
+            // Error::SshdAbsent, from `write_validated`
+            "ssh.harden",
+            "ssh.harden-strict",
+            "ssh.change-port",
+            "ssh.allow-users",
+            // Error::WireguardNotConfigured
+            "wireguard.add-peer",
+            // Error::DockerEngineAbsent
+            "docker.rootless",
+            // Error::CaddyAbsent
+            "caddy.validate",
+            "caddy.security-headers",
+            // Error::FirewallNotEnabled
+            "firewall.manage-ports",
+        ] {
+            let task = find(id).unwrap_or_else(|| panic!("{id} must be in the tree"));
+
+            assert!(
+                !task.requires(backend.as_ref()).is_empty(),
+                "{id} refuses at run time for a missing dependency, so it must \
+                 declare one — otherwise the row is drawn exactly like one that \
+                 would work"
+            );
+        }
+    }
+
+    #[test]
     fn a_requirement_points_at_a_task_that_exists() {
         // Same property the consequences have, and for the same reason: a
         // requirement naming a task is an instruction, and one naming something
