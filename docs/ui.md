@@ -297,10 +297,20 @@ a command that broke.
   — `firewall.status`, `wireguard.status`, `caddy.validate`.
 
 - **Help overlay** — every binding the interface has, grouped by where it
-  applies. Opened with `?` from anywhere, including on top of a dialog, since
-  the moment someone needs the key list is the moment they do not know which
-  key to press. Scrollable, because the section worth reading most — the keys
-  that cannot be guessed from anywhere else — is the one at the end.
+  applies, and a legend for the row markers. Opened with `?` from anywhere,
+  including on top of a dialog, since the moment someone needs the key list is
+  the moment they do not know which key to press. Scrollable, because the
+  section worth reading most — the keys that cannot be guessed from anywhere
+  else — is the one at the end.
+
+  **The marker legend is the one section that is not keys**, and it is there
+  because a flag is the only thing on screen carrying meaning with no word
+  beside it. Every other glyph either names a key the operator pressed or sits
+  next to text explaining it; `!`, `…`, `·`, `•` and `?` sit alone in a column.
+  So they were the only thing an operator could see and have no way to look up
+  from inside the tool — this file had the table, and this file is not on the
+  server. Each is drawn in the colour it has on the row, because someone asking
+  about a red `!` is asking about the colour as much as the glyph.
 - **Verification banner** — replaces the detail pane after a change that could
   sever the administrator's own access. States that the change is applied but
   not yet kept, counts down to the automatic revert, and names the two keys.
@@ -329,6 +339,15 @@ A row carries at most one flag, and they rank in that order: a task that both
 risks a lockout and takes parameters shows `!`, since the warning outranks the
 notice. `!` marks the lockout tier alone, not every task that confirms —
 almost all of them do, and a marker on nearly every row names none of them.
+
+**The five flags are also listed in the help overlay**, in the colours they are
+drawn in, so this table is not the only place they are explained. It was, and
+that is a poor place for it: a glyph is exactly the thing an operator can see
+and not know, and the answer sat in a file that is not on the server being
+administered. `›` is left out of the legend — it opens a level, which pressing
+`Enter` or `→` on it demonstrates faster than a line of text. A test asserts
+every marker the tree draws appears there, so one added here and forgotten
+fails the build rather than shipping unexplained.
 
 ## Rows that change their verb
 
