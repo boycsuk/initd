@@ -6,10 +6,12 @@
 
 use crate::backend::backup_index;
 use crate::backend::{Backend, Capability};
+use crate::domain::FileEditor;
 use crate::domain::files::Backup;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor, OutputLine, Stream};
 use crate::tasks::Progress;
+use crate::tasks::ssh::DEFAULT_SSH_PORT;
 
 /// Outcome of validating a configuration with `sshd -t`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +156,59 @@ pub fn directive_value(contents: &str, directive: &str) -> Option<String> {
         .rfind(|line| is_directive_line(line, directive) && !line.trim_start().starts_with('#'))
         .and_then(|line| line.split_once(char::is_whitespace))
         .map(|(_, value)| value.trim().to_owned())
+}
+
+/// The port the daemon is actually listening on.
+///
+/// Asked of `sshd -T` rather than read from the file, because the file answers
+/// a different question. A host that has never been reconfigured has **no**
+/// `Port` line at all — measured on `debian:13`, where `grep -c '^Port'`
+/// answers 0 while the daemon serves 22 — so a reader that only parsed the
+/// file would find nothing in the commonest case, and would also miss a value
+/// set in an `Include`d drop-in. `sshd -T` resolves includes and defaults and
+/// prints `port 2222` for a moved daemon.
+///
+/// Falls back to the file, then to [`DEFAULT_SSH_PORT`], because `sshd -T`
+/// fails on a host with no host keys — `no hostkeys available -- exiting`,
+/// which this project already records for a freshly installed Arch. That is a
+/// daemon that has never run, so the file is the better authority there.
+///
+/// Returns a value rather than an error on every path: this fills in a form
+/// field, and a form that refused to open because a probe failed would be
+/// worse than one that opens on the default.
+pub fn effective_port(executor: &dyn Executor, config_path: &str) -> u32 {
+    let query = Command::new("sshd").arg("-T");
+
+    if let Ok(output) = executor.run(&query)
+        && output.success()
+        && let Some(port) = port_in_dump(&output.stdout)
+    {
+        return port;
+    }
+
+    // The file, for the host whose daemon cannot answer for itself.
+    let files = crate::backend::unix_files::UnixFiles::new();
+
+    if let Ok(contents) = files.read(executor, config_path)
+        && let Some(port) = directive_value(&contents, "Port")
+        && let Ok(port) = port.parse()
+    {
+        return port;
+    }
+
+    DEFAULT_SSH_PORT
+}
+
+/// The `port` line in an `sshd -T` dump.
+///
+/// The dump lowercases every keyword and prints one setting per line, so the
+/// match is exact rather than a prefix: `port` and `portforwarding` would both
+/// answer a `starts_with`, and only one of them is a port.
+fn port_in_dump(dump: &str) -> Option<u32> {
+    dump.lines()
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .find(|(keyword, _)| *keyword == "port")
+        .and_then(|(_, value)| value.trim().parse().ok())
 }
 
 /// Whether a line defines the given directive, commented out or not.
@@ -354,6 +409,62 @@ pub fn write_validated(
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn the_port_comes_from_the_daemon_rather_than_the_file() {
+        // The file is the wrong authority for this and the difference is not
+        // academic: a host that has never been reconfigured has no `Port` line
+        // at all — measured on `debian:13`, where `grep -c '^Port'` answers 0
+        // while the daemon serves 22 — so a reader that parsed only the file
+        // would find nothing in the commonest case. `sshd -T` resolves
+        // includes and defaults.
+        let mock = MockExecutor::with_replies([Reply::ok(
+            "port 2222\naddressfamily any\npermitrootlogin no\n",
+        )]);
+
+        assert_eq!(effective_port(&mock, "/etc/ssh/sshd_config"), 2222);
+    }
+
+    #[test]
+    fn a_daemon_that_cannot_answer_leaves_the_file_to_say() {
+        // `sshd -T` fails with `no hostkeys available -- exiting` on a host
+        // where the daemon has never run — recorded for a freshly installed
+        // Arch. There the file is the better authority, since it is the only
+        // one there is.
+        let mock = MockExecutor::with_replies([
+            Reply::failure(255, "sshd: no hostkeys available -- exiting."),
+            Reply::ok("#Port 22\nPort 2022\nPermitRootLogin no\n"),
+        ]);
+
+        assert_eq!(effective_port(&mock, "/etc/ssh/sshd_config"), 2022);
+    }
+
+    #[test]
+    fn a_host_that_says_nothing_gets_the_default() {
+        // Both sources silent. Returns a value rather than an error on every
+        // path: this fills in a form field, and refusing to open the form
+        // because a probe failed is worse than opening it on 22.
+        let mock =
+            MockExecutor::with_replies([Reply::failure(1, ""), Reply::failure(1, "no such file")]);
+
+        assert_eq!(
+            effective_port(&mock, "/etc/ssh/sshd_config"),
+            DEFAULT_SSH_PORT
+        );
+    }
+
+    #[test]
+    fn a_setting_whose_name_merely_starts_with_port_is_not_the_port() {
+        // The dump lowercases every keyword and prints one per line, so
+        // `portforwarding` sits in the same list as `port` and would answer a
+        // prefix match. Only one of them is a port number, and the other is a
+        // word — which would parse to nothing and silently fall through to the
+        // file, quietly undoing the whole point of asking the daemon.
+        assert_eq!(
+            port_in_dump("gatewayports no\nportforwarding yes\nport 2222\n"),
+            Some(2222)
+        );
+    }
 
     #[test]
     fn appends_a_directive_that_is_absent() {

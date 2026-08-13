@@ -140,6 +140,13 @@ impl Backend for AlpineBackend {
             Capability::Caddy => CADDY_PACKAGE,
             Capability::Git => GIT_PACKAGE,
             Capability::GithubCli => GITHUB_CLI_PACKAGE,
+            // `sysctl` is a busybox applet here — `/sbin/sysctl` is a symlink
+            // to `/bin/busybox`, measured on `alpine:3.23`, where
+            // `apk info --who-owns` names busybox itself. So it is present on
+            // every host and there is nothing to install: this is the one
+            // family where the empty name means "already there" rather than
+            // "not packaged", which is why it does not share the arm below.
+            Capability::Sysctl => "",
             // Genuinely absent rather than named differently. Alpine has no
             // rootless Docker extras, no mise, no rustup and no unattended
             // upgrades — an empty name is the honest answer, and the tasks
@@ -159,6 +166,7 @@ impl Backend for AlpineBackend {
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Caddy => CADDY_SERVICE,
             Capability::Nftables
+            | Capability::Sysctl
             | Capability::DockerRootless
             | Capability::Fish
             | Capability::Zellij
@@ -181,6 +189,7 @@ impl Backend for AlpineBackend {
             // Git's system-wide file, which `git config --system` writes.
             Capability::Git => "/etc/gitconfig",
             Capability::Nftables
+            | Capability::Sysctl
             | Capability::DockerRootless
             | Capability::Zellij
             | Capability::Mise

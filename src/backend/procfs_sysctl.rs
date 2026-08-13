@@ -24,6 +24,26 @@ const DROP_IN: &str = "/etc/sysctl.d/99-initd.conf";
 /// Mode for the drop-in: readable by anyone, writable only by root.
 const DROP_IN_MODE: u32 = 0o644;
 
+/// The directory holding [`DROP_IN`].
+///
+/// Named separately because it cannot be assumed to exist: `rockylinux:9` has
+/// no `/etc/sysctl.d`, and installing `procps-ng` there does not create one.
+const DROP_IN_DIR: &str = "/etc/sysctl.d";
+
+/// Mode for that directory, matching what the families shipping it use.
+///
+/// Measured rather than chosen: Debian, Arch and Alpine all carry it as
+/// `drwxr-xr-x`. A drop-in read at boot has to be traversable by anyone, and
+/// writable only by root.
+const DROP_IN_DIR_MODE: u32 = 0o755;
+
+/// The parameter read to prove the tool works.
+///
+/// `kernel.ostype` because every Linux kernel carries it, so a failure is about
+/// the tool being absent rather than about this host's configuration — a key
+/// that some kernels lack would answer a different question than the one asked.
+const AVAILABILITY_KEY: &str = "kernel.ostype";
+
 /// Manages kernel parameters through `sysctl`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcfsSysctl;
@@ -65,6 +85,37 @@ impl ProcfsSysctl {
 }
 
 impl SysctlManager for ProcfsSysctl {
+    fn is_available(&self, executor: &dyn Executor) -> Result<bool> {
+        // Unprivileged deliberately, as the firewall's own availability check
+        // is: this is asked before the tool knows it will need to write
+        // anything, and a question that prompts for a password is the wrong
+        // shape for one whose answer may be "there is nothing here to drive".
+        //
+        // Reading a parameter rather than asking for a version, and the choice
+        // is load-bearing. `--version` was written here first and measured
+        // before it shipped: busybox rejects it *and* `-V` with exit 1
+        // (`sysctl: unrecognized option: version`, measured on `alpine:3.23`
+        // against busybox 1.37.0), so the check would have reported the tool
+        // absent on the one family where it can never be, and sent the task off
+        // to install a package Alpine does not carry. The same trap as the
+        // installer's `sha256sum --ignore-missing`, which this project has
+        // already paid for once.
+        //
+        // `kernel.ostype` is what all three accept: it exists on every Linux
+        // kernel, so the answer is about the tool rather than about the host,
+        // and `-n` is a flag procps and busybox both implement.
+        let command = Command::new("sysctl").args(["-n", AVAILABILITY_KEY]);
+
+        // An absent binary answers the question rather than failing to answer
+        // it — the same shape `Nftables::is_available` needed, and the reason
+        // this method exists at all.
+        match executor.run(&command) {
+            Ok(output) => Ok(output.success()),
+            Err(Error::ProgramNotFound { .. }) => Ok(false),
+            Err(other) => Err(other),
+        }
+    }
+
     fn get(&self, executor: &dyn Executor, key: &str) -> Result<String> {
         // `-n` prints the value alone, without the `key = ` prefix.
         let command = Command::new("sysctl").args(["-n", key]);
@@ -92,13 +143,28 @@ impl SysctlManager for ProcfsSysctl {
         // Then persistence. Read-modify-write so that settings this tool wrote
         // earlier survive, and so that repeating one replaces its line.
         let files = crate::backend::unix_files::UnixFiles::new();
+
+        use crate::domain::FileEditor;
+
+        // The directory before the file, because `tee` creates neither and one
+        // family ships neither. Measured on `rockylinux:9`: `/etc/sysctl.d` is
+        // absent from the base image and *stays* absent after `procps-ng` is
+        // installed — the package that owns `sysctl` does not own the drop-in
+        // directory. Debian's `procps` does create it, Alpine and Arch ship it,
+        // so four families hid the fifth. Without this the task reported
+        // `tee: /etc/sysctl.d/99-initd.conf.initd.new: No such file or
+        // directory` — a write failing for a reason that names a temporary file
+        // rather than the missing directory.
+        //
+        // `create_dir` is idempotent, so the four that already have it are
+        // unaffected, and 0755 is the mode all three that ship it use.
+        files.create_dir(executor, DROP_IN_DIR, DROP_IN_DIR_MODE)?;
+
         let existing = if files.exists(executor, DROP_IN)? {
             files.read(executor, DROP_IN)?
         } else {
             String::new()
         };
-
-        use crate::domain::FileEditor;
 
         files.write(executor, DROP_IN, &Self::merged(&existing, setting))?;
         files.set_mode(executor, DROP_IN, DROP_IN_MODE)?;

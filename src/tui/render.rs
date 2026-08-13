@@ -32,7 +32,9 @@ use ratatui::widgets::{
     Wrap,
 };
 
-use super::app::{App, Mode, Pane, VERIFY_BANNER_ROWS, VERSION};
+use super::app::{
+    App, DETAIL_MAX_ROWS, Mode, OUTPUT_MIN_ROWS, Pane, SPLIT_MIN_ROWS, VERIFY_BANNER_ROWS, VERSION,
+};
 use super::probe::InstalledState;
 use super::verify::Verification;
 use super::{help, layout, search, style};
@@ -274,10 +276,38 @@ fn right(frame: &mut Frame, app: &App, right_area: Rect) {
         app.output
             .render(frame, log, app.lang, app.focus == Pane::Output);
     } else if app.output.is_empty() {
+        // Nothing to put beneath it, so the description has the pane whether or
+        // not it has been folded: folding exists to give the *output* room, and
+        // with no output there is nothing to give it to.
         detail(frame, app, right_area);
-    } else {
+    } else if !app.detail_shown || right_area.height < SPLIT_MIN_ROWS {
+        // The output takes the pane whole — because the operator folded the
+        // description away, or because the pane is too short for both and a
+        // description squeezed into three rows serves nobody. The transcript
+        // wins in the second case for the same reason it is the half kept in
+        // the first: it is what a running task is producing.
         app.output
             .render(frame, right_area, app.lang, app.focus == Pane::Output);
+    } else {
+        // Both, which is what the pane could not do before: it chose by whether
+        // any output existed, so once a task had run, every task selected
+        // afterwards had its description displaced by the previous one's
+        // transcript.
+        //
+        // The description takes what it needs up to a ceiling and the output
+        // takes the rest, rather than a percentage each: a description is a
+        // sentence or two whose length is known, while a transcript grows, so
+        // splitting evenly would leave half the pane blank above a log that is
+        // scrolling.
+        let [top, bottom] = Layout::vertical([
+            Constraint::Max(DETAIL_MAX_ROWS),
+            Constraint::Min(OUTPUT_MIN_ROWS),
+        ])
+        .areas(right_area);
+
+        detail(frame, app, top);
+        app.output
+            .render(frame, bottom, app.lang, app.focus == Pane::Output);
     }
 }
 
@@ -423,9 +453,18 @@ fn tree_keys(app: &App) -> Vec<(&'static str, Msg)> {
         keys.push(("Esc", Msg::KeyBarBack));
     }
 
-    // Switching panes is pointless with nothing to read.
+    // Switching panes is pointless with nothing to read, and so is folding it
+    // away: both are offered only once there is a transcript to act on.
     if !app.output.is_empty() {
         keys.push(("Tab", Msg::KeyBarOutput));
+        keys.push((
+            "o",
+            if app.detail_shown {
+                Msg::KeyBarHideDetail
+            } else {
+                Msg::KeyBarShowDetail
+            },
+        ));
     }
 
     keys
@@ -674,7 +713,27 @@ pub(super) fn row(
 
             parts
         }
-        Node::Task(task) => task_row_parts(task.as_ref(), family),
+        // A task with no inverse cannot say "already there" by switching verbs
+        // the way a reversible row does, so it says it with a flag. Only the
+        // ones that declared a subject are measured at all, and the flag yields
+        // to whatever the task's own row already carries — a lockout warning
+        // outranks a note that the package is present.
+        Node::Task(task) => {
+            let mut parts = task_row_parts(task.as_ref(), family);
+            let measured = presence.of(task.id());
+
+            if parts.trailing.is_empty() {
+                if measured.calls_for_the_inverse() {
+                    parts.trailing = style::MARKER_PRESENT.to_owned();
+                    parts.trailing_style = style::BLOCK_SUBTITLE;
+                } else if task.subject().is_some() && !measured.is_settled() {
+                    parts.trailing = style::MARKER_PROBING.to_owned();
+                    parts.trailing_style = style::BLOCK_SUBTITLE;
+                }
+            }
+
+            parts
+        }
     };
 
     // A title longer than its column is cut with an ellipsis rather than

@@ -194,7 +194,7 @@ impl App {
     /// Forgetting first is the load-bearing half: until the new answer lands,
     /// the row falls back to its forward verb rather than showing what was
     /// measured about a machine that no longer exists.
-    fn refresh_presence_after(&mut self, id: &str) {
+    pub(super) fn refresh_presence_after(&mut self, id: &str) {
         let Some(task) = tasks::find(id) else {
             return;
         };

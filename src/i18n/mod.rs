@@ -111,6 +111,7 @@ pub enum Msg {
     },
 
     NoFirewallFrontEnd,
+    FirewallNotEnabled,
 
     // --- Command execution ---
     ProgramNotFound {
@@ -192,6 +193,9 @@ pub enum Msg {
     },
     WireguardNotConfigured,
     NoSubordinateIds {
+        user: String,
+    },
+    NoUserSession {
         user: String,
     },
     InvalidCaddyfile {
@@ -336,6 +340,7 @@ pub enum Msg {
     HelpStopAfterCommand,
     HelpScrollOutput,
     HelpFocusOutput,
+    HelpFoldOutput,
     HelpScrollLine,
     HelpScrollPage,
     HelpOldestLine,
@@ -592,6 +597,8 @@ pub enum Msg {
     KeyBarHistory,
     KeyBarBack,
     KeyBarOutput,
+    KeyBarHideDetail,
+    KeyBarShowDetail,
     KeyBarStop,
     KeyBarScroll,
     /// What `y` does in the output pane.
@@ -662,6 +669,11 @@ pub enum Msg {
     /// the time this is on screen the operator has already decided to proceed
     /// and the useful sentence is the one they can act on.
     ConfirmLockoutWarning,
+    ConfirmFirewallLockout {
+        port: u32,
+        listening: u32,
+        agrees: bool,
+    },
     /// The lockout warning for `users.lock-root`, heading the accounts that
     /// keep access.
     ///
@@ -822,6 +834,9 @@ pub enum Msg {
         unit: String,
     },
     /// A unit's state, as the host reports it.
+    TaskSshVersion {
+        version: String,
+    },
     TaskUnitState {
         unit: String,
         active: bool,
@@ -965,6 +980,7 @@ pub enum Msg {
         tried: String,
     },
     TaskFirewallInactive,
+    TaskFirewallDisabled,
     TaskFirewallDefaultDeny,
     TaskFirewallNoOpenPorts,
     TaskFirewallPortOpen {

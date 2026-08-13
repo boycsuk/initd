@@ -148,6 +148,18 @@ impl Task for InstallDockerRootless {
             return Err(Error::NoSubordinateIds { user });
         }
 
+        // And for the same reason: the engine runs under the account's own
+        // service manager, so an account whose session cannot be established
+        // has nothing to install it into. `runuser -l` is what opens that
+        // session and `pam_systemd` is what furnishes it, listed on Debian as
+        // `-session optional` — it fails without logging, leaving a shell with
+        // an empty environment. Left to be discovered at `enable --now`, the
+        // install has already happened and what surfaces is systemd's own
+        // message about two unset variables, naming no cause.
+        if !user_services.session_is_reachable(executor, &user)? {
+            return Err(Error::NoUserSession { user });
+        }
+
         report(progress, &Msg::TaskDockerInstalling { user: user.clone() });
 
         // Where the distribution packages no Docker, the engine comes from
@@ -678,7 +690,32 @@ impl Task for UninstallDockerRootless {
         progress: Progress<'_>,
     ) -> Result<Outcome> {
         let user = values.get(InstallDockerRootless::USER)?.to_owned();
+
+        // Before the session is asked about, because an account that does not
+        // exist has no session either and the two are not the same finding.
+        // Measured: `user=noexiste` reported the service manager unreachable,
+        // which is true, useless, and sends the reader to `systemd-logind` over
+        // a typo. The install has always checked this; the inverse had not.
+        if !backend.accounts().exists(executor, &user)? {
+            return Err(Error::NoSuchAccount { user });
+        }
+
         let user_services = backend.user_services();
+
+        // Asked here as well as in the install, because the two run at
+        // different times and the second cannot assume what the first left. A
+        // host rebooted since, or one whose `systemd-logind` has stopped, has
+        // an account whose service manager is no longer reachable — and this is
+        // the task that was reported failing: `runuser -l deploy -c 'systemctl
+        // --user disable --now docker.service'` answered `Failed to connect to
+        // user scope bus`, which named two unset variables and no cause.
+        //
+        // Refused rather than skipped. A teardown that ran on regardless would
+        // remove the engine's files while leaving a unit nothing stopped, and
+        // report success over a half-removed install.
+        if !user_services.session_is_reachable(executor, &user)? {
+            return Err(Error::NoUserSession { user });
+        }
 
         report(
             progress,
@@ -808,6 +845,9 @@ mod tests {
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
                 Reply::ok(""), // subuid
                 Reply::ok(""), // subgid
+                // `printenv XDG_RUNTIME_DIR` as the account: a populated value
+                // is a session `systemctl --user` can address.
+                Reply::ok("/run/user/1001"),
                 // Debian reaches the engine through Docker's own repository,
                 // as RHEL does: the distribution packages `docker.io`, which
                 // carries no rootless setup script.
@@ -816,7 +856,8 @@ mod tests {
                 Reply::ok(""),         // install -d the keyring directory
                 Reply::ok(""),         // fetch the key
                 Reply::ok(""),         // write the source
-                Reply::ok(""),         // apt-get update
+                Reply::ok(""),         // apt-get update, for the new source
+                Reply::ok(""),         // apt-get update, the one every install now runs
                 Reply::ok(""),         // install
                 Reply::ok("Linger=no"), // not lingering yet
                 Reply::ok(""),         // enable-linger
@@ -842,6 +883,107 @@ mod tests {
     }
 
     #[test]
+    fn an_unreachable_session_is_refused_before_anything_is_installed() {
+        // Reported from a Debian 13 host, on the uninstall half:
+        // `runuser -l deploy -c 'systemctl --user disable --now docker.service'`
+        // answered `Failed to connect to user scope bus via local transport:
+        // $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined`.
+        //
+        // `runuser -l` is relied on to establish the session that furnishes
+        // those variables, and `pam_systemd` — listed on Debian as
+        // `-session optional`, so silent when it fails — is what furnishes
+        // them. Reproduced under systemd as PID 1 by preventing logind from
+        // creating a session: the shell starts, the environment is empty.
+        //
+        // Refused here rather than discovered at `enable --now`, by which point
+        // the engine is installed and what surfaces is systemd's message naming
+        // two variables and no cause.
+        let (outcome, commands) = run(
+            &InstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok(""), // subuid
+                Reply::ok(""), // subgid
+                // The session was never established, so `printenv` exits
+                // non-zero with nothing on stdout.
+                Reply::failure(1, ""),
+            ],
+            &user_values("deploy"),
+        );
+
+        let err = outcome.expect_err("an unreachable session must be refused");
+
+        assert!(
+            matches!(err, Error::NoUserSession { ref user } if user == "deploy"),
+            "the error must name the account: {err:?}"
+        );
+
+        // What the refusal is *for*: nothing may have been installed by the
+        // time it happens. An error raised after the install would be correct
+        // and useless.
+        assert!(
+            !commands.iter().any(|command| command.contains("apt-get")),
+            "nothing may be installed before the session is known good: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_session_stops_the_uninstall_rather_than_half_removing_it() {
+        // The half that was actually reported. Asked again here rather than
+        // trusted from the install, because the two run at different times: a
+        // host rebooted since, or one whose `systemd-logind` has stopped, has
+        // an account whose service manager is no longer reachable.
+        //
+        // Refused rather than skipped, because the teardown that follows
+        // removes the engine's files. Running it over a unit nothing could stop
+        // leaves a half-removed install reported as a success.
+        let (outcome, commands) = run(
+            &UninstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::failure(1, ""), // no session
+            ],
+            &user_values("deploy"),
+        );
+
+        let err = outcome.expect_err("an unreachable session must be refused");
+
+        assert!(
+            matches!(err, Error::NoUserSession { ref user } if user == "deploy"),
+            "the error must name the account: {err:?}"
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|command| command.contains("setuptool") || command.contains("disable")),
+            "neither the teardown nor the disable may run: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn removing_from_an_account_that_does_not_exist_says_so() {
+        // Measured against the binary: `user=noexiste` reported the service
+        // manager unreachable, which is true of an account that is not there
+        // and sends the reader to `systemd-logind` over a typo. The install has
+        // always made this check; its inverse had not.
+        let (outcome, _) = run(
+            &UninstallDockerRootless,
+            Family::Debian,
+            vec![Reply::failure(1, "")], // getent: no such account
+            &user_values("noexiste"),
+        );
+
+        let err = outcome.expect_err("a missing account must be refused");
+
+        assert!(
+            matches!(err, Error::NoSuchAccount { ref user } if user == "noexiste"),
+            "the error must name the account, not the session: {err:?}"
+        );
+    }
+
+    #[test]
     fn an_engine_that_did_not_come_up_is_an_error() {
         // `enable --now` exiting zero says the command ran. Reporting success
         // here would send the administrator to look at their containers.
@@ -850,13 +992,15 @@ mod tests {
             Family::Debian,
             vec![
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
-                Reply::ok(""),
-                Reply::ok(""),
-                Reply::ok(""),
-                Reply::ok("Linger=yes"),
-                Reply::ok(""),
-                Reply::ok(""),
-                Reply::ok("inactive"), // enabled, not running
+                Reply::ok(""),               // subuid
+                Reply::ok(""),               // subgid
+                Reply::ok("/run/user/1001"), // the session is reachable
+                Reply::ok(""),               // apt-get update, before the install
+                Reply::ok(""),               // install
+                Reply::ok("Linger=yes"),     // already lingering
+                Reply::ok(""),               // setuptool
+                Reply::ok(""),               // enable --now
+                Reply::ok("inactive"),       // enabled, not running
             ],
             &user_values("deploy"),
         );

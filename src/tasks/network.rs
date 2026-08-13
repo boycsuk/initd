@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::exec::Executor;
 use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, External, Protocol as WarnProtocol, Reason};
-use crate::tasks::params::{Param, ParamKind, ParamValues};
+use crate::tasks::params::{LiveDefault, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
 
@@ -45,9 +45,16 @@ pub fn category() -> Category {
         vec![
             Node::Category(Category::new(
                 "Firewall",
+                // Enabling and disabling share a row, so it shows whichever the
+                // host justifies: a row offering to enable a firewall that is
+                // already filtering was reported as exactly the confusion the
+                // reversible pairs elsewhere exist to avoid.
                 vec![
                     Node::Task(Box::new(FirewallStatus)),
-                    Node::Task(Box::new(EnableFirewall)),
+                    Node::Reversible {
+                        forward: Box::new(EnableFirewall),
+                        inverse: Box::new(DisableFirewall),
+                    },
                     Node::Task(Box::new(AllowPort)),
                 ],
             )),
@@ -162,7 +169,7 @@ pub struct EnableFirewall;
 
 impl Task for EnableFirewall {
     fn id(&self) -> &'static str {
-        "firewall.enable"
+        Self::ID
     }
 
     fn title(&self) -> &'static str {
@@ -170,9 +177,12 @@ impl Task for EnableFirewall {
     }
 
     fn description(&self) -> &'static str {
-        "Denies inbound traffic by default, admitting established connections, \
-         loopback, and the port SSH is listening on. Open anything else with \
-         firewall.allow-port."
+        "Closes every inbound port except the ones named here. Nothing is being \
+         opened: a default-deny policy means anything not admitted is dropped, \
+         including the connection you are reading this over — which is why the \
+         port your SSH listens on is asked for and admitted in the same step. \
+         Established connections and loopback keep working. Open anything else \
+         afterwards with firewall.allow-port."
     }
 
     /// A default-deny policy applied without admitting the current session is
@@ -184,13 +194,41 @@ impl Task for EnableFirewall {
 
     fn params(&self) -> Vec<Param> {
         vec![
-            Param::new(Self::SSH_PORT, "SSH port", ParamKind::Port)
+            // "Port to keep open" rather than "SSH port": the field is not
+            // asking which port SSH uses as a piece of trivia, it is asking
+            // which one must survive the policy about to be applied. An
+            // operator who only wants to "turn the firewall on" reads the
+            // second label as an unrelated question — reported as exactly that
+            // — and the answer they skip past is the one keeping their session
+            // alive.
+            // The hint warns rather than describes, and it names no number.
+            // Recommending "22" would be recommending the value that locks out
+            // every host whose SSH has moved — the defect this field was just
+            // fixed for — and the port already shown is the one this host is
+            // serving, read from `sshd -T`. What an operator needs told is not
+            // which port to type but what happens if it is wrong, which is the
+            // one thing no other field on this form can cost them.
+            Param::new(Self::SSH_PORT, "Port to keep open", ParamKind::Port)
                 .with_initial(DEFAULT_SSH_PORT.to_string())
-                .with_hint("kept open, so this session survives"),
+                .defaulting_to_live(LiveDefault::SshPort)
+                .with_hint("wrong port here ends this session")
+                .warning_hint(),
         ]
     }
 
     supported_everywhere!();
+
+    /// What the row reports is whether this host is *filtering*, not whether
+    /// `nft` is installed — the probe treats this capability specially for
+    /// exactly that reason. Every Debian has the package available and none of
+    /// them filters until told to.
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Nftables)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["firewall.enable"]
+    }
 
     fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::SSH_PORT) else {
@@ -291,6 +329,15 @@ impl Task for EnableFirewall {
 impl EnableFirewall {
     /// Name of the parameter holding the port to keep open.
     pub const SSH_PORT: &'static str = "ssh_port";
+
+    /// Id, named because the interface reaches for it when building the
+    /// confirmation this task needs and no other does.
+    ///
+    /// A constant rather than a literal at the match site, for the reason
+    /// `LockRoot::ID` records: matching on a literal puts the id in two places
+    /// with nothing tying them together, and a rename would leave the dialog
+    /// silently falling back to the generic warning.
+    pub const ID: &'static str = "firewall.enable";
 }
 
 /// Opens one inbound port.
@@ -364,6 +411,25 @@ impl Task for AllowPort {
         // that stays closed, so this resolves rather than assuming.
         let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
 
+        // Before the rule, not after it. This check existed at the end of the
+        // task, where it reported "nothing is being filtered yet" over a rule
+        // that had just been added — and on a host where `firewall.enable` had
+        // never run, it was never reached at all: there is no table to add a
+        // rule to, so `nft` fails first. Reported from a Debian 13 host as
+        // `Error: Could not process rule: No such file or directory`, which
+        // names a file for a table that was never created and reads as a
+        // defect in the rule.
+        //
+        // Refused rather than repaired. Creating the table here would leave an
+        // `accept` rule in a ruleset with no default-deny policy — a firewall
+        // that filters nothing while looking configured, which is worse than
+        // the error. And enabling the policy is not this task's to do: it can
+        // end the session that asked for it, which is why `firewall.enable`
+        // carries a lockout confirmation and this one does not.
+        if !firewall.state(executor)?.active {
+            return Err(Error::FirewallNotEnabled);
+        }
+
         firewall.allow(executor, port, protocol)?;
 
         // Kept, for the same reason enabling is: a rule that only exists in the
@@ -385,13 +451,71 @@ impl Task for AllowPort {
             },
         );
 
-        // "Open" means something different depending on whether anything is
-        // closed. With no default-deny policy in place every port is already
-        // reachable, and a message reporting this one as opened would read as
-        // "only this is admitted" — the opposite of what the host does.
-        if !firewall.state(executor)?.active {
-            report(progress, &Msg::TaskFirewallNotFilteringYet);
-        }
+        // The "nothing is being filtered yet" note that used to live here is
+        // gone, and its absence is the fix rather than an omission. It reported
+        // the condition *after* adding a rule, which on a host with no policy
+        // is a rule that cannot be added at all — so the note was either
+        // unreachable or printed over work that had already happened. The
+        // condition is now refused before anything is written, above.
+        Ok(Outcome::Done)
+    }
+}
+
+/// Turns default-deny filtering off again.
+///
+/// The inverse of [`EnableFirewall`], so the row shows one verb or the other
+/// according to what this host is actually doing — reported as a row offering
+/// to enable a firewall that was already on.
+pub struct DisableFirewall;
+
+impl Task for DisableFirewall {
+    fn id(&self) -> &'static str {
+        "firewall.disable"
+    }
+
+    fn title(&self) -> &'static str {
+        "Disable the firewall"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes the inbound filtering this tool applied and stops it returning \
+         at boot. Rules written by anything else are left alone. Every port \
+         this host serves becomes reachable again, which is the state it was in \
+         before the firewall was enabled."
+    }
+
+    /// Opening every port is not a lockout — nothing that was reachable stops
+    /// being reachable — but it is not a change to make by pressing Enter
+    /// without reading either.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Change
+    }
+
+    supported_everywhere!();
+
+    /// The row this task's success changes, which is the pair it belongs to.
+    ///
+    /// Inverses have to declare this as much as their forward halves do, and
+    /// the default of "nothing" is why they can forget: the interface re-probes
+    /// only what a finished task names, so an inverse that names nothing leaves
+    /// its own row showing the verb it just stopped being true. Reported as
+    /// disabling the firewall and watching the row go on offering to disable it.
+    fn affects(&self) -> &'static [&'static str] {
+        &["firewall.enable"]
+    }
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
+
+        firewall.disable(executor)?;
+
+        report(progress, &Msg::TaskFirewallDisabled);
 
         Ok(Outcome::Done)
     }
@@ -482,6 +606,38 @@ fn set_and_report(
     progress: Progress<'_>,
 ) -> Result<Outcome> {
     let sysctl = backend.sysctl();
+
+    // Before anything asks the kernel a question, because the tool that asks it
+    // is a package on four of the five families and is missing from a freshly
+    // provisioned RHEL — `rockylinux:9` ships no `sysctl` at all. Going
+    // straight to the read failed with a missing binary, and the write failed
+    // worse: it is wrapped in `sudo`, so the spawn succeeds and what surfaces
+    // is exit 127 with `sudo: sysctl: command not found` buried on stderr.
+    // Both read as a broken tool rather than as a package nobody installed,
+    // which is the same wording `firewall.enable` installs `nftables` to avoid.
+    //
+    // Alpine never reaches the install: `sysctl` is a busybox applet there, so
+    // it is always available and the backend names no package for it. An empty
+    // name would mean "nothing to install" rather than "unknown", and this
+    // refuses instead of running `apk add ""`.
+    if !sysctl.is_available(executor)? {
+        let package = backend.package_for(Capability::Sysctl);
+
+        if package.is_empty() {
+            return Err(Error::ProgramNotFound {
+                program: "sysctl".to_owned(),
+            });
+        }
+
+        report(
+            progress,
+            &Msg::TaskInstalling {
+                what: package.to_owned(),
+            },
+        );
+
+        backend.packages().install(executor, package)?;
+    }
 
     // Both halves, because either alone is a system that does not behave as
     // the task describes. A kernel can hold the right value for reasons that
@@ -683,10 +839,20 @@ mod tests {
         // `nft` is packaged separately on every family. Going straight to
         // enabling would fail with "command not found", which reads as a
         // broken tool rather than as a missing package.
+        //
+        // `Reply::NotFound` rather than an exit code, and the difference is the
+        // whole reason this branch shipped broken. An absent binary produces no
+        // process and therefore no status: the `spawn` fails and the executor
+        // raises `ProgramNotFound`. Scripted as `failure(127, …)` this test
+        // passed for as long as `is_available` propagated that error, because
+        // 127 is a *process* saying "not found" — a thing only a shell can
+        // produce, and the shell is not in this path. The test asserted the
+        // install on a host that had `nft` all along, and a Debian without the
+        // package reported `nft --version` failing.
         let mock = MockExecutor::with_replies([
-            Reply::failure(127, "nft: not found"), // not available
-            Reply::ok(""),                         // install
-            Reply::ok(""),                         // the ruleset
+            Reply::NotFound, // no `nft` on this host at all
+            Reply::ok(""),   // install
+            Reply::ok(""),   // the ruleset
         ]);
         let backend = for_family(Family::Debian);
 
@@ -746,6 +912,51 @@ mod tests {
     }
 
     #[test]
+    fn a_port_is_not_opened_against_a_policy_that_does_not_exist() {
+        // Reported from a Debian 13 host with `nft` installed and working:
+        // `nft add rule inet initd input tcp dport 22 accept` answered
+        // `Error: Could not process rule: No such file or directory`, naming a
+        // file for a table nobody had created — `firewall.enable` had never
+        // run. That reads as a defect in the rule.
+        //
+        // The task did carry a note for this condition, and it was written to
+        // run *after* the rule: on a host with no table the rule cannot be
+        // added at all, so the note was unreachable in exactly the case it
+        // described.
+        let mut values = ParamValues::new();
+        values.set(AllowPort::PORT, "443".to_owned());
+        values.set(AllowPort::PROTOCOL, "tcp".to_owned());
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok("nftables v1.0.9"),                   // `nft` is here
+            Reply::failure(1, "No such file or directory"), // and no table is
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let error = AllowPort
+            .run(&mock, backend.as_ref(), &values, &mut |_| {})
+            .expect_err("a port must not be opened against no policy");
+
+        assert!(
+            matches!(error, Error::FirewallNotEnabled),
+            "the refusal must name the missing policy, not the missing file: {error:?}"
+        );
+
+        // The point of refusing rather than repairing: nothing may be written.
+        // Creating the table here would leave an `accept` rule in a ruleset
+        // with no default-deny policy — a firewall that filters nothing while
+        // looking configured.
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|command| command.contains("add rule") || command.contains("add table")),
+            "the host's ruleset must be untouched: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
     fn opening_a_port_keeps_it_across_a_reboot() {
         // Same reasoning as enabling: a rule only in the kernel is a rule that
         // ends at the next restart.
@@ -755,13 +966,13 @@ mod tests {
 
         let mock = MockExecutor::with_replies([
             Reply::ok("nftables v1.0.9"),       // available
+            Reply::ok("table inet initd {\n}"), // state: a policy is in place
             Reply::failure(1, ""),              // not already allowed
             Reply::ok(""),                      // add rule
             Reply::ok("table inet initd {\n}"), // list ruleset
             Reply::ok("systemd 257"),           // which init
             Reply::ok(""),                      // tee
             Reply::ok(""),                      // enable
-            Reply::ok("table inet initd {\n}"), // state: active
         ]);
         let backend = for_family(Family::Debian);
 
@@ -790,8 +1001,11 @@ mod tests {
             &AllowPort,
             vec![
                 Reply::ok("nftables v1.0.9"),
-                Reply::failure(1, "no such table"),
-                Reply::ok(""),
+                // The policy is in place: a port is only opened against one,
+                // since against no policy every port is already reachable.
+                Reply::ok("table inet initd {\n}"),
+                Reply::failure(1, "no such table"), // is_allowed: not yet
+                Reply::ok(""),                      // add rule
             ],
             &values,
         );
@@ -818,8 +1032,11 @@ mod tests {
                 // The front-end is resolved before anything is written: a port
                 // opened on one that is not filtering stays closed.
                 Reply::ok("nftables v1.0.9"),
-                Reply::failure(1, "no such table"),
-                Reply::ok(""),
+                // The policy is in place: a port is only opened against one,
+                // since against no policy every port is already reachable.
+                Reply::ok("table inet initd {\n}"),
+                Reply::failure(1, "no such table"), // is_allowed: not yet
+                Reply::ok(""),                      // add rule
             ],
             &values,
         );
@@ -840,6 +1057,7 @@ mod tests {
         let (outcome, commands) = run(
             &EnableIpForward,
             vec![
+                Reply::ok("Linux"),                   // sysctl is available
                 Reply::ok("1\n"),                     // the running value
                 Reply::ok(""),                        // test -e: the drop-in exists
                 Reply::ok("net.ipv4.ip_forward = 1"), // and records the value
@@ -852,6 +1070,97 @@ mod tests {
         assert!(
             !commands.iter().any(|command| command.starts_with("tee")),
             "nothing needed writing: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_sysctl_tool_is_installed_when_it_is_absent() {
+        // `sysctl` is packaged separately on four of the five families, and a
+        // freshly provisioned RHEL has none — measured on `rockylinux:9`, where
+        // `dnf provides /usr/sbin/sysctl` answers `procps-ng` from baseos and
+        // the image ships nothing. Reported from a Debian host as
+        // `FAILED — sysctl.ip-forward / program sysctl`, which reads as a
+        // broken tool rather than a package nobody installed.
+        //
+        // `Reply::NotFound` rather than a non-zero exit, for the reason the
+        // firewall's own test records: an absent binary produces no process and
+        // therefore no status.
+        let (outcome, commands) = run(
+            &EnableIpForward,
+            vec![
+                Reply::NotFound,  // no `sysctl` on this host
+                Reply::ok(""),    // install
+                Reply::ok("0\n"), // now it reads, and does not hold the value
+                // `is_persisted` is never asked: `holds` is already false, and
+                // `&&` short-circuits.
+                Reply::ok(""), // sysctl -w
+                Reply::ok(""), // test -e inside the write
+                Reply::ok(""), // tee
+                Reply::ok(""), // chmod
+            ],
+            &ParamValues::new(),
+        );
+
+        outcome.expect("the task must install the tool rather than fail");
+
+        assert!(
+            commands.iter().any(|command| command.contains("procps")),
+            "the package must be installed: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn alpine_is_refused_rather_than_sent_to_install_nothing() {
+        // The family where an empty package name means "already there" rather
+        // than "not packaged": `sysctl` is a busybox applet, so it cannot be
+        // missing, and if it somehow is there is nothing to install. Without
+        // this branch the task would run `apk add ""`.
+        //
+        // Both directions of the guard matter, which is why this test exists
+        // beside the one above: an install branch that fired here would send a
+        // package manager after an empty name, and one that refused everywhere
+        // would leave Debian and RHEL exactly as broken as they were.
+        //
+        // The assertion that carries this test is the *second* one. Removing
+        // the guard entirely leaves the error unchanged — `ProgramNotFound`
+        // then comes from `sysctl -n` itself a line later — so an error-only
+        // test would pass over the defect it is named for. What only the guard
+        // produces is the absence of an install: without it, an empty package
+        // name reaches `apk add`.
+        let mock = MockExecutor::with_replies([Reply::NotFound]);
+        let backend = for_family(Family::Alpine);
+
+        let error = EnableIpForward
+            .run(&mock, backend.as_ref(), &ParamValues::new(), &mut |_| {})
+            .expect_err("an absent applet must be reported, not installed");
+
+        assert!(
+            matches!(error, Error::ProgramNotFound { ref program } if program == "sysctl"),
+            "the error must name the tool: {error:?}"
+        );
+
+        let commands = mock.recorded_lines();
+
+        // `apk` at all, not `apk add ""`: the empty name renders as nothing, so
+        // matching the full line would pass against the very command this
+        // rejects.
+        assert!(
+            !commands.iter().any(|command| command.contains("apk")),
+            "nothing may be installed on the one family that always has it: {commands:?}"
+        );
+
+        // Which command ran, not how many. Both assertions above hold with the
+        // guard deleted — the error then comes from `sysctl -n
+        // net.ipv4.ip_forward` a line later, which is also one command and also
+        // installs nothing — so a test that stopped there passed over the
+        // defect it is named for. The availability check reads
+        // `kernel.ostype`, a key chosen because every kernel carries it, and
+        // that is the one observable difference between the two paths.
+        assert_eq!(
+            commands,
+            ["sysctl -n kernel.ostype"],
+            "the task must refuse at the availability check, not stumble into \
+             the read: {commands:?}"
         );
     }
 
@@ -869,6 +1178,7 @@ mod tests {
         let (outcome, commands) = run(
             &EnableIpForward,
             vec![
+                Reply::ok("Linux"),    // sysctl is available
                 Reply::ok("1\n"),      // already live
                 Reply::failure(1, ""), // but no drop-in of ours exists
                 Reply::ok(""),         // sysctl -w

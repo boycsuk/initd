@@ -193,10 +193,26 @@ a command that broke.
   Escape sequences are stripped from what a command prints, so a script that
   colours unconditionally does not put raw `\x1b[` codes on the screen or into
   the transcript.
-- **Detail** — occupies the same area as Output before any task has run,
-  showing what the selected task does, titled with the task's own name. With a
-  category selected it shows the category name and how many tasks it holds at
-  any depth.
+- **Detail** — shows what the selected task does, titled with the task's own
+  name. With a category selected it shows the category name and how many tasks
+  it holds at any depth.
+
+  It **shares the right-hand pane with Output**, description above and
+  transcript below, taking up to seven rows and leaving the rest to the
+  output. A ceiling rather than a share, because a description is a sentence or
+  two of known length while a transcript grows: splitting by percentage would
+  leave half the pane blank above a log that is scrolling.
+
+  Before this the pane showed one or the other, chosen by whether any output
+  existed — so once a task had run, every task selected afterwards had its
+  description displaced by the previous one's transcript, with no way back
+  until another task started.
+
+  Two exceptions. Below 18 rows of pane the output takes it whole, since
+  splitting serves neither half; and `o` folds the *description* away, giving
+  the output the pane, for when a long transcript is worth all of it. The
+  description is the half that yields: it is static text about a task already
+  running, while the transcript is what is being watched.
 - **Key bar** — the key hints for the current row and state. One borderless
   row, dropped on terminals shorter than 24 rows.
 - **Parameter form** — overlays the centre of the screen for tasks that collect
@@ -500,6 +516,7 @@ by name, and a grep for the constant found nothing.
 | Key | Action |
 |-----|--------|
 | `Tab` | Move focus between the tree and the output |
+| `o` | Fold the task description away, giving the whole right pane to the output — and back. Offered only once there is output. Nothing is discarded either way: the description is redrawn from the selected task, the transcript is untouched, and focus is left alone because the output stays drawn in both states |
 | `Ctrl-L` | Repaint every cell — except in a form, where it opens the field's list |
 | `?` | Open the help overlay |
 | `q` | Quit, from any level and either pane |

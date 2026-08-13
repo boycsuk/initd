@@ -7,7 +7,329 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The firewall's confirmation names the port and what getting it wrong
+  costs.** It showed the generic lockout sentence — "this operation can lock
+  you out of a server you reach over SSH, make sure you have another way in" —
+  which is true here and unactionable: it names no port, and that dialog is the
+  last place the value can still be changed.
+
+  It now reads like `users.lock-root`'s, which was the shape asked for: a red
+  block naming the port about to be the only one admitted, and saying plainly
+  that a session arriving over SSH depends on it. Where the value disagrees
+  with what `sshd -T` reports the host is serving, it says so and names the
+  port to use instead — the case that ends the session, and the one an operator
+  who has not thought about it cannot see.
+
+  The agreeing case still warns rather than reassuring. `sshd -T` says what the
+  daemon serves, not how the operator reached it: a jump host, a forwarded port
+  or a provider console all end up here, so "these match, you are safe" would
+  be a promise made on evidence that does not support it.
+
+- **The firewall row now offers to disable when the host is already
+  filtering.** Reported as a row offering to enable a firewall that was plainly
+  on. `firewall.enable` and a new `firewall.disable` share a row like every
+  other reversible pair, and the probe decides which verb by asking what the
+  host is *doing* rather than what it has installed — the one capability where
+  those differ, since every Debian can install `nft` and none filters until
+  told to.
+
+  Disabling removes only what this tool created: the `inet initd` table, the
+  saved ruleset and the boot unit, or firewalld's daemon where that is the
+  front-end. A ruleset somebody else wrote is left alone — a task named for
+  undoing its own change must not become the one that flushed Docker's rules.
+  Both halves, because a table removed while the boot still replays it is a
+  firewall that returns at the next restart, reported as off.
+
+  The saved ruleset is emptied rather than deleted: measured, `nft -f` on an
+  empty file exits 0 and leaves the ruleset empty, while a deleted file leaves
+  the unit failing at every boot instead of having nothing to do.
+
+- **`ssh.uninstall` exists, against this project's own advice.** It was absent
+  by decision — removing the SSH server over its own connection is the single
+  operation here with no route back, since the session ends mid-removal and
+  reinstalling needs the network path that just closed. Added on request; the
+  reasoning has not stopped being true, so it carries the strongest
+  confirmation the interface has and says plainly that recovery is the
+  provider's console. `docs/user-stories.md` records the reversal rather than
+  quietly dropping the promise it made.
+
+- **`ssh.install` reports which OpenSSH the host runs.** Asked for because
+  `openssh-server is already installed` says nothing about *what* is installed,
+  and the version is what decides which hardening tier is safe —
+  `ssh.harden-strict` insists on algorithms an older client may never have
+  learned.
+
+  Read from `sshd -V` rather than `ssh -V`: Rocky's `openssh-server` package
+  installs no client at all, so asking the client answers `command not found`
+  on a host with a working daemon. And read from **stderr**, which is where all
+  three implementations print it while leaving stdout empty and exiting 0 —
+  measured on `debian:13`, `alpine:3.23` and `rockylinux:9`. This project had
+  already paid for that once: two helpers in the container suite read `ssh -V`
+  from stdout, so the versions a scenario existed to compare were always blank.
+
+  Only the OpenSSH field is kept. The rest of the banner names the
+  distribution's patch level and OpenSSL's version, which answer a different
+  question. A version that cannot be read is left out rather than failing the
+  task: it is one line of narration after the daemon is already installed and
+  running.
+
+- **The description and the output now share the right-hand pane, and `o` folds
+  the output away.** The pane used to show one or the other, chosen by whether
+  any output existed — so once a task had run, every task selected afterwards
+  had its description displaced by the previous one's transcript, with no way
+  back until another task started. Reported as the output covering the
+  description, which is exactly what it was.
+
+  The description takes up to seven rows and the output takes the rest. A
+  ceiling rather than a share: a description is a sentence or two of known
+  length while a transcript grows, so splitting by percentage would leave half
+  the pane blank above a log that is scrolling.
+
+  `o` folds the output away entirely, for when a long transcript is worth the
+  whole pane. It folds rather than clears — the transcript is still there when
+  it comes back, which is what the pane's own design is careful about — and it
+  takes the focus with it, or the arrow keys would go on scrolling something
+  nobody can see while the tree appeared frozen.
+
+  The short-terminal threshold was measured rather than derived, and the first
+  attempt was dead code: the sum of the two pane minima is 14, the interface
+  refuses to draw below 15 rows at all, and the pane at that height is 13 — so
+  a branch guarding "too short to split" could never be reached while reading
+  as though it covered the case. It is 18 rows of pane, which is reachable and
+  pinned from both sides.
+
 ### Fixed
+- **`firewall.enable` offered a hardcoded `22` for the port keeping the session
+  alive.** Reported as a question that made no sense — *"why do I have to give a
+  port when I just want to turn the firewall on?"* — which turned out to be two
+  defects wearing one face.
+
+  **The dangerous one:** the port field admits one port through a default-deny
+  policy so the operator's own connection survives, and it proposed `22`
+  regardless of what the host was serving. On a machine whose SSH had been
+  moved, taking the default admitted a port nothing listens on and closed the
+  one carrying the session. The field that exists to prevent a lockout was the
+  most reliable way to cause one. It now opens on whatever `sshd -T` reports,
+  falling back to the file and only then to 22 — measured on `debian:13`, where
+  a host with no `Port` line at all still serves 22, so parsing only the file
+  would have found nothing in the commonest case. **The CLI had the same hole**
+  and now shares the fix: `initd run firewall.enable` with no arguments reads
+  the host too.
+
+  **The one that prompted the report:** nothing on screen explained why the
+  question was being asked. The description said "denies inbound traffic by
+  default" and the field said "SSH port", which reads as an unrelated question
+  in a task whose name is a verb with no object. The description now leads with
+  what *closes*, names the connection being read over as one of the things at
+  risk, and the field is labelled "Port to keep open" — the question it is
+  actually asking. The lockout warning says what stops answering before it
+  mentions the hosting provider's firewall.
+
+  `ssh.change-port` had the same stale default, and `docs/user-stories.md` has
+  promised since before it was true that the field "starts on the current
+  port". It does now.
+
+- **Opening a port on a host with no firewall policy blamed the rule.**
+  Reported from a Debian 13 host where `nft` was installed and working:
+  `firewall.allow-port` answered `Error: Could not process rule: No such file
+  or directory`, naming a file for a table nobody had created. `firewall.enable`
+  had never run there, so the table the rule targets did not exist.
+
+  The task *did* carry a note for this condition — "nothing is being filtered
+  yet" — and it ran **after** the rule was added, twenty-five lines further
+  down. On a host with no table the rule cannot be added at all, so the note
+  was unreachable in exactly the case it was written for. It is now a refusal,
+  before anything is written, naming the task that fixes it.
+
+  Refused rather than repaired, and the alternatives are worth recording.
+  Creating the table here would leave an `accept` rule in a ruleset with no
+  default-deny policy — a firewall that filters nothing while looking
+  configured, which is worse than the error. Enabling the policy is not this
+  task's to do: it can end the session that asked for it, which is why
+  `firewall.enable` carries a lockout confirmation and this one does not.
+
+- **`ssh.install` never reported an SSH server that was already installed.** It
+  detected it correctly when run, but the tree asked the host nothing, so the
+  row read the same whether or not the package was there.
+
+  The probe measured only reversible pairs, reasoning that a lone task has no
+  verb to choose. It has none — and it can still say whether the thing is
+  present. `ssh.install` is deliberately inverse-less, since removing the SSH
+  server over SSH is the one operation this tool refuses to offer, so it could
+  never be measured. Lone tasks are now measured when they declare a subject,
+  which keeps the cost to one query per task that has something to report.
+
+  A reversible row says "already there" by switching verbs; a one-verb row
+  carries a flag instead — a new one rather than the existing `✓`, which
+  already means *this session installed it*.
+
+- **Two package managers resolved names against an index nobody had
+  refreshed.** Found while verifying the sysctl fix on a clean `debian:13`:
+  `apt-get install -y procps` answers `E: Unable to locate package procps` and
+  exits 100. The package exists and the name is right — nothing had told apt
+  where to look. That reads as this backend naming the package wrong, which is
+  the one thing a per-family backend exists to get right.
+
+  **Arch had the same defect and a louder symptom.** `pacman -S` never
+  refreshes its databases, so on `archlinux:latest`, whose image ships them
+  empty, it warns `database file for 'core' does not exist (use '-Sy' to
+  download)` and fails with `target not found`. It is now `-Sy`, which syncs
+  and installs in one operation.
+
+  Measured before deciding, rather than assumed to be free: on Debian a refresh
+  with the lists already fresh costs **342 ms** against 1019 ms cold, on an
+  install that itself takes 1567 ms. Cheap enough to pay every time, and far
+  cheaper than a name resolved against a stale index. On Arch the sync costs
+  274 ms.
+
+  **The other three families were checked and need nothing**: Alpine's `apk
+  add --no-cache` fetches the index as part of the operation, and dnf and
+  zypper refresh on their own. Verified on `alpine:3.23`, `rockylinux:9` and
+  `opensuse/tumbleweed`, each installing successfully from a clean image.
+
+  `-Syu` was considered and rejected for Arch. It would remove the
+  partial-upgrade risk that `-Sy` carries, and it would do so by letting a task
+  asked to install `nftables` upgrade the kernel and every library on a
+  production server. A full upgrade has its own reboot, its own timing and its
+  own confirmation, none of which this task has.
+
+  Verified end to end on both families from a clean image, in the exact
+  condition that failed: Debian now reports `Installing procps...` and Arch
+  `installing nftables` where both previously refused.
+
+- **Thirty field hints were written, compiled, and never drawn.** Reported
+  against `firewall.enable`, whose dialog asks for an "SSH port" and gave no
+  reason to — the hint answering that question, `kept open, so this session
+  survives`, had been on the field all along and the form rendered no hint at
+  all. `Param::with_hint` is called thirty times across the tree and
+  `header_line` never read the field.
+
+  Several of the missing ones resolve an ambiguity the label cannot: `keep
+  leaves the files on disk; delete removes them`, `must appear in /etc/shells`,
+  `space-separated; every other account is refused`.
+
+  Drawn beside the label rather than on a row of its own, for the reason the
+  code already gives about the option counter: a row per field is the
+  difference between fitting a 24-row terminal and not. When the row is too
+  tight it is dropped whole rather than truncated — half a sentence reads as a
+  defect, and the verdict it would crowd out is the part of the row nobody can
+  work without. Pinned in both directions, since a hint that never appears and
+  one that pushes the verdict off the edge are both regressions.
+
+- **Rootless Docker blamed the engine for a session that was never
+  established.** Reported from a Debian 13 host:
+  `runuser -l deploy -c 'systemctl --user disable --now docker.service'`
+  answered `Failed to connect to user scope bus via local transport:
+  $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using
+  --machine=<user>@.host …)`. That names two variables, no cause, and suggests
+  a flag for reaching another host's bus.
+
+  Both user-service tasks rely on `runuser -l` to open a login session, and on
+  `pam_systemd` inside it to set those variables. Debian lists that module in
+  `/etc/pam.d/runuser-l` as `-session optional pam_systemd.so`, where the
+  leading `-` means a failure is **not even logged**: the shell starts
+  perfectly with an empty environment, and every `systemctl --user` after it
+  addresses nothing. Reproduced under systemd as PID 1 by preventing
+  `systemd-logind` from creating a session.
+
+  Both tasks now ask whether the session is reachable and refuse with an error
+  naming `systemd-logind`. The install asks beside its existing subordinate-id
+  check, for the same stated reason — discovering it at `enable --now` wastes
+  the install. The uninstall asks again rather than trusting the install, since
+  the two run at different times, and refuses rather than skipping: a teardown
+  that ran on regardless would remove the engine's files while leaving a unit
+  nothing stopped, and report success over a half-removed install.
+
+  **Exporting the variables was measured and rejected**, which is worth
+  recording because it was the obvious fix and it does not work: the bus socket
+  lives *inside* `/run/user/<uid>`, which `logind` creates, so pointing at a
+  directory nothing created answers `No such file or directory` — the same
+  failure with a different spelling. With the session healthy `runuser -l`
+  populates both variables unaided, even without lingering, so there is nothing
+  to repair and the honest response is to refuse.
+
+  A second defect surfaced while verifying the first:
+  `docker-rootless.uninstall` never checked that the account exists, so
+  `user=noexiste` reported the service manager unreachable — true of an account
+  that is not there, and it sends the reader to `systemd-logind` over a typo.
+  The install had always made that check; its inverse had not.
+
+- **`sysctl` was assumed present on every host, and is packaged separately on
+  four of the five families.** Reported from a Debian 13 host, where both
+  kernel-parameter tasks answered `FAILED — program sysctl`.
+
+  The firewall had a `is_available` on its trait and sysctl had none, so there
+  was nowhere to hang the check: `SysctlManager` grew one, and `Capability`
+  grew a `Sysctl` variant so each backend names its own package. The exhaustive
+  `match` did its job — the new variant produced **16** compile errors naming
+  exactly the sites that had to decide.
+
+  The two halves failed differently, which is why the check is asked once up
+  front rather than inferred from either. Reading runs unprivileged and raises
+  `ProgramNotFound`; writing is wrapped in `sudo`, so the binary that gets
+  spawned *exists* and what comes back is exit 127 with `sudo: sysctl: command
+  not found` on stderr — a generic command failure carrying the real cause in
+  text nothing parses.
+
+  Package names were measured rather than assumed, and disagree three ways:
+  `procps` on Debian and openSUSE, `procps-ng` on RHEL and Arch, and on Alpine
+  **no package at all** — `sysctl` there is a busybox applet
+  (`/sbin/sysctl -> /bin/busybox`), so it cannot be missing and installing
+  anything would be wrong. That family is refused rather than sent to `apk add
+  ""`.
+
+  **The obvious availability check was wrong and was measured before it
+  shipped.** `sysctl --version` was written first; busybox rejects it *and*
+  `-V` with exit 1, so the check would have declared the tool absent across all
+  of Alpine — the same trap as the installer's `sha256sum --ignore-missing`,
+  which this project has already paid for once. It reads `kernel.ostype`
+  instead, which procps and busybox both answer with `Linux`.
+
+  **A second defect surfaced only because the first was fixed.** On
+  `rockylinux:9` there is no `/etc/sysctl.d`, and installing `procps-ng` does
+  not create one — Debian's `procps` does, and Alpine and Arch ship it, so four
+  families hid the fifth. The task got past the install and failed at
+  `tee: /etc/sysctl.d/99-initd.conf.initd.new: No such file or directory`, a
+  write failing for a reason that names a temporary file rather than the
+  missing directory. The drop-in's parent is now created first.
+
+  Verified end to end on `rockylinux:9`, the worst case, where the task now
+  reports `Installing procps-ng...` and `net.ipv4.ip_forward = 1, now and after
+  a reboot`. Alpine and Arch were checked to still install nothing.
+
+- **A firewall front-end that is not installed made three tasks report a broken
+  tool.** Reported from a Debian 13 host: `firewall.status`, `firewall.enable`
+  and `firewall.allow-port` each answered `nft --version` / `FAILED — program
+  nft`, which reads as the tool being broken rather than as a package nobody
+  had installed.
+
+  `Nftables::is_available` propagated `ProgramNotFound` with `?` instead of
+  answering `false`. An absent binary produces no process at all — the `spawn`
+  fails — so the one case the check exists for was the one it could not report.
+  Both callers were defeated at once, and both already had correct code for it:
+  `firewall.status` carries a message naming the front-ends it looked for, and
+  `firewall.enable` carries a branch that installs the package, with a comment
+  saying it exists so nobody sees "command not found". Neither was reachable.
+
+  Measured on `rockylinux:9` with no front-end installed: `firewall.status` now
+  answers `none of these is installed: firewalld, nftables` and
+  `firewall.enable` answers `installing nftables`, where both previously failed.
+
+  `Firewalld::is_available` had the same defect and mattered more, because RHEL
+  asks firewalld **first**: a host whose administrator removed it to drive `nft`
+  directly failed on the first candidate and never reached the second — a state
+  that backend's own documentation calls ordinary rather than broken.
+
+  **The test that should have caught it asserted the bug instead.** It scripted
+  the absence as `Reply::failure(127, "nft: not found")` — a *process* that ran
+  and reported not-found, which only a shell produces, and no shell is in this
+  path. It passed for as long as the defect lived, asserting the install on a
+  host that had `nft` all along. The mock could not express the real case:
+  `Reply` modelled only "a process finished with this status", so
+  `Reply::NotFound` was added to model "no process ran". A defect a test cannot
+  express is one review has to catch every time, and this one was already
+  handled correctly twice in the same file.
 - **Two scenarios were deleting each other's containers, and blaming the code
   for it.** `TwoHosts::start` named its containers from `image.family`, which
   answers `suse` for both Tumbleweed and Leap — so the two built the same three

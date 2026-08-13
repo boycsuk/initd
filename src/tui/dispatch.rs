@@ -25,7 +25,8 @@ use super::history::History;
 use super::search::Search;
 use crate::exec::{OutputLine, Stream};
 use crate::i18n::Msg;
-use crate::tasks::params::{ParamValues, Suggestions};
+use crate::tasks::network::EnableFirewall;
+use crate::tasks::params::{LiveDefault, ParamValues, Suggestions};
 use crate::tasks::users::{Credentials, DeleteUser, Examined, LockRoot, escalated_from};
 use crate::tasks::{Confirmation, Node};
 
@@ -138,6 +139,23 @@ impl App {
             // in here" rather than "where is it".
             KeyCode::Char('/') => {
                 self.search = Some(Search::new(self.cursor.tree()));
+                return true;
+            }
+            // Folds the task's description away, giving the whole pane to the
+            // output. The other direction was built first and was the wrong
+            // half: hiding the transcript to make room for a description of a
+            // task that is already running hides the thing being read.
+            //
+            // Nothing is discarded either way — the description is regenerated
+            // from the selected task on every frame, and the transcript is
+            // untouched. The key changes how the pane is divided, not what
+            // exists.
+            //
+            // Focus is left alone, unlike the earlier version: the output keeps
+            // being drawn in both states, so the arrows never end up addressing
+            // a pane that is not there.
+            KeyCode::Char('o') => {
+                self.detail_shown = !self.detail_shown;
                 return true;
             }
             // `h` is free now that the vim movement keys are gone, and the
@@ -676,7 +694,32 @@ impl App {
         // that asked `params` — a task whose only field is filtered out here
         // needs no form at all, and an empty one would put a dialog with
         // nothing in it between the operator and the confirmation.
-        let asked = task.params_here(self.backend.as_ref());
+        let mut asked = task.params_here(self.backend.as_ref());
+
+        // Before the form is built rather than after: a field takes its value
+        // from `param.initial` when it is constructed, so replacing it here is
+        // what makes the field *open* on the host's answer instead of being
+        // overwritten a moment later.
+        //
+        // `firewall.enable` is why this exists. Its port field keeps the
+        // operator's own session alive through a default-deny policy, and it
+        // offered a compiled-in `22` to do that — so on a host whose SSH had
+        // been moved, accepting the default admitted a port nothing listens on
+        // and closed the one carrying the session. The field meant to prevent a
+        // lockout was the thing causing it.
+        for param in &mut asked {
+            let Some(live) = param.live_default else {
+                continue;
+            };
+
+            param.initial = match live {
+                LiveDefault::SshPort => crate::tasks::sshd_config::effective_port(
+                    self.executor.as_ref(),
+                    self.backend.path_for(crate::backend::Capability::Ssh),
+                )
+                .to_string(),
+            };
+        }
 
         if !asked.is_empty() {
             let mut form = Form::new(task.title(), asked);
@@ -791,6 +834,7 @@ impl App {
                 let warning = match task.id() {
                     LockRoot::ID => self.lockout_warning(),
                     DeleteUser::ID => self.deletion_warning(),
+                    EnableFirewall::ID => self.firewall_warning(),
                     _ => self.lang.render(&Msg::ConfirmLockoutWarning),
                 };
 
@@ -877,6 +921,39 @@ impl App {
     /// A path that cannot be measured says so instead of reporting zero. An
     /// unreadable directory and an empty one are different facts, and "(0 B)"
     /// understates the stake by exactly the amount that matters.
+    /// Names the port about to be the only one admitted, and what that means
+    /// for a session reaching this host over SSH.
+    ///
+    /// The generic lockout sentence — "this can lock you out, make sure you
+    /// have another way in" — is true here and useless: it says nothing about
+    /// *which* port decides, and this dialog is the last place the operator can
+    /// still change it. Reported as a task asking for a port with no stated
+    /// reason, which the field's own hint answers in six words and the dialog
+    /// has room to answer properly.
+    ///
+    /// The port comes from what was just typed rather than from the host, on
+    /// purpose: the value being confirmed is the one that will be applied, and
+    /// a warning quoting anything else would describe a different operation.
+    pub(super) fn firewall_warning(&self) -> String {
+        let Ok(port) = self.pending_values.port(EnableFirewall::SSH_PORT) else {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        // What the daemon is actually serving, so the warning can say whether
+        // the two agree. A mismatch is the case that ends the session, and it
+        // is invisible to an operator who has not thought about it.
+        let listening = crate::tasks::sshd_config::effective_port(
+            self.executor.as_ref(),
+            self.backend.path_for(crate::backend::Capability::Ssh),
+        );
+
+        self.lang.render(&Msg::ConfirmFirewallLockout {
+            port,
+            listening,
+            agrees: port == listening,
+        })
+    }
+
     pub(super) fn deletion_warning(&self) -> String {
         let Ok(user) = self.pending_values.get(DeleteUser::USER) else {
             return self.lang.render(&Msg::ConfirmLockoutWarning);

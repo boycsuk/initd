@@ -64,6 +64,17 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NoFirewallFrontEnd => {
             "no inbound filtering front-end is installed on this host".to_owned()
         }
+        // Names the task that fixes it, because this refusal is one step short
+        // of an operation the operator plainly wants and the step is not
+        // guessable from "the firewall is not enabled". Says why rather than
+        // only what: against no default-deny policy every port is already
+        // reachable, so a rule admitting one would filter nothing while looking
+        // like a firewall that had been configured.
+        Msg::FirewallNotEnabled => {
+            "nothing is being filtered, so opening a port would admit nothing it \
+             does not already admit — run firewall.enable first"
+                .to_owned()
+        }
         // --- Command execution ---
         Msg::ProgramNotFound { program } => {
             format!("executable {program} was not found in PATH")
@@ -175,6 +186,18 @@ pub(super) fn render(message: &Msg) -> String {
             format!(
                 "{user} has no subordinate id range in /etc/subuid and /etc/subgid, \
                  so rootless containers cannot map their users"
+            )
+        }
+        // Names systemd-logind, because that is what has to be working and
+        // systemd's own message names neither it nor any cause — it reports two
+        // unset variables and suggests `--machine=<user>@.host`, which is advice
+        // for reaching another host's bus rather than for a session that was
+        // never created.
+        Msg::NoUserSession { user } => {
+            format!(
+                "{user}'s own service manager cannot be reached: no session was \
+                 established, so XDG_RUNTIME_DIR is unset and systemctl --user has \
+                 no bus to address. Check that systemd-logind is running"
             )
         }
         // Stated as tampering rather than as a download problem, because that
@@ -318,10 +341,18 @@ pub(super) fn render(message: &Msg) -> String {
         // Says plainly that this one cannot be checked from here. An
         // administrator who opens a port locally and still cannot reach it has
         // usually hit exactly this, and the tool has no way to see it.
+        // Says what closes before it says what to check. The warning named only
+        // the provider's firewall, which is the second thing an operator needs
+        // to know — the first is that everything except this port is about to
+        // stop answering, and that a wrong number here is what ends the session
+        // running the task.
         Msg::ConsequenceProviderFirewall { port, protocol } => {
             format!(
-                "check your hosting provider's firewall allows {port}/{protocol} \
-                 — this tool cannot see it"
+                "every inbound port except {port}/{protocol} stops answering, \
+                 including anything else this host serves — and if that is not \
+                 the port your session is on, this ends it. Your hosting \
+                 provider's firewall is a separate layer, and this tool cannot \
+                 see it"
             )
         }
         Msg::ConsequenceDnsMustResolve => {
@@ -365,6 +396,11 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::HelpStopAfterCommand => "stop after the current command".to_owned(),
         Msg::HelpScrollOutput => "scroll the output".to_owned(),
         Msg::HelpFocusOutput => "move focus to the output".to_owned(),
+        // Says which half goes, since the pane holds two things and folding
+        // either would be a plausible reading of one word.
+        Msg::HelpFoldOutput => {
+            "fold the task description away, giving the pane to the output".to_owned()
+        }
         Msg::HelpScrollLine => "scroll a line".to_owned(),
         Msg::HelpScrollPage => "scroll a page".to_owned(),
         Msg::HelpOldestLine => "oldest retained line".to_owned(),
@@ -539,6 +575,11 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarHistory => "history".to_owned(),
         Msg::KeyBarBack => "back".to_owned(),
         Msg::KeyBarOutput => "output".to_owned(),
+        // Named for what the key does next rather than for what it toggles: a
+        // bar reading "detail" beside a visible description says nothing about
+        // which way pressing it goes.
+        Msg::KeyBarHideDetail => "hide detail".to_owned(),
+        Msg::KeyBarShowDetail => "show detail".to_owned(),
         Msg::KeyBarStop => "stop".to_owned(),
         Msg::KeyBarScroll => "scroll".to_owned(),
         Msg::KeyBarCopy => "copy".to_owned(),
@@ -618,6 +659,41 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::ConfirmLockoutWarning => "This operation can lock you out of a server you reach \
              over SSH. Make sure you have another way in before continuing."
             .to_owned(),
+        // Names the port and says whether it is the right one, which the generic
+        // sentence above cannot: "make sure you have another way in" is true
+        // here and unactionable, and this dialog is the last place the value can
+        // still be changed.
+        //
+        // The agreeing case still warns rather than reassuring. `sshd -T` says
+        // what the daemon serves, not how the operator reached it — a jump host,
+        // a forwarded port or a provider console all end up here — so "these
+        // match, you are safe" would be a promise made on evidence that does not
+        // support it.
+        Msg::ConfirmFirewallLockout {
+            port,
+            listening,
+            agrees,
+        } => {
+            if *agrees {
+                format!(
+                    "Everything except {port}/tcp stops answering the moment this runs, \
+                     including anything else this host serves.\n\n\
+                     If you are connected over SSH, {port} is the port keeping that \
+                     connection alive — this host's sshd is listening on it, which is \
+                     why it is filled in. Changing it to a port sshd does not serve \
+                     ends your session, and only a console can undo that."
+                )
+            } else {
+                format!(
+                    "Everything except {port}/tcp stops answering the moment this runs, \
+                     including anything else this host serves.\n\n\
+                     This host's sshd is listening on {listening}, not {port}. If you \
+                     are connected over SSH, this closes the port carrying your session \
+                     and leaves open one nothing answers on — and only a console can \
+                     undo that. Use {listening} unless you know why not."
+                )
+            }
+        }
         // The path and the size are the whole point. "Also delete the home
         // directory?" is a question answered by habit; a sentence naming
         // /home/deploy and 2.4 GB is one that gets read.
@@ -769,6 +845,10 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskHomeDeleted { path } => format!("{path} was deleted"),
         Msg::TaskEnabling { unit } => format!("Enabling {unit}..."),
         Msg::TaskUnitEnabled { unit } => format!("{unit} is enabled"),
+        // The daemon's own word for itself, `OpenSSH_10.0p2`, passed through
+        // rather than reformatted: it is what `sshd -V` prints and what an
+        // operator will match against a release note.
+        Msg::TaskSshVersion { version } => format!("running {version}"),
         Msg::TaskUnitState {
             unit,
             active,
@@ -856,6 +936,12 @@ pub(super) fn render(message: &Msg) -> String {
             format!("none of these is installed: {tried}")
         }
         Msg::TaskFirewallInactive => "inbound filtering is not active".to_owned(),
+        // Says what is now true rather than that a command ran: "the firewall
+        // is off" leaves an operator wondering what that means for the ports
+        // their host serves.
+        Msg::TaskFirewallDisabled => {
+            "inbound filtering removed — every port this host serves is reachable again".to_owned()
+        }
         Msg::TaskFirewallDefaultDeny => "inbound denied by default".to_owned(),
         Msg::TaskFirewallNoOpenPorts => "no ports are open".to_owned(),
         Msg::TaskFirewallPortOpen { port } => format!("  {port} is open"),

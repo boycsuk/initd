@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
-use crate::backend::Capability;
+use crate::backend::{Capability, firewall_for};
 use crate::distro::Distro;
 use crate::tasks::Node;
 
@@ -229,6 +229,25 @@ fn measure(
     backend: &dyn crate::backend::Backend,
     capability: Capability,
 ) -> Presence {
+    // The one capability where "present" is not a question about software. `nft`
+    // being installed says nothing about whether this host is filtering, and a
+    // row that offered to *disable* a firewall on the strength of a package
+    // being there would offer it on every Debian, none of which filter until
+    // told to. What the row reports is the policy, so that is what is measured.
+    if capability == Capability::Nftables {
+        return match firewall_for(backend, executor) {
+            Ok(Some(firewall)) => match firewall.state(executor) {
+                Ok(state) if state.active => Presence::Present,
+                Ok(_) => Presence::Absent,
+                Err(_) => Presence::Unknown,
+            },
+            // Nothing installed is nothing filtering, which is the same answer
+            // the row needs: it goes on offering to enable.
+            Ok(None) => Presence::Absent,
+            Err(_) => Presence::Unknown,
+        };
+    }
+
     if backend.has_package_for(capability) {
         let package = backend.package_for(capability);
 
@@ -275,6 +294,11 @@ fn program_for(capability: Capability) -> Option<&'static str> {
         // it as `github-cli` — which is why this table exists separately from
         // the package names.
         Capability::GithubCli => Some("gh"),
+        // Asked by name rather than by package, because the package is not the
+        // question on every family: Alpine's `sysctl` is a busybox applet, so a
+        // host with no `procps` of any spelling still has the binary. Asking
+        // the executable is the one question true on all five.
+        Capability::Sysctl => Some("sysctl"),
         // Everything else is packaged on every family this tool supports, so a
         // host that has no package for it has no other way to have got it
         // either. Written as an exhaustive match rather than a catch-all: a
@@ -327,9 +351,21 @@ pub fn subjects_in(nodes: &[Node]) -> Vec<(&'static str, Capability)> {
 fn collect_subjects(nodes: &[Node], out: &mut Vec<(&'static str, Capability)>) {
     for node in nodes {
         match node {
-            // A lone task has no verb to choose, so nothing about it is worth
-            // a command at startup even if it declared a subject.
-            Node::Task(_) => {}
+            // A lone task has no verb to choose, and for a long time that was
+            // taken to mean it had nothing worth asking either. It does: a row
+            // with one verb can still say whether the thing is already there,
+            // and `ssh.install` is the case that surfaced it — reported as not
+            // detecting an SSH server that was installed, because the tree
+            // asked the host nothing and the answer arrived only once the task
+            // had been run.
+            //
+            // It stays opt-in through `subject()`, so this costs one query per
+            // task that has something to report rather than one per task.
+            Node::Task(task) => {
+                if let Some(capability) = task.subject() {
+                    out.push((task.id(), capability));
+                }
+            }
             Node::Reversible { forward, .. } => {
                 if let Some(capability) = forward.subject() {
                     out.push((forward.id(), capability));
@@ -593,29 +629,99 @@ mod tests {
     }
 
     #[test]
+    fn both_halves_of_a_pair_name_the_row_they_change() {
+        // The forward half declaring `affects` is not enough, and this is the
+        // omission that made it obvious: `firewall.disable` did not, so after
+        // disabling the firewall the interface re-probed nothing and the row
+        // went on offering to disable a firewall that was already off. It
+        // corrected itself on the next start, which is the worst kind of wrong
+        // — right often enough that nobody reports it as a bug in the tree.
+        //
+        // Asserted over both halves rather than trusting a convention: the
+        // default is an empty list, so an inverse gets this wrong by saying
+        // nothing at all.
+        let tree = crate::tasks::tree();
+        let mut pairs = Vec::new();
+        collect_pairs(&tree, &mut pairs);
+
+        for (forward, inverse) in pairs {
+            for (task, role) in [(forward, "forward"), (inverse, "inverse")] {
+                assert!(
+                    !task.affects().is_empty(),
+                    "the {role} half of the pair, {}, must name the row its \
+                     success changes, or the interface never re-measures it",
+                    task.id()
+                );
+            }
+        }
+    }
+
+    /// Both halves of every reversible pair in a forest.
+    fn collect_pairs<'a>(
+        nodes: &'a [Node],
+        out: &mut Vec<(&'a dyn crate::tasks::Task, &'a dyn crate::tasks::Task)>,
+    ) {
+        for node in nodes {
+            match node {
+                Node::Task(_) => {}
+                Node::Reversible { forward, inverse } => {
+                    out.push((forward.as_ref(), inverse.as_ref()));
+                }
+                Node::Category(category) => collect_pairs(&category.children, out),
+            }
+        }
+    }
+
+    #[test]
     fn every_reversible_row_declares_what_to_measure() {
         // A pair whose forward task returns `None` from `subject` is a row that
         // can never learn which verb it should show: the probe would skip it
         // and it would offer to install for the whole session, including on a
         // host where the subject is plainly present. Silent, and indisputably
         // wrong — so the tree is walked rather than trusted.
-        let mut pairs = 0;
-        count_pairs(&crate::tasks::tree(), &mut pairs);
+        let tree = crate::tasks::tree();
+        let mut pairs = Vec::new();
+        collect_pair_ids(&tree, &mut pairs);
 
-        assert_eq!(
-            subjects_in(&crate::tasks::tree()).len(),
-            pairs,
-            "every reversible pair must declare a subject to measure"
+        let measured: Vec<&str> = subjects_in(&tree).iter().map(|(id, _)| *id).collect();
+
+        // Every pair is measured. Compared by id rather than by count, which is
+        // what the assertion used to do: lone tasks may now declare a subject
+        // too, so a total that happened to match would no longer prove that the
+        // *pairs* were the things in it.
+        for id in &pairs {
+            assert!(
+                measured.contains(id),
+                "{id} is a reversible pair and must declare a subject: {measured:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_one_verb_task_may_declare_a_subject_too() {
+        // `ssh.install` has no inverse — removing the SSH server over SSH is
+        // the one thing this tool refuses to offer — and for as long as the
+        // probe skipped lone tasks, its row asked the host nothing. Reported as
+        // the tool not detecting an SSH server that was plainly installed: the
+        // answer existed and arrived only once the task had been run.
+        let measured: Vec<&str> = subjects_in(&crate::tasks::tree())
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+
+        assert!(
+            measured.contains(&"ssh.install"),
+            "a lone task that declares a subject must be measured: {measured:?}"
         );
     }
 
-    /// Counts reversible pairs in a forest, however deeply nested.
-    fn count_pairs(nodes: &[Node], out: &mut usize) {
+    /// Collects the ids of every reversible pair's forward task.
+    fn collect_pair_ids(nodes: &[Node], out: &mut Vec<&'static str>) {
         for node in nodes {
             match node {
                 Node::Task(_) => {}
-                Node::Reversible { .. } => *out += 1,
-                Node::Category(category) => count_pairs(&category.children, out),
+                Node::Reversible { forward, .. } => out.push(forward.id()),
+                Node::Category(category) => collect_pair_ids(&category.children, out),
             }
         }
     }

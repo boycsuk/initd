@@ -59,6 +59,17 @@ pub enum Capability {
     Caddy,
     /// The nftables front-end, which the firewall drives.
     Nftables,
+    /// The `sysctl` tool, which reads and writes kernel parameters.
+    ///
+    /// Packaged separately on four families and absent from a freshly
+    /// provisioned RHEL — measured on `rockylinux:9`, where `dnf provides`
+    /// answers `procps-ng` from baseos and the image ships none of it. Alpine is
+    /// the exception in a way the package name cannot express: `sysctl` there is
+    /// a busybox applet (`/sbin/sysctl -> /bin/busybox`), so it is present on
+    /// every host and installing anything would be wrong. That is why the
+    /// backend answering `""` means "already there" rather than "unknown", and
+    /// why Alpine is the one family that answers it.
+    Sysctl,
     /// The fish shell.
     Fish,
     /// The Zellij multiplexer.

@@ -9,6 +9,13 @@ use crate::domain::user_services::UserServiceManager;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
+/// The variable whose presence proves the account's session was established.
+///
+/// `systemctl --user` finds the bus through it, and `pam_systemd` is what sets
+/// it. Either both it and `DBUS_SESSION_BUS_ADDRESS` are populated or neither
+/// is — measured on Debian 13 under systemd — so one is enough to ask about.
+const RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
+
 /// Manages a user's own services through `systemctl --user`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemdUserServices;
@@ -37,6 +44,24 @@ impl SystemdUserServices {
 }
 
 impl UserServiceManager for SystemdUserServices {
+    fn session_is_reachable(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
+        // Asked through the same `runuser -l` the real commands use, because
+        // the question is whether *that* establishes a session — asking any
+        // other way would answer about a session this tool never opens.
+        //
+        // `printenv` rather than `echo $XDG_RUNTIME_DIR`: an unset variable
+        // makes `echo` print an empty line and exit 0, so success would carry
+        // no information. `printenv` exits non-zero when the name is unset,
+        // which is the answer rather than a failure to get one.
+        let command = Self::as_user(user, &["printenv", RUNTIME_DIR]);
+        let output = executor.run(&command)?;
+
+        // The value, not just the exit code. A variable set to nothing is the
+        // same practical state as an unset one, and cheaper to rule out here
+        // than to diagnose from the failure it would cause two commands later.
+        Ok(output.success() && !output.stdout.trim().is_empty())
+    }
+
     fn is_lingering(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
         let command = Command::new("loginctl").args(["show-user", user, "--property=Linger"]);
         let output = executor.run(&command)?;

@@ -100,6 +100,7 @@ const SECTIONS: &[Section] = &[
             ("Ctrl-C", Msg::HelpStopAfterCommand),
             ("↑ ↓", Msg::HelpScrollOutput),
             ("Tab", Msg::HelpFocusOutput),
+            ("o", Msg::HelpFoldOutput),
         ],
     },
     Section {

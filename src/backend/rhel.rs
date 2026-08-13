@@ -218,6 +218,14 @@ const GITHUB_CLI_PACKAGE: &str = "";
 /// that is the hazard [`Nftables`] already documents for `ufw`.
 const NFTABLES_PACKAGE: &str = "nftables";
 
+/// What owns `sysctl` here.
+///
+/// The family where this matters most: `rockylinux:9` ships no `sysctl` at
+/// all, and `dnf provides /usr/sbin/sysctl` answers `procps-ng` from baseos.
+/// A freshly provisioned RHEL host cannot set a kernel parameter until this
+/// is installed.
+const SYSCTL_PACKAGE: &str = "procps-ng";
+
 /// fail2ban is packaged only in EPEL.
 ///
 /// It has never been in a base repository, in any release. Being Python there
@@ -346,6 +354,7 @@ impl Backend for RhelBackend {
             Capability::Mise => MISE_PACKAGE,
             Capability::Rust => RUST_PACKAGE,
             Capability::Nftables => NFTABLES_PACKAGE,
+            Capability::Sysctl => SYSCTL_PACKAGE,
             Capability::Fail2ban => FAIL2BAN_PACKAGE,
             Capability::Crowdsec => CROWDSEC_PACKAGE,
             Capability::Git => GIT_PACKAGE,
@@ -366,6 +375,7 @@ impl Backend for RhelBackend {
             // ships restores a saved ruleset at boot; it is not what a rule is
             // applied through.
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => FAIL2BAN_SERVICE,
             Capability::Crowdsec => CROWDSEC_SERVICE,
             // Neither is a service: both are commands somebody runs.
@@ -385,6 +395,7 @@ impl Backend for RhelBackend {
             Capability::Mise => "/etc/mise/config.toml",
             Capability::Rust => "",
             Capability::Nftables => "",
+            Capability::Sysctl => "",
             Capability::Fail2ban => "/etc/fail2ban/jail.d",
             Capability::Crowdsec => "/etc/crowdsec",
             // Git's system-wide file, which `git config --system` writes.

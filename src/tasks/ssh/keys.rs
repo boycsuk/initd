@@ -385,7 +385,7 @@ mod tests {
             // `Reply::failure`, which puts its text on stderr: the path travels
             // on stdout, so that a shell's own diagnostics cannot be mistaken
             // for one.
-            Reply {
+            Reply::Ran {
                 code: 9,
                 stdout: "/root/.ssh/authorized_keys".to_owned(),
                 stderr: String::new(),

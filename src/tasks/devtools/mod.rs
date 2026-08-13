@@ -76,13 +76,15 @@ pub fn category() -> Category {
                     Node::Task(Box::new(SetGitSafeDirectory)),
                 ],
             )),
-            Node::Category(Category::new(
-                "GitHub",
-                vec![Node::Reversible {
-                    forward: Box::new(InstallGithubCli),
-                    inverse: Box::new(UninstallGithubCli),
-                }],
-            )),
+            // Flat rather than a category of its own, unlike Git beside it. The
+            // reason to nest is a row count that crowds its neighbours, and one
+            // row crowds nobody: a category holding a single task costs a
+            // keystroke to open and shows exactly what its own title already
+            // said. Git keeps its category because it contributes five.
+            Node::Reversible {
+                forward: Box::new(InstallGithubCli),
+                inverse: Box::new(UninstallGithubCli),
+            },
         ],
     )
 }
@@ -634,6 +636,7 @@ mod tests {
         // fish is at /usr/bin/fish on Arch and either path on Debian depending
         // on the release. A guessed path produces a login shell nobody can use.
         let mock = MockExecutor::with_replies([
+            Reply::ok(""),                     // apt-get update, before the install
             Reply::ok(""),                     // install
             Reply::ok("/usr/bin/fish\n"),      // command -v
             Reply::ok("/bin/sh\n/bin/bash\n"), // read /etc/shells
@@ -660,9 +663,10 @@ mod tests {
         // `/bin/fish` is a substring of `/usr/bin/fish`, so the comparison is
         // line by line rather than by substring.
         let mock = MockExecutor::with_replies([
-            Reply::ok(""),
-            Reply::ok("/usr/bin/fish\n"),
-            Reply::ok("/bin/sh\n/usr/bin/fish\n"),
+            Reply::ok(""),                         // apt-get update
+            Reply::ok(""),                         // install
+            Reply::ok("/usr/bin/fish\n"),          // command -v
+            Reply::ok("/bin/sh\n/usr/bin/fish\n"), // read /etc/shells
         ]);
         let backend = for_family(Family::Debian);
 

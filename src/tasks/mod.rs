@@ -620,7 +620,7 @@ mod tests {
         // `Lockout` the red frame would mark every row and distinguish none,
         // and the dialog it teaches people to dismiss is the one before
         // `users.lock-root`, whose recovery is the provider's rescue console.
-        const LOCKOUT: [&str; 8] = [
+        const LOCKOUT: [&str; 9] = [
             "firewall.enable",
             "ssh.allow-users",
             "ssh.harden",
@@ -631,12 +631,19 @@ mod tests {
             // and unlike every other lockout there is nothing to put back: the
             // account is gone, and with it whatever sudo rule named it.
             "users.delete",
-            // The only uninstall that can end the session running it: an
-            // administrator connected over the tunnel loses the connection
-            // when wg0 goes down. Every other inverse removes something the
-            // session does not depend on — and `ssh.install` has no inverse
-            // at all, for the reason its own module records.
+            // Two uninstalls can end the session running them. An administrator
+            // connected over the tunnel loses it when wg0 goes down; every
+            // other inverse removes something the session does not depend on.
             "wireguard.uninstall",
+            // And the one this list used to say did not exist. `ssh.install`
+            // had no inverse deliberately, because removing the daemon over its
+            // own connection is the single operation in this tool with no route
+            // back — the session ends mid-removal and reinstalling needs the
+            // network path that just closed. It was added on request; the
+            // reasoning did not stop being true, so it carries the strongest
+            // confirmation the interface has and says plainly that a console is
+            // the only recovery.
+            "ssh.uninstall",
         ];
 
         let declared: Vec<_> = all_tasks()

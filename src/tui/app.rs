@@ -49,6 +49,36 @@ pub(super) const PAGE_SCROLL: usize = 10;
 /// Rows the verification banner occupies: its top border and four lines.
 pub(super) const VERIFY_BANNER_ROWS: u16 = 5;
 
+/// Tallest the description is drawn when it shares the pane with the output.
+///
+/// A ceiling rather than a share, because a description is a sentence or two
+/// of known length while a transcript grows without bound: splitting the pane
+/// by percentage would leave half of it blank above a log that is scrolling.
+/// Seven rows is two borders, a title and four lines of wrapped text, which
+/// holds every description in the tree at the width the pane is drawn at.
+pub(super) const DETAIL_MAX_ROWS: u16 = 7;
+
+/// Fewest rows the output keeps when it shares the pane.
+///
+/// Two borders, a title, and four lines of transcript. Below that it shows a
+/// frame and almost nothing — the state that makes an operator think the task
+/// produced no output. The description yields first, being static text they can
+/// come back to.
+pub(super) const OUTPUT_MIN_ROWS: u16 = 7;
+
+/// Shortest right-hand pane that is split at all.
+///
+/// Above the two minima rather than exactly their sum, and the difference was
+/// measured rather than reasoned about: the sum is 14, the interface refuses to
+/// draw below [`layout::MIN_HEIGHT`] of 15, and the pane at that height is 13
+/// rows — so a threshold of 14 could never be reached and the branch guarding
+/// it was dead code that read as covering the short-terminal case.
+///
+/// Eighteen is the first height at which both halves are worth drawing: it
+/// leaves the description its four lines and the output six, and below it the
+/// output takes the pane whole with the description one keypress away.
+pub(super) const SPLIT_MIN_ROWS: u16 = 18;
+
 /// Lines a page key moves the help overlay by.
 pub(super) const HELP_PAGE: u16 = 10;
 
@@ -130,6 +160,20 @@ pub struct App {
     /// Which pane the movement keys currently address.
     pub(super) focus: Pane,
     pub(super) output: OutputPane,
+    /// Whether the task's description shares the right-hand pane with the
+    /// output.
+    ///
+    /// The pane used to show one or the other, chosen by whether any output
+    /// existed — so after the first task ran, the description of every task
+    /// selected afterwards had nowhere to appear. Both are drawn now.
+    ///
+    /// Collapsible because the split costs the output rows it would otherwise
+    /// have, and the description is the half worth giving up: it is static text
+    /// about a task that is already running, while the transcript is what the
+    /// operator is watching. Folding the *output* away was built first and was
+    /// the wrong half — it hid the thing being read to make room for the thing
+    /// already read.
+    pub(super) detail_shown: bool,
     /// The parameter form, while one is being filled in.
     pub(super) form: Option<Form>,
     /// Where the cursor sits in the list of a field's options, while it is
@@ -273,6 +317,7 @@ impl App {
             // there is no output to read.
             focus: Pane::Tree,
             output: OutputPane::new(),
+            detail_shown: true,
             form: None,
             options_at: None,
             confirm: None,
@@ -2675,6 +2720,132 @@ mod tests {
     }
 
     #[test]
+    fn disabling_the_firewall_puts_the_row_back_to_enable() {
+        // The reported defect: after disabling, the row went on offering to
+        // disable. `refresh_presence_after` re-probes only what a finished task
+        // names in `affects`, and the inverse named nothing — so the interface
+        // kept the measurement taken before the task ran, and corrected itself
+        // only at the next start.
+        //
+        // Asserted through the state rather than by running the probe, which is
+        // asynchronous: a test that waited for the thread would assert on a
+        // race. What is checked is the part that was wrong — that finishing the
+        // task forgets the answer that is now stale.
+        let mut app = test_app(Family::Debian);
+
+        app.presence
+            .record("firewall.enable", crate::tui::probe::Presence::Present);
+        assert!(
+            app.presence.of("firewall.enable").calls_for_the_inverse(),
+            "the premise: the row is offering to disable"
+        );
+
+        app.refresh_presence_after("firewall.disable");
+
+        assert!(
+            !app.presence.of("firewall.enable").calls_for_the_inverse(),
+            "the stale answer must be forgotten, so the row falls back to its \
+             forward verb until the fresh probe lands"
+        );
+    }
+
+    #[test]
+    fn the_firewall_confirmation_names_the_port_and_what_it_costs() {
+        // The generic lockout sentence — "this can lock you out, make sure you
+        // have another way in" — is true here and unactionable: it names no
+        // port, and this dialog is the last place the value can be changed.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::EnableFirewall::SSH_PORT,
+            "22".to_owned(),
+        );
+
+        let warning = app.firewall_warning();
+
+        assert!(
+            warning.contains("22/tcp stops answering"),
+            "the warning must name the port: {warning}"
+        );
+        assert!(
+            warning.contains("connected over SSH"),
+            "and say what it costs a session that arrived that way: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_port_the_daemon_does_not_serve_is_named_as_such() {
+        // The case that ends the session: admitting a port nothing listens on
+        // while closing the one carrying the connection. The mock answers
+        // nothing for `sshd -T`, so `effective_port` falls back to 22 — which
+        // is the disagreement being tested.
+        let mut app = test_app(Family::Debian);
+        app.pending_values.set(
+            crate::tasks::network::EnableFirewall::SSH_PORT,
+            "80".to_owned(),
+        );
+
+        let warning = app.firewall_warning();
+
+        assert!(
+            warning.contains("listening on 22, not 80"),
+            "the disagreement must be stated: {warning}"
+        );
+        assert!(
+            warning.contains("Use 22"),
+            "and the port to use named: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_one_verb_task_says_when_the_host_already_has_its_subject() {
+        // Reported as the tool not detecting an SSH server that was installed.
+        // It detected it fine when run — `openssh-server is already installed`
+        // — but the tree had asked the host nothing, because the probe only
+        // measured reversible pairs and `ssh.install` deliberately has no
+        // inverse. A row with one verb cannot say "already there" by switching
+        // verbs, so it says it with a flag.
+        let task = crate::tasks::find("ssh.install").expect("ssh.install must exist");
+        let node = Node::Task(task);
+        let mut state = InstalledState::default();
+
+        state.record("ssh.install", crate::tui::probe::Presence::Present);
+
+        let drawn: String = row(&node, Family::Debian, 60, &state)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            drawn.contains(style::MARKER_PRESENT),
+            "an installed subject must be visible without running the task: {drawn}"
+        );
+    }
+
+    #[test]
+    fn a_one_verb_task_whose_subject_is_absent_carries_no_flag() {
+        // The other direction, and the reason the flag is not simply always
+        // drawn: a row flagged whether or not the host has the thing says
+        // nothing at all.
+        let task = crate::tasks::find("ssh.install").expect("ssh.install must exist");
+        let node = Node::Task(task);
+        let mut state = InstalledState::default();
+
+        state.record("ssh.install", crate::tui::probe::Presence::Absent);
+
+        let drawn: String = row(&node, Family::Debian, 60, &state)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            !drawn.contains(style::MARKER_PRESENT),
+            "nothing is installed, so nothing may claim it is: {drawn}"
+        );
+    }
+
+    #[test]
     fn a_task_that_collects_parameters_is_flagged_in_the_tree() {
         // The operator has to be able to tell, before pressing Enter, which
         // tasks stop to ask and which run straight away.
@@ -2720,6 +2891,123 @@ mod tests {
         assert!(
             !drawn.contains(style::MARKER_INPUT),
             "the two flags must not both be drawn: {drawn}"
+        );
+    }
+
+    #[test]
+    fn the_description_keeps_its_place_once_a_task_has_run() {
+        // The reported defect: the right-hand pane chose between description
+        // and output by whether any output existed, so after the first task
+        // ran, every task selected afterwards had its description displaced by
+        // the previous one's transcript — with no way back until another task
+        // started.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        let drawn = render_to_rows(&mut app, 100, 24).join("\n");
+
+        assert!(
+            drawn.contains("Detail"),
+            "the description must keep its place: {drawn}"
+        );
+        assert!(
+            drawn.contains("sysctl -n net.ipv4.ip_forward"),
+            "and the transcript must still be readable: {drawn}"
+        );
+    }
+
+    #[test]
+    fn the_description_folds_away_and_gives_the_pane_to_the_output() {
+        // The split costs the output rows, so it is collapsible — and the
+        // description is the half that goes. Folding the *output* was built
+        // first and was the wrong direction: it hid the transcript being read
+        // to make room for a description of a task already running.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+        let folded = render_to_rows(&mut app, 100, 24).join("\n");
+
+        assert!(
+            folded.contains("sysctl -n net.ipv4.ip_forward"),
+            "the transcript is what the operator kept: {folded}"
+        );
+        assert!(
+            !folded.contains("Detail"),
+            "and the description is what made room for it: {folded}"
+        );
+
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+        let restored = render_to_rows(&mut app, 100, 24).join("\n");
+
+        assert!(
+            restored.contains("Detail") && restored.contains("sysctl -n net.ipv4.ip_forward"),
+            "and both come back: {restored}"
+        );
+    }
+
+    #[test]
+    fn folding_the_description_leaves_the_focus_alone() {
+        // Unlike the earlier version, which folded the output and had to move
+        // focus off it. The output is drawn in both states now, so the arrows
+        // never address a pane that is not there and there is nothing to move.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        app.on_key(KeyEvent::from(KeyCode::Tab));
+        assert_eq!(app.focus, Pane::Output, "the premise: focus is on output");
+
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+
+        assert_eq!(
+            app.focus,
+            Pane::Output,
+            "the pane holding focus is still drawn, so focus stays put"
+        );
+    }
+
+    #[test]
+    fn a_short_terminal_gives_the_whole_pane_to_the_output() {
+        // Splitting serves neither half when there are not rows for both, so
+        // below the threshold the output takes the pane and the description
+        // stays one keypress away.
+        //
+        // Measured rather than derived: the sum of the two minima is 14, the
+        // interface refuses to draw below 15 rows at all, and the pane at that
+        // height is 13 — so a threshold set to that sum could never be reached,
+        // and the branch guarding it was dead code that read as covering this
+        // case.
+        let mut app = test_app(Family::Debian);
+        app.output.push(crate::exec::OutputLine::new(
+            crate::exec::Stream::Command,
+            "sysctl -n net.ipv4.ip_forward".to_owned(),
+        ));
+
+        let short = render_to_rows(&mut app, 100, 17).join("\n");
+
+        assert!(
+            short.contains("sysctl -n net.ipv4.ip_forward"),
+            "the output must be readable: {short}"
+        );
+        assert!(
+            !short.contains("Detail"),
+            "and must not be squeezed to share with a description: {short}"
+        );
+
+        let tall = render_to_rows(&mut app, 100, 19).join("\n");
+
+        assert!(
+            tall.contains("Detail") && tall.contains("sysctl -n net.ipv4.ip_forward"),
+            "two rows taller, both fit: {tall}"
         );
     }
 

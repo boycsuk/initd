@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::exec::{Executor, OutputLine, Stream};
 use crate::i18n::Msg;
 use crate::tasks::consequence::{Consequence, External, Protocol, Reason, firewall_check};
-use crate::tasks::params::{MAX_PORT, Param, ParamKind, ParamValues};
+use crate::tasks::params::{LiveDefault, MAX_PORT, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
 use crate::tasks::sshd_config;
 use crate::tasks::{Confirmation, Progress, Task, report, supported_everywhere};
@@ -51,9 +51,14 @@ impl Task for ChangePort {
 
     fn params(&self) -> Vec<Param> {
         vec![
+            // Opens on the port the daemon is actually serving, so the field
+            // states what is being changed *from* rather than asserting a `22`
+            // that may be a year out of date. `docs/user-stories.md` has
+            // promised this since before it was true.
             Param::new(Self::PORT, "Port", ParamKind::Port)
                 .with_initial(DEFAULT_SSH_PORT.to_string())
-                .with_hint("1-65535"),
+                .defaulting_to_live(LiveDefault::SshPort)
+                .with_hint("1-65535; opens on the current one"),
         ]
     }
 

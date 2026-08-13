@@ -55,6 +55,15 @@ const FOCUS_BAR: &str = "▌ ";
 /// columns right and leave the arithmetic silently wrong.
 const GUTTER_WIDTH: usize = 2;
 
+/// The room a hint needs beyond its own text before it may be drawn.
+///
+/// Two cells for the gap that separates it from the label, and two more so the
+/// verdict on the far right is not touching it. Below that the hint is dropped
+/// rather than shortened: a truncated explanation reads as a bug, and the
+/// verdict it would crowd out is the one thing on that row the operator cannot
+/// do without.
+const HINT_MARGIN_CELLS: usize = 4;
+
 /// Column the value hangs at, under its header.
 ///
 /// Indented so the value reads as a consequence of the label above it rather
@@ -582,12 +591,33 @@ fn header_line(field: &Field, lang: Lang, width: usize, focused: bool) -> Line<'
 
     let right = format!("{options}  {verdict}");
 
+    // The hint beside the label it explains, because until now it was written
+    // and never drawn: thirty fields carried one and the dialog rendered none
+    // of them. Reported as a firewall asking for an "SSH port" for no stated
+    // reason — the hint says `kept open, so this session survives`, which is
+    // the whole answer to "why is it asking me this". Others resolve a real
+    // ambiguity the label cannot: `keep leaves the files on disk; delete
+    // removes them`, `must appear in /etc/shells`.
+    //
+    // On the label's row rather than one of its own, for the reason the
+    // comment above gives about `options`: a row per field is the difference
+    // between fitting a 24-row terminal and not. It is therefore the first
+    // thing dropped when the row is tight, since a hint that pushes the verdict
+    // off the edge costs more than it explains.
+    let hint = field.param.hint.as_deref().unwrap_or_default();
+    let fixed = GUTTER_WIDTH + render::cells(label) + render::cells(&right);
+    let hint = if hint.is_empty()
+        || width.saturating_sub(fixed) < render::cells(hint) + HINT_MARGIN_CELLS
+    {
+        String::new()
+    } else {
+        format!("  {hint}")
+    };
+
     // Two spaces separate the label from whatever is right-aligned against the
     // far edge; below that the gap closes and the two would read as one
     // phrase, so the verdict yields its right-alignment rather than collide.
-    let gap = width
-        .saturating_sub(GUTTER_WIDTH + render::cells(label) + render::cells(&right))
-        .max(2);
+    let gap = width.saturating_sub(fixed + render::cells(&hint)).max(2);
 
     Line::from(vec![
         Span::styled(focus_bar(focused), style::FLAG_INPUT),
@@ -595,6 +625,19 @@ fn header_line(field: &Field, lang: Lang, width: usize, focused: bool) -> Line<'
             label,
             if focused {
                 style::EMPHASIS
+            } else {
+                style::BLOCK_SUBTITLE
+            },
+        ),
+        // A hint is a note; on one field it is a warning. `firewall.enable`'s
+        // port is the only one where a wrong value costs the machine rather
+        // than a retry, and the danger colour is worth exactly as much as it is
+        // rare — spending it on "must appear in /etc/shells" would spend it on
+        // nothing.
+        Span::styled(
+            hint,
+            if field.param.hint_warns {
+                style::DANGER_TEXT
             } else {
                 style::BLOCK_SUBTITLE
             },
@@ -695,6 +738,116 @@ mod tests {
         let empty = Field::new(Param::new("user", "Username", ParamKind::Username));
 
         assert_eq!(header_of(&empty), "Username a username is required");
+    }
+
+    #[test]
+    fn a_warning_hint_is_drawn_in_the_danger_colour() {
+        // One field in the tree carries a hint where being wrong costs the
+        // machine rather than a retry, and it is the only one: colouring the
+        // others would spend the signal that means "this can lock you out" on
+        // "must appear in /etc/shells".
+        // A short label, so the row has room for the hint: what this test is
+        // about is the colour, and a hint dropped for width would pass the
+        // "not drawn in danger" check for the wrong reason.
+        let field = Field::new(
+            Param::new("port", "Port", ParamKind::Port)
+                .with_hint("wrong port here ends this session")
+                .warning_hint(),
+        );
+
+        let line = header_line(&field, Lang::En, layout::DIALOG_WIDTH as usize, true);
+        let hint = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("ends this session"))
+            .expect("the warning must be drawn");
+
+        assert_eq!(hint.style, style::DANGER_TEXT);
+    }
+
+    #[test]
+    fn an_ordinary_hint_stays_quiet() {
+        // The other direction: a note is a note. If every hint were red the
+        // colour would mark every field and distinguish none.
+        let field = Field::new(Param::new("port", "Port", ParamKind::Port).with_hint("1-65535"));
+
+        let line = header_line(&field, Lang::En, layout::DIALOG_WIDTH as usize, true);
+        let hint = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("1-65535"))
+            .expect("the hint must be drawn");
+
+        assert_eq!(hint.style, style::BLOCK_SUBTITLE);
+    }
+
+    #[test]
+    fn a_field_draws_the_hint_that_explains_it() {
+        // Thirty fields carried a hint and the dialog drew none of them, so
+        // every one of those sentences was written, compiled, and invisible.
+        // Reported against `firewall.enable`, whose "SSH port" field asks for a
+        // number for a reason only the hint gives: leaving that port open is
+        // what keeps the operator's own session alive through a default-deny
+        // policy. Without it the field reads as an unexplained question.
+        let field = Field::new(
+            Param::new("port", "SSH port", ParamKind::Port)
+                .with_hint("kept open, so this session survives"),
+        );
+
+        // At the width the dialog is actually drawn at, rather than the 60 the
+        // shared helper uses: this hint needs 34 cells and does not fit in 60,
+        // which is a true fact about a narrower row and not the one the report
+        // was about.
+        let header = header_line(&field, Lang::En, layout::DIALOG_WIDTH as usize, false)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert_eq!(
+            header,
+            "SSH port kept open, so this session survives a port is required"
+        );
+    }
+
+    #[test]
+    fn a_hint_yields_the_row_rather_than_crowding_the_verdict() {
+        // The constraint the hint had to fit inside: this row already carries
+        // the label and the verdict, and a row per field is the difference
+        // between fitting a 24-row terminal and not. So the hint is the first
+        // thing dropped when the row is tight — dropped whole rather than
+        // truncated, since half a sentence reads as a defect, and the verdict
+        // is the part of the row nobody can work without.
+        let field = Field::new(
+            Param::new("port", "SSH port", ParamKind::Port)
+                .with_hint("kept open, so this session survives"),
+        );
+
+        let narrow = header_line(&field, Lang::En, 30, false)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert_eq!(
+            narrow, "SSH port a port is required",
+            "the verdict must survive a width the hint does not fit in"
+        );
+    }
+
+    #[test]
+    fn a_field_with_no_hint_reads_exactly_as_it_did() {
+        // The other direction, since most fields have none: adding the hint
+        // must not put a stray gap into a header that never had one.
+        let field = Field::new(Param::new("user", "Username", ParamKind::Username));
+
+        assert_eq!(header_of(&field), "Username a username is required");
     }
 
     #[test]

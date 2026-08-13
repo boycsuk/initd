@@ -14,7 +14,7 @@ pub mod port;
 
 pub use allow_users::RestrictUsers;
 pub use harden::{HardenSsh, HardenSshStrict};
-pub use install::InstallSsh;
+pub use install::{InstallSsh, UninstallSsh};
 pub use keys::{AuthorizeKey, is_valid_public_key};
 pub use port::ChangePort;
 
@@ -45,7 +45,13 @@ const VALID_KEY_PREFIXES: [&str; 5] = [
 ];
 
 /// Default port offered when none is given.
-const DEFAULT_SSH_PORT: u32 = 22;
+///
+/// The last resort rather than the first: `sshd_config::effective_port` asks
+/// the daemon what it is actually listening on, and this is what answers when
+/// neither the daemon nor its file can say. Offering it unconditionally is how
+/// a firewall admits 22 on a host whose SSH moved to 2222 — and that firewall
+/// ends the session it was run from.
+pub(crate) const DEFAULT_SSH_PORT: u32 = 22;
 
 /// Builds the SSH category, subdivided by what each task acts on.
 ///
@@ -58,7 +64,14 @@ pub fn category() -> Category {
         vec![
             Node::Category(Category::new(
                 "Service",
-                vec![Node::Task(Box::new(InstallSsh))],
+                // A pair rather than a lone task, so the row reports what this
+                // host already has. The inverse is the most dangerous operation
+                // in the tree — see `UninstallSsh` — and it is reached only
+                // once the probe has confirmed a server is actually installed.
+                vec![Node::Reversible {
+                    forward: Box::new(InstallSsh),
+                    inverse: Box::new(UninstallSsh),
+                }],
             )),
             Node::Category(Category::new(
                 "Configuration",
