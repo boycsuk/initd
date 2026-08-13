@@ -17,13 +17,8 @@ use crate::tasks::consequence::{
 };
 use crate::tasks::params::{LiveDefault, Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
+use crate::tasks::ssh::DEFAULT_SSH_PORT;
 use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
-
-/// The port SSH listens on unless it has been moved.
-///
-/// Kept open when filtering is first enabled: a default-deny policy that did
-/// not admit the current session would end it.
-const DEFAULT_SSH_PORT: u32 = 22;
 
 /// Forwarding, which routes packets between interfaces.
 const IP_FORWARD: Setting = Setting {
