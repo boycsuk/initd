@@ -679,6 +679,14 @@ pub struct Param {
     ///
     /// Opt-in like its neighbours: a parameter says so or keeps its constant.
     pub live_default: Option<LiveDefault>,
+    /// Whether the hint is a warning rather than a note.
+    ///
+    /// Drawn in the danger colour, and reserved for the field where getting the
+    /// value wrong costs the operator the machine. Today that is
+    /// `firewall.enable`'s port: every other field's hint explains a format or
+    /// resolves an ambiguity, and colouring those would spend the one signal
+    /// that means "this can lock you out" on things that cannot.
+    pub hint_warns: bool,
     /// Whether the task runs without a value for this.
     ///
     /// Distinct from having an initial value, which is what the command line
@@ -706,6 +714,7 @@ impl Param {
             suggestions: None,
             existence: None,
             live_default: None,
+            hint_warns: false,
             optional: false,
         }
     }
@@ -754,6 +763,16 @@ impl Param {
     #[must_use]
     pub const fn defaulting_to_live(mut self, source: LiveDefault) -> Self {
         self.live_default = Some(source);
+        self
+    }
+
+    /// Draws this field's hint as a warning rather than a note.
+    ///
+    /// For the field where a wrong value costs the machine, not the one where
+    /// it costs a retry.
+    #[must_use]
+    pub const fn warning_hint(mut self) -> Self {
+        self.hint_warns = true;
         self
     }
 

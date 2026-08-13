@@ -45,9 +45,16 @@ pub fn category() -> Category {
         vec![
             Node::Category(Category::new(
                 "Firewall",
+                // Enabling and disabling share a row, so it shows whichever the
+                // host justifies: a row offering to enable a firewall that is
+                // already filtering was reported as exactly the confusion the
+                // reversible pairs elsewhere exist to avoid.
                 vec![
                     Node::Task(Box::new(FirewallStatus)),
-                    Node::Task(Box::new(EnableFirewall)),
+                    Node::Reversible {
+                        forward: Box::new(EnableFirewall),
+                        inverse: Box::new(DisableFirewall),
+                    },
                     Node::Task(Box::new(AllowPort)),
                 ],
             )),
@@ -194,14 +201,34 @@ impl Task for EnableFirewall {
             // second label as an unrelated question — reported as exactly that
             // — and the answer they skip past is the one keeping their session
             // alive.
+            // The hint warns rather than describes, and it names no number.
+            // Recommending "22" would be recommending the value that locks out
+            // every host whose SSH has moved — the defect this field was just
+            // fixed for — and the port already shown is the one this host is
+            // serving, read from `sshd -T`. What an operator needs told is not
+            // which port to type but what happens if it is wrong, which is the
+            // one thing no other field on this form can cost them.
             Param::new(Self::SSH_PORT, "Port to keep open", ParamKind::Port)
                 .with_initial(DEFAULT_SSH_PORT.to_string())
                 .defaulting_to_live(LiveDefault::SshPort)
-                .with_hint("your SSH port — everything else is closed"),
+                .with_hint("wrong port here ends this session")
+                .warning_hint(),
         ]
     }
 
     supported_everywhere!();
+
+    /// What the row reports is whether this host is *filtering*, not whether
+    /// `nft` is installed — the probe treats this capability specially for
+    /// exactly that reason. Every Debian has the package available and none of
+    /// them filters until told to.
+    fn subject(&self) -> Option<Capability> {
+        Some(Capability::Nftables)
+    }
+
+    fn affects(&self) -> &'static [&'static str] {
+        &["firewall.enable"]
+    }
 
     fn consequences(&self, _backend: &dyn Backend, values: &ParamValues) -> Vec<Consequence> {
         let Ok(port) = values.port(Self::SSH_PORT) else {
@@ -421,6 +448,55 @@ impl Task for AllowPort {
         // is a rule that cannot be added at all — so the note was either
         // unreachable or printed over work that had already happened. The
         // condition is now refused before anything is written, above.
+        Ok(Outcome::Done)
+    }
+}
+
+/// Turns default-deny filtering off again.
+///
+/// The inverse of [`EnableFirewall`], so the row shows one verb or the other
+/// according to what this host is actually doing — reported as a row offering
+/// to enable a firewall that was already on.
+pub struct DisableFirewall;
+
+impl Task for DisableFirewall {
+    fn id(&self) -> &'static str {
+        "firewall.disable"
+    }
+
+    fn title(&self) -> &'static str {
+        "Disable the firewall"
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes the inbound filtering this tool applied and stops it returning \
+         at boot. Rules written by anything else are left alone. Every port \
+         this host serves becomes reachable again, which is the state it was in \
+         before the firewall was enabled."
+    }
+
+    /// Opening every port is not a lockout — nothing that was reachable stops
+    /// being reachable — but it is not a change to make by pressing Enter
+    /// without reading either.
+    fn confirmation(&self) -> Confirmation {
+        Confirmation::Change
+    }
+
+    supported_everywhere!();
+
+    fn run(
+        &self,
+        executor: &dyn Executor,
+        backend: &dyn Backend,
+        _values: &ParamValues,
+        progress: Progress<'_>,
+    ) -> Result<Outcome> {
+        let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
+
+        firewall.disable(executor)?;
+
+        report(progress, &Msg::TaskFirewallDisabled);
+
         Ok(Outcome::Done)
     }
 }
