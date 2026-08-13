@@ -122,11 +122,16 @@ pub enum Capability {
 pub trait Backend {
     /// The family this backend serves.
     ///
-    /// Nothing in the interface asks for it today — the header names the
-    /// distribution, not its family — but it is what proves a backend was
-    /// resolved for the family that was detected, which is the one mistake
-    /// this indirection could silently make.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Two callers, and they want different things from it. Tests use it to
+    /// prove a backend was resolved for the family that was detected, which is
+    /// the one mistake this indirection could silently make. The Docker tasks
+    /// use it to ask whether they are on Arch, where the rootless setup script
+    /// no official package ships has to be fetched rather than installed.
+    ///
+    /// That second use is the one `Task::support` would normally own. It does
+    /// not here because the answer is not whether the task runs — it runs on
+    /// Arch — but which of two routes it takes to the same end, and a route is
+    /// not a refusal.
     fn family(&self) -> Family;
 
     /// The package providing a capability on this distribution.

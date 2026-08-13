@@ -16,19 +16,22 @@
 //!
 //! The table is declared whole rather than grown entry by entry, so that the
 //! roles stay a single readable reference and a new call site picks one instead
-//! of inventing a colour. Entries the interface does not draw yet are therefore
-//! allowed to be unused; the alternative is scattering their definitions across
-//! later commits, which is exactly the drift this module exists to prevent.
+//! of inventing a colour.
 //!
-//! Which entries those are is worth stating accurately, because the list is the
-//! only thing distinguishing "declared ahead of its use" from "outlived its
-//! caller". Undrawn today: [`GAUGE`], [`RESULT_FAIL`], and the [`MARKER_OK`],
-//! [`MARKER_FAIL`] and [`MARKER_CURSOR`] glyphs. The search highlight this once
-//! listed is drawn now, and [`BORDER_UNFOCUSED`] and [`KEYBAR_LABEL`] look
+//! What is unused says so per item rather than through a blanket allow, for the
+//! reason [`super::layout`] records beside its own: a blanket one covers
+//! whatever dies next as readily as what was declared ahead of its use. This
+//! module had one, and it was hiding exactly that — `GAUGE` and `RESULT_FAIL`
+//! had outlived their callers, with no `Gauge` widget anywhere in the tree and
+//! nothing drawing a failed result in that role. The header maintained a
+//! hand-written list of which entries were undrawn, which is prose nothing
+//! asserts, and the list had drifted from the code it described.
+//!
+//! What remains annotated is the three glyphs the tests exercise and the screen
+//! does not draw yet. Note that [`BORDER_UNFOCUSED`] and [`KEYBAR_LABEL`] look
 //! unused to a grep while reaching the screen through [`border`] and
-//! [`key_hint`] — which is the trap that makes counting call sites by hand
-//! unreliable here.
-#![allow(dead_code)]
+//! [`key_hint`] — which is why the compiler, not a call-site count, is what
+//! decides this.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -99,9 +102,6 @@ pub const FLAG_UNSUPPORTED: Style = fg_mod(Color::White, Modifier::DIM);
 
 /// The `✓` glyph and `ok` lines.
 pub const RESULT_OK: Style = fg(Color::Green);
-
-/// The `✗` glyph on a failed task.
-pub const RESULT_FAIL: Style = fg_mod(Color::Red, Modifier::BOLD);
 
 /// A consequence the tool can inspect, and verify when asked.
 pub const CONSEQUENCE: Style = fg(Color::Yellow);
@@ -231,9 +231,6 @@ pub fn key_hint(glyph: &str, label: &str) -> [ratatui::text::Span<'static>; 2] {
     ]
 }
 
-/// The step-progress gauge.
-pub const GAUGE: Style = pair(Color::Green, Color::Reset);
-
 // --- Row markers -----------------------------------------------------------
 //
 // Glyphs rather than colours carry these meanings, so that a monochrome or
@@ -275,6 +272,7 @@ pub const MARKER_BLOCKED: &str = "-";
 pub const FLAG_BLOCKED: Style = fg_mod(Color::White, Modifier::DIM);
 
 /// Marks a task that succeeded during this session.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const MARKER_OK: &str = "✓";
 
 /// Marks a one-verb task whose subject the host already has.
@@ -287,9 +285,11 @@ pub const MARKER_OK: &str = "✓";
 pub const MARKER_PRESENT: &str = "•";
 
 /// Marks a task that failed during this session.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const MARKER_FAIL: &str = "✗";
 
 /// Precedes the selected row, alongside [`SELECTION_FOCUSED`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub const MARKER_CURSOR: &str = "▸";
 
 #[cfg(test)]
