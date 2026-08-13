@@ -300,9 +300,25 @@ impl FirewallManager for Firewalld {
         // The unit being enabled is the whole question here: the rules are in
         // the permanent configuration already, and what decides whether they
         // come back is whether firewalld starts to read them.
+        //
+        // The word, not the exit code. `systemctl is-enabled` exits 0 for
+        // `static`, `indirect` and `enabled-runtime` as readily as for
+        // `enabled` — measured on this host, where `static` units answer 0 —
+        // and a `static` unit does not start at boot. firewalld ships `static`
+        // on RHEL often enough that this is the ordinary case rather than the
+        // odd one, so the exit code reported a firewall surviving a reboot
+        // that would not come back.
+        //
+        // Both siblings already compare the word: `systemd::state` and
+        // `apt_periodic::is_enabled`. The nftables side of this same trait has
+        // a test named for the property — "a ruleset only in the kernel is not
+        // reported as persisted" — and this side had neither the test nor the
+        // check.
         let command = Command::new("systemctl").args(["is-enabled", "firewalld"]);
 
-        Ok(executor.run(&command)?.success())
+        // `executor.run` rather than `run_capturing`: `disabled` exits 1, and
+        // that is an answer rather than a failure to report.
+        Ok(executor.run(&command)?.stdout.trim() == "enabled")
     }
 
     fn disable(&self, executor: &dyn Executor) -> Result<()> {
@@ -860,5 +876,36 @@ mod tests {
             .expect("the query must succeed");
 
         assert_eq!(state.allowed, [AllowedPort::direct("8000-8080/tcp")]);
+    }
+
+    #[test]
+    fn a_unit_that_does_not_start_at_boot_is_not_reported_as_persisted() {
+        // `systemctl is-enabled` exits 0 for `static`, `indirect` and
+        // `enabled-runtime` as readily as for `enabled` — measured, and
+        // firewalld ships `static` on RHEL often enough for this to be the
+        // ordinary case. Reading the exit code reported a firewall surviving a
+        // reboot it would not come back from, which is the mirror of what
+        // `a_ruleset_only_in_the_kernel_is_not_reported_as_persisted` pins on
+        // the nftables side. This side had no test at all.
+        for answer in ["static\n", "indirect\n", "enabled-runtime\n", "disabled\n"] {
+            let mock = MockExecutor::with_replies([Reply::ok(answer)]);
+
+            assert!(
+                !Firewalld::new()
+                    .is_persisted(&mock)
+                    .expect("the question must be answerable"),
+                "{} does not start at boot",
+                answer.trim()
+            );
+        }
+
+        let mock = MockExecutor::with_replies([Reply::ok("enabled\n")]);
+
+        assert!(
+            Firewalld::new()
+                .is_persisted(&mock)
+                .expect("the question must be answerable"),
+            "an enabled unit is the one case that does come back"
+        );
     }
 }
