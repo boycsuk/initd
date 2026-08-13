@@ -2804,7 +2804,11 @@ mod tests {
 
         assert_eq!(
             colour_of("stops answering"),
-            Some(style::DANGER_TEXT.fg.expect("the danger role sets a colour")),
+            Some(
+                style::DANGER_TEXT
+                    .fg
+                    .expect("the danger role sets a colour")
+            ),
             "the warning must be drawn in the danger colour"
         );
         assert_ne!(
