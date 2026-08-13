@@ -231,23 +231,41 @@ fn readable_time(stamp: &str) -> String {
 ///
 /// A path is identified by where it ends: `…/ssh/sshd_config` says what the row
 /// is about where `/etc/ssh/sshd…` does not.
+///
+/// Measured in cells rather than in characters, which is what this counted
+/// before. The two agree only while every character is one cell wide, and the
+/// paths here come out of `backups.jsonl` — a file whose contents are whatever
+/// the administrator's filesystem holds. A wide character made the row overrun
+/// its width, and since the ellipsis is prepended last it was the ellipsis that
+/// the pane clipped. `render::truncate_head` documents the same reasoning; that
+/// one frames its result for a border, which is why this is not a call to it.
 fn truncate_head(path: &str, room: usize) -> String {
-    let length = path.chars().count();
-
-    if length <= room {
+    if super::render::cells(path) <= room {
         return path.to_owned();
     }
 
-    let ellipsis = '…';
-    let keep = room.saturating_sub(1);
+    // One cell is reserved for the ellipsis, then characters are kept from the
+    // back while they fit whole: a wide character cannot be half included.
+    let budget = room.saturating_sub(1);
+    let mut kept = String::new();
+    let mut used = 0;
 
-    if keep == 0 {
+    for character in path.chars().rev() {
+        let next = used + super::render::cells(character.encode_utf8(&mut [0; 4]));
+
+        if next > budget {
+            break;
+        }
+
+        kept.insert(0, character);
+        used = next;
+    }
+
+    if kept.is_empty() {
         return String::new();
     }
 
-    let tail: String = path.chars().skip(length - keep).collect();
-
-    format!("{ellipsis}{tail}")
+    format!("…{kept}")
 }
 
 #[cfg(test)]
@@ -371,5 +389,19 @@ mod tests {
         // of path survive.
         assert_eq!(truncate_head("/etc/ssh/sshd_config", 10), "…hd_config");
         assert_eq!(truncate_head("/etc/hosts", 40), "/etc/hosts");
+    }
+
+    #[test]
+    fn a_wide_character_is_measured_by_the_cells_it_occupies() {
+        // Counting characters overruns the row: these occupy two cells each, so
+        // a path of five of them is ten cells wide and not five. The row is
+        // drawn into a fixed width, and the overrun clipped the ellipsis — the
+        // one character saying the head was dropped at all.
+        let wide = "/等等等等等";
+
+        assert_eq!(super::super::render::cells(&truncate_head(wide, 7)), 7);
+
+        // And a path that fits is returned whole, measured the same way.
+        assert_eq!(truncate_head("/等", 3), "/等");
     }
 }
