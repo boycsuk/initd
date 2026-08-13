@@ -140,27 +140,21 @@ impl App {
                 self.search = Some(Search::new(self.cursor.tree()));
                 return true;
             }
-            // Folds the output away, giving the pane back to the description.
-            // Global rather than a key of the output pane, because the reason
-            // to press it is usually that the output is in the way — and
-            // reaching a key that belongs to the pane would mean focusing the
-            // thing being dismissed.
+            // Folds the task's description away, giving the whole pane to the
+            // output. The other direction was built first and was the wrong
+            // half: hiding the transcript to make room for a description of a
+            // task that is already running hides the thing being read.
             //
-            // Folding rather than clearing: the transcript is still there when
-            // it comes back, which is what the pane's own design is careful
-            // about. A finished task's output must not be discarded by a
-            // keystroke aimed at making room.
+            // Nothing is discarded either way — the description is regenerated
+            // from the selected task on every frame, and the transcript is
+            // untouched. The key changes how the pane is divided, not what
+            // exists.
+            //
+            // Focus is left alone, unlike the earlier version: the output keeps
+            // being drawn in both states, so the arrows never end up addressing
+            // a pane that is not there.
             KeyCode::Char('o') => {
-                self.output_shown = !self.output_shown;
-
-                // Focus follows the pane out of sight, or the arrow keys go on
-                // scrolling something nobody can see while the tree appears
-                // frozen — the interface looking broken for as long as it takes
-                // to guess which key caused it.
-                if !self.output_shown {
-                    self.focus = Pane::Tree;
-                }
-
+                self.detail_shown = !self.detail_shown;
                 return true;
             }
             // `h` is free now that the vim movement keys are gone, and the

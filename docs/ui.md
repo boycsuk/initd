@@ -209,9 +209,10 @@ a command that broke.
   until another task started.
 
   Two exceptions. Below 18 rows of pane the output takes it whole, since
-  splitting serves neither half; and `o` folds the output away entirely,
-  giving the description the pane, for when a long transcript is worth all of
-  it. Folding keeps the transcript — it is still there when it comes back.
+  splitting serves neither half; and `o` folds the *description* away, giving
+  the output the pane, for when a long transcript is worth all of it. The
+  description is the half that yields: it is static text about a task already
+  running, while the transcript is what is being watched.
 - **Key bar** — the key hints for the current row and state. One borderless
   row, dropped on terminals shorter than 24 rows.
 - **Parameter form** — overlays the centre of the screen for tasks that collect
@@ -515,7 +516,7 @@ by name, and a grep for the constant found nothing.
 | Key | Action |
 |-----|--------|
 | `Tab` | Move focus between the tree and the output |
-| `o` | Fold the output away, giving the whole right pane to the description — and back. Offered only once there is output. The transcript is kept, not discarded, and focus returns to the tree so the arrows do not address a pane that is no longer drawn |
+| `o` | Fold the task description away, giving the whole right pane to the output — and back. Offered only once there is output. Nothing is discarded either way: the description is redrawn from the selected task, the transcript is untouched, and focus is left alone because the output stays drawn in both states |
 | `Ctrl-L` | Repaint every cell — except in a form, where it opens the field's list |
 | `?` | Open the help overlay |
 | `q` | Quit, from any level and either pane |

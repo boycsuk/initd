@@ -275,15 +275,17 @@ fn right(frame: &mut Frame, app: &App, right_area: Rect) {
         verification(frame, banner, window, app.lang);
         app.output
             .render(frame, log, app.lang, app.focus == Pane::Output);
-    } else if app.output.is_empty() || !app.output_shown {
-        // The description takes the pane when there is nothing to show beneath
-        // it, and when the operator has folded the output away.
+    } else if app.output.is_empty() {
+        // Nothing to put beneath it, so the description has the pane whether or
+        // not it has been folded: folding exists to give the *output* room, and
+        // with no output there is nothing to give it to.
         detail(frame, app, right_area);
-    } else if right_area.height < SPLIT_MIN_ROWS {
-        // Too short to split usefully: a description squeezed into three rows
-        // and an output squeezed into the rest serves neither. The output wins,
-        // being what a running task is producing, and the description is one
-        // keypress away.
+    } else if !app.detail_shown || right_area.height < SPLIT_MIN_ROWS {
+        // The output takes the pane whole — because the operator folded the
+        // description away, or because the pane is too short for both and a
+        // description squeezed into three rows serves nobody. The transcript
+        // wins in the second case for the same reason it is the half kept in
+        // the first: it is what a running task is producing.
         app.output
             .render(frame, right_area, app.lang, app.focus == Pane::Output);
     } else {
@@ -457,10 +459,10 @@ fn tree_keys(app: &App) -> Vec<(&'static str, Msg)> {
         keys.push(("Tab", Msg::KeyBarOutput));
         keys.push((
             "o",
-            if app.output_shown {
-                Msg::KeyBarHideOutput
+            if app.detail_shown {
+                Msg::KeyBarHideDetail
             } else {
-                Msg::KeyBarShowOutput
+                Msg::KeyBarShowDetail
             },
         ));
     }

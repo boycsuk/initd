@@ -160,18 +160,20 @@ pub struct App {
     /// Which pane the movement keys currently address.
     pub(super) focus: Pane,
     pub(super) output: OutputPane,
-    /// Whether the output shares the right-hand pane with the description.
+    /// Whether the task's description shares the right-hand pane with the
+    /// output.
     ///
-    /// The pane used to be one or the other, chosen by whether any output
+    /// The pane used to show one or the other, chosen by whether any output
     /// existed — so after the first task ran, the description of every task
-    /// selected afterwards had nowhere to appear. Reported as the output
-    /// covering the description, which is what it was.
+    /// selected afterwards had nowhere to appear. Both are drawn now.
     ///
-    /// Split by default, and collapsible because the split costs rows the
-    /// output would otherwise have: on a 24-row terminal a long transcript is
-    /// worth the whole pane, and the description of a task already running is
-    /// not what the operator is reading.
-    pub(super) output_shown: bool,
+    /// Collapsible because the split costs the output rows it would otherwise
+    /// have, and the description is the half worth giving up: it is static text
+    /// about a task that is already running, while the transcript is what the
+    /// operator is watching. Folding the *output* away was built first and was
+    /// the wrong half — it hid the thing being read to make room for the thing
+    /// already read.
+    pub(super) detail_shown: bool,
     /// The parameter form, while one is being filled in.
     pub(super) form: Option<Form>,
     /// Where the cursor sits in the list of a field's options, while it is
@@ -315,7 +317,7 @@ impl App {
             // there is no output to read.
             focus: Pane::Tree,
             output: OutputPane::new(),
-            output_shown: true,
+            detail_shown: true,
             form: None,
             options_at: None,
             confirm: None,
@@ -2841,11 +2843,11 @@ mod tests {
     }
 
     #[test]
-    fn the_output_folds_away_and_gives_the_pane_back() {
-        // The split costs rows the output would otherwise have, so it is
-        // collapsible: on a short terminal a long transcript is worth the whole
-        // pane. Folding rather than clearing — the transcript is still there
-        // when it comes back, which is what the pane's design is careful about.
+    fn the_description_folds_away_and_gives_the_pane_to_the_output() {
+        // The split costs the output rows, so it is collapsible — and the
+        // description is the half that goes. Folding the *output* was built
+        // first and was the wrong direction: it hid the transcript being read
+        // to make room for a description of a task already running.
         let mut app = test_app(Family::Debian);
         app.output.push(crate::exec::OutputLine::new(
             crate::exec::Stream::Command,
@@ -2856,28 +2858,28 @@ mod tests {
         let folded = render_to_rows(&mut app, 100, 24).join("\n");
 
         assert!(
-            !folded.contains("sysctl -n net.ipv4.ip_forward"),
-            "the output must be out of the way: {folded}"
+            folded.contains("sysctl -n net.ipv4.ip_forward"),
+            "the transcript is what the operator kept: {folded}"
         );
         assert!(
-            folded.contains("Detail"),
-            "and the description must have the pane: {folded}"
+            !folded.contains("Detail"),
+            "and the description is what made room for it: {folded}"
         );
 
         app.on_key(KeyEvent::from(KeyCode::Char('o')));
         let restored = render_to_rows(&mut app, 100, 24).join("\n");
 
         assert!(
-            restored.contains("sysctl -n net.ipv4.ip_forward"),
-            "folding must not discard the transcript: {restored}"
+            restored.contains("Detail") && restored.contains("sysctl -n net.ipv4.ip_forward"),
+            "and both come back: {restored}"
         );
     }
 
     #[test]
-    fn folding_the_output_takes_the_focus_with_it() {
-        // Otherwise the arrow keys go on scrolling a pane nobody can see while
-        // the tree appears frozen — the interface looking broken for as long as
-        // it takes to guess which key caused it.
+    fn folding_the_description_leaves_the_focus_alone() {
+        // Unlike the earlier version, which folded the output and had to move
+        // focus off it. The output is drawn in both states now, so the arrows
+        // never address a pane that is not there and there is nothing to move.
         let mut app = test_app(Family::Debian);
         app.output.push(crate::exec::OutputLine::new(
             crate::exec::Stream::Command,
@@ -2891,8 +2893,8 @@ mod tests {
 
         assert_eq!(
             app.focus,
-            Pane::Tree,
-            "focus must not stay in a pane that is no longer drawn"
+            Pane::Output,
+            "the pane holding focus is still drawn, so focus stays put"
         );
     }
 
