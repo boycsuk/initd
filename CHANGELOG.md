@@ -164,6 +164,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a test that asserts what a task refuses proves nothing about what it does.
 
 ### Added
+- **`→` opens the selected category in the task tree.** The inverse of `←`,
+  which leaves one. Without it the arrows could walk out of a level but not into
+  one: descending needed `Enter` while ascending had `Esc`, `Backspace` and `←`.
+
+  It is deliberately narrower than `Enter`, which opens a category *or* runs a
+  task. On a task row `→` does nothing at all. An arrow is a movement key, and
+  an operator descending a level and overshooting onto a task must not find that
+  the next `→` began changing the machine — reaching a task and reaching for the
+  next arrow are one keystroke apart.
+
+  Not added to the key bar: on a category it would say what `Enter open` already
+  says, and the bar sheds hints by width, so a synonym would push out something
+  that is not one. The help overlay lists it, which is where bindings are
+  enumerated.
+
 - **The header says a task is alive, and which one.** While a task runs it
   trades the distribution and the privilege mechanism — two facts that do not
   change, and both back when the task ends — for a turning throbber, the task's
