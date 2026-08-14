@@ -96,10 +96,26 @@ impl FileEditor for UnixFiles {
         Ok(output.stdout)
     }
 
+    fn read_unprivileged(&self, executor: &dyn Executor, path: &str) -> Result<String> {
+        // The same `cat` without the escalation. See the trait for who needs it
+        // and why the two are separate methods rather than one that dropped
+        // privilege: this must only ever be pointed at a world-readable file.
+        let command = Command::new("cat").arg(path);
+        let output = run_capturing(executor, &command)?;
+
+        Ok(output.stdout)
+    }
+
     fn exists(&self, executor: &dyn Executor, path: &str) -> Result<bool> {
         // `test -e` exits non-zero for "no", which is an answer rather than a
         // failure, so the exit code is read instead of checked.
         let command = Command::new("test").args(["-e", path]).privileged();
+
+        Ok(executor.run(&command)?.success())
+    }
+
+    fn exists_unprivileged(&self, executor: &dyn Executor, path: &str) -> Result<bool> {
+        let command = Command::new("test").args(["-e", path]);
 
         Ok(executor.run(&command)?.success())
     }

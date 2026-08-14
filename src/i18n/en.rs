@@ -78,6 +78,19 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::NoFirewallFrontEnd => {
             "no inbound filtering front-end is installed on this host".to_owned()
         }
+        // Says what to do rather than only what happened, because the remedy is
+        // not guessable: listing a ruleset needs root, the interface
+        // authenticates once at startup, and the helper's timestamp lapses
+        // while the session stays open — so the same screen that was correct on
+        // arrival stops being able to read this. Running any task
+        // re-authenticates, which is what makes "run a task" the instruction
+        // rather than "restart initd".
+        Msg::FirewallStateUnreadable => {
+            "the firewall ruleset could not be read: listing it needs \
+             administrator access, and this session's has expired — run a task \
+             to authenticate again, or start initd as root"
+                .to_owned()
+        }
         // Names the task that fixes it, because this refusal is one step short
         // of an operation the operator plainly wants and the step is not
         // guessable from "the firewall is not enabled". Says why rather than

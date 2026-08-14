@@ -105,7 +105,7 @@ fn execute(task: &dyn tasks::Task, values: &ParamValues) -> Result<()> {
     // with. Anything given on the command line has already been set and is
     // left alone.
     let mut values = values.clone();
-    apply_live_defaults(task, backend.as_ref(), &executor, &mut values);
+    apply_live_defaults(task, backend.as_ref(), &executor, &mut values)?;
     let values = &values;
 
     let outcome = task.run(
@@ -402,7 +402,7 @@ fn apply_live_defaults(
     backend: &dyn backend::Backend,
     executor: &dyn exec::Executor,
     values: &mut ParamValues,
-) {
+) -> error::Result<()> {
     for param in task.params() {
         let Some(live) = param.live_default else {
             continue;
@@ -420,13 +420,23 @@ fn apply_live_defaults(
             .to_string(),
             // Without this an invocation naming no ports would declare the
             // empty set, and the empty set closes everything.
+            //
+            // Which is why the failure is raised rather than defaulted: this
+            // used to answer `""` for a ruleset it could not read, and `""` is
+            // the empty set. The comment above described the hazard while the
+            // code walked into it — an unprivileged `initd run
+            // firewall.manage-ports` on a host whose ruleset needs root would
+            // resolve "every port that is open" to "none of them" and close
+            // them all.
             tasks::params::LiveDefault::OpenPorts => {
-                tasks::network::open_ports_value(executor, backend)
+                tasks::network::open_ports_value(executor, backend)?
             }
         };
 
         values.set(param.name, resolved);
     }
+
+    Ok(())
 }
 
 /// Prints what a task accepts, with its hints.

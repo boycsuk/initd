@@ -45,8 +45,41 @@ pub trait FileEditor {
     /// Reads a file's contents.
     fn read(&self, executor: &dyn Executor, path: &str) -> Result<String>;
 
+    /// Reads a file that is world-readable, without escalating.
+    ///
+    /// For the caller that must work where no password can be asked for. The
+    /// interface's probe thread runs with `Prompting::Refuse` — it may not raise
+    /// a prompt under a tree the operator is reading — so a privileged read
+    /// there does not fail loudly, it returns `NoTerminalForPrompt` and the row
+    /// falls back to whatever the caller does with an error. For the kernel
+    /// parameter rows that meant `Presence::Unknown`, which draws the forward
+    /// verb: applying a setting appeared to do nothing at all.
+    ///
+    /// Separate from [`read`](Self::read) rather than replacing it, and the
+    /// separation is the safety: `read` also opens `sshd_config`, mode `600`,
+    /// where dropping privilege would turn a readable file into an error. Only
+    /// a caller that knows its file is world-readable may use this — the sysctl
+    /// drop-in is `0644` in a `0755` directory by deliberate choice, so the
+    /// privilege bought nothing there.
+    ///
+    /// Defaulted to the privileged read so the four implementations that have
+    /// no unprivileged case are untouched, and so a new one is correct before
+    /// it is optimised.
+    fn read_unprivileged(&self, executor: &dyn Executor, path: &str) -> Result<String> {
+        self.read(executor, path)
+    }
+
     /// Whether the path exists.
     fn exists(&self, executor: &dyn Executor, path: &str) -> Result<bool>;
+
+    /// Whether a world-readable path exists, without escalating.
+    ///
+    /// The companion to [`read_unprivileged`](Self::read_unprivileged), and
+    /// needed for the same reason: a probe that cannot ask for a password must
+    /// not be stopped by a question about a path anyone may look at.
+    fn exists_unprivileged(&self, executor: &dyn Executor, path: &str) -> Result<bool> {
+        self.exists(executor, path)
+    }
 
     /// Whether the path is a symbolic link.
     ///

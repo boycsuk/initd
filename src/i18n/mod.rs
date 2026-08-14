@@ -128,6 +128,7 @@ pub enum Msg {
     },
 
     NoFirewallFrontEnd,
+    FirewallStateUnreadable,
     FirewallNotEnabled,
 
     // --- Command execution ---

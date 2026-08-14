@@ -15,6 +15,31 @@ use crate::domain::firewall::{AllowedPort, FirewallManager, FirewallState, Proto
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
+/// Whether `nft` refused to answer rather than answering "no such table".
+///
+/// Both exit non-zero, so the streams are the only thing that separates them —
+/// and separating them is the difference between "this host filters nothing"
+/// and "nobody here can see what it filters". Reported as the first, the second
+/// tells an operator their firewall is off while it is running.
+///
+/// Matched on the message because the exit code carries nothing: `nft` answers
+/// 1 for a missing table and 1 for a refusal alike. Matching another program's
+/// user-facing text is a thing this codebase avoids where it can — see the
+/// executor's note on not parsing sudo's stderr — and here there is no
+/// alternative to it, so the match is deliberately broad rather than exact:
+/// `nft` speaks through the kernel's own `errno`, which is `EPERM` for an
+/// unprivileged listing, and libc's spelling of that varies by locale even with
+/// `LC_ALL=C` set for the process. Anything narrower would answer "not
+/// filtering" the first time a message is reworded.
+fn denies_access(stderr: &str) -> bool {
+    let said = stderr.to_ascii_lowercase();
+
+    // "Operation not permitted" is `EPERM` as `nft` reports it; "permission
+    // denied" is `EACCES`, which a locked-down `/proc` or an LSM produces
+    // instead. Both mean the listing was refused rather than absent.
+    said.contains("not permitted") || said.contains("permission denied")
+}
+
 /// The table this tool owns.
 ///
 /// Named for the tool so its rules are distinguishable from the distribution's
@@ -499,6 +524,22 @@ impl FirewallManager for Nftables {
         let output = executor.run(&command)?;
 
         if !output.success() {
+            // Two different things exit non-zero here and they mean opposite
+            // things: the table does not exist (nothing is filtered), or it
+            // could not be looked at (nothing is known). Both were reported as
+            // the first, which is how a firewall enabled as root read as "not
+            // filtering" the moment an unprivileged admin account looked at it
+            // — the row went on offering to enable it, and its port table
+            // opened without the SSH row in it.
+            //
+            // Separated by what `nft` says, since the exit code cannot tell
+            // them apart. A refusal is the one case where the listing is
+            // unknown rather than empty; anything else is the ordinary "no such
+            // table", which stays an answer rather than a failure.
+            if denies_access(&output.stderr) {
+                return Err(Error::FirewallStateUnreadable);
+            }
+
             return Ok(FirewallState {
                 active: false,
                 allowed: Vec::new(),
@@ -1080,6 +1121,44 @@ mod tests {
             .expect("an absent binary must not raise");
 
         assert!(!available);
+    }
+
+    #[test]
+    fn a_listing_that_was_refused_is_not_read_as_an_empty_ruleset() {
+        // The defect at the bottom of the firewall report from a Hetzner
+        // Debian host. `nft list` exits 1 both for a table that does not exist
+        // and for one the caller may not see, and this collapsed the two — so
+        // an unprivileged admin account was told the firewall it had enabled as
+        // root was not filtering, and its port table opened without SSH in it.
+        let refused = MockExecutor::with_replies([Reply::failure(
+            1,
+            "Error: Could not process rule: Operation not permitted",
+        )]);
+
+        let err = Nftables::new()
+            .state(&refused)
+            .expect_err("a refused listing must not answer");
+
+        assert!(matches!(err, Error::FirewallStateUnreadable), "{err:?}");
+    }
+
+    #[test]
+    fn a_missing_table_is_still_an_answer_rather_than_a_failure() {
+        // The other half, and the reason the two are separated by message
+        // rather than by exit code: a host where `firewall.enable` has never
+        // run has no table, which is an ordinary answer. Turning *this* into an
+        // error would break the row that offers to enable it.
+        let no_table = MockExecutor::with_replies([Reply::failure(
+            1,
+            "Error: No such file or directory",
+        )]);
+
+        let state = Nftables::new()
+            .state(&no_table)
+            .expect("a missing table must answer rather than raise");
+
+        assert!(!state.active);
+        assert!(state.allowed.is_empty());
     }
 
     #[test]

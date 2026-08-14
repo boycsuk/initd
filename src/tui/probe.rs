@@ -389,9 +389,19 @@ fn measure(
                 Ok(_) => Presence::Absent,
                 Err(_) => Presence::Unknown,
             },
-            // Nothing installed is nothing filtering, which is the same answer
-            // the row needs: it goes on offering to enable.
-            Ok(None) => Presence::Absent,
+            // Nothing installed is nothing filtering, and that *is* an answer —
+            // but only when the question could be asked. `firewall_for` cannot
+            // distinguish the two: it answers `None` both for a host with no
+            // front-end and for one whose front-end it could not reach, and
+            // reading `None` as "not filtering" is how an active firewall went
+            // on offering to be enabled while its port table opened empty.
+            //
+            // `Unknown` rather than `Absent`, which costs the one case it is
+            // wrong about — a host that genuinely has no front-end now draws no
+            // verb until something says otherwise — and buys the case that
+            // matters: a row never claims a machine is unprotected on the
+            // strength of a question it failed to ask.
+            Ok(None) => Presence::Unknown,
             Err(_) => Presence::Unknown,
         };
     }
@@ -1075,6 +1085,150 @@ mod tests {
         assert!(
             measured.contains(&"ssh.install"),
             "a lone task that declares a subject must be measured: {measured:?}"
+        );
+    }
+
+    #[test]
+    fn no_row_is_measured_by_a_command_that_would_prompt() {
+        // The net that was missing, and the reason four defects reached a real
+        // server at once. The probe thread runs with `Prompting::Refuse`, so a
+        // privileged command there does not prompt and does not succeed — it
+        // returns `NoTerminalForPrompt`, which every caller folds into a
+        // definite-looking answer: `Presence::Unknown` for a kernel parameter
+        // (drawing the forward verb, so applying one looked like a no-op) and
+        // `Absent` for the firewall (so an active one went on offering to be
+        // enabled).
+        //
+        // Every probe test before this used a positional `MockExecutor`, which
+        // has no opinion about privilege — so each of those defects passed the
+        // suite for as long as it shipped. `any_privileged` is the question
+        // none of them asked.
+        //
+        // Asked of the real tree against all five families rather than of a
+        // fixture: what has to hold is that *no* row can be measured this way,
+        // including the next one somebody adds.
+        for family in [
+            Family::Debian,
+            Family::Rhel,
+            Family::Arch,
+            Family::Alpine,
+            Family::Suse,
+        ] {
+            let backend = for_family(family);
+
+            for (forward_id, capability) in subjects_in(&crate::tasks::tree()) {
+                // The firewall is the one subject exempt, and exempt on the
+                // merits rather than by grandfathering: `nft list` genuinely
+                // requires root — unlike the sysctl drop-in, which was `0644`
+                // all along and privileged for no reason — and there is no
+                // unprivileged spelling of the question. What that row must do
+                // instead is answer `Unknown` rather than `Absent`, which the
+                // test below pins.
+                if capability == Capability::Nftables {
+                    continue;
+                }
+
+                // Enough replies for the longest path any single measurement
+                // takes, and `Reply::ok` throughout: what is under test is
+                // which commands are *issued*, not what they answer.
+                let mock = MockExecutor::with_replies(std::iter::repeat_n(Reply::ok(""), 8));
+
+                let _ = measure(&mock, backend.as_ref(), forward_id, capability);
+
+                assert!(
+                    !mock.any_privileged(),
+                    "{forward_id} on {family:?} is measured by a privileged command, \
+                     which the probe thread cannot run: {:?}",
+                    mock.recorded_lines()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_requirement_is_checked_by_a_command_that_would_prompt() {
+        // The same guarantee for the other half of what the probe asks. A
+        // requirement measured by a privileged command answers
+        // `Readiness::Unknown` on the thread that asks it, which greys nothing
+        // and blocks nothing — so the row stays enabled and the task refuses
+        // only once it has been started.
+        for family in [
+            Family::Debian,
+            Family::Rhel,
+            Family::Arch,
+            Family::Alpine,
+            Family::Suse,
+        ] {
+            let backend = for_family(family);
+
+            for (task_id, required) in requirements_in(&crate::tasks::tree(), backend.as_ref()) {
+                // The firewall's own state is the exemption `measure` above
+                // records: `manage-ports` requires an active policy, and asking
+                // whether one exists means listing a ruleset only root may see.
+                // `Readiness::Unknown` is the honest outcome there — it greys
+                // nothing and blocks nothing, so the row stays reachable and
+                // the task refuses on its own terms with a message that names
+                // what to run.
+                if task_id == "firewall.manage-ports" {
+                    continue;
+                }
+
+                let mock = MockExecutor::with_replies(std::iter::repeat_n(Reply::ok(""), 8));
+
+                let _ = measure_requirements(&mock, &required);
+
+                assert!(
+                    !mock.any_privileged(),
+                    "{task_id} on {family:?} states a requirement checked by a \
+                     privileged command: {:?}",
+                    mock.recorded_lines()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_firewall_that_could_not_be_read_is_not_reported_as_absent() {
+        // The defect this pins, reported from a Hetzner Debian host: the
+        // operator enabled the firewall as root, came back as an admin account,
+        // and the row went on offering to enable it while the port table opened
+        // without the SSH port in it.
+        //
+        // `nft list` needs root and the probe thread may not prompt for it, so
+        // the question could not be asked — and `firewall_for` answers `None`
+        // for that exactly as it does for a host with no front-end at all.
+        // Reading `None` as "not filtering" turned "I could not look" into "it
+        // is off", which is the shape CLAUDE.md already condemns for
+        // `exit_code_of` and `start_server_daemon`.
+        let unreachable = MockExecutor::with_replies([Reply::NotFound]);
+
+        assert_eq!(
+            measure(
+                &unreachable,
+                for_family(Family::Debian).as_ref(),
+                "firewall.enable",
+                Capability::Nftables,
+            ),
+            Presence::Unknown,
+            "a front-end that could not be reached must not read as no firewall"
+        );
+
+        // The other direction, so this cannot be satisfied by answering
+        // `Unknown` to everything: a host that answers is still measured.
+        let filtering = MockExecutor::with_replies([
+            Reply::ok("/usr/sbin/nft"),
+            Reply::ok("table inet initd {\n  chain input {\n    tcp dport 22 accept\n  }\n}"),
+        ]);
+
+        assert_eq!(
+            measure(
+                &filtering,
+                for_family(Family::Debian).as_ref(),
+                "firewall.enable",
+                Capability::Nftables,
+            ),
+            Presence::Present,
+            "a host that answers must still be measured"
         );
     }
 

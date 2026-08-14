@@ -429,21 +429,30 @@ fn specs_in(value: &str) -> Vec<Spec> {
 /// particular value only because the task refuses against an inactive policy
 /// before acting on it; the field never reaches a host where an empty set
 /// would be taken as "close everything".
-pub fn open_ports_value(executor: &dyn Executor, backend: &dyn Backend) -> String {
-    let Ok(Some(firewall)) = firewall_for(backend, executor) else {
-        return String::new();
-    };
+pub fn open_ports_value(executor: &dyn Executor, backend: &dyn Backend) -> Result<String> {
+    // Raised rather than answered empty, which is what this did and what the
+    // comment above now describes as the hazard it avoids. The empty string
+    // *is* the empty set, and the empty set closes every port this tool can
+    // close — so a ruleset that could not be read produced the one value whose
+    // meaning is the opposite of "I do not know".
+    //
+    // Reachable in the ordinary way: `nft list` needs root, and neither the
+    // interface's reading executor nor an unprivileged CLI invocation can
+    // always get it. `run` itself is safe — it reads the ruleset privileged and
+    // fails outright if that read fails — but this value is resolved *before*
+    // run, and its emptiness is indistinguishable from an operator meaning it.
+    let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
 
-    let Ok(state) = firewall.state(executor) else {
-        return String::new();
-    };
+    let state = firewall
+        .state(executor)
+        .map_err(|_| Error::FirewallStateUnreadable)?;
 
-    state
+    Ok(state
         .allowed
         .iter()
         .map(|port| port.spec.as_str())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" "))
 }
 
 /// Declares which ports are open, opening and closing to match.
@@ -1103,6 +1112,45 @@ mod tests {
     use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
     use crate::tasks::Confirmation;
+
+    #[test]
+    fn an_unreadable_ruleset_is_not_offered_as_the_empty_set() {
+        // The most dangerous of the five defects this batch fixes, and the one
+        // whose own comment described it: "without this an invocation naming no
+        // ports would declare the empty set, and the empty set closes
+        // everything". This function was that `without this` — it answered `""`
+        // for a ruleset it could not read, and `""` is the empty set.
+        //
+        // `nft list` needs root, so an unprivileged `initd run
+        // firewall.manage-ports` naming no ports would resolve "every port
+        // currently open" to "none of them", and ask for all of them to be
+        // closed — including the one carrying the session.
+        let unreadable = MockExecutor::with_replies([
+            Reply::ok("/usr/sbin/nft"), // the front-end is there
+            Reply::failure(1, "Operation not permitted"),
+        ]);
+
+        let err = open_ports_value(&unreadable, for_family(Family::Debian).as_ref())
+            .expect_err("a ruleset that could not be read must not answer");
+
+        assert!(matches!(err, Error::FirewallStateUnreadable), "{err:?}");
+    }
+
+    #[test]
+    fn a_readable_ruleset_still_answers_with_what_is_open() {
+        // The other direction, so the guard above cannot be satisfied by
+        // failing at everything: a host that answers is still read, and the
+        // value is what seeds the field an operator edits.
+        let readable = MockExecutor::with_replies([
+            Reply::ok("/usr/sbin/nft"),
+            Reply::ok("table inet initd {\n  chain input {\n    tcp dport 22 accept\n  }\n}"),
+        ]);
+
+        let value = open_ports_value(&readable, for_family(Family::Debian).as_ref())
+            .expect("a readable ruleset must answer");
+
+        assert!(value.contains("22/tcp"), "{value}");
+    }
 
     /// Runs a task against a mock, returning its outcome and the commands run.
     fn run(

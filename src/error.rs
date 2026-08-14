@@ -98,6 +98,22 @@ pub enum Error {
     /// backend already owns.
     NoFirewallFrontEnd,
 
+    /// The ruleset could not be read, so what this host admits is unknown.
+    ///
+    /// Distinct from [`NoFirewallFrontEnd`](Self::NoFirewallFrontEnd), which
+    /// states a fact about the machine, and from
+    /// [`FirewallNotEnabled`](Self::FirewallNotEnabled), which states a fact
+    /// about its policy. This one states a fact about *this process*: listing a
+    /// ruleset needs root, and the interface's reading threads may not raise a
+    /// password prompt under a screen somebody is looking at.
+    ///
+    /// Its own variant because the alternative was returning an empty set,
+    /// which reads as "this host admits nothing" — and the port table is
+    /// declarative, so confirming that empty set would ask for every port to be
+    /// closed. Reported from a live host: a firewall enabled as root showed no
+    /// SSH row once the operator returned as an unprivileged admin.
+    FirewallStateUnreadable,
+
     /// The executable is not in `PATH`.
     ProgramNotFound { program: String },
 
@@ -517,6 +533,7 @@ impl Error {
             },
             Self::PathNotAbsolute { path } => Msg::PathNotAbsolute { path: path.clone() },
             Self::NoFirewallFrontEnd => Msg::NoFirewallFrontEnd,
+            Self::FirewallStateUnreadable => Msg::FirewallStateUnreadable,
             Self::FirewallNotEnabled => Msg::FirewallNotEnabled,
             Self::ProgramNotFound { program } => Msg::ProgramNotFound {
                 program: program.clone(),
@@ -849,6 +866,7 @@ impl Error {
             // catalogue turns into a paragraph naming a remedy, and `kind
             // NoOtherAdmin` says less than the sentence it replaces.
             Self::NoFirewallFrontEnd
+            | Self::FirewallStateUnreadable
             | Self::FirewallNotEnabled
             | Self::NoPrivilegeEscalator
             | Self::CannotDeleteRoot

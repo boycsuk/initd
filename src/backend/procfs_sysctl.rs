@@ -227,9 +227,28 @@ impl SysctlManager for ProcfsSysctl {
 
         let files = crate::backend::unix_files::UnixFiles::new();
 
+        // Asked unprivileged, which is what lets the interface's probe answer
+        // it at all. That thread runs with `Prompting::Refuse` — it may not
+        // raise a password prompt under a tree somebody is reading — so the
+        // privileged read this used to do returned `NoTerminalForPrompt`
+        // whenever sudo's timestamp had lapsed, `measure` folded that into
+        // `Presence::Unknown`, and `Unknown` draws the *forward* verb. Applying
+        // a kernel parameter therefore looked like it had done nothing: the row
+        // went on offering to apply it and never offered the undo.
+        //
+        // Intermittent in the way that hides a defect: the startup `sudo -v`
+        // keeps a timestamp live for a few minutes, so it worked right after
+        // launch and stopped later, and never worked at all under `doas` or
+        // `run0`, which have no timestamp to keep.
+        //
+        // Sound because the file is world-readable by this tool's own choice:
+        // `DROP_IN_MODE` is `0644` inside a `0755` directory, both above. The
+        // privilege bought nothing here, while `FileEditor::read` keeps it for
+        // the files where it buys everything — `sshd_config` is mode `600`.
+        //
         // No drop-in at all is an answer rather than a failure: this tool has
         // never written here.
-        if !files.exists(executor, DROP_IN)? {
+        if !files.exists_unprivileged(executor, DROP_IN)? {
             return Ok(false);
         }
 
@@ -239,7 +258,7 @@ impl SysctlManager for ProcfsSysctl {
         // to "somebody else may have set it" is to write ours anyway, which is
         // what returning false does.
         Ok(files
-            .read(executor, DROP_IN)?
+            .read_unprivileged(executor, DROP_IN)?
             .lines()
             .filter(|line| Self::declares(line, setting.key))
             .any(|line| {
@@ -345,6 +364,42 @@ mod tests {
 
         assert_eq!(value, "1");
         assert!(!mock.any_privileged());
+    }
+
+    #[test]
+    fn asking_what_is_persisted_needs_no_privilege() {
+        // The question the interface's probe asks about both kernel-parameter
+        // rows, on a thread that runs with `Prompting::Refuse` and therefore
+        // cannot answer a privileged one. It used to be privileged: the read
+        // failed with `NoTerminalForPrompt` once sudo's timestamp lapsed,
+        // `measure` folded that into `Presence::Unknown`, and `Unknown` draws
+        // the forward verb — so applying a parameter appeared to do nothing and
+        // the row never offered the undo.
+        //
+        // Sound because the drop-in is `0644` in a `0755` directory by this
+        // tool's own choice, both pinned by tests above. `FileEditor::read`
+        // stays privileged for `sshd_config`, which is mode `600`.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""), // the drop-in is there
+            Reply::ok("net.ipv4.ip_forward = 1\n"),
+        ]);
+
+        assert!(
+            ProcfsSysctl::new()
+                .is_persisted(
+                    &mock,
+                    Setting {
+                        key: "net.ipv4.ip_forward",
+                        value: "1",
+                    },
+                )
+                .expect("the question must be answerable")
+        );
+
+        assert!(
+            !mock.any_privileged(),
+            "a probe that cannot prompt must not ask a question needing one"
+        );
     }
 
     #[test]

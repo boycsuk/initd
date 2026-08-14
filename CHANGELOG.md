@@ -86,6 +86,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the answer goes on describing the host the commands will run on when a
   second implementation runs them over SSH.
 
+- **A firewall enabled as root read as "not filtering" from an admin account.**
+  The row went on offering to enable an active firewall, and the port table
+  opened without the SSH port in it — on a host that was admitting it.
+
+  `nft list` exits 1 both for a table that does not exist and for one the caller
+  may not read, and `Nftables::state` collapsed the two into "nothing is
+  filtered". Everything downstream inherited that: the tree drew the forward
+  verb, and the port table — which is *declarative*, so a row missing from it is
+  a port asked to be closed — opened empty.
+
+  The interface authenticates once at startup and the helper's timestamp lapses
+  while the session stays open, so this is not a state an operator arrives in.
+  It is one the screen decays into after fifteen minutes on Debian, five on
+  Arch, and immediately under `doas` or `run0`, which keep no timestamp at all.
+
+  Now separated by what `nft` says, since the exit code cannot tell them apart:
+  a refusal raises `FirewallStateUnreadable`, a missing table stays an answer.
+  `Presence::Unknown` replaces `Absent` where the front-end could not be
+  reached, and the port table refuses to open rather than opening blank, naming
+  what to do — running any task re-authenticates.
+
+- **`initd run firewall.manage-ports` could close every port it can close.**
+  The worst of these, and its own comment described it: "without this an
+  invocation naming no ports would declare the empty set, and the empty set
+  closes everything". `open_ports_value` was that *without this* — it answered
+  `""` for a ruleset it could not read, and `""` is the empty set.
+
+  Reachable without privilege, which is the documented way to run this: listing
+  needs root, so an unprivileged `initd run firewall.manage-ports` naming no
+  ports resolved "every port currently open" to "none of them" and asked for all
+  of them to be closed, the session's own among them. It raises now.
+
+  `ManagePorts::run` was never the hole — it reads the ruleset privileged and
+  fails outright if that read fails. The value was resolved *before* run, where
+  an empty answer is indistinguishable from an operator meaning it.
+
+### Added
+- **A guard that would have caught four of these at once.** Two tests walk the
+  real tree against all five families and assert that no row's presence and no
+  task's requirements are measured by a privileged command. The probe thread
+  runs with `Prompting::Refuse`, so such a command cannot succeed there — it
+  returns `NoTerminalForPrompt`, which each caller folded into a
+  definite-looking answer.
+
+  Every probe test before this used a positional `MockExecutor`, which has no
+  opinion about privilege, so each of these defects passed the suite for as long
+  as it shipped. `MockExecutor::any_privileged` already existed; nothing in the
+  probe tests had asked it.
+
+  The firewall is exempt on the merits rather than grandfathered: `nft list`
+  genuinely requires root and has no unprivileged spelling, unlike the sysctl
+  drop-in, which was world-readable all along. What that row must do instead —
+  answer `Unknown` rather than `Absent` — has a test of its own.
+
 ## [0.3.0] — 2026-08-13
 
 ### Changed

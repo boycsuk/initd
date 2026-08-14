@@ -938,10 +938,27 @@ impl App {
                 .to_string(),
                 // The set the operator is about to edit starts as what the host
                 // holds, so removing a row is the only way a port closes.
-                LiveDefault::OpenPorts => crate::tasks::network::open_ports_value(
-                    self.executor.as_ref(),
-                    self.backend.as_ref(),
-                ),
+                //
+                // A ruleset that could not be read stops this rather than
+                // seeding the field with the empty set, which in a declarative
+                // field means "close everything". The port *table* refuses for
+                // the same reason a few lines below; this is the text field the
+                // same value reaches on a task asking for it that way.
+                LiveDefault::OpenPorts => {
+                    let Ok(open) = crate::tasks::network::open_ports_value(
+                        self.executor.as_ref(),
+                        self.backend.as_ref(),
+                    ) else {
+                        self.output.push(OutputLine::new(
+                            Stream::Stderr,
+                            self.lang.render(&Msg::FirewallStateUnreadable),
+                        ));
+
+                        return None;
+                    };
+
+                    open
+                }
             };
         }
 
@@ -950,7 +967,26 @@ impl App {
         // field that declares a list wants a list, and the interface should
         // not have to be told which tasks those are.
         if asked.iter().any(|param| param.kind == ParamKind::PortList) {
-            self.ports = Some(PortTable::new(task.title(), &self.admitted_ports()));
+            // Refused rather than opened empty. The table is *declarative* — a
+            // row absent from it is a port asked to be closed — so a listing
+            // that failed to read would be confirmed as "admit nothing", and
+            // the port carrying the operator's own session is the likeliest
+            // row missing from it.
+            //
+            // The unreadable case is the ordinary one rather than an edge:
+            // `nft list` needs root, this executor may not prompt, and the
+            // startup timestamp lapses while the session stays open. So the
+            // message says how to get it back.
+            let Some(admitted) = self.readable_admitted_ports() else {
+                self.output.push(OutputLine::new(
+                    Stream::Stderr,
+                    self.lang.render(&Msg::FirewallStateUnreadable),
+                ));
+
+                return None;
+            };
+
+            self.ports = Some(PortTable::new(task.title(), &admitted));
             return None;
         }
 
@@ -983,17 +1019,24 @@ impl App {
     /// An empty answer where nothing can be read, for the same reason the
     /// suggestions are dropped rather than raised: the task refuses on its own
     /// terms with a better message than a dialog that would not open.
-    fn admitted_ports(&self) -> Vec<crate::domain::firewall::AllowedPort> {
-        let Ok(Some(firewall)) =
-            crate::backend::firewall_for(self.backend.as_ref(), self.executor.as_ref())
-        else {
-            return Vec::new();
-        };
+    /// The ports this host admits, or `None` where the ruleset could not be
+    /// read.
+    ///
+    /// The distinction this returns used to be collapsed into an empty `Vec`,
+    /// and the two halves call for opposite things. An empty list is a firewall
+    /// admitting nothing; `None` is a firewall nobody could ask — `nft list`
+    /// needs root, and this executor may not prompt for it. Rendered
+    /// identically, the second reads as the first: on a host admitting SSH the
+    /// table opened with no SSH row and no sign that anything had failed, which
+    /// in a declarative table is a confirmation away from closing it.
+    fn readable_admitted_ports(&self) -> Option<Vec<crate::domain::firewall::AllowedPort>> {
+        let firewall =
+            crate::backend::firewall_for(self.backend.as_ref(), self.executor.as_ref()).ok()??;
 
         firewall
             .state(self.executor.as_ref())
+            .ok()
             .map(|state| state.allowed)
-            .unwrap_or_default()
     }
 
     /// Fills each field with what the host says it could hold.
