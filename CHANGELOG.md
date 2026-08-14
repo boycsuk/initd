@@ -143,6 +143,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an empty answer is indistinguishable from an operator meaning it.
 
 ### Added
+- **Container scenarios that run as an operator rather than as root.** The
+  environment the suite never had, and the reason five defects reached a live
+  host at once: `docker run` is root, whose `PATH` carries `/usr/sbin`, while
+  `initd` is documented to run unprivileged and escalate per command. Every
+  scenario exercised the one environment in which a lookup for `sshd` or `nft`
+  could not fail.
+
+  `tests/integration_operator.rs` asserts each defect against the account that
+  found it, through a helper that creates an account with passwordless `sudo`
+  and enters it with `su -` — never `docker run --user`, which inherits the
+  daemon's environment and would silently restore root's `PATH`.
+
+  Confirmed to catch what it exists for by reintroducing the `PATH` defect and
+  watching it fail, rather than assumed to. That pass is what made the scenario
+  usable: the first version drove `ssh.harden`, which refuses at a lockout
+  guard *before* the daemon is looked for, so it passed on all six images with
+  the bug present. `ssh.change-port` reaches the lookup and reproduces the
+  operator's own refusal.
+
+  It is one test rather than six, and the restriction is measured. Two things
+  must coincide for the defect to reproduce: `/usr/sbin` absent from a non-root
+  login — true on Debian, Arch and both SUSE images, false on Alpine and RHEL —
+  and `sshd` present *only* there, which excludes Arch, since it also ships
+  `/usr/bin/sshd`. That leaves Debian and SUSE, and SUSE resolves `run0`, which
+  needs systemd as PID 1 and so never reaches the assertion in a container.
+  Written across the matrix, five of the six would have been tests that cannot
+  fail.
+
+  The helper's own setup guards against the two ways it can fail to produce the
+  account, since both would otherwise surface as an empty stdout and read as
+  the scenario's assertion failing — the shape `exit_code_of` and the 125 guard
+  already record. Debian ships an `operator` *group* in its base image, so
+  `useradd operator` refuses; the harness had recorded that on `LOGIN_USER`
+  already, and this rediscovered it by not reusing the constant.
+
 - **The installer says what it is replacing.** Re-running it already upgraded
   correctly — `install` overwrites, including over a *running* binary, which it
   replaces by inode so an open session goes on working against the copy it

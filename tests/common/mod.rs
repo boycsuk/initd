@@ -36,6 +36,13 @@
 //!   question a single image cannot pose, since client and server there share
 //!   one OpenSSH release.
 //!
+//! - `integration_operator` runs as an unprivileged account that escalates,
+//!   which is how `initd` is documented to be used and what every other
+//!   scenario here was missing. `docker run` is root, whose `PATH` carries
+//!   `/usr/sbin`, so the suite exercised the one environment in which a lookup
+//!   for `sshd` or `nft` could not fail — and four defects passed it for as
+//!   long as they shipped.
+//!
 //! Both are slow enough, and demanding enough of the host, to keep out of the
 //! shared matrix.
 //!
@@ -72,6 +79,13 @@ pub struct Image {
     pub refresh: &'static str,
     /// Installs the OpenSSH server under whatever this family calls it.
     pub install_ssh: &'static str,
+    /// Installs `sudo`, which no base image here ships.
+    ///
+    /// Needed only by [`run_in_container_as_operator`], which exists to run as
+    /// an account that escalates rather than as root. Every family spells the
+    /// package `sudo`; what differs is the manager in front of it, which is
+    /// why this is a command rather than a name.
+    pub install_sudo: &'static str,
     /// Installs the OpenSSH *client*, needed to prove a session negotiates.
     ///
     /// Separate from [`Self::install_ssh`] because the split is a packaging
@@ -175,6 +189,7 @@ pub const DEBIAN: Image = Image {
     family: "debian",
     refresh: "apt-get update -qq",
     install_ssh: "apt-get install -y -qq openssh-server",
+    install_sudo: "apt-get install -y -qq sudo",
     install_ssh_client: "apt-get install -y -qq openssh-client",
     install_useradd: "apt-get install -y -qq passwd",
     install_tmux: "apt-get install -y -qq tmux",
@@ -196,6 +211,7 @@ pub const ARCH: Image = Image {
     family: "arch",
     refresh: "pacman -Sy --noconfirm",
     install_ssh: "pacman -S --needed --noconfirm openssh",
+    install_sudo: "pacman -S --needed --noconfirm sudo",
     // The same package: Arch does not split client from server.
     install_ssh_client: "pacman -S --needed --noconfirm openssh",
     // `useradd` is in the base image here, so there is nothing to install.
@@ -226,6 +242,7 @@ pub const ALPINE: Image = Image {
     // separate refresh step to run.
     refresh: "true",
     install_ssh: "apk add --no-cache openssh",
+    install_sudo: "apk add --no-cache sudo",
     // The same package, as on Arch: Alpine does not split client from server.
     install_ssh_client: "apk add --no-cache openssh",
     // busybox provides `adduser`; there is nothing to install.
@@ -265,6 +282,7 @@ pub const RHEL: Image = Image {
     family: "rhel",
     refresh: "dnf makecache -q",
     install_ssh: "dnf install -y -q openssh-server",
+    install_sudo: "dnf install -y -q sudo",
     // Plural, and the one name here a scenario would fail on quietly: without
     // a client there is nothing to connect with, which reads as the daemon
     // refusing rather than as a missing package.
@@ -314,6 +332,7 @@ pub const TUMBLEWEED: Image = Image {
     // prompts for licence agreements and vendor changes as well as for
     // confirmation, and none of those are answered by a trailing flag.
     install_ssh: "zypper --non-interactive install openssh-server",
+    install_sudo: "zypper --non-interactive install sudo",
     // Split as Debian splits it, and the same quiet failure if omitted: no
     // client means nothing to connect with, which reads as the daemon
     // refusing.
@@ -353,6 +372,7 @@ pub const LEAP: Image = Image {
     family: "suse",
     refresh: "zypper --non-interactive refresh",
     install_ssh: "zypper --non-interactive install openssh-server",
+    install_sudo: "zypper --non-interactive install sudo",
     install_ssh_client: "zypper --non-interactive install openssh-clients",
     install_useradd: "true",
     install_tmux: "zypper --non-interactive install tmux",
@@ -728,6 +748,102 @@ pub fn run_in_container(image: &Image, script: &str) -> std::process::Output {
     panic_if_the_container_never_ran(image, &output);
 
     output
+}
+
+/// Runs a script as an unprivileged account that can escalate.
+///
+/// The environment every scenario in this suite was missing, and the reason
+/// five defects reached a production host at once: `docker run` is root, whose
+/// `PATH` carries `/usr/sbin`, and `initd` is documented to run as an ordinary
+/// operator who escalates command by command. So the suite exercised the one
+/// environment in which a `PATH` lookup for `sshd` or `nft` could not fail.
+///
+/// The account is given passwordless `sudo` because that is the arrangement the
+/// tool is built around, and because a script cannot answer a prompt. What it
+/// deliberately does *not* get is root's `PATH`: `su -` runs the login shell, so
+/// the account sees exactly what a real one does — measured on `debian:13`,
+/// `/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games`, with
+/// `/usr/sbin` absent while `/usr/sbin/sshd` and `/usr/sbin/nft` sit on disk.
+///
+/// `su -` rather than `docker run --user`: the latter inherits the daemon's
+/// environment rather than building a login one, so `PATH` would stay root's
+/// and the whole point of the helper would be lost.
+///
+/// The account is [`LOGIN_USER`] rather than a name of this helper's own, and
+/// that constant's comment says why: Debian ships an `operator` *group* in its
+/// base image, so `useradd operator` refuses with "group operator exists". A
+/// second name here would have been a second place to rediscover that — which
+/// is precisely what happened before this reused it.
+///
+/// Creating it is conditional because the same image may already carry the
+/// account from an earlier layer, and `useradd` treats that as an error rather
+/// than as the state being reached.
+pub fn run_in_container_as_operator(image: &Image, script: &str) -> std::process::Output {
+    // `sudo` is not in every base image, and an account that cannot escalate
+    // exercises a different thing entirely — so it is installed rather than
+    // assumed, and the failure to install it would surface as the scenario's
+    // own commands failing rather than as a silent root run.
+    // `/usr/sbin` is spelled out rather than resolved, and that is the whole
+    // care this helper needs: `useradd` lives there, and the *point* of this
+    // helper is a `PATH` that cannot see it. Letting the setup resolve through
+    // `PATH` made the account silently not exist, and every scenario then ran
+    // its script as root — passing for the reason it was written to disprove.
+    //
+    // Alpine's busybox has no `useradd` at all and spells it `adduser -D`, with
+    // arguments Debian's interactive `adduser` rejects; each is tried by
+    // absolute path so neither is reached through a lookup.
+    // `refresh` before the install, because a bare `debian:13` carries no
+    // package index and `apt-get install` exits 100 without one. Under `set -e`
+    // that ended the whole prelude before the account existed, and — the part
+    // worth recording — it did so *silently*: stdout was empty, which reads
+    // exactly like a scenario whose assertion legitimately failed. The same
+    // shape `run_in_container`'s own 125 guard exists for, one layer up.
+    let prelude = format!(
+        "set -e; \
+         {refresh} >/dev/null 2>&1 || true; \
+         command -v sudo >/dev/null 2>&1 || {install} >/dev/null 2>&1; \
+         command -v sudo >/dev/null 2>&1 || exit 96; \
+         id {user} >/dev/null 2>&1 || \
+           if [ -x /usr/sbin/useradd ]; then /usr/sbin/useradd -m -s /bin/sh {user}; \
+           else /usr/sbin/adduser -D -s /bin/sh {user}; fi; \
+         id {user} >/dev/null 2>&1 || exit 97; \
+         echo '{user} ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers; \
+         su - {user} -c {script}",
+        refresh = image.refresh,
+        install = image.install_sudo,
+        user = LOGIN_USER,
+        script = shell_quote(script),
+    );
+
+    let output = run_in_container(image, &prelude);
+
+    // The two ways the *setup* can fail, told apart from the scenario's own
+    // result. Both would otherwise surface as empty output and be read as the
+    // assertion failing — the lesson `exit_code_of` and the 125 guard already
+    // record: a helper that could not do its job must say so rather than hand
+    // back something the caller will interpret.
+    match output.status.code() {
+        Some(96) => panic!(
+            "{}: sudo could not be installed, so the scenario could not run as \
+             an unprivileged operator",
+            image.name
+        ),
+        Some(97) => panic!(
+            "{}: the operator account was not created, so the scenario would \
+             have run as root — which is the environment it exists to avoid",
+            image.name
+        ),
+        _ => output,
+    }
+}
+
+/// Wraps a script so a shell passes it through as one argument.
+///
+/// Single quotes with the POSIX escape for an embedded one. Written out because
+/// the scenarios' scripts carry quotes of their own, and a helper that mangled
+/// them would fail in ways that look like the code under test misbehaving.
+fn shell_quote(script: &str) -> String {
+    format!("'{}'", script.replace('\'', r"'\''"))
 }
 
 /// Docker's own exit code for "the container did not start".
