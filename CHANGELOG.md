@@ -86,6 +86,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the answer goes on describing the host the commands will run on when a
   second implementation runs them over SSH.
 
+- **Applying a kernel parameter looked like it had done nothing.** The row went
+  on offering to apply it and never offered the undo, so an operator had no way
+  to tell the change had landed.
+
+  The rows are reversible and correctly wired, and the interface does re-probe
+  after a run. What failed is one layer below: `is_persisted` read the drop-in
+  through the privileged file editor, on the probe thread, which may not raise a
+  password prompt. The read returned `NoTerminalForPrompt`, `measure` folded
+  that into `Presence::Unknown`, and `Unknown` draws the forward verb.
+
+  Intermittent in the way that hides a defect: the startup `sudo -v` keeps a
+  timestamp live for a few minutes, so it worked right after launch and stopped
+  later — and never worked at all under `doas` or `run0`.
+
+  The read is unprivileged now, which is sound because
+  `/etc/sysctl.d/99-initd.conf` is mode `0644` in a `0755` directory by this
+  tool's own choice: the privilege bought nothing. `FileEditor::read` keeps it
+  for the files where it buys everything — `sshd_config` is mode `600` — so the
+  unprivileged path is a second method rather than a weakening of the first.
+
 - **A firewall enabled as root read as "not filtering" from an admin account.**
   The row went on offering to enable an active firewall, and the port table
   opened without the SSH port in it — on a host that was admitting it.
