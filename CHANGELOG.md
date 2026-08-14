@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`docker.rootless` refused an account that had a working service manager.**
+  Reported from the same Debian 13 server, where `/run/user/1000` existed and
+  `systemd-logind` was active — yet the task stopped at
+  `runuser -l deploy -c 'printenv XDG_RUNTIME_DIR'`, which printed nothing.
+
+  The check asked whether PAM had exported a variable and took an empty answer
+  as "this account has no service manager". Those are different claims. Debian
+  declares the module that would set it as `-session optional pam_systemd.so`
+  in `/etc/pam.d/runuser-l`: the leading `-` means "ignore silently if it will
+  not load" and `optional` means "carry on if it fails", so the variable may
+  simply not appear on a host where the manager is perfectly reachable.
+
+  `runuser -l` is now given `XDG_RUNTIME_DIR` rather than depending on PAM to
+  have set it — `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}`, so a session that did
+  register keeps whatever it was given. And the check asks the manager directly,
+  with `systemctl --user is-system-running`, which is the question the task
+  actually needs answered. `degraded` counts as reachable: it means some unit
+  failed, which says nothing about whether this tool can reach the bus, and
+  refusing on it would turn one broken user service into a refusal to install
+  another.
+
+  Reproduced before fixing and verified after, by commenting that PAM line out
+  in a container: the symptom matched exactly, and the reworked check answered
+  `running` where the old one refused.
 - **Both kernel-parameter tasks failed on a host that had `sysctl` installed,
   after installing it again.** Reported from the same Debian 13 server: the
   task announced "Installing procps...", apt replied `procps is already the

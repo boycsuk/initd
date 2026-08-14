@@ -9,11 +9,12 @@ use crate::domain::user_services::UserServiceManager;
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
-/// The variable whose presence proves the account's session was established.
+/// The variable `systemctl --user` finds the account's bus through.
 ///
-/// `systemctl --user` finds the bus through it, and `pam_systemd` is what sets
-/// it. Either both it and `DBUS_SESSION_BUS_ADDRESS` are populated or neither
-/// is — measured on Debian 13 under systemd — so one is enough to ask about.
+/// Set by `pam_systemd` when a session is registered — and *not* set when it is
+/// not, which used to be read here as proof the account had no service manager.
+/// It is not proof: see [`SystemdUserServices::as_user`], which now supplies
+/// this rather than depending on PAM having exported it.
 const RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
 
 /// Manages a user's own services through `systemctl --user`.
@@ -32,34 +33,61 @@ impl SystemdUserServices {
     /// account's own runtime directory, and a shell that inherits root's
     /// environment addresses root's service manager while appearing to
     /// address the user's. `runuser -l` sets up the session properly.
+    /// `XDG_RUNTIME_DIR` is supplied rather than relied on, which is the part
+    /// that had to be learned from a live host. `runuser -l` exports it only if
+    /// PAM registers a session, and Debian's `/etc/pam.d/runuser-l` declares
+    /// that module as `-session optional pam_systemd.so` — the leading `-`
+    /// meaning "ignore silently if it will not load" and `optional` meaning
+    /// "carry on if it fails". So the variable may simply not appear, on a host
+    /// where the account plainly *has* a service manager.
+    ///
+    /// Reported from a Debian 13 server where `/run/user/1000` existed and
+    /// `systemd-logind` was active, yet `runuser -l deploy -c 'printenv
+    /// XDG_RUNTIME_DIR'` printed nothing and exited 1. Reproduced by commenting
+    /// that one PAM line out, and the setup then worked once the variable was
+    /// given: `systemctl --user` answered `running`.
+    ///
+    /// Computed with `id -u` inside the command rather than resolved here,
+    /// because the trait is handed a name and a uid lookup of its own would be
+    /// a second way to get the same answer. `${XDG_RUNTIME_DIR:-...}` so a
+    /// session that *did* register keeps whatever it was given — this fills a
+    /// gap rather than overriding a working environment.
     fn as_user(user: &str, args: &[&str]) -> Command {
-        let mut command_args = vec!["-l", user, "-c"];
-        let joined = args.join(" ");
-        command_args.push(&joined);
+        let script = format!(
+            "export {RUNTIME_DIR}=\"${{{RUNTIME_DIR}:-/run/user/$(id -u)}}\"; {}",
+            args.join(" ")
+        );
 
         Command::new("runuser")
-            .args(command_args.iter().copied())
+            .args(["-l", user, "-c", &script])
             .privileged()
     }
 }
 
 impl UserServiceManager for SystemdUserServices {
     fn session_is_reachable(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
-        // Asked through the same `runuser -l` the real commands use, because
-        // the question is whether *that* establishes a session — asking any
-        // other way would answer about a session this tool never opens.
+        // Asks the service manager whether it answers, rather than asking
+        // whether a variable is set. That distinction cost a real host: this
+        // used to run `printenv XDG_RUNTIME_DIR` and refuse on an empty answer,
+        // and Debian's `runuser -l` may not export it even where the account
+        // has a perfectly good user manager — see [`Self::as_user`] for the PAM
+        // line that decides it. The environment was a proxy for the question,
+        // and on that host the proxy was wrong.
         //
-        // `printenv` rather than `echo $XDG_RUNTIME_DIR`: an unset variable
-        // makes `echo` print an empty line and exit 0, so success would carry
-        // no information. `printenv` exits non-zero when the name is unset,
-        // which is the answer rather than a failure to get one.
-        let command = Self::as_user(user, &["printenv", RUNTIME_DIR]);
-        let output = executor.run(&command)?;
+        // `is-system-running` because it needs the bus and reports through the
+        // exit code. Its *value* is deliberately not read: `degraded` means
+        // some unit failed, which says nothing about whether this tool can
+        // reach the manager, and refusing on it would turn one failed user unit
+        // into a refusal to install another.
+        let command = Self::as_user(user, &["systemctl", "--user", "is-system-running"]);
 
-        // The value, not just the exit code. A variable set to nothing is the
-        // same practical state as an unset one, and cheaper to rule out here
-        // than to diagnose from the failure it would cause two commands later.
-        Ok(output.success() && !output.stdout.trim().is_empty())
+        match executor.run(&command) {
+            Ok(output) => Ok(output.success() || output.stdout.trim() == "degraded"),
+            // An unreachable bus is the answer this exists to give, not a
+            // failure to obtain one.
+            Err(Error::CommandFailed { .. }) => Ok(false),
+            Err(other) => Err(other),
+        }
     }
 
     fn is_lingering(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
@@ -152,6 +180,69 @@ impl UserServiceManager for SystemdUserServices {
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn a_session_that_pam_did_not_register_is_still_reachable() {
+        // Reported from a Debian 13 server, and the reason this check no longer
+        // asks about an environment variable. `/run/user/1000` existed and
+        // `systemd-logind` was active, yet `runuser -l deploy -c 'printenv
+        // XDG_RUNTIME_DIR'` printed nothing: Debian declares the module that
+        // would have set it as `-session optional pam_systemd.so` in
+        // `/etc/pam.d/runuser-l`, which may do nothing and say nothing.
+        //
+        // So the account had a service manager and the task refused to use it.
+        // Reproduced by commenting that line out in a container, where
+        // `systemctl --user` then answered `running` once the variable was
+        // supplied.
+        let mock = MockExecutor::with_replies([Reply::ok("running\n")]);
+
+        assert!(
+            SystemdUserServices::new()
+                .session_is_reachable(&mock, "deploy")
+                .expect("a manager that answers must be reachable")
+        );
+
+        let asked = mock.single_command().to_string();
+
+        assert!(
+            asked.contains("systemctl --user is-system-running"),
+            "the manager must be asked directly: {asked}"
+        );
+        assert!(
+            asked.contains("XDG_RUNTIME_DIR"),
+            "and must be given the runtime directory rather than hoping for it: {asked}"
+        );
+        assert!(
+            !asked.contains("printenv"),
+            "asking what PAM exported is the defect this replaced: {asked}"
+        );
+    }
+
+    #[test]
+    fn a_degraded_manager_is_still_a_manager() {
+        // `is-system-running` exits non-zero for `degraded`, which means some
+        // unit failed — a fact about that unit, not about whether this tool can
+        // reach the bus. Refusing on it would turn one broken user service into
+        // a refusal to install another.
+        let mock = MockExecutor::with_replies([Reply::failure(1, "")]);
+
+        // The mock returns the value on stdout the way the real command does.
+        let degraded = MockExecutor::with_replies([Reply::ok("degraded\n")]);
+
+        assert!(
+            SystemdUserServices::new()
+                .session_is_reachable(&degraded, "deploy")
+                .expect("degraded must not raise")
+        );
+
+        // And a genuinely absent manager is still refused, so the allowance
+        // above cannot be satisfied by accepting everything.
+        assert!(
+            !SystemdUserServices::new()
+                .session_is_reachable(&mock, "deploy")
+                .expect("an unreachable bus is an answer")
+        );
+    }
 
     #[test]
     fn an_account_that_never_logged_in_is_not_lingering() {
