@@ -402,10 +402,17 @@ impl Task for InstallDockerRootless {
 /// `tui::probe` records about `sshd`: the engine may have arrived from the
 /// distribution's repositories or from Docker's, under different names, and
 /// `docker` is what both put on the PATH.
+///
+/// `is_installed` rather than `is_installed_here`, for the reason
+/// [`caddy_is_present`] spells out below and `sshd_is_present` records having
+/// been fixed for: the latter asks whether *this tool's* copy sits in
+/// `/usr/local/bin`, and no route to Docker writes there. Both the
+/// distribution's package and Docker's own repository install `/usr/bin/docker`,
+/// so asking that way refused every host that had an engine — and
+/// `docker.install` could not repair it, since installing the package lands in
+/// the directory the check was not looking at.
 fn engine_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
-    backend
-        .binaries()
-        .is_installed_here(executor, DOCKER_BINARY)
+    backend.binaries().is_installed(executor, DOCKER_BINARY)
 }
 
 /// Whether this host has the web server.
@@ -1394,6 +1401,51 @@ mod tests {
         assert!(
             !commands.iter().any(|c| c.contains("setuptool")),
             "the setup script must not run: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_engine_is_looked_for_where_docker_actually_installs() {
+        // The assertion the two tests around this one could not make. Both feed
+        // a positional `MockExecutor`, which hands back the next reply whatever
+        // was asked — so the reply labelled `command -v docker` satisfied
+        // `test -f /usr/local/bin/docker` just as happily, and the comment was
+        // the only thing claiming which question was asked.
+        //
+        // It was the wrong one. `/usr/local/bin` is this tool's own directory
+        // for release binaries; no route to Docker writes there. The engine
+        // arrives at `/usr/bin/docker` from the distribution's package and from
+        // Docker's repository alike, so the check refused every host that had
+        // one — and `docker.install` could not clear it, which made the task
+        // permanently unrunnable rather than merely blocked.
+        let (outcome, commands) = run(
+            &InstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok("/usr/bin/docker"),
+                Reply::ok(""),               // subuid
+                Reply::ok(""),               // subgid
+                Reply::ok("/run/user/1001"), // the session is reachable
+                Reply::ok(""),               // apt-get update
+                Reply::ok(""),               // install
+                Reply::ok("Linger=yes"),     // already lingering
+                Reply::ok(""),               // the setup script
+                Reply::ok(""),               // enable --now
+                Reply::ok("active"),         // is-active
+            ],
+            &user_values("deploy"),
+        );
+
+        outcome.expect("a host with /usr/bin/docker has an engine");
+
+        assert!(
+            commands.iter().any(|c| c.contains("command -v docker")),
+            "the engine must be looked for on the PATH: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("/usr/local/bin/docker")),
+            "and never in this tool's own install directory: {commands:?}"
         );
     }
 
