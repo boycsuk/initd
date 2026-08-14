@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-14
+
+Three tasks reported from the same Debian 13 server as still failing after
+0.4.0, all three for reasons that only appear on a host running as an operator
+rather than as root.
+
 ### Fixed
 - **`docker.rootless` refused an account that had a working service manager.**
   Reported from the same Debian 13 server, where `/run/user/1000` existed and
