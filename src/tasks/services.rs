@@ -353,10 +353,26 @@ impl Task for InstallDockerRootless {
         // repository, `docker-rootless-extras` on openSUSE, `rootlesskit` on
         // Arch. The repository, where there is one, was registered by
         // `docker.install` — which this task has already checked ran.
+        // `packages_for` where the family answers with more than one name, and
+        // Debian does: the extras package does not depend on `uidmap`, whose
+        // `newuidmap`/`newgidmap` are what *apply* the subordinate id ranges
+        // checked a few lines above. Installing the first name alone left
+        // upstream's setup script refusing with `[ERROR] Missing system
+        // requirements`, telling the operator to install a package this tool
+        // should have brought — reported from a live host.
+        //
+        // The same asymmetry that let an uninstall leave four of five packages
+        // behind, here on the install side: one name where the capability is
+        // several.
         if backend.has_package_for(Capability::DockerRootless) {
-            backend
-                .packages()
-                .install(executor, &[backend.package_for(Capability::DockerRootless)])?;
+            let named = backend.packages_for(Capability::DockerRootless);
+            let installing: Vec<&str> = if named.is_empty() {
+                vec![backend.package_for(Capability::DockerRootless)]
+            } else {
+                named.to_vec()
+            };
+
+            backend.packages().install(executor, &installing)?;
         }
 
         // Lingering first. Without it the engine stops when the account's last
@@ -1422,6 +1438,49 @@ mod tests {
         assert!(
             !commands.iter().any(|c| c.contains("setuptool")),
             "the setup script must not run: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_rootless_install_brings_the_helpers_the_setup_script_demands() {
+        // The task checked that `deploy` had subordinate id ranges and then
+        // installed nothing able to apply them. Upstream's script refused with
+        // `[ERROR] Missing system requirements` and told the operator to run
+        // `apt-get install -y uidmap` by hand — the step this tool exists to
+        // take, and one it had all the information to take.
+        let (outcome, commands) = run(
+            &InstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok("/usr/bin/docker"),
+                Reply::ok(""),           // subuid
+                Reply::ok(""),           // subgid
+                Reply::ok("running"),    // the manager answers
+                Reply::ok(""),           // apt-get update
+                Reply::ok(""),           // the install
+                Reply::ok("Linger=yes"), // already lingering
+                Reply::ok(""),           // the setup script
+                Reply::ok(""),           // enable --now
+                Reply::ok("active"),     // is-active
+            ],
+            &user_values("deploy"),
+        );
+
+        outcome.expect("the install must succeed");
+
+        let install = commands
+            .iter()
+            .find(|line| line.contains("apt-get install"))
+            .expect("the rootless extras must be installed");
+
+        assert!(
+            install.contains("docker-ce-rootless-extras"),
+            "the extras must still be installed: {install}"
+        );
+        assert!(
+            install.contains("uidmap"),
+            "and the id-mapping helpers with them, in the same transaction: {install}"
         );
     }
 

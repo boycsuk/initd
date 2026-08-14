@@ -66,6 +66,24 @@ const WIREGUARD_CONFIG: &str = "/etc/wireguard";
 /// the name being wrong rather than as the repository being absent.
 const DOCKER_ROOTLESS_PACKAGE: &str = "docker-ce-rootless-extras";
 
+/// What a rootless setup needs here, which is two packages rather than one.
+///
+/// `uidmap` provides `newuidmap` and `newgidmap`, the setuid helpers that apply
+/// the subordinate id ranges `docker.rootless` already checks for. Debian ships
+/// neither in the base system, and `docker-ce-rootless-extras` does not depend
+/// on them — measured with `apt-get install -s`, which brings in systemd, dbus
+/// and `rootlesskit` and no `uidmap`.
+///
+/// So upstream's own setup script refused with `[ERROR] Missing system
+/// requirements`, telling the operator to run `apt-get install -y uidmap`
+/// themselves. Reported from a live host, and the whole point of a per-family
+/// backend is that this is the layer holding that name.
+///
+/// The one family that needs it named. Arch, RHEL and both SUSE variants carry
+/// the helpers in their base `shadow`/`shadow-utils` package — measured on all
+/// four — and Alpine names its own, so only these two families answer here.
+const DOCKER_ROOTLESS_PACKAGES: &[&str] = &[DOCKER_ROOTLESS_PACKAGE, "uidmap"];
+
 /// The engine itself, as Docker's own installation page lists it.
 ///
 /// Four names rather than one, and the list is upstream's verbatim: the daemon,
@@ -378,6 +396,7 @@ impl Backend for DebianBackend {
     fn packages_for(&self, capability: Capability) -> &'static [&'static str] {
         match capability {
             Capability::DockerEngine => DOCKER_ENGINE_PACKAGES,
+            Capability::DockerRootless => DOCKER_ROOTLESS_PACKAGES,
             _ => &[],
         }
     }
@@ -614,6 +633,31 @@ mod tests {
         assert!(
             repository.base_url.contains("/linux/debian"),
             "{repository:?}"
+        );
+    }
+
+    #[test]
+    fn a_rootless_setup_brings_the_helpers_that_map_its_ids() {
+        // Reported from a live host: upstream's setup script refused with
+        // `[ERROR] Missing system requirements` and told the operator to run
+        // `apt-get install -y uidmap` themselves — a step this tool exists to
+        // take. `newuidmap` and `newgidmap` are what apply the subordinate id
+        // ranges the task already checks for, so checking the ranges while
+        // omitting the helpers that use them is half a job.
+        //
+        // Debian ships neither in the base system, and
+        // `docker-ce-rootless-extras` does not depend on them: `apt-get install
+        // -s` brings in systemd, dbus and rootlesskit and no uidmap, measured.
+        let backend = DebianBackend::for_distribution("debian", Some("trixie"));
+        let packages = backend.packages_for(Capability::DockerRootless);
+
+        assert!(
+            packages.contains(&"docker-ce-rootless-extras"),
+            "the rootless extras must still be installed: {packages:?}"
+        );
+        assert!(
+            packages.contains(&"uidmap"),
+            "and the id-mapping helpers with them: {packages:?}"
         );
     }
 
