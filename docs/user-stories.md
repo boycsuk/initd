@@ -227,7 +227,19 @@ TUI or CLI:
     field naming an account states which it expects, so neither mistake waits
     for the task to run.
 - As an **administrator**, I can lock the root account, so that it cannot be
-  logged into at all.
+  logged into at all — and unlock it again from the same place.
+  - Acceptance: one row covers both directions, and which one it offers is read
+    from the host when the confirmation opens rather than guessed at. Where the
+    account's state cannot be read — that answer needs administrator access,
+    which a session loses once its authentication expires — neither direction
+    is offered, and the dialog says so instead of proposing the wrong one.
+  - Acceptance: unlocking lifts the expiry and sets no password, which the tool
+    states plainly: an account holding no usable credential still cannot log in
+    afterwards.
+  - Acceptance: unlocking is not refused for want of another administrator. The
+    scan below guards the direction that can strand somebody; restoring access
+    can strand nobody, and a host with no other administrator is exactly where
+    it matters most.
   - Acceptance: I am not asked which account keeps access. The tool scans every
     account the host has and answers that itself — the question had one right
     answer the machine already held, and the account I would have named was
@@ -530,6 +542,13 @@ TUI or CLI:
   ports it admits, so that I know what is reachable before I change anything.
   - Acceptance: "not filtering" and "filtering nothing" are reported
     differently. They look alike in a listing and mean opposite things.
+  - Acceptance: and so is "could not be read", which is a third state rather
+    than a shade of the first. Listing a ruleset needs administrator access,
+    and a session loses that once its authentication expires — so a firewall
+    that is running is never reported as off on the strength of a question the
+    tool was refused. The row says the state is unknown, and the port table
+    declines to open rather than opening empty: it is declarative, so an empty
+    table confirmed is a request to close every port, the session's included.
   - Acceptance: the status says whether the rules come back after a restart.
     The running ruleset cannot be read for it — `nft` holds its rules in the
     kernel — so a host filtering perfectly now can return from a reboot with
