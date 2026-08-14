@@ -377,6 +377,58 @@ fn measure(
         };
     }
 
+    // The second capability whose row asks something the package database
+    // cannot answer, and it asked anyway: this one is about an *account*, and a
+    // package is about the machine.
+    //
+    // `docker.rootless-off` deliberately leaves the package — another account
+    // may be running its own engine from it — so the row went on offering to
+    // remove a setup that had just been removed. Reported from a live host, and
+    // it would never have settled: nothing the uninstall does changes the
+    // answer the row was reading.
+    //
+    // What the setup actually leaves behind is a user unit, written by
+    // upstream's script into the account's own systemd directory and deleted by
+    // its `uninstall` — verified on the host that reported this, where the
+    // directory was gone afterwards.
+    //
+    // **Any account rather than the one the form will name**, which is a real
+    // limitation and the best this can do here: the row is drawn before a
+    // username has been typed, so "some account has one" is the only question
+    // available. It is right in the case that matters — a host where nobody has
+    // a rootless engine no longer offers to remove one — and wrong where two
+    // accounts differ, which is why the task checks the account it was given
+    // rather than trusting this.
+    // The second capability whose row asks something the package database
+    // cannot answer, and it asked anyway: this one is about an *account*, and a
+    // package is about the machine.
+    //
+    // `docker.rootless-off` deliberately leaves the package — another account
+    // may be running its own engine from it — so the row went on offering to
+    // remove a setup that had just been removed. Reported from a live host, and
+    // it would never have settled: nothing the uninstall does changes the
+    // answer the row was reading.
+    //
+    // What the setup actually leaves behind is a user unit, written by
+    // upstream's script into the account's own systemd directory and deleted by
+    // its `uninstall` — verified on the host that reported this, where
+    // `~/.config/systemd/user/` was gone afterwards.
+    //
+    // **Any account rather than the one the form will name**, which is a real
+    // limitation and the best available here: the row is drawn before a
+    // username has been typed, so "some account has one" is the only question
+    // there is. It is right in the case that matters — a host where nobody has
+    // a rootless engine no longer offers to remove one — and wrong where two
+    // accounts differ, which is why the task checks the account it was given
+    // rather than trusting this.
+    if capability == Capability::DockerRootless {
+        return match backend.user_services().any_account_has_engine(executor) {
+            Ok(true) => Presence::Present,
+            Ok(false) => Presence::Absent,
+            Err(_) => Presence::Unknown,
+        };
+    }
+
     // The one capability where "present" is not a question about software. `nft`
     // being installed says nothing about whether this host is filtering, and a
     // row that offered to *disable* a firewall on the strength of a package
@@ -1185,6 +1237,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_rootless_row_follows_the_account_rather_than_the_package() {
+        // Reported from a live host: the row said "remove" forever. It asked
+        // the package database, and `docker.rootless-off` deliberately leaves
+        // the package — another account may be running its own engine from it —
+        // so nothing the uninstall did could ever change the answer.
+        //
+        // The row is about an account and a package is about the machine. What
+        // the setup leaves behind is a user unit, which its uninstall deletes:
+        // verified on that host, where `~/.config/systemd/user/` was gone
+        // afterwards.
+        let torn_down = MockExecutor::with_replies([Reply::failure(1, "")]);
+
+        assert_eq!(
+            measure(
+                &torn_down,
+                for_family(Family::Debian).as_ref(),
+                "docker.rootless",
+                Capability::DockerRootless,
+            ),
+            Presence::Absent,
+            "with no account holding a unit, the row must offer to install"
+        );
+
+        let set_up = MockExecutor::with_replies([Reply::ok(
+            "/home/deploy/.config/systemd/user/docker.service",
+        )]);
+
+        assert_eq!(
+            measure(
+                &set_up,
+                for_family(Family::Debian).as_ref(),
+                "docker.rootless",
+                Capability::DockerRootless,
+            ),
+            Presence::Present,
+            "and offer to remove one where an account has it"
+        );
+
+        // Never the package, which is the whole defect: `dpkg-query` answering
+        // for `docker-ce-rootless-extras` is what the row used to read.
+        assert!(
+            !torn_down
+                .recorded_lines()
+                .iter()
+                .any(|line| line.contains("dpkg-query")),
+            "the package database cannot answer a question about an account: {:?}",
+            torn_down.recorded_lines()
+        );
     }
 
     #[test]

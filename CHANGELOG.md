@@ -91,6 +91,34 @@ uses, and how many packages a capability is.
   site, `rust.rs`'s `rustup self uninstall`, had *neither* and would have failed
   the same way on the same host.
 
+- **The rootless row said "remove" forever.** It asked the package database, and
+  `docker.rootless-off` deliberately leaves the package — another account may be
+  running its own engine from it — so nothing the uninstall did could ever
+  change the answer. The row is about an *account*; a package is about the
+  machine.
+
+  It now looks for the user unit upstream's script writes and its `uninstall`
+  deletes, verified on the host that reported this: `~/.config/systemd/user/`
+  was gone afterwards.
+
+  Any account rather than the one the form will name, which is a real limit and
+  the best available: the row is drawn before a username is typed. It is right
+  in the case that matters — a host where nobody has a rootless engine stops
+  offering to remove one — and the task still checks the account it was actually
+  given.
+
+### Changed
+- **Tasks no longer reinstall packages that are already installed.** A run
+  printed a full `apt-get update`, a dependency resolution and `already the
+  newest version` before doing what it was asked. Correct — every package
+  manager treats an installed package as the state being asked for — and loud,
+  which for a task an operator is watching is its own defect.
+
+  `install_missing` is the promise `install`'s own first line already made and
+  did not keep. It sits on the trait with a default, so every task gains it
+  rather than Docker alone, and it still installs whatever *is* missing in one
+  transaction.
+
 ## [0.4.1] — 2026-08-14
 
 Three tasks reported from the same Debian 13 server as still failing after

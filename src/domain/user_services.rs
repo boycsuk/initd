@@ -43,6 +43,31 @@ pub trait UserServiceManager {
     /// therefore a fact to refuse on, not a thing to repair.
     fn session_is_reachable(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
 
+    /// Whether any account on this host has a rootless engine set up.
+    ///
+    /// Asked by the interface rather than by a task, and asked of *any* account
+    /// because the row is drawn before a username has been typed. A task that
+    /// has one checks that one instead.
+    ///
+    /// The question exists because the obvious one is wrong: `docker.rootless`
+    /// installs a package and `docker.rootless-off` deliberately leaves it —
+    /// another account may be running its own engine from it — so a row keyed
+    /// on the package went on offering to remove a setup that had just been
+    /// removed, and nothing the uninstall did could ever change that answer.
+    ///
+    /// What the setup leaves is a *user unit*, written by upstream's script
+    /// into the account's own systemd directory and deleted by its `uninstall`
+    /// — verified on the host that reported this, where the directory was gone
+    /// afterwards.
+    ///
+    /// Defaulted to `false` because it is a fact about systemd: OpenRC has no
+    /// per-user manager at all, which is why `docker.rootless` refuses Alpine,
+    /// and "no account has one" is the truthful answer there rather than a
+    /// stand-in for one.
+    fn any_account_has_engine(&self, _executor: &dyn Executor) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Whether the account may keep services running with no session open.
     fn is_lingering(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
 

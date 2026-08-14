@@ -123,6 +123,31 @@ impl UserServiceManager for SystemdUserServices {
         }
     }
 
+    fn any_account_has_engine(&self, executor: &dyn Executor) -> Result<bool> {
+        // A glob over the accounts' own systemd directories, which is where
+        // upstream's script writes the unit and where its `uninstall` removes
+        // it. Verified on the host that reported the row never settling: after
+        // `docker.rootless-off`, `~/.config/systemd/user/` was gone entirely.
+        //
+        // `ls` rather than the file editor's `exists`, because the question has
+        // a wildcard in it and `test -e` takes one path. Its exit code is the
+        // whole answer, so nothing is parsed — a filename is the one thing a
+        // shell glob is guaranteed to hand back, and reading one would mean
+        // deciding what to do about an account whose home is somewhere else.
+        //
+        // Unprivileged: the directory is the account's own and world-executable
+        // by default, and this runs on the probe thread, which may not prompt.
+        // A home that is not readable answers "no such file", which reads as
+        // absent — the direction that leaves the row offering to install, which
+        // is harmless where the other is not.
+        let command = Command::new("sh").args([
+            "-c",
+            "ls -d /home/*/.config/systemd/user/docker.service 2>/dev/null",
+        ]);
+
+        Ok(executor.run(&command)?.success())
+    }
+
     fn is_lingering(&self, executor: &dyn Executor, user: &str) -> Result<bool> {
         let command = Command::new("loginctl").args(["show-user", user, "--property=Linger"]);
         let output = executor.run(&command)?;
