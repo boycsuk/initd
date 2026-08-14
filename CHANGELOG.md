@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-14
+
+Five defects reported from a live Debian 13 server, three more found while
+fixing them, and the reason none of them was caught: every container scenario
+ran as root, whose `PATH` carries `/usr/sbin`, while `initd` is documented to
+run unprivileged and escalate command by command.
+
 ### Fixed
 - **`docker.rootless` refused every host that had a Docker engine.** It asked
   `is_installed_here`, which is whether *this tool's* copy sits in
