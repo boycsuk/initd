@@ -1130,6 +1130,15 @@ pub(super) fn render(message: &Msg) -> String {
             format!("none of these is installed: {tried}")
         }
         Msg::TaskFirewallInactive => "inbound filtering is not active".to_owned(),
+        // Deliberately shares no wording with the line above. "Not active" and
+        // "could not be read" are the two answers this whole change exists to
+        // keep apart, and a reader skimming for one must not find the other.
+        Msg::TaskFirewallStateUnreadable => {
+            "the ruleset could not be listed, so what this host filters is \
+             unknown — listing it needs administrator access, and this \
+             session's has expired"
+                .to_owned()
+        }
         // Says what is now true rather than that a command ran: "the firewall
         // is off" leaves an operator wondering what that means for the ports
         // their host serves.

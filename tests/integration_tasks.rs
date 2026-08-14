@@ -253,19 +253,33 @@ for_each_image! {
         // missing table must not turn into an error: a host where this tool
         // has never run allows nothing through its table because there is no
         // table, which is an answer.
+        //
+        // Run with `NET_ADMIN`, and that is what the scenario is *for* rather
+        // than a workaround. An ordinary container cannot reach netlink, so
+        // `nft` answers "Operation not permitted" to root for every question —
+        // including this one — and the tool now reports that as unknown rather
+        // than as "not filtering". Without the capability this would assert
+        // that a question nobody could ask came back with the right answer,
+        // which is how it passed while the two were conflated.
         // Both front-ends, because which one holds a host's ruleset is a
         // property of the host rather than of the family: RHEL resolves
         // firewalld first and only falls back to `nft`, so installing `nft`
         // alone leaves the task looking for a `firewall-cmd` that is not
         // there. A stock RHEL host has firewalld; an image has whatever it was
         // given, which is why this gives it both.
-        let observed = observe_with(
+        let output = common::run_in_container_with_netlink(
             image,
             &format!(
-                "{}; {}",
+                "{} >/dev/null 2>&1; {} >/dev/null 2>&1; \
+                 initd run firewall.status >/tmp/o 2>&1; echo exit=$?; cat /tmp/o",
                 image.install_nftables, image.install_firewalld
             ),
-            "initd run firewall.status >/tmp/o 2>&1; echo exit=$?; cat /tmp/o",
+        );
+
+        let observed = format!(
+            "{}{}",
+            common::stdout_of(&output),
+            String::from_utf8_lossy(&output.stderr)
         );
 
         assert!(

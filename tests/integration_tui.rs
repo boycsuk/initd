@@ -504,12 +504,12 @@ for_each_image! {
         tui.press("Enter"); // Users
         tui.press("Down");  // create -> delete
         tui.press("Down");  // delete -> set-shell
-        tui.press("Down");  // set-shell -> lock-root
+        tui.press("Down");  // set-shell -> root access
 
         let screen = tui.screen();
         assert!(
-            screen.contains("Lock the root account"),
-            "{}: navigation must land on the lock task; the tree may have been \
+            screen.contains("Manage root access"),
+            "{}: navigation must land on the root-access row; the tree may have been \
              reordered: {screen}",
             image.name
         );
@@ -582,8 +582,8 @@ for_each_image! {
 
         let screen = tui.screen();
         assert!(
-            screen.contains("Lock the root account"),
-            "{}: navigation must land on the lock task: {screen}",
+            screen.contains("Manage root access"),
+            "{}: navigation must land on the root-access row: {screen}",
             image.name
         );
 

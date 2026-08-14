@@ -1177,6 +1177,13 @@ pub enum Msg {
         tried: String,
     },
     TaskFirewallInactive,
+    /// The third answer the status can give: it could not look.
+    ///
+    /// Distinct from [`TaskFirewallInactive`](Self::TaskFirewallInactive) in
+    /// the words as well as in the variant, because the whole hazard is that
+    /// the two get read as the same thing. A host whose ruleset could not be
+    /// listed is not a host with no ruleset.
+    TaskFirewallStateUnreadable,
     TaskFirewallDisabled,
     TaskFirewallDefaultDeny,
     TaskFirewallNoOpenPorts,

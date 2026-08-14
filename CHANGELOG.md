@@ -121,8 +121,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is one the screen decays into after fifteen minutes on Debian, five on
   Arch, and immediately under `doas` or `run0`, which keep no timestamp at all.
 
-  Now separated by what `nft` says, since the exit code cannot tell them apart:
-  a refusal raises `FirewallStateUnreadable`, a missing table stays an answer.
+  Now separated by what `nft` says, since the exit code cannot tell them apart —
+  and phrased as *did it answer* rather than *was it refused*, which is the
+  second attempt. The first asked whether stderr said `Operation not permitted`;
+  correct on a real host, and wrong in a container, where `nft` says exactly
+  that **to root** because there is no `NET_ADMIN` and netlink is unreachable.
+  Four passing scenarios turned into errors about expired authentication.
+
+  Only `ENOENT` counts as a listing to draw conclusions from — measured with
+  `--cap-add=NET_ADMIN`, where a missing table really does answer `No such file
+  or directory`. Everything else leaves the state unknown, and the failure
+  direction is the safe one: a reworded message makes a host read as unreadable
+  rather than as unprotected.
+
+  The two callers differ on purpose. `firewall.status` reports the third state,
+  because saying what the host's state is *is* the task and "I could not read
+  it" is one of the states it can be in. `firewall.manage-ports` folds it into
+  `FirewallNotEnabled`, because there the useful half is naming the remedy —
+  both cases are fixed by running `firewall.enable`, and nothing is drawn or
+  confirmed on that path.
   `Presence::Unknown` replaces `Absent` where the front-end could not be
   reached, and the port table refuses to open rather than opening blank, naming
   what to do — running any task re-authenticates.

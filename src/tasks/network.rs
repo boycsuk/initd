@@ -135,7 +135,21 @@ impl Task for FirewallStatus {
             return Ok(Outcome::Done);
         };
 
-        let state = firewall.state(executor)?;
+        // Reported rather than raised, which is this task's whole job: it exists
+        // to say what the host's state is, and "I could not read it" is one of
+        // the states it can be in. Failing instead would leave an operator with
+        // an error where they asked for a status, and the third answer is
+        // exactly the one worth having — a firewall that is running must never
+        // be summarised as off because the listing was refused.
+        let state = match firewall.state(executor) {
+            Ok(state) => state,
+            Err(Error::FirewallStateUnreadable) => {
+                report(progress, &Msg::TaskFirewallStateUnreadable);
+
+                return Ok(Outcome::Done);
+            }
+            Err(other) => return Err(other),
+        };
 
         if !state.active {
             // Said plainly, because "no rules" and "not filtering" look alike
@@ -588,7 +602,23 @@ impl Task for ManagePorts {
         // that stays as it was, so this resolves rather than assuming.
         let firewall = firewall_for(backend, executor)?.ok_or(Error::NoFirewallFrontEnd)?;
 
-        let state = firewall.state(executor)?;
+        // A ruleset that could not be read is refused as `FirewallNotEnabled`
+        // rather than propagated, because for *this* task the two call for the
+        // same thing. The operator asked to declare a set of open ports; there
+        // is nothing to declare it against, and the step that fixes both is
+        // `firewall.enable` — which the message names.
+        //
+        // Distinct from the interface's handling, deliberately. There the two
+        // differ: a row drawing "not filtering" over a running firewall is a
+        // false claim about the host, and a port table opening empty is one
+        // confirmation away from closing every port. Here nothing is drawn and
+        // nothing is confirmed — the task simply stops — so the more useful
+        // half is naming the remedy rather than the diagnosis.
+        let state = match firewall.state(executor) {
+            Ok(state) => state,
+            Err(Error::FirewallStateUnreadable) => return Err(Error::FirewallNotEnabled),
+            Err(other) => return Err(other),
+        };
 
         // Before anything is written, and refused rather than repaired — the
         // reasoning the per-port task carried before this replaced it. There is

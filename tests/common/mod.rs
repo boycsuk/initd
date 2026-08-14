@@ -750,6 +750,57 @@ pub fn run_in_container(image: &Image, script: &str) -> std::process::Output {
     output
 }
 
+/// Runs a script in a container that can actually reach netlink.
+///
+/// For the scenarios whose subject is the *ruleset* rather than the tool's
+/// handling of one. An ordinary container has no `NET_ADMIN`, so `nft` cannot
+/// talk to the kernel at all and answers `Operation not permitted (you must be
+/// root)` — to root — for every question, including one about a table that
+/// simply does not exist.
+///
+/// That was invisible for as long as the tool conflated the two: a scenario
+/// asserting "this host is not filtering" passed on a container where nothing
+/// could be asked, because "could not ask" and "nothing there" produced the
+/// same answer. Telling them apart is what surfaced it, and the fix for the
+/// scenarios is the capability rather than a looser assertion — measured on
+/// `debian:13`, where `--cap-add=NET_ADMIN` turns `Operation not permitted`
+/// into the `No such file or directory` a missing table really gives.
+///
+/// Not the default, because the capability is a real grant and most scenarios
+/// have no business with it. `--cap-add` alone rather than `--privileged`: this
+/// needs to configure the container's own network namespace and nothing more.
+pub fn run_in_container_with_netlink(image: &Image, script: &str) -> std::process::Output {
+    let binary = binary_for(image).unwrap_or_else(|| {
+        panic!(
+            "{} needs a statically linked binary, which has not been built. \
+             Run `cargo build --target x86_64-unknown-linux-musl` first.",
+            image.name
+        )
+    });
+
+    let mount = format!("{binary}:/usr/local/bin/initd:ro");
+    let base = cached_image(image);
+
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--cap-add=NET_ADMIN",
+            "-v",
+            &mount,
+            &base,
+            "sh",
+            "-c",
+            script,
+        ])
+        .output()
+        .expect("docker run must execute");
+
+    panic_if_the_container_never_ran(image, &output);
+
+    output
+}
+
 /// Runs a script as an unprivileged account that can escalate.
 ///
 /// The environment every scenario in this suite was missing, and the reason

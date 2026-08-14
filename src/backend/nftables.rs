@@ -15,29 +15,40 @@ use crate::domain::firewall::{AllowedPort, FirewallManager, FirewallState, Proto
 use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
-/// Whether `nft` refused to answer rather than answering "no such table".
+/// Whether `nft` looked and found no table, as against never having looked.
 ///
-/// Both exit non-zero, so the streams are the only thing that separates them —
-/// and separating them is the difference between "this host filters nothing"
-/// and "nobody here can see what it filters". Reported as the first, the second
-/// tells an operator their firewall is off while it is running.
+/// Both exit 1, so the streams are the only thing separating them — and the
+/// difference is between "this host filters nothing" and "nobody here can see
+/// what it filters". Reported as the first, the second tells an operator their
+/// firewall is off while it is running.
 ///
-/// Matched on the message because the exit code carries nothing: `nft` answers
-/// 1 for a missing table and 1 for a refusal alike. Matching another program's
-/// user-facing text is a thing this codebase avoids where it can — see the
-/// executor's note on not parsing sudo's stderr — and here there is no
-/// alternative to it, so the match is deliberately broad rather than exact:
-/// `nft` speaks through the kernel's own `errno`, which is `EPERM` for an
-/// unprivileged listing, and libc's spelling of that varies by locale even with
-/// `LC_ALL=C` set for the process. Anything narrower would answer "not
-/// filtering" the first time a message is reworded.
-fn denies_access(stderr: &str) -> bool {
+/// **Phrased as "did it answer" rather than "was it refused", which is the
+/// second attempt.** The first asked whether stderr said `Operation not
+/// permitted` and treated that as unreadable — correct on a real host, and
+/// wrong in a container, where `nft` says exactly that *to root* because the
+/// container has no `NET_ADMIN` and cannot reach netlink at all. Measured on
+/// `debian:13`: root without the capability gets `Operation not permitted (you
+/// must be root)` for a table that does not exist, which turned four passing
+/// scenarios into errors about expired authentication. The distinction the
+/// callers need is not who was refused; it is whether the answer is one to
+/// believe.
+///
+/// So only the message `nft` produces having *reached* the kernel counts as an
+/// answer. `No such file or directory` is `ENOENT` for a table that is not
+/// there — measured with `--cap-add=NET_ADMIN`, where it is what a missing
+/// table actually says. Everything else, refusal or unreachable netlink alike,
+/// is a listing this tool may not draw conclusions from.
+///
+/// Matching another program's user-facing text is a thing this codebase avoids
+/// where it can — see the executor's note on not parsing sudo's stderr — and
+/// here the exit code carries nothing, so there is no alternative. The failure
+/// direction is the safe one: a reworded `ENOENT` makes a host with no table
+/// read as unreadable, which is a row that says "unknown" rather than one that
+/// says "unprotected".
+fn answered_that_no_table_exists(stderr: &str) -> bool {
     let said = stderr.to_ascii_lowercase();
 
-    // "Operation not permitted" is `EPERM` as `nft` reports it; "permission
-    // denied" is `EACCES`, which a locked-down `/proc` or an LSM produces
-    // instead. Both mean the listing was refused rather than absent.
-    said.contains("not permitted") || said.contains("permission denied")
+    said.contains("no such file or directory") || said.contains("no such table")
 }
 
 /// The table this tool owns.
@@ -533,17 +544,24 @@ impl FirewallManager for Nftables {
             // opened without the SSH row in it.
             //
             // Separated by what `nft` says, since the exit code cannot tell
-            // them apart. A refusal is the one case where the listing is
-            // unknown rather than empty; anything else is the ordinary "no such
-            // table", which stays an answer rather than a failure.
-            if denies_access(&output.stderr) {
-                return Err(Error::FirewallStateUnreadable);
+            // them apart — and phrased as "did it answer" rather than "was it
+            // refused", for the reason `answered_that_no_table_exists` records:
+            // a container without `NET_ADMIN` refuses *root* in the same words
+            // it refuses anyone, so keying on the refusal made four passing
+            // scenarios report expired authentication.
+            //
+            // Only `ENOENT` is a listing to draw conclusions from. Anything
+            // else — a refusal, an unreachable netlink — leaves the state
+            // genuinely unknown, and saying so is what stops a running firewall
+            // being drawn as off.
+            if answered_that_no_table_exists(&output.stderr) {
+                return Ok(FirewallState {
+                    active: false,
+                    allowed: Vec::new(),
+                });
             }
 
-            return Ok(FirewallState {
-                active: false,
-                allowed: Vec::new(),
-            });
+            return Err(Error::FirewallStateUnreadable);
         }
 
         // Parsed back out of the listing rather than remembered: the ruleset is
@@ -1138,6 +1156,30 @@ mod tests {
         let err = Nftables::new()
             .state(&refused)
             .expect_err("a refused listing must not answer");
+
+        assert!(matches!(err, Error::FirewallStateUnreadable), "{err:?}");
+    }
+
+    #[test]
+    fn a_container_that_cannot_reach_netlink_is_not_read_as_a_missing_table() {
+        // The regression the first version of this fix caused, and the reason
+        // the question is now "did it answer" rather than "was it refused".
+        // A container without `NET_ADMIN` cannot talk to netlink at all, so
+        // `nft` answers `Operation not permitted (you must be root)` — to root
+        // — for a table that simply does not exist. Measured on `debian:13`.
+        //
+        // Keying on the refusal made that read as "the state is unknown", which
+        // was right on a real host and wrong here. Keying on `ENOENT` instead
+        // gets both: this stays unreadable, and the case below stays an answer.
+        let unreachable = MockExecutor::with_replies([Reply::failure(
+            1,
+            "Operation not permitted (you must be root)\n\
+             netlink: Error: cache initialization failed: Operation not permitted",
+        )]);
+
+        let err = Nftables::new()
+            .state(&unreachable)
+            .expect_err("a listing that never reached the kernel must not answer");
 
         assert!(matches!(err, Error::FirewallStateUnreadable), "{err:?}");
     }
