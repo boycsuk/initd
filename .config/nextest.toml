@@ -43,6 +43,35 @@ test-group = 'containers'
 slow-timeout = { period = "60s", terminate-after = 5 }
 
 [[profile.default.overrides]]
+# Booting systemd is exempt, and learning why cost a release too — the same
+# lesson as the entry below, in a second place, which is why both are written
+# out rather than one being folded into the other.
+#
+# These scenarios boot systemd as PID 1 and wait for a unit to settle, which is
+# the most expensive shape in the suite: a whole init system starting inside a
+# container that is also installing packages. On 32 cores that is seconds; on
+# the 2-core runner CI uses it is minutes.
+#
+# Measured, on `changing_the_port_leaves_the_service_healthy::rhel`:
+#
+#   -  8.8s  alone, locally
+#   -  8.9s  with the other 35 systemd scenarios, locally
+#   - >300s  on the runner, where it was killed
+#
+# A 34-fold spread with no change in what the scenario does. The proof that it
+# is the runner rather than the test is its neighbour:
+# `hardening_reloads_the_unit_without_stopping_it::rhel` **passed in 216s** in
+# that same run, 84 seconds short of the ceiling, where it takes 37s here.
+#
+# Ten minutes rather than five. Not a figure anything should reach: it is
+# roughly three times the slowest measurement on the slowest machine, so
+# reaching it means stuck rather than slow — which is what the ceiling is for.
+# The general five-minute ceiling stays for the other 1790 scenarios, where a
+# runaway is worth catching sooner.
+filter = 'binary(integration_systemd)'
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+[[profile.default.overrides]]
 # Preparing the images is exempt, and learning why cost a release.
 #
 # `prepare_the_images` builds all six, and building one means installing its
