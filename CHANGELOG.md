@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.2] — 2026-08-14
 
-Two more from the same Debian 13 server, both about assuming something the
-host had not agreed to: which shell an account uses, and how many packages a
-capability is.
+Three more from the same Debian 13 server, each found by the one before it
+being fixed — the rootless setup got one step further every time. All three are
+about assuming something the host had not agreed to: which shell an account
+uses, and how many packages a capability is.
 
 ### Fixed
 - **Every command run as another account went through *that account's* login
@@ -44,6 +45,24 @@ capability is.
   Both directions are pinned, so the fix cannot be satisfied by removing more
   than was asked: the engine must name all five, and a capability that is one
   package everywhere must not gain neighbours.
+
+- **A rootless setup did not install the helpers that map its ids.** Upstream's
+  script refused with `[ERROR] Missing system requirements`, telling the
+  operator to run `apt-get install -y uidmap` themselves — a step this tool
+  exists to take, and one it had every reason to take: it checks the account's
+  subordinate id ranges a few lines earlier, and `newuidmap`/`newgidmap` are
+  what *apply* them. The check and the tools that use it disagreed.
+
+  Debian is the only family that needs the name. It ships neither helper in the
+  base system and `docker-ce-rootless-extras` does not depend on them —
+  `apt-get install -s` brings in systemd, dbus and `rootlesskit` and no
+  `uidmap`, measured. Arch, RHEL and both SUSE variants carry them in their base
+  `shadow`/`shadow-utils`, measured on all four, and Alpine refuses this task
+  outright for want of a per-user service manager.
+
+  The same asymmetry as the uninstall above, on the install side: the task
+  installed through `package_for`, a single name, while `packages_for` existed
+  to say a capability is several.
 
 ## [0.4.1] — 2026-08-14
 
