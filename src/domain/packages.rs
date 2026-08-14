@@ -24,7 +24,7 @@ pub trait PackageManager {
     /// Whether the package is currently installed.
     fn is_installed(&self, executor: &dyn Executor, package: &str) -> Result<bool>;
 
-    /// Removes a package, leaving its configuration behind.
+    /// Removes packages, leaving their configuration behind.
     ///
     /// Never cascades. Every family offers a flag that also removes whatever
     /// the package left orphaned — `apt-get --auto-remove`, `pacman -Rs` — and
@@ -32,7 +32,19 @@ pub trait PackageManager {
     /// about Caddy, and a removal that reaches further is one whose extent
     /// cannot be stated before it runs. Cleaning up orphans is a different
     /// operation, and one this tool does not offer.
-    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()>;
+    ///
+    /// A slice for the same reason [`install`](Self::install) takes one, and
+    /// this asymmetry was a defect rather than a design: installing Docker's
+    /// engine puts down five packages on Debian and removing it took only the
+    /// first, so `docker` stayed on the host — the client lives in
+    /// `docker-ce-cli` — and an operator who uninstalled the engine still had a
+    /// working `docker` command. Reported from a live host.
+    ///
+    /// One invocation rather than a loop, so the package manager resolves them
+    /// as one transaction: removed one at a time, the first would take the
+    /// others' dependencies with it or refuse for depending on them, and which
+    /// of the two depends on an ordering nothing here states.
+    fn remove(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()>;
 
     /// Removes a package and the configuration files it owns.
     ///
@@ -48,5 +60,5 @@ pub trait PackageManager {
     /// configuration as `.rpmsave`. It says so itself through
     /// [`Backend::has_purge_for`](crate::backend::Backend::has_purge_for)
     /// rather than quietly doing something else.
-    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()>;
+    fn purge(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()>;
 }

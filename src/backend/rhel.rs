@@ -572,19 +572,20 @@ impl PackageManager for DnfPackages {
         rpm_packages::is_installed(executor, package)
     }
 
-    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn remove(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // `dnf remove` takes the dependencies the package pulled in and nothing
         // else needs. Unlike apt and pacman there is no flag to decline that,
         // so the note the other three carry — "no cascade" — cannot be made
         // here, and Alpine's `apk del` cannot make it either.
         let command = Command::new("dnf")
-            .args(["remove", "-y", package])
+            .args(["remove", "-y"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
     }
 
-    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn purge(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // The same command as `remove`, because rpm has no purge: it does not
         // track configuration as separately removable the way dpkg's conffiles
         // are, and a file the administrator edited is left behind as
@@ -598,7 +599,7 @@ impl PackageManager for DnfPackages {
         // because a trait method that cannot be called is still a method, and
         // `unreachable!()` in a tool that runs as root is a promise about
         // callers rather than about code.
-        self.remove(executor, package)
+        self.remove(executor, packages)
     }
 }
 
@@ -627,10 +628,12 @@ mod tests {
         // removal, and be told nothing. The two assertions belong together for
         // that reason — either alone permits the combination that lies.
         let removed = MockExecutor::new();
-        DnfPackages.remove(&removed, "fail2ban").expect("removes");
+        DnfPackages
+            .remove(&removed, &["fail2ban"])
+            .expect("removes");
 
         let purged = MockExecutor::new();
-        DnfPackages.purge(&purged, "fail2ban").expect("purges");
+        DnfPackages.purge(&purged, &["fail2ban"]).expect("purges");
 
         assert_eq!(removed.recorded_lines(), ["dnf remove -y fail2ban"]);
         assert_eq!(purged.recorded_lines(), removed.recorded_lines());

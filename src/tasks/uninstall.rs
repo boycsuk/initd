@@ -117,6 +117,23 @@ pub fn undo(
     if backend.has_package_for(capability) {
         let package = backend.package_for(capability);
 
+        // Every package the forward task installed, not just the one the
+        // capability is named after. `packages_for` answers with more than one
+        // name on the families whose installation page lists more than one, and
+        // removing only the first left the rest behind: uninstalling Docker's
+        // engine on Debian took `docker-ce` and left `docker-ce-cli`, so
+        // `docker` was still on the `PATH` and still ran. Reported from a live
+        // host.
+        //
+        // Falls back to the single name where a family answers with nothing,
+        // which is the fourteen capabilities that are one package everywhere.
+        let named = backend.packages_for(capability);
+        let removing: Vec<&str> = if named.is_empty() {
+            vec![package]
+        } else {
+            named.to_vec()
+        };
+
         if !backend.packages().is_installed(executor, package)? {
             report(
                 progress,
@@ -174,9 +191,9 @@ pub fn undo(
         );
 
         if purging {
-            backend.packages().purge(executor, package)?;
+            backend.packages().purge(executor, &removing)?;
         } else {
-            backend.packages().remove(executor, package)?;
+            backend.packages().remove(executor, &removing)?;
         }
 
         return Ok(Outcome::Done);
@@ -255,6 +272,87 @@ mod tests {
     use crate::backend::for_family;
     use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn removing_a_capability_takes_every_package_that_installed_it() {
+        // Reported from a live Debian 13 host: uninstalling the Docker engine
+        // left `docker` working. Installing it puts down five packages —
+        // upstream's page lists them and `install` takes a slice for exactly
+        // that reason — while removing it took `package_for`, which answers
+        // with the first name alone. The client lives in `docker-ce-cli`, so it
+        // survived every uninstall.
+        //
+        // The asymmetry was the defect: two methods for one transaction, one
+        // taking a list and the other a name.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("install ok installed"), // the engine is installed
+            Reply::ok(""),                     // disable the unit
+            Reply::ok(""),                     // the removal itself
+        ]);
+
+        undo(
+            &mock,
+            for_family(Family::Debian).as_ref(),
+            &ParamValues::new(),
+            &mut |_| {},
+            Capability::DockerEngine,
+            "docker",
+        )
+        .expect("the engine must be removable");
+
+        let removal = mock
+            .recorded_lines()
+            .into_iter()
+            .find(|line| line.contains("apt-get remove"))
+            .expect("the engine must be removed");
+
+        for package in [
+            "docker-ce",
+            "docker-ce-cli",
+            "containerd.io",
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
+        ] {
+            assert!(
+                removal.contains(package),
+                "{package} was installed and must be removed: {removal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_capability_that_is_one_package_still_names_one() {
+        // The other direction, so the fix above cannot be satisfied by removing
+        // more than was asked for: fourteen capabilities are a single package on
+        // every family, and `packages_for` answers empty for them.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("install ok installed"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        undo(
+            &mock,
+            for_family(Family::Debian).as_ref(),
+            &ParamValues::new(),
+            &mut |_| {},
+            Capability::Fail2ban,
+            "fail2ban",
+        )
+        .expect("fail2ban must be removable");
+
+        let removal = mock
+            .recorded_lines()
+            .into_iter()
+            .find(|line| line.contains("apt-get remove"))
+            .expect("it must be removed");
+
+        assert!(removal.contains("fail2ban"), "{removal}");
+        assert!(
+            !removal.contains("docker"),
+            "a single-package capability must not gain neighbours: {removal}"
+        );
+    }
 
     /// Values naming a removal depth, as a form would collect them.
     fn asking_for(depth: &str) -> ParamValues {

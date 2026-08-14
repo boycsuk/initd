@@ -334,19 +334,20 @@ impl PackageManager for PacmanPackages {
         Ok(executor.run(&command)?.success())
     }
 
-    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn remove(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // `-R` alone: it removes this package and refuses if something else
         // depends on it, which is the refusal an operator wants rather than a
         // cascade they did not ask for. `--noconfirm` avoids a prompt that
         // would hang a TUI that has handed the terminal over.
         let command = Command::new("pacman")
-            .args(["-R", "--noconfirm", package])
+            .args(["-R", "--noconfirm"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
     }
 
-    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn purge(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // `-n` adds the configuration files pacman itself saved as `.pacsave`;
         // `-s` is deliberately absent, though it is what most guides pair with
         // it. `-s` removes dependencies now left orphaned, which reaches
@@ -354,7 +355,8 @@ impl PackageManager for PacmanPackages {
         // Purging means "this package and its configuration", not "this
         // package and whatever else stopped being needed".
         let command = Command::new("pacman")
-            .args(["-Rn", "--noconfirm", package])
+            .args(["-Rn", "--noconfirm"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
@@ -429,11 +431,13 @@ mod tests {
     fn removing_keeps_the_configuration_and_purging_does_not() {
         let removed = MockExecutor::new();
         PacmanPackages
-            .remove(&removed, "fail2ban")
+            .remove(&removed, &["fail2ban"])
             .expect("removes");
 
         let purged = MockExecutor::new();
-        PacmanPackages.purge(&purged, "fail2ban").expect("purges");
+        PacmanPackages
+            .purge(&purged, &["fail2ban"])
+            .expect("purges");
 
         assert_eq!(removed.recorded_lines(), ["pacman -R --noconfirm fail2ban"]);
         assert_eq!(purged.recorded_lines(), ["pacman -Rn --noconfirm fail2ban"]);
@@ -448,8 +452,8 @@ mod tests {
         // of a flag string: `-Rns` and `-Rn` differ by one character.
         let mock = MockExecutor::new();
 
-        PacmanPackages.remove(&mock, "caddy").expect("removes");
-        PacmanPackages.purge(&mock, "caddy").expect("purges");
+        PacmanPackages.remove(&mock, &["caddy"]).expect("removes");
+        PacmanPackages.purge(&mock, &["caddy"]).expect("purges");
 
         for line in mock.recorded_lines() {
             assert!(!line.contains("-Rs"), "removal must not cascade: {line}");

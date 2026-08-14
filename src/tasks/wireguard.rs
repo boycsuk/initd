@@ -731,10 +731,12 @@ impl Task for UninstallWireguard {
             },
         );
 
+        // One name, not `packages_for`: every family resolves WireGuard to a
+        // single `wireguard-tools`, and a slice of one says that plainly.
         if purging {
-            backend.packages().purge(executor, package)?;
+            backend.packages().purge(executor, &[package])?;
         } else {
-            backend.packages().remove(executor, package)?;
+            backend.packages().remove(executor, &[package])?;
         }
 
         Ok(Outcome::Done)

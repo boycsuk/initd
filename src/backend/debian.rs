@@ -563,38 +563,28 @@ impl PackageManager for AptPackages {
         Ok(output.success() && output.stdout.trim() == "install ok installed")
     }
 
-    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn remove(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // No `--auto-remove`: it pulls out whatever the package left orphaned,
         // and what that reaches cannot be stated before it runs. On a host
         // where Caddy arrived alongside its own dependencies, removing it that
         // way takes them too — including any another package came to rely on
         // since.
         let command = Command::new("env")
-            .args([
-                "DEBIAN_FRONTEND=noninteractive",
-                "apt-get",
-                "remove",
-                "-y",
-                package,
-            ])
+            .args(["DEBIAN_FRONTEND=noninteractive", "apt-get", "remove", "-y"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
     }
 
-    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn purge(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // This is the family where the distinction is sharpest: `remove` leaves
         // conffiles in place and dpkg keeps the package in its status as
         // "deinstall ok config-files", which is why `is_installed` demands
         // exactly "install ok installed" rather than trusting the exit code.
         let command = Command::new("env")
-            .args([
-                "DEBIAN_FRONTEND=noninteractive",
-                "apt-get",
-                "purge",
-                "-y",
-                package,
-            ])
+            .args(["DEBIAN_FRONTEND=noninteractive", "apt-get", "purge", "-y"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
@@ -718,10 +708,12 @@ mod tests {
         // leaves conffiles for a reinstall to find, `purge` deletes them, and
         // the difference is not recoverable once made.
         let removed = MockExecutor::new();
-        AptPackages.remove(&removed, "fail2ban").expect("removes");
+        AptPackages
+            .remove(&removed, &["fail2ban"])
+            .expect("removes");
 
         let purged = MockExecutor::new();
-        AptPackages.purge(&purged, "fail2ban").expect("purges");
+        AptPackages.purge(&purged, &["fail2ban"]).expect("purges");
 
         assert_eq!(
             removed.recorded_lines(),
@@ -742,8 +734,8 @@ mod tests {
         // something else came to depend on since.
         let mock = MockExecutor::new();
 
-        AptPackages.remove(&mock, "caddy").expect("removes");
-        AptPackages.purge(&mock, "caddy").expect("purges");
+        AptPackages.remove(&mock, &["caddy"]).expect("removes");
+        AptPackages.purge(&mock, &["caddy"]).expect("purges");
 
         for line in mock.recorded_lines() {
             assert!(

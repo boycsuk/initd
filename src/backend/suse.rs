@@ -550,18 +550,19 @@ impl PackageManager for ZypperPackages {
         rpm_packages::is_installed(executor, package)
     }
 
-    fn remove(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn remove(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // No `--clean-deps`: it cascades, removing dependencies this tool never
         // installed. That is the decision apt and pacman each record as "no
         // cascade" and the one zypper makes opt-in rather than default.
         let command = Command::new("zypper")
-            .args(["--non-interactive", "remove", package])
+            .args(["--non-interactive", "remove"])
+            .args(packages.iter().copied())
             .privileged();
 
         run_checked(executor, &command)
     }
 
-    fn purge(&self, executor: &dyn Executor, package: &str) -> Result<()> {
+    fn purge(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
         // The same command as `remove`, because zypper has no purge — measured:
         // it is not a subcommand, and `zypper rm` offers nothing that discards
         // configuration. rpm leaves an edited file as `.rpmsave` regardless.
@@ -569,7 +570,7 @@ impl PackageManager for ZypperPackages {
         // Reachable only if `has_purge_for` ever answered true here, which it
         // does not, so the interface never offers the choice. Implemented
         // rather than left to panic for the reason RHEL's records.
-        self.remove(executor, package)
+        self.remove(executor, packages)
     }
 }
 
@@ -626,7 +627,9 @@ mod tests {
         // `--clean-deps` would take dependencies this tool never installed.
         let mock = MockExecutor::new();
 
-        ZypperPackages.remove(&mock, "fail2ban").expect("removes");
+        ZypperPackages
+            .remove(&mock, &["fail2ban"])
+            .expect("removes");
 
         let args = mock.single_command().args;
         assert!(
@@ -642,11 +645,13 @@ mod tests {
         // same thing and telling the operator nothing.
         let removed = MockExecutor::new();
         ZypperPackages
-            .remove(&removed, "fail2ban")
+            .remove(&removed, &["fail2ban"])
             .expect("removes");
 
         let purged = MockExecutor::new();
-        ZypperPackages.purge(&purged, "fail2ban").expect("purges");
+        ZypperPackages
+            .purge(&purged, &["fail2ban"])
+            .expect("purges");
 
         assert_eq!(
             removed.recorded_lines(),
