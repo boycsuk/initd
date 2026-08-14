@@ -18,6 +18,12 @@ use crate::exec::{Command, Executor};
 /// `/usr/local/bin` rather than `/usr/bin`: the latter belongs to the package
 /// manager, and a file this tool put there is one a distribution upgrade may
 /// overwrite or complain about.
+///
+/// **`install.sh` puts `initd` itself here too**, which is correct for both and
+/// worth knowing about: the tool and the things the tool installs share a
+/// directory. Nothing collides today because no capability resolves to the name
+/// `initd`, and a future one that did would have this tool overwrite itself
+/// mid-run. The name to keep clear is the binary's own.
 pub const INSTALL_DIR: &str = "/usr/local/bin";
 
 /// Mode for an installed binary.

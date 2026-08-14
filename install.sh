@@ -33,6 +33,11 @@ REPO="boycsuk/initd"
 #
 # `INITD_INSTALL_DIR` is still honoured, and is now the whole of the escape
 # hatch: packaging, inspecting the binary, a host whose root path is elsewhere.
+#
+# The same directory `initd` installs *its* release binaries into — zellij,
+# mise, caddy on RHEL; see `release_installer::INSTALL_DIR`. Correct for both,
+# and worth stating in both places: the tool and the things it installs live
+# side by side, so the one name that must stay unclaimed is `initd` itself.
 SYSTEM_DIR="/usr/local/bin"
 
 fail() {
@@ -125,9 +130,19 @@ main() {
     # impossible call for different advice, and it is the one that knows which.
     choose_install_dir
 
+    # Said before the write rather than after, because afterwards there is
+    # nothing left to compare against: `install` replaces the file in place.
+    report_replacement "$install_dir/initd"
+
     # `escalate` is empty unless the directory needs root *and* this account can
     # reach it without being asked for a password. Unquoted on purpose: it is
     # either nothing or a command with its own arguments.
+    #
+    # `install` overwrites whatever is there, which is what makes re-running
+    # this an upgrade rather than an error — verified including the awkward
+    # case, a binary that is *running*: the file is replaced by inode, so a
+    # session someone left open in another terminal goes on working against the
+    # copy it started with.
     $escalate install -m 0755 "$workdir/initd-$target" "$install_dir/initd" 2>/dev/null \
         || fail "could not write to $install_dir — set INITD_INSTALL_DIR to somewhere writable"
 
@@ -137,6 +152,44 @@ main() {
 
     echo
     echo "run 'initd' for the interactive interface, or 'initd list' to see the tasks"
+}
+
+# Says what is about to be replaced, where anything is.
+#
+# `install` overwrites in silence, which is right — re-running this is how an
+# upgrade is done — but silence is also how a *downgrade* happens without
+# anybody noticing, and the two are the same command. The one thing a person
+# re-running an install wants to know is what it displaces.
+#
+# Both versions come from the binaries themselves rather than from the tag
+# asked for, because `INITD_VERSION` is usually `latest` and `latest` is not a
+# version anyone can compare against. The downloaded copy has already been
+# checksum-verified by the time this runs, so asking it is not a new trust.
+#
+# Every failure here is silent by design. This is a courtesy line, and an
+# installed copy too old to answer `--version`, or one built for another
+# architecture, must not stop an install that would have replaced it anyway.
+report_replacement() {
+    target_path="$1"
+
+    [ -x "$target_path" ] || return 0
+
+    installed=$("$target_path" --version 2>/dev/null | tr -d '\r') || return 0
+    [ -n "$installed" ] || return 0
+
+    incoming=$("$workdir/initd-$target" --version 2>/dev/null | tr -d '\r') || return 0
+    [ -n "$incoming" ] || return 0
+
+    if [ "$installed" = "$incoming" ]; then
+        echo "reinstalling $installed over the copy at $target_path"
+        return 0
+    fi
+
+    # `sort -V` is not POSIX and busybox's is a stub, so the comparison is left
+    # to the reader rather than guessed at with something that sorts `0.10.0`
+    # below `0.9.0`. Naming both versions answers the question either way, and
+    # is honest about which direction this is going.
+    echo "replacing $installed at $target_path with $incoming"
 }
 
 # Where the binary goes, and the command that puts it there — the second being

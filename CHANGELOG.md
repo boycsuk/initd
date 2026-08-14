@@ -143,6 +143,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an empty answer is indistinguishable from an operator meaning it.
 
 ### Added
+- **The installer says what it is replacing.** Re-running it already upgraded
+  correctly — `install` overwrites, including over a *running* binary, which it
+  replaces by inode so an open session goes on working against the copy it
+  started with. What it did not do is say so, and the command that upgrades is
+  the command that downgrades: installing an older release over a newer one
+  happened in silence.
+
+  Both versions are read from the binaries themselves rather than from the tag
+  asked for, since `INITD_VERSION` is usually `latest` and `latest` compares
+  against nothing. The downloaded copy has been checksum-verified by then, so
+  asking it is not a new trust.
+
+  It names both versions rather than judging the direction: `sort -V` is not
+  POSIX and busybox's is a stub, and a comparison that sorts `0.10.0` below
+  `0.9.0` is worse than none. Every failure in this path is silent — a courtesy
+  line must not stop an install that would have replaced the copy anyway.
+
 - **`users.lock-root` runs in both directions, and is now "Manage root
   access".** Locking root was reachable and undoing it was not: the row
   reported "root is already locked" and did nothing, so an account barred by
