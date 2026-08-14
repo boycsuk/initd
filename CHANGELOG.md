@@ -159,6 +159,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails outright if that read fails. The value was resolved *before* run, where
   an empty answer is indistinguishable from an operator meaning it.
 
+### Changed
+- **The output pane's `f` is a toggle, and the key bar says which half is
+  next.** It read `follow` in both states while doing the same thing in both:
+  jumping to the newest line and re-attaching. So a pane that was already
+  following offered to start following, and an operator who had scrolled back
+  could not tell from the bar whether they had left the tail — which the pane
+  does on its own, on any upward scroll, without the key being pressed.
+
+  `f` now detaches **without moving the view**, which is the direction that had
+  no key at all: leaving the tail meant scrolling up, and that takes the line
+  being read off the screen on the way. `End` keeps the unconditional jump, so
+  nothing reachable before needs an extra keypress.
+
+  The bar reads `unfollow` while attached and `follow` while not. A one-word
+  hint can only carry a state by naming what pressing it would do, and the two
+  are separate catalogue entries rather than an assembled `un` + `follow`,
+  which would be right in English and wrong everywhere else.
+
 ### Added
 - **Container scenarios that run as an operator rather than as root.** The
   environment the suite never had, and the reason five defects reached a live

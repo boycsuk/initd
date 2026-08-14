@@ -699,6 +699,26 @@ fn fitted(mut keys: Vec<(&'static str, Msg)>, lang: Lang, width: u16) -> Vec<(&'
 /// The hints follow the focused pane and the row under the cursor rather
 /// than listing every binding: a bar that never changes is one the operator
 /// stops reading.
+/// What `f` offers to do next, which is the opposite of what the pane is doing.
+///
+/// Named what it *does* rather than what it is for, because that is the only
+/// way a one-word hint can carry a state: "follow" over a pane that is already
+/// following says nothing about which of the two it is in. It matters more than
+/// a toggle usually would, since the pane detaches on its own whenever the
+/// operator scrolls up — so the state changes without this key being pressed,
+/// and the bar is the only thing that says so.
+///
+/// A free function rather than an inline `if` so the choice can be asserted
+/// without drawing a frame: `key_bar` renders straight into a `Frame`, and a
+/// test of the whole bar would be a test of ratatui's layout.
+const fn follow_key(following: bool) -> (&'static str, Msg) {
+    if following {
+        ("f", Msg::KeyBarUnfollow)
+    } else {
+        ("f", Msg::KeyBarFollow)
+    }
+}
+
 fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
     // While a change is unverified the tree keys are refused, so offering
     // them would advertise actions the state does not allow.
@@ -761,7 +781,7 @@ fn key_bar(frame: &mut Frame, app: &App, area: Rect) {
             Pane::Tree => tree_keys(app),
             Pane::Output => vec![
                 ("↑↓", Msg::KeyBarScroll),
-                ("f", Msg::KeyBarFollow),
+                follow_key(app.output.is_following()),
                 ("y", Msg::KeyBarCopy),
                 ("Tab", Msg::KeyBarTree),
             ],
@@ -1173,6 +1193,54 @@ mod tests {
     /// The keys the bar offers from the tree, as an operator reads them.
     fn tree_glyphs(app: &App) -> Vec<&'static str> {
         tree_keys(app).into_iter().map(|(key, _)| key).collect()
+    }
+
+    #[test]
+    fn the_follow_hint_names_what_pressing_it_would_do() {
+        // The pane starts attached and detaches on any scroll up, so the state
+        // changes without this key being pressed — which is what makes a fixed
+        // label misleading rather than merely terse: an operator who scrolled
+        // back would read "follow" and not know whether they had already left.
+        let lang = crate::i18n::Lang::En;
+
+        let (_, attached) = follow_key(true);
+        let (_, detached) = follow_key(false);
+
+        assert_eq!(lang.render(&attached), "unfollow");
+        assert_eq!(lang.render(&detached), "follow");
+
+        // Both directions asserted, and asserted as *different words*: a
+        // catalogue entry that rendered the same string for both would satisfy
+        // either check alone while telling the operator nothing.
+        assert_ne!(
+            lang.render(&attached),
+            lang.render(&detached),
+            "the two states must be distinguishable at a glance"
+        );
+    }
+
+    #[test]
+    fn scrolling_up_changes_what_the_follow_hint_offers() {
+        // The property the label exists for, taken from the pane rather than
+        // from a boolean: the hint has to track the state the pane arrives at
+        // on its own, not only the one a keypress puts it in.
+        let mut pane = crate::tui::output::OutputPane::new();
+
+        assert_eq!(follow_key(pane.is_following()).1, Msg::KeyBarUnfollow);
+
+        pane.scroll_up(1);
+        assert_eq!(
+            follow_key(pane.is_following()).1,
+            Msg::KeyBarFollow,
+            "a pane detached by scrolling must offer to follow again"
+        );
+
+        pane.scroll_to_tail();
+        assert_eq!(
+            follow_key(pane.is_following()).1,
+            Msg::KeyBarUnfollow,
+            "and offer to stop once it has caught up"
+        );
     }
 
     #[test]

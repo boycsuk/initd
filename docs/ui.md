@@ -773,13 +773,25 @@ same reason `Enter` is: only one task at a time.
 | `↓` | Scroll one line back towards the newest |
 | `PageUp` / `PageDown` | Scroll by ten lines |
 | `Home` | Jump to the oldest retained line |
-| `End` / `f` | Jump to the newest output and follow it again |
+| `End` | Jump to the newest output and follow it again |
+| `f` | Stop following where the view is, or re-attach to the newest |
 | `y` | Send the whole transcript to the terminal's clipboard |
 
 Any upward scroll detaches the view from the tail, so reading back through a
 log is never interrupted by new arrivals. Scrolling back to the bottom
 re-attaches on its own — the operator has caught up, and needing another key to
 resume following would be a step with no purpose.
+
+`f` is a toggle and `End` is not, which is the difference worth knowing: `End`
+always jumps, while `f` detaches *without moving the view*. That direction had
+no key before — detaching meant scrolling up, which takes the line being read
+off the screen on the way, so an operator holding a spot in a task's output
+could not simply hold it.
+
+The key bar names whichever half is next — `unfollow` while attached, `follow`
+while not — because the pane changes state on its own whenever the operator
+scrolls, so a fixed label would leave them guessing which of the two they are
+in. A one-word hint can only carry a state by naming what pressing it would do.
 
 **The pane moves the view and hands over the transcript; it does nothing else.**
 It is a record of what a task did, and a record is read rather than operated.

@@ -236,7 +236,16 @@ impl App {
             // `f` names what it does, which is what kept it when `G` went:
             // re-attaching to the tail has no arrow of its own, so dropping
             // both would leave scrolling away from the tail one-way.
-            KeyCode::End | KeyCode::Char('f') => self.output.scroll_to_tail(),
+            KeyCode::End => self.output.scroll_to_tail(),
+            // A toggle rather than a second `End`, which is what it was. The
+            // pane detaches on any upward scroll, so the state changes without
+            // this key — and the bar names whichever half is next, which it
+            // could not honestly do while both halves did the same thing.
+            //
+            // Detaching leaves the view where it is: an operator holding the
+            // pane still on a line they are reading wants that line, not a jump
+            // to the tail followed by scrolling back.
+            KeyCode::Char('f') => self.output.toggle_following(),
             KeyCode::Char('y') => self.copy_output(),
             _ => return false,
         }
@@ -285,7 +294,16 @@ impl App {
             KeyCode::Up => self.output.scroll_up(1),
             KeyCode::PageDown => self.output.scroll_down(PAGE_SCROLL),
             KeyCode::PageUp => self.output.scroll_up(PAGE_SCROLL),
-            KeyCode::End | KeyCode::Char('f') => self.output.scroll_to_tail(),
+            KeyCode::End => self.output.scroll_to_tail(),
+            // A toggle rather than a second `End`, which is what it was. The
+            // pane detaches on any upward scroll, so the state changes without
+            // this key — and the bar names whichever half is next, which it
+            // could not honestly do while both halves did the same thing.
+            //
+            // Detaching leaves the view where it is: an operator holding the
+            // pane still on a line they are reading wants that line, not a jump
+            // to the tail followed by scrolling back.
+            KeyCode::Char('f') => self.output.toggle_following(),
             // Folding the detail away is if anything more useful here than
             // while browsing: a task's output is the thing being read, and
             // giving it the whole pane is what somebody watching an install

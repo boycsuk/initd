@@ -110,7 +110,12 @@ impl OutputPane {
     }
 
     /// Whether the view is pinned to the newest output.
-    #[cfg(test)]
+    ///
+    /// No longer test-only: the key bar reads it to name what `f` will do
+    /// next, since a hint that says "follow" over a pane already following
+    /// tells an operator nothing about which of the two states they are in —
+    /// and the pane detaches by itself on any scroll, so the state changes
+    /// without the key ever being pressed.
     pub const fn is_following(&self) -> bool {
         self.follow
     }
@@ -186,6 +191,25 @@ impl OutputPane {
     pub fn scroll_to_tail(&mut self) {
         self.scroll_offset = 0;
         self.follow = true;
+    }
+
+    /// Attaches to the newest output, or stops following without moving.
+    ///
+    /// The half `f` was missing: detaching used to be reachable only by
+    /// scrolling up, which moves the view as well, so an operator watching a
+    /// task scroll past could not hold the pane still on the line they were
+    /// reading without also leaving it. `End` keeps the unconditional jump, so
+    /// nothing reachable before needs an extra keypress now.
+    ///
+    /// Detaching deliberately leaves the offset alone. The point is to keep
+    /// what is on screen where it is, and a detach that also jumped would be
+    /// the very thing it exists to avoid.
+    pub fn toggle_following(&mut self) {
+        if self.follow {
+            self.follow = false;
+        } else {
+            self.scroll_to_tail();
+        }
     }
 
     /// Wraps lines from the newest backwards until `wanted` rows are covered.
@@ -930,5 +954,65 @@ mod tests {
 
         assert!(pane.is_following());
         assert_eq!(pane.scroll_offset, 0);
+    }
+
+    #[test]
+    fn detaching_holds_the_view_where_it_is() {
+        // The half `f` gained, and the reason it is not simply `scroll_up(0)`:
+        // an operator reading a line while a task scrolls past wants *that*
+        // line held, so detaching must not move the view. Leaving it attached
+        // and scrolling instead is what they were forced to do before, and it
+        // takes the line off screen on the way.
+        let mut pane = OutputPane::new();
+        for i in 0..10 {
+            pane.push(line(&format!("line {i}")));
+        }
+
+        // Detaching from the attached state is the direction that had no key:
+        // scrolling up detaches too, but it moves the view on the way, which is
+        // exactly what an operator holding a line does not want.
+        assert!(pane.is_following(), "a fresh pane follows");
+
+        pane.toggle_following();
+
+        assert!(!pane.is_following(), "the first press detaches");
+        assert_eq!(
+            pane.scroll_offset, 0,
+            "and must leave the view exactly where it was"
+        );
+
+        // The other direction re-attaches and lands on the newest line, which
+        // is what `End` did and what `f` used to do unconditionally.
+        pane.scroll_up(3);
+        assert!(!pane.is_following(), "scrolling up detaches on its own");
+
+        pane.toggle_following();
+
+        assert!(pane.is_following(), "the press from detached re-attaches");
+        assert_eq!(pane.scroll_offset, 0, "and lands on the newest line");
+    }
+
+    #[test]
+    fn detaching_survives_new_output() {
+        // What detaching is *for*. A pane held still must stay still while the
+        // task goes on writing, or the operator reading an error watches it
+        // slide off the top anyway and the key bought nothing.
+        let mut pane = OutputPane::new();
+        for i in 0..10 {
+            pane.push(line(&format!("line {i}")));
+        }
+
+        pane.toggle_following();
+        let held = pane.scroll_offset;
+
+        for i in 10..20 {
+            pane.push(line(&format!("line {i}")));
+        }
+
+        assert!(!pane.is_following());
+        assert_eq!(
+            pane.scroll_offset, held,
+            "new output must not drag a detached view along"
+        );
     }
 }

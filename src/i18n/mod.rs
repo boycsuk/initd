@@ -760,6 +760,13 @@ pub enum Msg {
     KeyBarRestore,
     KeyBarClose,
     KeyBarFollow,
+    /// The same key while the pane is already following.
+    ///
+    /// A second entry rather than a parameter on the one above, because the
+    /// two are different words in every language rather than one word with a
+    /// prefix — and a catalogue that assembled "un" + "follow" would be right
+    /// in English and wrong everywhere else.
+    KeyBarUnfollow,
     KeyBarTree,
     KeyBarQuit,
 

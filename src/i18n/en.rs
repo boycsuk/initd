@@ -706,6 +706,7 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::KeyBarRestore => "restore".to_owned(),
         Msg::KeyBarClose => "close".to_owned(),
         Msg::KeyBarFollow => "follow".to_owned(),
+        Msg::KeyBarUnfollow => "unfollow".to_owned(),
         Msg::KeyBarTree => "tree".to_owned(),
         Msg::KeyBarQuit => "quit".to_owned(),
 
