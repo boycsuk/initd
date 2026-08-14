@@ -127,7 +127,18 @@ impl SysctlManager for ProcfsSysctl {
         // `kernel.ostype` is what all three accept: it exists on every Linux
         // kernel, so the answer is about the tool rather than about the host,
         // and `-n` is a flag procps and busybox both implement.
-        let command = Command::new("sysctl").args(["-n", AVAILABILITY_KEY]);
+        //
+        // Searched where system tools live rather than on the inherited `PATH`,
+        // for the reason `Command::locating` records: this process runs as the
+        // operator, and `sysctl` is `/usr/sbin/sysctl` on Debian — absent from
+        // a non-root login there. Reported from a live host, and the shape of
+        // it is worth keeping: the probe answered "not installed", the task
+        // dutifully installed `procps`, apt said it was already the newest
+        // version, and the very next command failed the same way. An install
+        // loop over a binary that was there all along.
+        let command = Command::new("sysctl")
+            .args(["-n", AVAILABILITY_KEY])
+            .with_env("PATH", crate::exec::LOOKUP_PATH);
 
         // An absent binary answers the question rather than failing to answer
         // it — the same shape `Nftables::is_available` needed, and the reason
@@ -141,7 +152,15 @@ impl SysctlManager for ProcfsSysctl {
 
     fn get(&self, executor: &dyn Executor, key: &str) -> Result<String> {
         // `-n` prints the value alone, without the `key = ` prefix.
-        let command = Command::new("sysctl").args(["-n", key]);
+        //
+        // Unprivileged and given a `PATH`, which is the pairing that matters:
+        // reading `/proc/sys` needs no root — measured, an ordinary account
+        // gets an answer — so escalating here would ask for a password the
+        // question does not need. What it does need is to find the binary,
+        // which lives in `/usr/sbin` and is invisible to a non-root login.
+        let command = Command::new("sysctl")
+            .args(["-n", key])
+            .with_env("PATH", crate::exec::LOOKUP_PATH);
         let output = executor.run(&command)?;
 
         if !output.success() {
@@ -364,6 +383,55 @@ mod tests {
 
         assert_eq!(value, "1");
         assert!(!mock.any_privileged());
+    }
+
+    #[test]
+    fn every_reading_command_is_told_where_sysctl_lives() {
+        // Reported from a live Debian 13 host, and the shape of the failure is
+        // what makes it worth pinning: `sysctl` is `/usr/sbin/sysctl` there and
+        // a non-root login has no `/usr/sbin`, so the availability probe
+        // answered "not installed", the task installed `procps`, apt replied it
+        // was already the newest version, and the next command failed
+        // identically. An install loop over a binary that was there all along.
+        //
+        // Both reads are asserted together because they fail as one: the probe
+        // gates the task and `get` is the first thing past it, so fixing either
+        // alone leaves the same symptom. `set` is exempt — it is `.privileged()`
+        // and reaches `/usr/sbin` through sudo's `secure_path`.
+        for (label, mock) in [
+            (
+                "availability",
+                MockExecutor::with_replies([Reply::ok("Linux")]),
+            ),
+            ("get", MockExecutor::with_replies([Reply::ok("0\n")])),
+        ] {
+            if label == "availability" {
+                ProcfsSysctl::new()
+                    .is_available(&mock)
+                    .expect("the probe must answer");
+            } else {
+                ProcfsSysctl::new()
+                    .get(&mock, "net.ipv4.ip_unprivileged_port_start")
+                    .expect("the read must answer");
+            }
+
+            let searched = mock
+                .single_command()
+                .env
+                .into_iter()
+                .find(|(key, _)| key == "PATH")
+                .map(|(_, value)| value)
+                .unwrap_or_else(|| panic!("{label} must carry a PATH of its own"));
+
+            assert!(
+                searched.split(':').any(|entry| entry == "/usr/sbin"),
+                "{label} must look where sysctl lives: {searched}"
+            );
+            assert!(
+                !mock.any_privileged(),
+                "{label} reads /proc/sys, which needs no root"
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Both kernel-parameter tasks failed on a host that had `sysctl` installed,
+  after installing it again.** Reported from the same Debian 13 server: the
+  task announced "Installing procps...", apt replied `procps is already the
+  newest version`, and the very next command failed with `program sysctl`. An
+  install loop over a binary that was there all along.
+
+  The same `PATH` defect as `sshd` and `nft`, in the two calls that read a
+  value. `sysctl` is `/usr/sbin/sysctl` on Debian — measured, it is not in
+  `/usr/bin` at all — and a non-root login has no `/usr/sbin`. The availability
+  probe therefore answered "not installed", the task installed the package that
+  was already there, and `get` failed for the same reason a moment later.
+
+  Both reads now carry the search path and stay unprivileged, which is the
+  pairing that matters: reading `/proc/sys` needs no root — measured, an
+  ordinary account gets an answer — so escalating would ask for a password the
+  question does not need. `set` is untouched: it is `.privileged()` and reaches
+  `/usr/sbin` through sudo's `secure_path`.
+
+  Confirmed to be caught by reintroducing it rather than assumed: the new test
+  fails on the `get` half alone, which is what the two reads failing as one
+  would otherwise have hidden.
+
 ## [0.4.0] — 2026-08-14
 
 Five defects reported from a live Debian 13 server, three more found while
