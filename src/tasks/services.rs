@@ -353,27 +353,7 @@ impl Task for InstallDockerRootless {
         // repository, `docker-rootless-extras` on openSUSE, `rootlesskit` on
         // Arch. The repository, where there is one, was registered by
         // `docker.install` — which this task has already checked ran.
-        // `packages_for` where the family answers with more than one name, and
-        // Debian does: the extras package does not depend on `uidmap`, whose
-        // `newuidmap`/`newgidmap` are what *apply* the subordinate id ranges
-        // checked a few lines above. Installing the first name alone left
-        // upstream's setup script refusing with `[ERROR] Missing system
-        // requirements`, telling the operator to install a package this tool
-        // should have brought — reported from a live host.
-        //
-        // The same asymmetry that let an uninstall leave four of five packages
-        // behind, here on the install side: one name where the capability is
-        // several.
-        if backend.has_package_for(Capability::DockerRootless) {
-            let named = backend.packages_for(Capability::DockerRootless);
-            let installing: Vec<&str> = if named.is_empty() {
-                vec![backend.package_for(Capability::DockerRootless)]
-            } else {
-                named.to_vec()
-            };
-
-            backend.packages().install(executor, &installing)?;
-        }
+        install_rootless_packages(executor, backend)?;
 
         // Lingering first. Without it the engine stops when the account's last
         // session ends, and because a user unit is wanted by `default.target`
@@ -444,6 +424,39 @@ fn engine_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<b
 /// packaged into `/usr/bin`.
 fn caddy_is_present(executor: &dyn Executor, backend: &dyn Backend) -> Result<bool> {
     backend.binaries().is_installed(executor, CADDY_BINARY)
+}
+
+/// Puts down everything a rootless setup needs, where the family packages it.
+///
+/// `packages_for` rather than `package_for`, because on Debian the capability is
+/// two names: the extras package does not depend on `uidmap`, whose
+/// `newuidmap`/`newgidmap` are what *apply* the subordinate id ranges the task
+/// checks for. Installing the first name alone left upstream's script refusing
+/// with `[ERROR] Missing system requirements` and asking the operator to install
+/// a package this tool should have brought.
+///
+/// Called by the *uninstall* as well as the install, which reads oddly and is
+/// what upstream requires: `dockerd-rootless-setuptool.sh uninstall` makes the
+/// same requirement check as `install` and refuses without the helpers. On a
+/// host where the install predates this fix — reported from one — the teardown
+/// could not run at all, so the account was left with a half-configured engine
+/// and no way to undo it through the tool that made it.
+///
+/// Idempotent on every family: each package manager treats an already-installed
+/// package as the state being asked for.
+fn install_rootless_packages(executor: &dyn Executor, backend: &dyn Backend) -> Result<()> {
+    if !backend.has_package_for(Capability::DockerRootless) {
+        return Ok(());
+    }
+
+    let named = backend.packages_for(Capability::DockerRootless);
+    let installing: Vec<&str> = if named.is_empty() {
+        vec![backend.package_for(Capability::DockerRootless)]
+    } else {
+        named.to_vec()
+    };
+
+    backend.packages().install(executor, &installing)
 }
 
 /// Runs upstream's rootless setup as the account.
@@ -1116,6 +1129,18 @@ impl Task for UninstallDockerRootless {
             "dockerd-rootless-setuptool.sh uninstall"
         };
 
+        // Before the script, because the script refuses without them: upstream
+        // makes the same requirement check on `uninstall` as on `install`, and
+        // an account set up before this tool installed `uidmap` could not be
+        // torn down at all — reported from a host left with a half-configured
+        // engine and no way to undo it through the tool that made it.
+        //
+        // Installing something in order to remove something reads oddly, and it
+        // is what upstream requires. The alternative was tolerating the refusal
+        // and carrying on, which would report success over a teardown that did
+        // not happen.
+        install_rootless_packages(executor, backend)?;
+
         // `-s` for the same reason the install has it: the teardown names
         // `$HOME/bin/...` on Arch, and the account's shell is not this tool's
         // to assume.
@@ -1383,6 +1408,50 @@ mod tests {
         assert!(
             !debian_commands.iter().any(|c| c.contains("get.docker.com")),
             "and must not reach the network for it: {debian_commands:?}"
+        );
+    }
+
+    #[test]
+    fn the_teardown_brings_the_helpers_its_own_script_demands() {
+        // Reported from a live host, and the awkward half of the uidmap fix:
+        // upstream makes the same requirement check on `uninstall` as on
+        // `install`, so an account set up before this tool installed `uidmap`
+        // could not be torn down at all — a half-configured engine with no way
+        // to undo it through the tool that made it.
+        //
+        // Installing in order to remove reads oddly and is what upstream
+        // requires. The alternative, tolerating the refusal, would report
+        // success over a teardown that did not happen.
+        let (outcome, commands) = run(
+            &UninstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok("running"), // the manager answers
+                Reply::ok(""),        // disable --now
+                Reply::ok(""),        // apt-get update
+                Reply::ok(""),        // the install of the helpers
+                Reply::ok(""),        // the teardown script
+                Reply::ok(""),        // disable-linger
+            ],
+            &user_values("deploy"),
+        );
+
+        outcome.expect("the teardown must succeed");
+
+        let installed_at = commands
+            .iter()
+            .position(|c| c.contains("apt-get install") && c.contains("uidmap"))
+            .expect("the helpers must be installed");
+
+        let torn_down_at = commands
+            .iter()
+            .position(|c| c.contains("setuptool.sh uninstall"))
+            .expect("the teardown script must run");
+
+        assert!(
+            installed_at < torn_down_at,
+            "the helpers must be there before the script that needs them: {commands:?}"
         );
     }
 

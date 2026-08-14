@@ -64,6 +64,15 @@ uses, and how many packages a capability is.
   installed through `package_for`, a single name, while `packages_for` existed
   to say a capability is several.
 
+  The *uninstall* needs them too, which is the awkward half: upstream makes the
+  same requirement check on `uninstall` as on `install`, so an account set up
+  before this fix could not be torn down at all — a half-configured engine with
+  no way to undo it through the tool that made it. `docker.rootless-off`
+  therefore installs the helpers before running the script that demands them.
+  Installing in order to remove reads oddly and is what upstream requires; the
+  alternative, tolerating the refusal, would report success over a teardown that
+  did not happen.
+
 ## [0.4.1] — 2026-08-14
 
 Three tasks reported from the same Debian 13 server as still failing after
