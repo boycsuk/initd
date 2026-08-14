@@ -73,6 +73,24 @@ uses, and how many packages a capability is.
   alternative, tolerating the refusal, would report success over a teardown that
   did not happen.
 
+- **Upstream's rootless script was not told where the session was.** It ran and
+  printed `[INFO] systemd not detected, dockerd-rootless.sh needs to be stopped
+  manually` — on a host whose user manager had answered `running` a second
+  earlier in the same task. So it skipped stopping the engine and left that to
+  the operator.
+
+  Four call sites spelled `runuser` themselves, and each had to remember two
+  separate things: `-s /bin/sh`, so the script does not go through the account's
+  login shell, and `XDG_RUNTIME_DIR`, so `systemctl --user` has a bus to
+  address. Every one of them had some subset. The two that ran upstream's
+  scripts had the first — added when fish broke them — and not the second.
+
+  All four go through one helper now, and a test asserts that helper carries
+  both. Found by auditing every way this codebase runs a command as another
+  account, after the same class of omission was reported three times: a fifth
+  site, `rust.rs`'s `rustup self uninstall`, had *neither* and would have failed
+  the same way on the same host.
+
 ## [0.4.1] — 2026-08-14
 
 Three tasks reported from the same Debian 13 server as still failing after

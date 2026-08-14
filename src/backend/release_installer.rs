@@ -289,20 +289,18 @@ impl BinaryInstaller for ReleaseInstaller {
         // inner script where the username is not.
         let staged_path = output.stdout.trim().to_owned();
 
-        // `-s` because the quoting here is POSIX and `runuser -l` would run it
-        // through the account's own login shell otherwise. `rustup-init` is
-        // installed for an operator whose shell this tool does not choose, and
-        // fish — measured — rejects syntax `sh` accepts.
-        let run = Command::new("runuser")
-            .args([
-                "-s",
-                crate::backend::systemd_user::POSIX_SHELL,
-                "-l",
-                user,
-                "-c",
-                &format!("'{staged_path}' {args}"),
-            ])
-            .privileged();
+        // Through the shared helper, which carries both decisions this needs:
+        // `-s /bin/sh`, since the quoting here is POSIX and the account's login
+        // shell may be fish; and `XDG_RUNTIME_DIR`, which costs nothing for an
+        // installer that does not use it and is one less thing for the next
+        // call site to omit — the omission that had upstream's Docker script
+        // reporting `systemd not detected` on a host whose manager was running.
+        //
+        // The staged path keeps its single quotes: `mktemp` produces the name,
+        // so no part of it came from the operator, and quoting it survives a
+        // directory a future `mktemp` puts a space in.
+        let script = format!("'{staged_path}' {args}");
+        let run = crate::backend::systemd_user::SystemdUserServices::as_user(user, &[&script]);
 
         let outcome = Self::run_script_command(executor, &run, program, release);
 

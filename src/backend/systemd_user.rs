@@ -69,7 +69,13 @@ impl SystemdUserServices {
     /// a second way to get the same answer. `${XDG_RUNTIME_DIR:-...}` so a
     /// session that *did* register keeps whatever it was given — this fills a
     /// gap rather than overriding a working environment.
-    fn as_user(user: &str, args: &[&str]) -> Command {
+    /// Public because two callers outside this module run a script as an
+    /// account and were each spelling `runuser` themselves — which is how one
+    /// of them ended up without the environment the other sets. Upstream's
+    /// rootless script reported `systemd not detected` while
+    /// `systemctl --user` had answered `running` a second earlier, because the
+    /// task ran it through a bare `runuser` with no `XDG_RUNTIME_DIR`.
+    pub fn as_user(user: &str, args: &[&str]) -> Command {
         let script = format!(
             "export {RUNTIME_DIR}=\"${{{RUNTIME_DIR}:-/run/user/$(id -u)}}\"; {}",
             args.join(" ")
@@ -207,6 +213,38 @@ impl UserServiceManager for SystemdUserServices {
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn running_as_an_account_carries_both_decisions_at_once() {
+        // The guard that would have prevented three separate reports. Two
+        // things must be true of every command run as another account, and
+        // each was omitted somewhere while the other was present:
+        //
+        //   - `-s /bin/sh`, or the script goes through the account's login
+        //     shell. An operator whose shell is fish got `${ is not a valid
+        //     variable in fish` from a tool that never asked them to write one.
+        //   - `XDG_RUNTIME_DIR`, or `systemctl --user` has no bus to address.
+        //     Upstream's Docker script reported `systemd not detected` on a
+        //     host whose user manager had answered `running` a second earlier.
+        //
+        // Asserted on the one function every such command now goes through,
+        // which is the point of it existing: four call sites spelled `runuser`
+        // themselves and each had to remember both.
+        let rendered = SystemdUserServices::as_user("deploy", &["true"]).to_string();
+
+        assert!(
+            rendered.contains("-s /bin/sh"),
+            "the shell must be chosen, not inherited: {rendered}"
+        );
+        assert!(
+            rendered.contains("XDG_RUNTIME_DIR"),
+            "and the runtime directory supplied rather than hoped for: {rendered}"
+        );
+        assert!(
+            rendered.contains("-l deploy"),
+            "as a login session for the named account: {rendered}"
+        );
+    }
 
     #[test]
     fn a_session_that_pam_did_not_register_is_still_reachable() {

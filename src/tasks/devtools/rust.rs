@@ -267,9 +267,16 @@ impl Task for UninstallRust {
                 return Err(Error::NoSuchAccount { user });
             }
 
-            let removal = Command::new("runuser")
-                .args(["-l", &user, "-c", "rustup self uninstall -y"])
-                .privileged();
+            // Through the shared helper rather than a `runuser` spelled here,
+            // which is what this call site was: no `-s`, so an account whose
+            // login shell is fish would have had `rustup self uninstall -y`
+            // handed to a shell that parses it differently, and no
+            // `XDG_RUNTIME_DIR` either. Found by auditing every `runuser` after
+            // the same two omissions were reported one at a time elsewhere.
+            let removal = crate::backend::systemd_user::SystemdUserServices::as_user(
+                &user,
+                &["rustup", "self", "uninstall", "-y"],
+            );
 
             crate::backend::systemd::run_checked(executor, &removal)?;
 

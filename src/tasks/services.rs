@@ -487,20 +487,14 @@ fn run_rootless_setup(
         "dockerd-rootless-setuptool.sh install"
     };
 
-    // `-s` because the script is POSIX and `runuser -l` would otherwise run it
-    // through the account's own login shell. Upstream's installer is fetched
-    // and run by a script using `trap`, `$(mktemp)` and `"$script"` — none of
-    // which fish parses, and fish is what the account reporting this used.
-    let setup = Command::new("runuser")
-        .args([
-            "-s",
-            crate::backend::systemd_user::POSIX_SHELL,
-            "-l",
-            user,
-            "-c",
-            script,
-        ])
-        .privileged();
+    // Through the same helper the user-service commands use, rather than a
+    // `runuser` spelled here. It carries two decisions this call site kept
+    // getting one of: `-s /bin/sh`, because the script is POSIX and the
+    // account's shell may be fish; and `XDG_RUNTIME_DIR`, without which
+    // upstream's script reports `systemd not detected` and leaves the engine
+    // for the operator to stop by hand — reported from a host where
+    // `systemctl --user` had answered `running` a second earlier.
+    let setup = crate::backend::systemd_user::SystemdUserServices::as_user(user, &[script]);
 
     crate::backend::systemd::run_checked(executor, &setup)
 }
@@ -1141,19 +1135,13 @@ impl Task for UninstallDockerRootless {
         // not happen.
         install_rootless_packages(executor, backend)?;
 
-        // `-s` for the same reason the install has it: the teardown names
-        // `$HOME/bin/...` on Arch, and the account's shell is not this tool's
-        // to assume.
-        let teardown = Command::new("runuser")
-            .args([
-                "-s",
-                crate::backend::systemd_user::POSIX_SHELL,
-                "-l",
-                &user,
-                "-c",
-                teardown_script,
-            ])
-            .privileged();
+        // The same helper the install uses, for the same two reasons — and the
+        // second is what this call site was missing: without `XDG_RUNTIME_DIR`
+        // upstream's script reported `systemd not detected` and told the
+        // operator to stop the engine by hand, on a host whose user manager had
+        // answered `running` moments before.
+        let teardown =
+            crate::backend::systemd_user::SystemdUserServices::as_user(&user, &[teardown_script]);
 
         crate::backend::systemd::run_checked(executor, &teardown)?;
 
@@ -1507,6 +1495,50 @@ mod tests {
         assert!(
             !commands.iter().any(|c| c.contains("setuptool")),
             "the setup script must not run: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn upstreams_script_is_told_where_the_session_is() {
+        // Reported from a live host, and the last of the four the rootless
+        // path gave up one at a time: the teardown ran and printed `[INFO]
+        // systemd not detected, dockerd-rootless.sh needs to be stopped
+        // manually` — on a host whose user manager had answered `running` a
+        // second earlier in the same task.
+        //
+        // The task spelled `runuser` itself instead of using the helper, so it
+        // got `-s /bin/sh` (added when fish broke it) and not
+        // `XDG_RUNTIME_DIR`. The script then found no bus, skipped stopping the
+        // engine, and left that for the operator.
+        let (outcome, commands) = run(
+            &UninstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok("running"),
+                Reply::ok(""), // disable --now
+                Reply::ok(""), // apt-get update
+                Reply::ok(""), // the helpers
+                Reply::ok(""), // the teardown script
+                Reply::ok(""), // disable-linger
+            ],
+            &user_values("deploy"),
+        );
+
+        outcome.expect("the teardown must succeed");
+
+        let script = commands
+            .iter()
+            .find(|c| c.contains("setuptool.sh uninstall"))
+            .expect("the teardown script must run");
+
+        assert!(
+            script.contains("XDG_RUNTIME_DIR"),
+            "upstream's script needs the session to find systemd: {script}"
+        );
+        assert!(
+            script.contains("-s /bin/sh"),
+            "and must not go through the account's own shell: {script}"
         );
     }
 
