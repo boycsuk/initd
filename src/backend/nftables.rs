@@ -211,9 +211,25 @@ impl FirewallManager for Nftables {
     }
 
     fn is_available(&self, executor: &dyn Executor) -> Result<bool> {
-        // `--version` rather than `list ruleset`: listing needs privilege, and
+        // A lookup rather than `list ruleset`: listing needs privilege, and
         // availability is asked before the tool knows it will need any.
-        let command = Command::new("nft").arg("--version");
+        //
+        // `Command::locating` rather than running `nft --version`, which is
+        // what this was and what made it the one unprivileged command in a
+        // module where every other call is `.privileged()`. Those go through
+        // sudo and get `secure_path`; this one was spawned under whatever
+        // `PATH` the operator had, and `nft` lives in `/usr/sbin` — absent from
+        // a non-root login on Debian. So a host with nftables installed
+        // answered "no front-end" to every caller, and `firewall.manage-ports`
+        // refused with `NoFirewallFrontEnd` while `firewall.enable` had worked
+        // minutes earlier for the one reason that it had been run as root.
+        //
+        // The lookup sets its own `PATH`, so this asks the same question of the
+        // same directories however the tool was started. Left on the executor
+        // rather than reading the filesystem directly: the answer must describe
+        // the host the commands will run on, which stops being this one the day
+        // a second `Executor` runs them over SSH.
+        let command = Command::locating("nft");
 
         // An absent binary is the answer to this question, not a failure to
         // answer it — the same reasoning `persistence_target` and
@@ -1064,5 +1080,36 @@ mod tests {
             .expect("an absent binary must not raise");
 
         assert!(!available);
+    }
+
+    #[test]
+    fn availability_is_asked_where_nft_actually_lives() {
+        // The defect this replaced: `nft --version` was the one unprivileged
+        // command in a module whose every other call is `.privileged()`. Those
+        // reach `/usr/sbin` through sudo's `secure_path`; this one ran under
+        // whatever `PATH` the operator had, and a non-root Debian login has no
+        // `/usr/sbin`. A host with nftables installed therefore answered "no
+        // front-end" to every caller — `firewall.manage-ports` refusing with
+        // `NoFirewallFrontEnd` on the same box where `firewall.enable` had
+        // succeeded, the difference being only that enable had been run as
+        // root.
+        let mock = MockExecutor::with_replies([Reply::ok("/usr/sbin/nft")]);
+
+        assert!(
+            Nftables::new()
+                .is_available(&mock)
+                .expect("a host with nft must answer")
+        );
+
+        let asked = mock.recorded_lines();
+
+        assert!(
+            asked.iter().any(|line| line.contains("command -v nft")),
+            "availability must be a lookup, not a run: {asked:?}"
+        );
+        assert!(
+            !mock.any_privileged(),
+            "and must not need privilege, since the probe thread has none"
+        );
     }
 }

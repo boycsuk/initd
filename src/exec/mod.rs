@@ -40,7 +40,11 @@ use crate::error::Result;
 /// `location_of` for everything installed from a release — `mise`, `zellij` and
 /// this tool's own copies live in `/usr/local/bin`, and a lookup that cannot see
 /// them reports a row absent for the opposite reason.
-const LOOKUP_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin";
+/// Public because a lookup is not the only question asked of a program that
+/// lives in `/usr/sbin`: `firewall-cmd --state` must *run* the binary to tell a
+/// stopped daemon from an absent one, so it needs the same directories without
+/// going through [`Command::locating`].
+pub const LOOKUP_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin";
 
 /// A command to run: a program resolved through `PATH` plus its arguments.
 ///

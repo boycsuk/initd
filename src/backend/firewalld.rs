@@ -255,7 +255,21 @@ impl FirewallManager for Firewalld {
         // running holds none. It exits 252 when stopped and 251 when it started
         // and failed, and neither is an error to report upwards — they are the
         // answer.
-        let command = Command::new("firewall-cmd").arg("--state");
+        // Searched where system tools live rather than on the inherited `PATH`,
+        // for the reason `Command::locating` records: this process runs as the
+        // operator, and a non-root login need not carry `/usr/sbin`. Not a
+        // lookup, because a lookup cannot answer this question — the point of
+        // `--state` is to separate an installed daemon that is stopped from one
+        // that is absent, and both have the binary on disk.
+        //
+        // Worth more here than it looks. firewalld is the *first* candidate
+        // RHEL offers, so a `firewall-cmd` invisible on `PATH` reads as absent
+        // and silently promotes nftables — which would then write a table of
+        // this tool's own over a host whose ruleset firewalld holds, exactly
+        // the outcome `RhelBackend::firewalls` orders these two to prevent.
+        let command = Command::new("firewall-cmd")
+            .arg("--state")
+            .with_env("PATH", crate::exec::LOOKUP_PATH);
 
         // An absent `firewall-cmd` answers the question as surely as a stopped
         // daemon does, and mapping only the exit codes left the one case that
@@ -529,6 +543,40 @@ mod tests {
         Firewalld::new().is_available(&mock).expect("runs");
 
         assert!(!mock.any_privileged());
+    }
+
+    #[test]
+    fn availability_is_asked_where_firewall_cmd_actually_lives() {
+        // Unprivileged, so it is spawned under the environment this process
+        // inherited — which belongs to the operator, not to root, and on a
+        // non-root login need not contain `/usr/sbin`. `nft` had the identical
+        // defect one module over.
+        //
+        // Not solved with a lookup the way `nft` was, because a lookup cannot
+        // answer this question: `--state` exists to tell a stopped daemon from
+        // an absent one, and both have the binary on disk.
+        //
+        // It matters more here than the shared cause suggests. firewalld is the
+        // first candidate RHEL offers, so an invisible `firewall-cmd` reads as
+        // absent and silently promotes nftables — which would write a table of
+        // this tool's own over a host whose ruleset firewalld holds, the very
+        // outcome the ordering in `RhelBackend::firewalls` exists to prevent.
+        let mock = MockExecutor::with_replies([Reply::ok("running")]);
+
+        Firewalld::new().is_available(&mock).expect("runs");
+
+        let searched = mock
+            .single_command()
+            .env
+            .into_iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value)
+            .expect("the state query must carry a PATH of its own");
+
+        assert!(
+            searched.split(':').any(|entry| entry == "/usr/sbin"),
+            "firewall-cmd must be looked for where it lives: {searched}"
+        );
     }
 
     #[test]

@@ -58,6 +58,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PATH` includes `/usr/sbin`. The suite exercised the one environment under
   which the check worked.
 
+- **`firewall.manage-ports` reported no front-end on a host that had one.**
+  Both firewall front-ends were detected by the only unprivileged command in
+  modules where every other call is `.privileged()` — and privileged calls reach
+  `/usr/sbin` through sudo's `secure_path` while these did not. `nft` and
+  `firewall-cmd` both live there, so an operator who was not root got "no
+  inbound filtering front-end is installed on this host" from a box that was
+  filtering. `firewall.enable` had worked on the same box minutes earlier for
+  the single reason that it was run as root.
+
+  Detection is a gatekeeper — `firewall_for` picks the front-end every other
+  firewall call then drives — so one invisible binary disabled the lot.
+
+  `nft` is now found through `Command::locating`, which carries its own search
+  path. firewalld could not use the same fix: `firewall-cmd --state` has to
+  *run* the binary, since its whole purpose is telling a stopped daemon from an
+  absent one, and both have it on disk. It gets the same directories through the
+  command's environment instead.
+
+  Worth more on RHEL than the shared cause suggests: firewalld is the first
+  candidate there, so an invisible `firewall-cmd` reads as absent and silently
+  promotes nftables — which would then write a table of this tool's own over a
+  host whose ruleset firewalld holds, the outcome `RhelBackend::firewalls`
+  orders the two candidates to prevent.
+
+  Detection stays on the `Executor` rather than reading the filesystem directly,
+  so the answer goes on describing the host the commands will run on when a
+  second implementation runs them over SSH.
+
 ## [0.3.0] — 2026-08-13
 
 ### Changed
