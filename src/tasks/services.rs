@@ -456,7 +456,12 @@ fn install_rootless_packages(executor: &dyn Executor, backend: &dyn Backend) -> 
         named.to_vec()
     };
 
-    backend.packages().install(executor, &installing)
+    // `install_missing` rather than `install`: this runs on both the install and
+    // the teardown, and on a host where everything is already there it printed a
+    // full `apt-get update`, a dependency resolution and `already the newest
+    // version` before doing anything. Correct and loud, which for a task an
+    // operator is watching is its own defect.
+    backend.packages().install_missing(executor, &installing)
 }
 
 /// Runs upstream's rootless setup as the account.
@@ -1346,26 +1351,38 @@ mod tests {
         // Pinned in both directions, because a branch that always fetched would
         // be just as wrong as one that never did: Debian has the script in a
         // package and must not reach the network for it.
-        let replies = || {
-            vec![
+        // Per family rather than shared, because the queue is positional and
+        // the two families differ in how many packages they name: one
+        // `is_installed` runs per package before anything is fetched, so Arch
+        // consumes one reply here where Debian consumes two. A single list
+        // shifted Arch's whole queue by one and failed its install for a reason
+        // having nothing to do with the branch under test.
+        let replies = |absent: usize| {
+            let mut queue = vec![
                 Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
                 Reply::ok("/usr/bin/docker"), // the engine is installed
                 Reply::ok(""),                // subuid
                 Reply::ok(""),                // subgid
-                Reply::ok("/run/user/1001"),  // the session is reachable
-                Reply::ok(""),                // pacman -Sy / apt-get update
-                Reply::ok(""),                // install
-                Reply::ok("Linger=yes"),      // already lingering
-                Reply::ok(""),                // the setup script
-                Reply::ok(""),                // enable --now
-                Reply::ok("active"),          // is-active
-            ]
+                Reply::ok("running"),         // the manager answers
+            ];
+
+            queue.extend(std::iter::repeat_n(Reply::failure(1, ""), absent));
+            queue.extend([
+                Reply::ok(""),           // pacman -Sy / apt-get update
+                Reply::ok(""),           // install
+                Reply::ok("Linger=yes"), // already lingering
+                Reply::ok(""),           // the setup script
+                Reply::ok(""),           // enable --now
+                Reply::ok("active"),     // is-active
+            ]);
+
+            queue
         };
 
         let (arch, arch_commands) = run(
             &InstallDockerRootless,
             Family::Arch,
-            replies(),
+            replies(1),
             &user_values("deploy"),
         );
 
@@ -1381,7 +1398,7 @@ mod tests {
         let (debian, debian_commands) = run(
             &InstallDockerRootless,
             Family::Debian,
-            replies(),
+            replies(2),
             &user_values("deploy"),
         );
 
@@ -1543,6 +1560,57 @@ mod tests {
     }
 
     #[test]
+    fn a_second_run_does_not_reinstall_what_is_already_there() {
+        // Reported by an operator watching the same eight lines scroll past on
+        // every run: a full `apt-get update`, a dependency resolution and
+        // `already the newest version` before the task did the thing it was
+        // asked to do. Correct — every package manager treats an installed
+        // package as the state being asked for — and loud, which for a task
+        // somebody is reading is its own defect.
+        //
+        // Cheap to ask and expensive to skip asking: `is_installed` is one
+        // local query per package, where the install it avoids reaches the
+        // network to refresh an index.
+        let (outcome, commands) = run(
+            &InstallDockerRootless,
+            Family::Debian,
+            vec![
+                Reply::ok("deploy:x:1001:1001::/home/deploy:/bin/bash"),
+                Reply::ok("/usr/bin/docker"),
+                Reply::ok(""),                     // subuid
+                Reply::ok(""),                     // subgid
+                Reply::ok("running"),              // the manager answers
+                Reply::ok("install ok installed"), // the extras are there
+                Reply::ok("install ok installed"), // and so is uidmap
+                Reply::ok("Linger=yes"),           // already lingering
+                Reply::ok(""),                     // the setup script
+                Reply::ok(""),                     // enable --now
+                Reply::ok("active"),               // is-active
+            ],
+            &user_values("deploy"),
+        );
+
+        outcome.expect("the install must succeed");
+
+        assert!(
+            !commands.iter().any(|c| c.contains("apt-get install")),
+            "nothing was missing, so nothing may be installed: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.contains("apt-get update")),
+            "and the index must not be refreshed for an install that does not \
+             happen: {commands:?}"
+        );
+
+        // The work itself still runs, so the check cannot be satisfied by
+        // skipping the task.
+        assert!(
+            commands.iter().any(|c| c.contains("setuptool.sh install")),
+            "the setup must still run: {commands:?}"
+        );
+    }
+
+    #[test]
     fn the_rootless_install_brings_the_helpers_the_setup_script_demands() {
         // The task checked that `deploy` had subordinate id ranges and then
         // installed nothing able to apply them. Upstream's script refused with
@@ -1558,6 +1626,8 @@ mod tests {
                 Reply::ok(""),           // subuid
                 Reply::ok(""),           // subgid
                 Reply::ok("running"),    // the manager answers
+                Reply::failure(1, ""),   // the extras are absent
+                Reply::failure(1, ""),   // and so is uidmap
                 Reply::ok(""),           // apt-get update
                 Reply::ok(""),           // the install
                 Reply::ok("Linger=yes"), // already lingering
@@ -1608,6 +1678,8 @@ mod tests {
                 Reply::ok(""),               // subuid
                 Reply::ok(""),               // subgid
                 Reply::ok("/run/user/1001"), // the session is reachable
+                Reply::failure(1, ""),       // the extras are absent
+                Reply::failure(1, ""),       // and so is uidmap
                 Reply::ok(""),               // apt-get update
                 Reply::ok(""),               // install
                 Reply::ok("Linger=yes"),     // already lingering
@@ -1642,9 +1714,14 @@ mod tests {
                 Reply::ok("/usr/bin/docker"), // the engine is installed
                 Reply::ok(""),                // subuid
                 Reply::ok(""),                // subgid
-                // `printenv XDG_RUNTIME_DIR` as the account: a populated value
-                // is a session `systemctl --user` can address.
-                Reply::ok("/run/user/1001"),
+                // `systemctl --user is-system-running` as the account: the
+                // manager answering is what makes the session reachable, rather
+                // than a variable PAM may or may not have exported.
+                Reply::ok("running"),
+                // One `is_installed` per package, which is what keeps a second
+                // run from reinstalling what is already there.
+                Reply::failure(1, ""), // the extras are absent
+                Reply::failure(1, ""), // and so is uidmap
                 // No repository registration here any more: `docker.install`
                 // does that, and this task refuses when it has not run.
                 Reply::ok(""),          // apt-get update, which every install runs

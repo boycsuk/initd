@@ -21,6 +21,44 @@ pub trait PackageManager {
     /// backend would have to remember to split it.
     fn install(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()>;
 
+    /// Installs only what is missing, and touches nothing when nothing is.
+    ///
+    /// The promise [`install`](Self::install)'s first line already made and did
+    /// not keep. Every package manager treats an already-installed package as
+    /// the state being asked for, so re-running was *correct* — it was just
+    /// loud: a task run twice printed a full `apt-get update`, a dependency
+    /// resolution and `already the newest version` before doing the thing it
+    /// was actually asked to do. Reported by an operator watching the same
+    /// eight lines scroll past on every run and reasonably asking why a tool
+    /// that had just checked was installing anyway.
+    ///
+    /// Cheap to ask and expensive to skip asking: `is_installed` is one query
+    /// per package against a local database, where the install it avoids
+    /// reaches the network to refresh an index.
+    ///
+    /// Still one transaction for whatever *is* missing, which is why this
+    /// filters rather than looping: two packages installed separately can each
+    /// take the other's dependencies, and the ordering that decides which is
+    /// not something any caller states.
+    ///
+    /// Defaulted so no family implements it. What differs between them is how
+    /// to install and how to ask, and both are answered above.
+    fn install_missing(&self, executor: &dyn Executor, packages: &[&str]) -> Result<()> {
+        let mut missing = Vec::new();
+
+        for package in packages {
+            if !self.is_installed(executor, package)? {
+                missing.push(*package);
+            }
+        }
+
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        self.install(executor, &missing)
+    }
+
     /// Whether the package is currently installed.
     fn is_installed(&self, executor: &dyn Executor, package: &str) -> Result<bool>;
 
