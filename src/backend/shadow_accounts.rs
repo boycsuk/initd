@@ -23,6 +23,14 @@ use crate::exec::{Command, Executor};
 /// implementation reads it the same way.
 const EXPIRED: &str = "1";
 
+/// What clears an expiry date, restoring an account that was locked.
+///
+/// The empty string rather than `-1`: `usermod --expiredate ""` empties
+/// `shadow(5)`'s eighth field, which means "never expires", while `-1` is
+/// written literally by some implementations and leaves a field nothing else
+/// parses as absent.
+const NEVER_EXPIRES: &str = "";
+
 /// Manages accounts through the shadow suite.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ShadowAccounts;
@@ -135,6 +143,30 @@ impl AccountWriter for ShadowAccounts {
             LockMethod::Expire => {
                 let command = Command::new("usermod")
                     .args(["--expiredate", EXPIRED, user])
+                    .privileged();
+
+                run_checked(executor, &command)
+            }
+        }
+    }
+
+    fn unlock(&self, executor: &dyn Executor, user: &str, method: LockMethod) -> Result<()> {
+        match method {
+            // An empty `--expiredate` clears the field rather than setting a
+            // date, which is what `usermod(8)` documents and what leaves the
+            // account as it was before the lock: `shadow(5)`'s eighth field
+            // empty means "never expires". Passing `-1` is the other spelling
+            // and writes a literal `-1` into the field on some implementations,
+            // so the empty string is the portable one.
+            //
+            // No password is written here, deliberately. Lifting the expiry
+            // restores the *ability* to authenticate; the credential is
+            // whatever the account already held, and an account with no usable
+            // password stays unusable — which the task above says out loud
+            // rather than leaving an operator to discover.
+            LockMethod::Expire => {
+                let command = Command::new("usermod")
+                    .args(["--expiredate", NEVER_EXPIRES, user])
                     .privileged();
 
                 run_checked(executor, &command)

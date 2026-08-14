@@ -1148,10 +1148,8 @@ mod tests {
         // rather than by exit code: a host where `firewall.enable` has never
         // run has no table, which is an ordinary answer. Turning *this* into an
         // error would break the row that offers to enable it.
-        let no_table = MockExecutor::with_replies([Reply::failure(
-            1,
-            "Error: No such file or directory",
-        )]);
+        let no_table =
+            MockExecutor::with_replies([Reply::failure(1, "Error: No such file or directory")]);
 
         let state = Nftables::new()
             .state(&no_table)

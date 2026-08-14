@@ -148,6 +148,18 @@ pub trait AccountWriter {
     /// Bars an account from logging in by any method.
     fn lock(&self, executor: &dyn Executor, user: &str, method: LockMethod) -> Result<()>;
 
+    /// Lifts what [`lock`](Self::lock) put in place.
+    ///
+    /// Takes the method rather than guessing, so it undoes what was done: the
+    /// two mechanisms live in different shadow fields, and clearing the wrong
+    /// one reports success over an account that is still barred.
+    ///
+    /// What it restores is the *ability* to authenticate, never a credential.
+    /// An expiry lifted from an account holding no usable password leaves it
+    /// exactly as unusable as before — which is why the task above this refuses
+    /// to imply otherwise, and why nothing here writes a password.
+    fn unlock(&self, executor: &dyn Executor, user: &str, method: LockMethod) -> Result<()>;
+
     /// Whether an account is barred from logging in.
     fn is_locked(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
 

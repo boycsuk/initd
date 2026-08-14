@@ -18,7 +18,12 @@ use crate::tasks::ssh::has_authorized_key;
 use crate::tasks::{Category, Confirmation, Node, Progress, Task, report, supported_everywhere};
 
 /// The account whose lock is dangerous enough to warrant its own guard.
-const ROOT: &str = "root";
+/// The account this tool locks and unlocks by name.
+///
+/// `pub(crate)` because the confirmation reads the same account's state to
+/// decide which direction to propose, and a second literal there would be a
+/// second place to spell it.
+pub(crate) const ROOT: &str = "root";
 
 /// The account that escalated into this process, where it can be known.
 ///
@@ -342,6 +347,21 @@ pub fn category() -> Category {
             // that both are always available.
             Node::Task(Box::new(DeleteUser)),
             Node::Task(Box::new(SetShell)),
+            // One row rather than a reversible pair, and the difference is
+            // *where* the direction is decided. A pair decides it in the probe
+            // thread, which may not prompt — and `is_locked` reads
+            // `/etc/shadow`, mode `640`, a genuinely privileged question unlike
+            // the sysctl drop-in that was world-readable all along. The row
+            // would answer `Unknown` for every operator who is not root, and
+            // `Unknown` draws the forward verb: it would offer to lock a root
+            // that was already locked.
+            //
+            // Harmless for a kernel parameter and not here — re-locking a root
+            // an operator believed open is recovered through the hosting
+            // provider's rescue console. So the question is asked in the
+            // confirmation instead, which is a point of interaction and may
+            // therefore escalate: `lockout_warning` already spends seventeen
+            // privileged commands there.
             Node::Task(Box::new(LockRoot)),
         ],
     )
@@ -603,7 +623,22 @@ impl Task for SetShell {
     }
 }
 
-/// Bars the root account from logging in.
+/// Bars the root account from logging in, or lets it in again.
+///
+/// One task in both directions rather than a reversible pair, because the two
+/// differ in *where* the direction can be decided. A pair decides it in the
+/// probe thread, and the question — is root locked — is answered by
+/// `/etc/shadow`, mode `640`. The probe may not prompt, so it would answer
+/// `Unknown` for every operator who is not root, and `Unknown` draws the
+/// forward verb: the row would offer to lock a root already locked, which is
+/// recovered through the hosting provider's rescue console.
+///
+/// The confirmation decides instead. It is a point of interaction and may
+/// escalate — [`lockout_warning`] already spends seventeen privileged commands
+/// there — so by the time an operator is looking at the dialog, the direction
+/// is measured rather than guessed. `run` reads the state again for the reason
+/// the lock always did: the dialog ran several privileged commands ago, and the
+/// account may have changed underneath it.
 pub struct LockRoot;
 
 impl Task for LockRoot {
@@ -612,14 +647,16 @@ impl Task for LockRoot {
     }
 
     fn title(&self) -> &'static str {
-        "Lock the root account"
+        "Manage root access"
     }
 
     fn description(&self) -> &'static str {
-        "Expires the root account so no authentication method admits it — \
-         including the provider's rescue console, which is reached as the \
-         administrative account instead. Refuses to run unless that account \
-         can already log in, by key or by password, and escalate."
+        "Locks the root account by expiring it, so no authentication method \
+         admits it — including the provider's rescue console, which is reached \
+         as the administrative account instead. Refuses unless that account can \
+         already log in and escalate. Where root is already locked, this lifts \
+         the expiry instead, restoring whatever credential the account held: it \
+         sets no password, so a root without one still cannot log in."
     }
 
     fn confirmation(&self) -> Confirmation {
@@ -650,20 +687,39 @@ impl Task for LockRoot {
         _values: &ParamValues,
         progress: Progress<'_>,
     ) -> Result<Outcome> {
-        // The hard prerequisite. Every other change in this tool is
-        // recoverable — this one can require the provider's rescue console, so
-        // it verifies rather than warns. A dismissible warning is no
-        // protection against the only irreversible mistake here.
-        Self::verify_a_way_back_in(executor, backend, progress)?;
-
-        // Idempotent: an already-locked root is the state this task exists to
-        // reach, so reaching it twice is success rather than an error. Saying
-        // so is the point — silence would read as having just done it.
+        // Which direction this runs in is decided here rather than by the row,
+        // because the answer lives in `/etc/shadow` and only a privileged
+        // command may read it. The confirmation asked the same question a
+        // moment ago so the operator saw which way they were agreeing to; this
+        // asks again because that was several privileged commands back, and an
+        // account can change underneath a dialog.
         if backend.account_writer().is_locked(executor, ROOT)? {
-            report(progress, &Msg::TaskRootAlreadyLocked);
+            report(progress, &Msg::TaskUnlockingRoot);
+
+            // The method is named rather than inferred: the two mechanisms live
+            // in different shadow fields, and clearing the one that was not set
+            // reports success over an account still barred.
+            backend
+                .account_writer()
+                .unlock(executor, ROOT, LockMethod::Expire)?;
+
+            // Said afterwards because it is a fact about the account rather
+            // than about this task. Expiry is one of the ways in that root can
+            // lack, and lifting it restores the *ability* to authenticate
+            // rather than something to authenticate with — "unlocked" and "can
+            // log in" being one sentence in English and two fields in
+            // `/etc/shadow`.
+            report(progress, &Msg::TaskRootUnlockedWithoutCredential);
 
             return Ok(Outcome::Done);
         }
+
+        // Everything below locks, and only that direction needs a guard: this
+        // is the one change in the tool that can require the provider's rescue
+        // console, so it verifies rather than warns. A dismissible warning is
+        // no protection against the only irreversible mistake here. Unlocking
+        // needs no such check — it can strand nobody.
+        Self::verify_a_way_back_in(executor, backend, progress)?;
 
         // Read once more, immediately before the irreversible step. The checks
         // above ran several privileged commands ago, and each of those is a
@@ -1363,6 +1419,21 @@ mod tests {
         );
     }
 
+    /// Runs the root-access row against a host where root can still log in.
+    ///
+    /// The row asks that question first, because it decides which direction it
+    /// runs in — so every test about the *locking* half has to answer it before
+    /// its own replies begin. Written once here rather than prepended to
+    /// eleven literal lists, where the one that was forgotten would fail for a
+    /// reason having nothing to do with what it tests.
+    fn run_locking(family: Family, replies: Vec<Reply>) -> (Result<Outcome>, Vec<String>) {
+        let unlocked = std::iter::once(Reply::ok("root:$6$salt$hash:19000:0:99999:7:::"))
+            .chain(replies)
+            .collect();
+
+        run(&LockRoot, family, unlocked, &ParamValues::new())
+    }
+
     /// A passwd file with root and the named accounts in it.
     ///
     /// Written as the scan reads it, since the scan starts by listing rather
@@ -1386,11 +1457,9 @@ mod tests {
         // used to be refused as a typed value; with nothing typed, the refusal
         // becomes an exclusion from the scan — and the only way to see it is
         // that a host holding *only* root is refused.
-        let (outcome, commands) = run(
-            &LockRoot,
+        let (outcome, commands) = run_locking(
             Family::Debian,
             vec![Reply::ok("root:x:0:0:root:/root:/bin/bash\n")],
-            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("root cannot vouch for itself");
@@ -1408,14 +1477,12 @@ mod tests {
         // administer the machine once root is gone. It used to abort the task
         // by name; it is now the reason this one account was set aside, and the
         // refusal is about the host.
-        let (outcome, _) = run(
-            &LockRoot,
+        let (outcome, _) = run_locking(
             Family::Debian,
             vec![
                 Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice users"), // not in sudo
             ],
-            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("a host of non-administrators has no way back in");
@@ -1431,6 +1498,9 @@ mod tests {
         // the words — `GroupGrantsNothing` names a file and a line, and a
         // diagnosis nobody reads is not a diagnosis.
         let mock = MockExecutor::with_replies(vec![
+            // Root's own state, read first so the row knows which direction it
+            // runs in. Not locked, so what follows is the locking guard.
+            Reply::ok("root:$6$salt$hash:19000:0:99999:7:::"),
             Reply::ok(passwd(&["cosmin", "deploy"])),
             Reply::ok("cosmin wheel"), // in the group...
             Reply::ok("deploy users"), // ...and this one is not
@@ -1517,14 +1587,12 @@ mod tests {
         // The distinct diagnosis matters as much as the refusal: reporting
         // "not in wheel" would send the operator to `usermod` for a problem
         // that command cannot fix, and assert something the system contradicts.
-        let (outcome, _) = run(
-            &LockRoot,
+        let (outcome, _) = run_locking(
             Family::Suse,
             vec![
                 Reply::ok(passwd(&["alice"])),
                 Reply::ok("alice wheel"), // in the group, which grants nothing here
             ],
-            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("membership alone must not vouch here");
@@ -1537,8 +1605,7 @@ mod tests {
         // In the admin group and unable to log in by any means is still locked
         // out: no key, and a `!` hash, which is what `useradd` leaves on an
         // account created without a password.
-        let (outcome, _) = run(
-            &LockRoot,
+        let (outcome, _) = run_locking(
             Family::Debian,
             vec![
                 Reply::ok(passwd(&["alice"])),
@@ -1546,7 +1613,6 @@ mod tests {
                 Reply::failure(1, ""),                   // no authorized_keys
                 Reply::ok("alice:!:19000:0:99999:7:::"), // and no password
             ],
-            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("an account with no credential must not vouch");
@@ -1565,6 +1631,9 @@ mod tests {
         // Asserted on the second account being asked about at all, which a scan
         // that returned after `alice` would never do.
         let mock = MockExecutor::with_replies(vec![
+            // The row reads root's own state first, to decide which direction
+            // it runs in. Locking is the half this test is about.
+            Reply::ok("root:$6$salt$hash:19000:0:99999:7:::"),
             Reply::ok(passwd(&["alice", "deploy"])),
             Reply::ok("alice sudo"),
             Reply::ok(""),         // sudo grants it something
@@ -1574,7 +1643,6 @@ mod tests {
             Reply::ok(""),                                   // sudo grants it something
             Reply::failure(1, ""),                           // deploy: no key
             Reply::ok("deploy:$6$xyz$w:19000:0:99999:7:::"), // deploy: a password too
-            Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"),   // root is not locked
             // ...and the recheck scans the whole host again.
             Reply::ok(passwd(&["alice", "deploy"])),
             Reply::ok("alice sudo"),
@@ -1611,8 +1679,7 @@ mod tests {
         // an account numbered below it — with sudo and a key — is a genuine way
         // back in, and skipping it would report a host as stranded while
         // somebody was logged into it.
-        let (outcome, commands) = run(
-            &LockRoot,
+        let (outcome, commands) = run_locking(
             Family::Debian,
             vec![
                 // uid 998, which the rank calls `System`.
@@ -1626,7 +1693,6 @@ mod tests {
                 Reply::ok(""), // the file exists
                 Reply::ok(TEST_KEY), // and holds a key
                 Reply::ok("git:!:19000:0:99999:7:::"), // no password behind it
-                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"), // root is not locked
                 Reply::ok(
                     "root:x:0:0:root:/root:/bin/bash\n\
                      git:x:998:998::/var/lib/git:/bin/bash\n",
@@ -1639,7 +1705,6 @@ mod tests {
                 Reply::ok("git:!:19000:0:99999:7:::"),
                 Reply::ok(""), // the lock
             ],
-            &ParamValues::new(),
         );
 
         outcome.expect("an account below the threshold is still an account");
@@ -1707,8 +1772,7 @@ mod tests {
         // provider's rescue console too — and a password is exactly what gets
         // an administrator in there, which is why refusing here was measuring
         // SSH when the question was about every channel.
-        let (outcome, commands) = run(
-            &LockRoot,
+        let (outcome, commands) = run_locking(
             Family::Debian,
             vec![
                 Reply::ok(passwd(&["alice"])),
@@ -1716,7 +1780,6 @@ mod tests {
                 Reply::ok(""),           // sudo grants it something
                 Reply::failure(1, ""),   // no authorized_keys
                 Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // but a usable hash
-                Reply::ok("root:$6$xyz$w:19000:0:99999:7:::"), // root is not locked
                 // The recheck scans the host again rather than re-asking about
                 // one account, which is what keeps it the same question the
                 // guard asked.
@@ -1727,7 +1790,6 @@ mod tests {
                 Reply::ok("alice:$6$abc$def:19000:0:99999:7:::"), // recheck: still a hash
                 Reply::ok(""),         // the lock itself
             ],
-            &ParamValues::new(),
         );
 
         outcome.expect("a password is a way back in");
@@ -1747,8 +1809,7 @@ mod tests {
         // check that merely found the field non-empty would accept exactly the
         // accounts that cannot log in.
         for hash in ["!", "*", "!$6$abc$def", ""] {
-            let (outcome, _) = run(
-                &LockRoot,
+            let (outcome, _) = run_locking(
                 Family::Debian,
                 vec![
                     Reply::ok(passwd(&["alice"])),
@@ -1756,7 +1817,6 @@ mod tests {
                     Reply::failure(1, ""),
                     Reply::ok(format!("alice:{hash}:19000:0:99999:7:::")),
                 ],
-                &ParamValues::new(),
             );
 
             let err = outcome.expect_err("a locked hash must not vouch");
@@ -1772,8 +1832,7 @@ mod tests {
     fn an_authorized_keys_holding_only_comments_authorises_nobody() {
         // The file exists, so a presence check would pass. Nothing in it can
         // authenticate anyone.
-        let (outcome, _) = run(
-            &LockRoot,
+        let (outcome, _) = run_locking(
             Family::Debian,
             vec![
                 Reply::ok(passwd(&["alice"])),
@@ -1783,7 +1842,6 @@ mod tests {
                 Reply::ok("# added by hand\n\n"),                      // and holds no key
                 Reply::ok("alice:!:19000:0:99999:7:::"),               // nor a password
             ],
-            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("a file of comments must not count as a key");
@@ -1796,8 +1854,7 @@ mod tests {
         // The finding that makes this task correct: `passwd -l` writes a `!`
         // that PAM checks during authentication, and public-key auth never
         // reaches that check. Only expiry refuses every method.
-        let (outcome, commands) = run(
-            &LockRoot,
+        let (outcome, commands) = run_locking(
             Family::Debian,
             vec![
                 Reply::ok(passwd(&["alice"])),
@@ -1812,7 +1869,6 @@ mod tests {
                 // report names every credential that will let the operator
                 // back in, not merely the first one found.
                 Reply::ok("alice:!:19000:0:99999:7:::"), // and no password
-                Reply::ok("Account expires\t: never"),   // not yet locked
                 Reply::ok(passwd(&["alice"])),           // re-check: the scan again
                 Reply::ok("alice sudo"),
                 Reply::ok(""), // sudo grants it something
@@ -1822,7 +1878,6 @@ mod tests {
                 Reply::ok("alice:!:19000:0:99999:7:::"), // re-check: still no password
                 Reply::ok(""), // usermod
             ],
-            &ParamValues::new(),
         );
 
         outcome.expect("every prerequisite is satisfied");
@@ -1844,8 +1899,7 @@ mod tests {
         // — or another session of this tool — could remove the key in between.
         // Every other task can afford that; recovery from this one is the
         // provider's rescue console.
-        let (outcome, commands) = run(
-            &LockRoot,
+        let (outcome, commands) = run_locking(
             Family::Debian,
             vec![
                 Reply::ok(passwd(&["alice"])),
@@ -1861,7 +1915,6 @@ mod tests {
                 Reply::failure(1, ""),                                 // re-check: key file gone
                 Reply::ok("alice:!:19000:0:99999:7:::"), // re-check: and no password behind it
             ],
-            &ParamValues::new(),
         );
 
         let err = outcome.expect_err("a key that vanished must stop the lock");
@@ -1874,30 +1927,40 @@ mod tests {
     }
 
     #[test]
-    fn locking_an_already_locked_root_is_success() {
-        // The state this task exists to reach. Reaching it twice is not a
-        // failure, and the interface says so rather than staying silent.
+    fn a_locked_root_is_what_the_row_offers_to_unlock() {
+        // The direction this row runs in is decided by the host rather than by
+        // which of two rows was pressed, so a locked root is the *other* half
+        // of the same task. It used to be a no-op reported as success.
+        //
+        // The state is read first, before the way-back-in scan: that guard
+        // protects the locking direction, and running it here would make
+        // unlocking refuse on a host with no other administrator — which is
+        // precisely the host where restoring root matters most.
+        // `run` rather than `run_locking`: this test supplies the state itself,
+        // and the helper's whole job is answering that question the other way.
         let (outcome, commands) = run(
             &LockRoot,
             Family::Debian,
             vec![
-                Reply::ok(passwd(&["alice"])),
-                Reply::ok("alice sudo"),
-                Reply::ok(""), // sudo grants it something
-                Reply::ok("alice:x:1000:1000::/home/alice:/bin/bash"), // passwd
-                Reply::ok(""),
-                Reply::ok(TEST_KEY),
-                Reply::ok("alice:!:19000:0:99999:7:::"), // no password behind the key
-                Reply::ok("root:$6$salt$hash:19000:0:99999:7::1:"), // already expired
+                Reply::ok("root:$6$salt$hash:19000:0:99999:7::1:"), // expired
+                Reply::ok(""),                                      // usermod
             ],
             &ParamValues::new(),
         );
 
-        outcome.expect("an already-locked root is the desired state");
+        outcome.expect("a locked root must be unlockable");
 
         assert!(
-            !commands.iter().any(|c| c.contains("--expiredate")),
-            "nothing to do: {commands:?}"
+            commands
+                .iter()
+                .any(|c| c.contains("usermod --expiredate  root")),
+            "the expiry must be cleared: {commands:?}"
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c.contains("/etc/shadow") && c.contains("alice")),
+            "unlocking must not run the way-back-in scan: {commands:?}"
         );
     }
 

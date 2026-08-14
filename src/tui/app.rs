@@ -1316,6 +1316,10 @@ mod tests {
             crate::tui::fixtures::test_host(),
             crate::backend::for_family(Family::Debian),
             crate::exec::mock::MockExecutor::with_replies([
+                // Root's own state, which the dialog reads first to decide
+                // which direction the row is about. Not locked, so what it goes
+                // on to build is the lockout warning this test asserts on.
+                crate::exec::mock::Reply::ok("root:$6$salt$hash:19000:0:99999:7:::"),
                 crate::exec::mock::Reply::ok(
                     "root:x:0:0:root:/root:/bin/bash\n\
                      cosmin:x:1000:1000::/home/cosmin:/bin/bash\n\
@@ -1338,9 +1342,81 @@ mod tests {
             warning.contains("cosmin") && warning.contains("password"),
             "the account that keeps access must be named with its credential: {warning}"
         );
+
+        // The scan is what makes this dialog worth opening, and it only belongs
+        // to the locking direction. Pinned here because the row now runs both
+        // ways: a version that scanned regardless would spend seventeen
+        // privileged commands to warn about a lockout that unlocking cannot
+        // cause.
+        assert!(
+            !warning.contains("lifts the expiry"),
+            "an unlocked root must be offered the lock: {warning}"
+        );
         assert!(
             !warning.contains("deploy"),
             "and one that cannot escalate is not a way back in: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_locked_root_makes_the_dialog_offer_the_other_direction() {
+        // What lets one row cover both directions: the dialog may escalate
+        // where the probe thread drawing the tree may not, so by the time an
+        // operator is reading this, which way they are agreeing to has been
+        // measured rather than guessed.
+        let app = App::new(
+            crate::tui::fixtures::test_distro(Family::Debian),
+            crate::tui::fixtures::test_host(),
+            crate::backend::for_family(Family::Debian),
+            crate::exec::mock::MockExecutor::with_replies([crate::exec::mock::Reply::ok(
+                "root:$6$salt$hash:19000:0:99999:7::1:", // expired
+            )]),
+        );
+
+        let warning = app.lockout_warning();
+
+        assert!(
+            warning.contains("lifts the expiry"),
+            "a locked root must be offered the unlock: {warning}"
+        );
+        // The half worth stating twice, because "unlocked" and "can log in" are
+        // one sentence in English and two fields in `/etc/shadow`.
+        assert!(
+            warning.contains("no password"),
+            "and must not imply a credential it does not set: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_root_state_that_could_not_be_read_proposes_neither_direction() {
+        // The third outcome, and the reason a single row is safe at all. The
+        // dialog escalates only while the helper's timestamp is live, and that
+        // lapses while a session stays open — fifteen minutes on Debian, five
+        // on Arch, at once under doas.
+        //
+        // Guessing the forward direction there is how an operator is offered a
+        // lock over a root already locked, which is recovered through the
+        // hosting provider's rescue console. So it says what it could not
+        // determine instead of choosing.
+        let app = App::new(
+            crate::tui::fixtures::test_distro(Family::Debian),
+            crate::tui::fixtures::test_host(),
+            crate::backend::for_family(Family::Debian),
+            crate::exec::mock::MockExecutor::with_replies([crate::exec::mock::Reply::failure(
+                1,
+                "grep: /etc/shadow: Permission denied",
+            )]),
+        );
+
+        let warning = app.lockout_warning();
+
+        assert!(
+            warning.contains("could not be read"),
+            "an unreadable state must be reported as such: {warning}"
+        );
+        assert!(
+            !warning.contains("lifts the expiry") && !warning.contains("no longer log in"),
+            "and neither direction may be proposed: {warning}"
         );
     }
 

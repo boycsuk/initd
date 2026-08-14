@@ -114,6 +114,17 @@ pub enum Error {
     /// SSH row once the operator returned as an unprivileged admin.
     FirewallStateUnreadable,
 
+    /// Whether an account is locked could not be read.
+    ///
+    /// The account database's counterpart to
+    /// [`FirewallStateUnreadable`](Self::FirewallStateUnreadable), and raised
+    /// for the same reason: `/etc/shadow` is mode `640`, so an unprivileged
+    /// caller is refused rather than told "no such account". `grep` exits
+    /// non-zero for both, and reading the refusal as "not locked" is the
+    /// dangerous direction — it offers to lock a root that is already locked,
+    /// which is recovered through the hosting provider's rescue console.
+    AccountStateUnreadable { user: String },
+
     /// The executable is not in `PATH`.
     ProgramNotFound { program: String },
 
@@ -534,6 +545,9 @@ impl Error {
             Self::PathNotAbsolute { path } => Msg::PathNotAbsolute { path: path.clone() },
             Self::NoFirewallFrontEnd => Msg::NoFirewallFrontEnd,
             Self::FirewallStateUnreadable => Msg::FirewallStateUnreadable,
+            Self::AccountStateUnreadable { user } => {
+                Msg::AccountStateUnreadable { user: user.clone() }
+            }
             Self::FirewallNotEnabled => Msg::FirewallNotEnabled,
             Self::ProgramNotFound { program } => Msg::ProgramNotFound {
                 program: program.clone(),
@@ -813,7 +827,8 @@ impl Error {
             | Self::NoSuchAccount { user }
             | Self::CannotDeleteOwnAccount { user }
             | Self::NoSubordinateIds { user }
-            | Self::NoUserSession { user } => vec![(ErrorField::User, user.clone())],
+            | Self::NoUserSession { user }
+            | Self::AccountStateUnreadable { user } => vec![(ErrorField::User, user.clone())],
             Self::NoWayBackIn { examined } => {
                 vec![(ErrorField::Examined, examined.to_string())]
             }

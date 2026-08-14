@@ -129,6 +129,9 @@ pub enum Msg {
 
     NoFirewallFrontEnd,
     FirewallStateUnreadable,
+    AccountStateUnreadable {
+        user: String,
+    },
     FirewallNotEnabled,
 
     // --- Command execution ---
@@ -851,6 +854,21 @@ pub enum Msg {
     ConfirmRootLockout {
         keeping: usize,
     },
+    /// The same row read in the other direction: root is locked, so confirming
+    /// lifts the expiry.
+    ///
+    /// Says what will *not* happen as well as what will, because the two are
+    /// easy to conflate and only one of them is true: lifting an expiry
+    /// restores the ability to authenticate, never a credential.
+    ConfirmRootUnlock,
+    /// Neither direction, because the account's state could not be read.
+    ///
+    /// `/etc/shadow` is mode `640`, and a dialog may escalate only while the
+    /// helper's timestamp is live. Proposing the forward direction on a failed
+    /// read is how an operator is offered a lock over a root already locked —
+    /// recovered through the hosting provider's rescue console — so the dialog
+    /// says what it could not determine instead of choosing.
+    ConfirmRootStateUnreadable,
     /// One line of that list: an account, and what it gets in with.
     ///
     /// Rendered per account rather than joined into the sentence above, because
@@ -1094,6 +1112,9 @@ pub enum Msg {
     },
     TaskRootAlreadyLocked,
     TaskLockingRoot,
+    TaskRootAlreadyUnlocked,
+    TaskUnlockingRoot,
+    TaskRootUnlockedWithoutCredential,
     TaskRootLocked {
         admin: String,
     },

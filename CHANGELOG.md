@@ -143,6 +143,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an empty answer is indistinguishable from an operator meaning it.
 
 ### Added
+- **`users.lock-root` runs in both directions, and is now "Manage root
+  access".** Locking root was reachable and undoing it was not: the row
+  reported "root is already locked" and did nothing, so an account barred by
+  this tool could only be restored by hand.
+
+  One row rather than a reversible pair, because the two differ in *where* the
+  direction can be decided. A pair decides it in the probe thread, and the
+  question — is root locked — is answered by `/etc/shadow`, mode `640`. The
+  probe may not prompt, so it would answer `Unknown` for every operator who is
+  not root, and `Unknown` draws the forward verb: the row would offer to lock a
+  root already locked, which is recovered through the hosting provider's rescue
+  console.
+
+  The confirmation decides instead. It is a point of interaction and may
+  escalate — `lockout_warning` already spends seventeen privileged commands
+  there — so by the time an operator is reading the dialog, the direction has
+  been measured. Where it cannot be read, neither direction is offered rather
+  than the forward one being assumed.
+
+  The task id stays `users.lock-root`, so nothing that scripts it breaks.
+
+  Unlocking runs no way-back-in scan: that guard protects the locking
+  direction, and running it here would refuse on a host with no other
+  administrator — precisely the host where restoring root matters most. It sets
+  no password either, and says so, because "unlocked" and "can log in" are one
+  sentence in English and two fields in `/etc/shadow`.
+
+- **A locked account read as unlocked wherever `/etc/shadow` could not be
+  read.** `grep` exits non-zero both for "no such account" and for "permission
+  denied", and `is_locked` reported both as "not locked" — the same defect as
+  the firewall's, in the account database, and in the direction that offers to
+  lock a root that is already locked.
+
+### Added
 - **A guard that would have caught four of these at once.** Two tests walk the
   real tree against all five families and assert that no row's presence and no
   task's requirements are measured by a privileged command. The probe thread

@@ -85,12 +85,17 @@ pub(super) fn render(message: &Msg) -> String {
         // arrival stops being able to read this. Running any task
         // re-authenticates, which is what makes "run a task" the instruction
         // rather than "restart initd".
-        Msg::FirewallStateUnreadable => {
-            "the firewall ruleset could not be read: listing it needs \
+        Msg::AccountStateUnreadable { user } => {
+            format!(
+                "whether {user} is locked could not be read: /etc/shadow needs \
+                 administrator access, and this session's has expired — run any \
+                 task to authenticate again"
+            )
+        }
+        Msg::FirewallStateUnreadable => "the firewall ruleset could not be read: listing it needs \
              administrator access, and this session's has expired — run a task \
              to authenticate again, or start initd as root"
-                .to_owned()
-        }
+            .to_owned(),
         // Names the task that fixes it, because this refusal is one step short
         // of an operation the operator plainly wants and the step is not
         // guessable from "the firewall is not enabled". Says why rather than
@@ -881,6 +886,25 @@ pub(super) fn render(message: &Msg) -> String {
                  this machine — check that yours is one of them:"
             )
         }
+        // No scan and no list, because there is nobody to check for: this
+        // direction widens access rather than removing it, and the account the
+        // operator is reaching this dialog through is not at risk.
+        Msg::ConfirmRootUnlock => {
+            "root is locked. Confirming lifts the expiry, so the account can \
+             authenticate again by whatever means it already held — this sets \
+             no password, so a root without one still cannot log in."
+                .to_owned()
+        }
+        // Neither direction offered, rather than the forward one guessed at.
+        // The remedy is the same as the firewall's for the same underlying
+        // reason: the timestamp established at startup has lapsed, and running
+        // any task establishes another.
+        Msg::ConfirmRootStateUnreadable => {
+            "whether root is locked could not be read: the account database \
+             needs administrator access, and this session's has expired — run \
+             any task to authenticate again, then reopen this"
+                .to_owned()
+        }
         // The credentials in one line, because this is a list the operator
         // scans for their own name and an account spread over two rows is one
         // that pushes another off the bottom.
@@ -1050,6 +1074,19 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::TaskShellSet { user, shell } => format!("{user} now uses {shell}"),
         Msg::TaskRootAlreadyLocked => "root is already locked".to_owned(),
         Msg::TaskLockingRoot => "locking root".to_owned(),
+        Msg::TaskRootAlreadyUnlocked => "root is not locked".to_owned(),
+        Msg::TaskUnlockingRoot => "lifting the expiry from root".to_owned(),
+        // Said because "unlocked" and "can log in" are one sentence in English
+        // and two facts in `/etc/shadow`. Lifting the expiry restores the
+        // ability to authenticate; whether root holds anything to authenticate
+        // *with* is a separate question this task deliberately does not answer,
+        // and an operator who reads "unlocked" and stops there would find out
+        // at the worst moment.
+        Msg::TaskRootUnlockedWithoutCredential => {
+            "root can authenticate again by whatever means it already held — no \
+             password was set, so an account without one still cannot log in"
+                .to_owned()
+        }
         Msg::TaskRootLocked { admin } => {
             format!("root is locked; {admin} is the way in from now on")
         }

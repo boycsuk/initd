@@ -1167,6 +1167,26 @@ impl App {
     /// silence or to a claim. The task runs the same scan again and refuses on
     /// its own terms, which is a better place to fail than a dialog.
     pub(super) fn lockout_warning(&self) -> String {
+        // Which direction the row is about, asked here because here it *can*
+        // be asked: a dialog is a point of interaction, so this may escalate
+        // where the probe thread drawing the tree may not. `/etc/shadow` is
+        // mode `640` and answers nothing to anyone else.
+        //
+        // Three outcomes rather than two, and the third is the one that made
+        // the single row workable. A state that could not be read is not
+        // guessed at: proposing the forward direction on a failed read is how
+        // an operator is offered a lock over a root already locked, and that
+        // mistake is recovered through the hosting provider's rescue console.
+        match self
+            .backend
+            .account_writer()
+            .is_locked(self.executor.as_ref(), crate::tasks::users::ROOT)
+        {
+            Ok(true) => return self.lang.render(&Msg::ConfirmRootUnlock),
+            Ok(false) => {}
+            Err(_) => return self.lang.render(&Msg::ConfirmRootStateUnreadable),
+        }
+
         let Ok(examined) = LockRoot::verify_a_way_back_in(
             self.executor.as_ref(),
             self.backend.as_ref(),

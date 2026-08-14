@@ -12,7 +12,7 @@
 //! answer needs `&self`: they ask the host, not the implementation.
 
 use super::systemd::{run_capturing, run_checked};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::exec::{Command, Executor};
 
 /// The list of shells a login is allowed to use.
@@ -336,6 +336,22 @@ pub fn is_locked(executor: &dyn Executor, user: &str) -> Result<bool> {
     let output = executor.run(&command)?;
 
     if !output.success() {
+        // `grep` exits 1 for "no matching line" and 2 for "could not read the
+        // file", and only the first is an answer. `/etc/shadow` is mode `640`,
+        // so an unprivileged caller gets the second — and reading that as "not
+        // locked" is the dangerous direction: it is what would offer to lock a
+        // root that is already locked, recovered only through the hosting
+        // provider's rescue console.
+        //
+        // The same shape as the firewall's `nft list`, one module over: a
+        // helper that could not ask its question must say so rather than hand
+        // back a value the caller will read as an answer.
+        if !output.stderr.trim().is_empty() {
+            return Err(Error::AccountStateUnreadable {
+                user: user.to_owned(),
+            });
+        }
+
         return Ok(false);
     }
 

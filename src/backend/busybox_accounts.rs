@@ -29,6 +29,11 @@ const PASSWD: &str = "/etc/passwd";
 /// `shadow(5)` documents 0 as ambiguous.
 const EXPIRED: &str = "1";
 
+/// What clears that expiry again, for the same reason as the shadow
+/// implementation: the empty string empties the field, where `-1` is written
+/// literally by some implementations.
+const NEVER_EXPIRES: &str = "";
+
 /// Reads accounts from `/etc/passwd` directly.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BusyboxAccounts;
@@ -203,6 +208,24 @@ impl AccountWriter for BusyboxAccountWriter {
 
                 let command = Command::new("usermod")
                     .args(["--expiredate", EXPIRED, user])
+                    .privileged();
+
+                super::systemd::run_checked(executor, &command)
+            }
+        }
+    }
+
+    fn unlock(&self, executor: &dyn Executor, user: &str, method: LockMethod) -> Result<()> {
+        match method {
+            // The mirror of `lock` above, through the same `usermod` this suite
+            // has to install before it can reach one: busybox's own applet does
+            // not carry `--expiredate`, which is why `ensure_usermod` exists and
+            // why undoing the lock needs it as much as applying it did.
+            LockMethod::Expire => {
+                self.ensure_usermod(executor)?;
+
+                let command = Command::new("usermod")
+                    .args(["--expiredate", NEVER_EXPIRES, user])
                     .privileged();
 
                 super::systemd::run_checked(executor, &command)
