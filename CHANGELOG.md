@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-08-14
+
+Two more from the same Debian 13 server, both about assuming something the
+host had not agreed to: which shell an account uses, and how many packages a
+capability is.
+
+### Fixed
+- **Every command run as another account went through *that account's* login
+  shell.** `docker.rootless` failed with `fish: ${ is not a valid variable in
+  fish` on a host where `deploy` uses fish, because `runuser -l` runs the script
+  through the shell the account chose and every script here is POSIX.
+
+  Fixed at all four call sites rather than the one that failed. The worst of
+  the others is upstream's rootless installer, which is fetched and run by a
+  script using `trap`, `$(mktemp)` and `"$script"` — it would have died one step
+  later on the same host.
+
+  `/bin/sh` is one of the few absolute paths in this codebase and earns it:
+  `runuser -s` takes a path rather than a name to resolve, and it is the one
+  binary POSIX fixes in place. Verified that it costs nothing else — with `-s`,
+  the session still registers and `systemctl --user` still answers, measured
+  against an account whose shell is `/usr/bin/fish` under systemd.
+
+- **Uninstalling the Docker engine left `docker` working.** Installing it puts
+  down five packages on Debian; removing it took the first name alone, and the
+  client lives in `docker-ce-cli`.
+
+  The asymmetry was the defect rather than the call site: `PackageManager`'s
+  `install` took a slice while `remove` and `purge` took a single name, for what
+  is one transaction. All three take a slice now, across the five families, in
+  one invocation — removed one at a time, the first would either take the
+  others' dependencies with it or refuse for depending on them, and which of the
+  two depends on an ordering nothing states.
+
+  Both directions are pinned, so the fix cannot be satisfied by removing more
+  than was asked: the engine must name all five, and a capability that is one
+  package everywhere must not gain neighbours.
+
 ## [0.4.1] — 2026-08-14
 
 Three tasks reported from the same Debian 13 server as still failing after
