@@ -289,8 +289,19 @@ impl BinaryInstaller for ReleaseInstaller {
         // inner script where the username is not.
         let staged_path = output.stdout.trim().to_owned();
 
+        // `-s` because the quoting here is POSIX and `runuser -l` would run it
+        // through the account's own login shell otherwise. `rustup-init` is
+        // installed for an operator whose shell this tool does not choose, and
+        // fish — measured — rejects syntax `sh` accepts.
         let run = Command::new("runuser")
-            .args(["-l", user, "-c", &format!("'{staged_path}' {args}")])
+            .args([
+                "-s",
+                crate::backend::systemd_user::POSIX_SHELL,
+                "-l",
+                user,
+                "-c",
+                &format!("'{staged_path}' {args}"),
+            ])
             .privileged();
 
         let outcome = Self::run_script_command(executor, &run, program, release);
@@ -664,8 +675,25 @@ mod tests {
             .find(|command| command.program == "runuser")
             .expect("the installer must be run through runuser");
 
-        assert_eq!(run.args.first().map(String::as_str), Some("-l"));
-        assert_eq!(run.args.get(1).map(String::as_str), Some("deploy"));
+        // Asserted by content rather than by position, which is what let the
+        // `-s` below be added without rewriting the intent: what matters is
+        // that the account is named to `runuser` and that the script runs under
+        // a POSIX shell, not which index each lands at.
+        assert!(
+            run.args.iter().any(|arg| arg == "-l"),
+            "the installer must run as a login session: {:?}",
+            run.args
+        );
+        assert!(
+            run.args.iter().any(|arg| arg == "deploy"),
+            "and must name the account: {:?}",
+            run.args
+        );
+        assert!(
+            run.args.iter().any(|arg| arg == "-s"),
+            "and must pick the shell rather than take the account's: {:?}",
+            run.args
+        );
     }
 
     #[test]
@@ -690,7 +718,17 @@ mod tests {
             .find(|command| command.program == "runuser")
             .expect("the installer must be run");
 
-        let script = run.args.get(3).expect("the -c script").clone();
+        // The argument after `-c`, found rather than indexed: this used to read
+        // position 3 and broke the moment `-s` was added ahead of it, which is
+        // a test failing over where a flag sits rather than over what the code
+        // does.
+        let script = run
+            .args
+            .iter()
+            .position(|arg| arg == "-c")
+            .and_then(|at| run.args.get(at + 1))
+            .expect("the -c script")
+            .clone();
 
         assert!(
             !script.contains("de'ploy"),

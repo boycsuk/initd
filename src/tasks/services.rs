@@ -458,8 +458,19 @@ fn run_rootless_setup(
         "dockerd-rootless-setuptool.sh install"
     };
 
+    // `-s` because the script is POSIX and `runuser -l` would otherwise run it
+    // through the account's own login shell. Upstream's installer is fetched
+    // and run by a script using `trap`, `$(mktemp)` and `"$script"` — none of
+    // which fish parses, and fish is what the account reporting this used.
     let setup = Command::new("runuser")
-        .args(["-l", user, "-c", script])
+        .args([
+            "-s",
+            crate::backend::systemd_user::POSIX_SHELL,
+            "-l",
+            user,
+            "-c",
+            script,
+        ])
         .privileged();
 
     crate::backend::systemd::run_checked(executor, &setup)
@@ -1089,8 +1100,18 @@ impl Task for UninstallDockerRootless {
             "dockerd-rootless-setuptool.sh uninstall"
         };
 
+        // `-s` for the same reason the install has it: the teardown names
+        // `$HOME/bin/...` on Arch, and the account's shell is not this tool's
+        // to assume.
         let teardown = Command::new("runuser")
-            .args(["-l", &user, "-c", teardown_script])
+            .args([
+                "-s",
+                crate::backend::systemd_user::POSIX_SHELL,
+                "-l",
+                &user,
+                "-c",
+                teardown_script,
+            ])
             .privileged();
 
         crate::backend::systemd::run_checked(executor, &teardown)?;

@@ -17,6 +17,23 @@ use crate::exec::{Command, Executor};
 /// this rather than depending on PAM having exported it.
 const RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
 
+/// The shell these commands are written for.
+///
+/// One of the few absolute paths in this codebase, and it earns the exception:
+/// `runuser -s` takes a *path* rather than a name to resolve, and `/bin/sh` is
+/// the one binary POSIX guarantees at a fixed location. Every family here
+/// carries it — Debian and Ubuntu as a link to dash, the rest to bash or
+/// busybox — and what matters is that all of them accept the syntax used above.
+///
+/// Named rather than passed inline so the reason travels with it: without `-s`,
+/// `runuser -l` uses the *account's* login shell, and an operator whose shell
+/// is fish gets a parse error out of a tool that never asked them to run a
+/// script.
+/// Public because every `runuser` in this codebase needs it, and each one that
+/// spelled its own would be another chance to forget: the scripts they carry
+/// are POSIX, and an account's login shell is not obliged to be.
+pub const POSIX_SHELL: &str = "/bin/sh";
+
 /// Manages a user's own services through `systemctl --user`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemdUserServices;
@@ -58,8 +75,18 @@ impl SystemdUserServices {
             args.join(" ")
         );
 
+        // `-s /bin/sh` because the script above is POSIX and `runuser -l` would
+        // otherwise run it through the *account's* login shell. Reported from a
+        // Debian 13 host where that shell is fish, which rejects `${VAR:-…}`
+        // outright: `fish: ${ is not a valid variable in fish`. The account's
+        // choice of interactive shell is not a statement about what syntax this
+        // tool may use, and every command here is written for `sh`.
+        //
+        // Measured that it costs nothing else: with `-s`, the session still
+        // registers and `systemctl --user` still answers — verified against an
+        // account whose shell is `/usr/bin/fish`, under systemd.
         Command::new("runuser")
-            .args(["-l", user, "-c", &script])
+            .args(["-s", POSIX_SHELL, "-l", user, "-c", &script])
             .privileged()
     }
 }
@@ -336,8 +363,19 @@ mod tests {
 
         let line = mock.recorded_lines().remove(0);
 
-        assert!(line.starts_with("runuser -l deploy"), "{line}");
+        assert!(line.starts_with("runuser"), "{line}");
+        assert!(line.contains("-l deploy"), "{line}");
         assert!(line.contains("systemctl --user"), "{line}");
+
+        // The shell is named rather than inherited, which is the half a `-l`
+        // alone does not buy: `runuser -l` runs the script through the
+        // *account's* login shell, and an operator whose shell is fish got
+        // `${ is not a valid variable in fish` out of a tool that never asked
+        // them to write one.
+        assert!(
+            line.contains("-s /bin/sh"),
+            "the script is POSIX, so the shell must be too: {line}"
+        );
     }
 
     #[test]

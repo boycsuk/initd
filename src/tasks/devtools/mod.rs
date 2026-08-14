@@ -488,12 +488,24 @@ mod tests {
             .find(|command| command.program == "runuser")
             .expect("the installer must be run as the account");
 
-        assert_eq!(run.args.get(1).map(String::as_str), Some("deploy"));
+        // By content rather than by index: `-s /bin/sh` sits ahead of the
+        // account now, and a test that breaks when a flag moves is testing the
+        // argument order rather than the behaviour.
+        assert!(
+            run.args.iter().any(|arg| arg == "deploy"),
+            "the account must be named: {:?}",
+            run.args
+        );
 
         // `--no-modify-path`, because editing somebody's shell profile is a
         // change this tool was not asked for and could not put back: nothing
         // records it in `backups.jsonl`.
-        let script = run.args.get(3).expect("the -c script");
+        let script = run
+            .args
+            .iter()
+            .position(|arg| arg == "-c")
+            .and_then(|at| run.args.get(at + 1))
+            .expect("the -c script");
 
         assert!(script.contains("--no-modify-path"), "{script}");
     }
