@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`docker.rootless` refused every host that had a Docker engine.** It asked
+  `is_installed_here`, which is whether *this tool's* copy sits in
+  `/usr/local/bin` — its own directory for release binaries. No route to Docker
+  writes there: the distribution's package and Docker's own repository both
+  install `/usr/bin/docker`. So the check ran `test -f /usr/local/bin/docker`,
+  found nothing, and raised "the docker engine is not installed on this host",
+  which `docker.install` could not clear — installing the package lands in the
+  directory the check was not looking at, leaving the task permanently
+  unrunnable.
+
+  The doc comment above it described `is_installed`, a PATH lookup, and the code
+  beneath it asked a different question. `sshd_is_present` records having had
+  this exact bug and `caddy_is_present` explains why it uses the other method;
+  Docker was the one that was missed.
+
+  The two tests either side of it could not catch it. Both feed a positional
+  `MockExecutor` that hands back the next reply whatever was asked, so a reply
+  labelled `command -v docker` satisfied `test -f /usr/local/bin/docker` just as
+  happily. The new test asserts the command *text*.
+
+- **Every `sshd_config`-editing task refused on a host with SSH preinstalled.**
+  Four tasks — `ssh.harden`, `ssh.harden-strict`, `ssh.change-port` and
+  `ssh.allow-users` — reported "the SSH server is not installed" on a Debian 13
+  VPS plainly serving SSH, and the tree greyed their rows out with it.
+
+  A lookup was asked of the inherited `PATH`. `initd` is unprivileged and
+  escalates command by command, so it inherits the *operator's* environment, and
+  a non-root login on Debian gets no `/usr/sbin` — which is where `sshd` lives.
+  The comment on `program_check` asserted the opposite, that the probe "inherits
+  the environment of a process that did" escalate, and reasoned from there that
+  sudo's `secure_path` restored the directory. No such process exists: bare
+  `initd` is the documented invocation in both `docs/cli.md` and the README.
+
+  `Command::locating` now sets a `PATH` of its own instead of trusting the one
+  it inherits, which fixes both the `requires()` declaration and the `run`
+  guard, for every capability, at the one site all of them already passed
+  through. The four system directories come first and `/usr/local/bin` is kept
+  after them: dropping it would answer the SSH question and blind the lookup to
+  `mise`, `zellij` and this tool's own copies, which is the same defect pointing
+  the other way.
+
+  It travels as the command's environment rather than inside the script, so the
+  output pane still shows `sh -c command -v sshd` — a lookup prefixed by six
+  directories reads as noise at exactly the moment an operator reads it closely,
+  which is when the program was not found.
+
+  Not caught because every container scenario runs as root inside Docker, whose
+  `PATH` includes `/usr/sbin`. The suite exercised the one environment under
+  which the check worked.
+
 ## [0.3.0] — 2026-08-13
 
 ### Changed

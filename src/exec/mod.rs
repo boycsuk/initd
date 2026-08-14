@@ -17,6 +17,31 @@ use std::fmt;
 
 use crate::error::Result;
 
+/// Where a program lookup searches, whoever is running this tool.
+///
+/// `initd` is unprivileged and escalates command by command, so it inherits the
+/// operator's environment rather than root's — `src/exec/privilege.rs` states
+/// this and is the accurate account. A non-root login on Debian 13 gets
+/// `/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games`, and **`/usr/sbin`
+/// is not in it**, which is where `sshd` and `nft` live. So a lookup asked of
+/// the bare inherited `PATH` reported a preinstalled SSH server absent on a host
+/// plainly serving SSH, and greyed out all four `sshd_config` tasks with it.
+///
+/// The doc comment on `tasks::consequence::program_check` used to claim the
+/// opposite — that the probe "inherits the environment of a process that did"
+/// escalate. Nothing creates such a process: `docs/cli.md` and the README both
+/// document the invocation as bare `initd`. That comment also carried its own
+/// correction, unacted on for as long as it stood: "a future caller running
+/// these checks from an unprivileged context would need to look on disk
+/// instead". This is that caller, and always was.
+///
+/// The four system directories come first and **`$PATH` is kept after them**
+/// rather than replaced. Dropping it would answer the SSH question and break
+/// `location_of` for everything installed from a release — `mise`, `zellij` and
+/// this tool's own copies live in `/usr/local/bin`, and a lookup that cannot see
+/// them reports a row absent for the opposite reason.
+const LOOKUP_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin";
+
 /// A command to run: a program resolved through `PATH` plus its arguments.
 ///
 /// Absolute paths are never hardcoded — binaries live in different locations
@@ -46,6 +71,18 @@ pub struct Command {
     /// the caller that asked for the key still receives it — what changes is
     /// that nobody is watching over its shoulder.
     pub secret_output: bool,
+    /// Environment this command needs beyond what the process inherits.
+    ///
+    /// Per-command rather than global, which is the difference from
+    /// `INVARIANT_LOCALE`: that one is true of every command this tool runs, and
+    /// this is true of the one that asks it. Only [`locating`](Self::locating)
+    /// sets anything today, and what it sets is a `PATH` — see there for why.
+    ///
+    /// Kept out of [`Display`](std::fmt::Display) on purpose. The pane is a
+    /// transcript an operator reads to see *what was asked*, and a lookup
+    /// prefixed by four directories reads as noise at exactly the moment it is
+    /// being read — when the program was not found.
+    pub env: Vec<(String, String)>,
 }
 
 impl Command {
@@ -57,6 +94,7 @@ impl Command {
             needs_root: false,
             stdin: None,
             secret_output: false,
+            env: Vec::new(),
         }
     }
 
@@ -85,7 +123,16 @@ impl Command {
     /// literal" is only as good as the next person's attention.
     #[must_use]
     pub fn locating(program: &'static str) -> Self {
-        Self::new("sh").args(["-c", &format!("command -v {program}")])
+        Self::new("sh")
+            .args(["-c", &format!("command -v {program}")])
+            .with_env("PATH", LOOKUP_PATH)
+    }
+
+    /// Adds one environment variable to what this command runs with.
+    #[must_use]
+    pub fn with_env(mut self, key: &str, value: impl Into<String>) -> Self {
+        self.env.push((key.to_owned(), value.into()));
+        self
     }
 
     /// Feeds the given data to the process on stdin.
@@ -385,6 +432,61 @@ mod tests {
         assert!(
             !cmd.needs_root,
             "asking where a program is needs no privilege"
+        );
+    }
+
+    #[test]
+    fn a_lookup_searches_where_system_daemons_live() {
+        // The defect this exists for: `initd` runs unprivileged and inherits
+        // the operator's `PATH`, which on a non-root Debian login has no
+        // `/usr/sbin` — so `sshd` and `nft` were invisible and four SSH tasks
+        // refused on a host plainly serving SSH.
+        let (key, value) = Command::locating("sshd")
+            .env
+            .first()
+            .cloned()
+            .expect("a lookup must carry a PATH of its own");
+
+        assert_eq!(key, "PATH");
+
+        for directory in ["/usr/sbin", "/usr/bin", "/sbin", "/bin"] {
+            assert!(
+                value.split(':').any(|entry| entry == directory),
+                "{directory} must be searched: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lookup_still_finds_what_this_tool_installs_itself() {
+        // The half a narrower fix would have broken. Capabilities installed
+        // from a release live in `/usr/local/bin`, and `location_of` names the
+        // copy it found — a lookup blind to that directory reports `mise` and
+        // `zellij` absent, which is the same bug pointing the other way.
+        let (_, value) = Command::locating("zellij")
+            .env
+            .first()
+            .cloned()
+            .expect("a lookup must carry a PATH of its own");
+
+        assert!(
+            value.split(':').any(|entry| entry == "/usr/local/bin"),
+            "a release-installed binary must still be found: {value}"
+        );
+    }
+
+    #[test]
+    fn a_lookups_path_is_not_spelled_into_the_pane() {
+        // The environment is deliberately outside `Display`. What an operator
+        // reads when a program was not found is the question that was asked,
+        // and six directories in front of it is noise at the one moment the
+        // line is being read closely.
+        let rendered = Command::locating("sshd").to_string();
+
+        assert_eq!(rendered, "sh -c command -v sshd");
+        assert!(
+            !rendered.contains("/usr/sbin"),
+            "the search path must stay out of the transcript: {rendered}"
         );
     }
 

@@ -460,6 +460,10 @@ impl Executor for LocalExecutor {
         let mut child = StdCommand::new(&program)
             .args(&args)
             .envs(INVARIANT_LOCALE)
+            // After the locale, so a command that needs a variable of its own
+            // sets it, and before nothing: `INVARIANT_LOCALE` names two keys no
+            // command asks for, so the two sets cannot collide today.
+            .envs(command.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(stdin_for(command))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

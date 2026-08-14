@@ -322,20 +322,25 @@ impl Consequence {
 /// eight call sites spelling `command -v` themselves would be eight chances to
 /// spell it differently.
 ///
-/// **Asked of the `PATH`, which is sound only because `initd` runs with
-/// privilege.** Measured across all six images: `command -v sshd` answers
-/// `/usr/sbin/sshd` for root on every one, and for an *unprivileged* login on
-/// four — openSUSE's `/etc/profile` sets `PATH=/usr/local/bin:/usr/bin:/bin`
-/// for anyone who is not root, so `sshd` is invisible there. What rescues it is
-/// that the operator reaches these tasks through `sudo`, whose `secure_path`
-/// puts `/usr/sbin` back: measured on Tumbleweed, `sudo sh -c 'command -v sshd'`
-/// answers while the same question in a login shell does not.
+/// **Asked of a `PATH` this tool sets rather than of the one it inherits.**
+/// `Command::locating` puts the four system directories in front of the lookup,
+/// and that is load-bearing rather than defensive: `initd` is unprivileged and
+/// escalates command by command, so it inherits the *operator's* environment,
+/// and a non-root login on Debian 13 has no `/usr/sbin` — which is where `sshd`
+/// lives. openSUSE is stricter still, its `/etc/profile` setting
+/// `PATH=/usr/local/bin:/usr/bin:/bin` for anyone who is not root.
 ///
-/// The probe thread does not escalate, but it inherits the environment of a
-/// process that did, which is what makes this hold. A future caller running
-/// these checks from an unprivileged context would need to look on disk
-/// instead — so this is a property of *how the tool is started*, recorded here
-/// rather than left to be rediscovered.
+/// This comment used to claim the opposite — that the probe "inherits the
+/// environment of a process that did" escalate — and reasoned from there that
+/// `sudo`'s `secure_path` put `/usr/sbin` back. No such process exists:
+/// `docs/cli.md` and the README both document the invocation as bare `initd`,
+/// and nothing in the tree tells anyone to run it under `sudo`. The measurement
+/// cited was real and tested a scenario the tool does not create, so four SSH
+/// tasks refused on any host where an operator ran this the documented way.
+///
+/// The correction was written here all along, in the sentence that followed it:
+/// a caller running these checks unprivileged "would need to look on disk
+/// instead". That caller was always this one.
 pub fn program_check(program: &'static str, installed_by: &'static str) -> Requirement {
     Requirement {
         task: installed_by,
