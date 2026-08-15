@@ -818,6 +818,29 @@ mod tests {
     }
 
     #[test]
+    fn a_lowercase_y_does_not_answer_a_confirmation() {
+        // The safe answers cost one keystroke; the one that changes the machine
+        // costs a Shift, as `K` and `R` already do. Lowercase `y` is the output
+        // pane's copy key, so it is the letter an operator arrives here already
+        // in the habit of pressing.
+        let mut app = app_with_a_record(Family::Debian);
+
+        press(&mut app, KeyCode::Enter);
+
+        let started = app.dispatch(KeyEvent::from(KeyCode::Char('y')));
+
+        assert!(started.is_none());
+        assert!(
+            app.confirm.is_some(),
+            "the dialog must still be open and still be asking"
+        );
+        assert!(
+            app.pending_restore.is_some(),
+            "and nothing may have been applied"
+        );
+    }
+
+    #[test]
     fn a_confirmed_restore_never_runs_a_task_from_the_tree() {
         // The worst thing this path could do. `accept_confirmation` yields the
         // values that start whatever the tree's cursor is on, so a restore
@@ -827,7 +850,7 @@ mod tests {
 
         press(&mut app, KeyCode::Enter);
 
-        let started = app.dispatch(KeyEvent::from(KeyCode::Char('y')));
+        let started = app.dispatch(KeyEvent::from(KeyCode::Char('Y')));
 
         assert!(
             started.is_none(),

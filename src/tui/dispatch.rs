@@ -843,7 +843,12 @@ impl App {
             // `n` and `Esc` both mean the safe answer, so the reflex to back
             // out of something lands on it whichever key it reaches for.
             KeyCode::Esc | KeyCode::Char('n' | 'N') => self.cancel_confirmation(),
-            KeyCode::Char('y' | 'Y') => return self.accept_confirmation(),
+            // Uppercase only, the rule `K` and `R` already follow in the
+            // verification window: the safe answers may be a single keystroke,
+            // the one that changes the machine costs a deliberate Shift.
+            // Lowercase `y` is also the copy-transcript key on the output pane,
+            // so the reflex learned there landed on accept here.
+            KeyCode::Char('Y') => return self.accept_confirmation(),
             // Asked for from wherever the operator is stuck — which includes
             // the dialog that is about to change the machine.
             KeyCode::Char('?') => self.help = Some(0),
@@ -870,6 +875,11 @@ impl App {
         // on — a restore confirmed from the history would run an unrelated
         // task, which is the worst thing this path could do.
         if let Some(record) = self.pending_restore.take() {
+            // Same reason as in `cancel_confirmation`: these values are
+            // abandoned rather than run, so whatever secret they hold has to be
+            // overwritten instead of dropped.
+            self.forget_pending_secrets();
+            self.pending_values = ParamValues::new();
             self.restore_recorded(record);
             return None;
         }
@@ -878,10 +888,29 @@ impl App {
         Some(std::mem::take(&mut self.pending_values))
     }
     /// Closes the dialog, discarding anything collected for the task.
+    ///
+    /// Discarding a password means overwriting it, not dropping it: replacing
+    /// `pending_values` would free the old buffer with the typed value intact.
+    /// [`finish_bookkeeping`](super::App::finish_bookkeeping) closes the same
+    /// hole for a task that *ran*, and `users.create` asks an ordinary
+    /// `Confirmation::Change`, so filling the form and answering `n` is a
+    /// path an operator takes without anything having gone wrong.
     fn cancel_confirmation(&mut self) {
+        self.forget_pending_secrets();
         self.confirm = None;
         self.pending_restore = None;
         self.pending_values = ParamValues::new();
+    }
+
+    /// Overwrites any secret held in the values collected but never run.
+    ///
+    /// The task is the cursor's, which is where the values came from: the form
+    /// opens on the selected row and the dialog is answered before it moves.
+    fn forget_pending_secrets(&mut self) {
+        if let Some(task) = self.selected_task() {
+            let params = task.params();
+            self.pending_values.forget_secrets(&params);
+        }
     }
     /// Acts on the selected row: descends into a category, or runs a task.
     fn activate(&mut self) -> Option<ParamValues> {

@@ -1209,12 +1209,19 @@ test asserts the sentence reaches the buffer at each of those sizes, since
 | `Tab` / `←` / `→` | Switch between Yes and No |
 | `↑` / `↓` / `k` / `j` | Scroll the warning, where it has more than it shows |
 | `?` | Open the help overlay, drawn over the dialog |
-| `y` | Apply |
-| `n` / `Esc` | Cancel |
+| `Y` | Apply — uppercase only |
+| `n` / `N` / `Esc` | Cancel |
 | `Enter` | Confirm the current answer |
 
 The dialog opens on **No**, so a stray `Enter` cannot start a change. `n` and `Esc` both mean the safe answer, so the reflex to back out
 lands on it whichever key it reaches for.
+
+**Apply is uppercase and cancel is not**, the same asymmetry the verification
+window's `K` and `R` carry: a safe answer may cost one keystroke, an answer that
+changes the machine costs a deliberate Shift. Lowercase `y` is the output pane's
+copy-transcript key, so it was the one letter an operator could arrive at this
+dialog already in the habit of pressing — and unlike `Enter`, it did not consult
+which answer the dialog was sitting on.
 
 The warning scrolls because one of them carries a list rather than a sentence:
 `users.lock-root` names every account that keeps access, which is unbounded —
