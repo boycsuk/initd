@@ -138,7 +138,18 @@ pub fn set_directive(contents: &str, directive: &str, value: &str) -> String {
     // The line the file already carries for this directive, commented out.
     // Uncommenting it in place keeps the file in its own order, where
     // appending would leave the shipped default above a contradicting copy.
-    if let Some(index) = commented_directive_line(contents, directive) {
+    //
+    // Only when nothing active precedes it. sshd honours the *first* active
+    // line, so rewriting the commented one below an active `PermitRootLogin
+    // yes` writes a directive the daemon never reads — and the task reports
+    // success over a root login it was asked to close. The loop below is what
+    // handles that file: it comments the active line out and writes the new
+    // value in its place.
+    if !contents
+        .lines()
+        .any(|line| is_directive_line(line, directive))
+        && let Some(index) = commented_directive_line(contents, directive)
+    {
         return rewrite_line(contents, index, &format!("{directive} {value}"));
     }
 
@@ -247,6 +258,12 @@ fn is_match_line(line: &str) -> bool {
 pub fn directive_value(contents: &str, directive: &str) -> Option<String> {
     contents
         .lines()
+        // Split the same line the match was made against. `is_directive_line`
+        // trims first, so splitting the raw line hands back the leading
+        // whitespace as the keyword and the whole line as the value — and an
+        // indented directive is what an `Include`d drop-in and a `Match` block
+        // both produce.
+        .map(str::trim_start)
         .find(|line| is_directive_line(line, directive))
         .and_then(|line| line.split_once(char::is_whitespace))
         .map(|(_, value)| value.trim().to_owned())
@@ -648,6 +665,43 @@ mod tests {
             Some("3")
         );
         assert_eq!(directive_value(after, "MaxAuthTries").as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn an_indented_directive_reads_back_as_its_value() {
+        // The match is made against the trimmed line and the split was made
+        // against the raw one, so leading whitespace came back as the keyword
+        // and the whole line as the value. An `Include`d drop-in and a `Match`
+        // block both indent, and the value fed the idempotence check.
+        assert_eq!(
+            directive_value("    PermitRootLogin no\n", "PermitRootLogin").as_deref(),
+            Some("no")
+        );
+    }
+
+    #[test]
+    fn an_active_line_is_replaced_even_when_a_commented_one_follows() {
+        // sshd honours the *first* active line. Rewriting the commented copy
+        // below an active one wrote a directive the daemon never reads, and
+        // `sshd -t` accepts the repetition — so `ssh.harden` reported success
+        // over a root login it had been asked to close. This is what an
+        // administrator's own edit above the shipped default produces.
+        let contents = "PermitRootLogin yes\n#PermitRootLogin prohibit-password\n";
+
+        let updated = set_directive(contents, "PermitRootLogin", "no");
+
+        let first_active = updated
+            .lines()
+            .find(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with('#') && trimmed.starts_with("PermitRootLogin")
+            })
+            .unwrap_or("(none)");
+
+        assert_eq!(
+            first_active, "PermitRootLogin no",
+            "the line sshd honours must be the new one: {updated}"
+        );
     }
 
     #[test]
