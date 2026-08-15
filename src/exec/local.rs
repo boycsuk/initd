@@ -376,7 +376,12 @@ impl LocalExecutor {
             // Nothing to authenticate with on its own, so the terminal is
             // released around a no-op privileged command instead: it is the
             // real command's prompt, drawn where it can be answered.
-            None => self.escalator.wrap(&Command::new("true").privileged())?,
+            //
+            // By absolute path, the same rule the probes follow: the helper
+            // resolves this against the operator's `PATH`, and it runs as root.
+            None => self
+                .escalator
+                .wrap(&Command::new(crate::exec::privilege::no_op_command()).privileged())?,
         };
 
         if broker.authenticate(&program, &args)? {

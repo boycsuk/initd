@@ -56,6 +56,36 @@ const DOAS: &str = "doas";
 /// prompt.
 const RUN0: &str = "run0";
 
+/// The do-nothing command a probe runs to ask a helper a question.
+///
+/// `doas` and `run0` have no validate flag, so the probe needs *some* command
+/// to carry; the answer is in the exit code, not in what runs.
+const NO_OP: &str = "true";
+
+/// Where `true` is if the trusted directories do not have it.
+///
+/// They always do — it is coreutils on four families and busybox on Alpine —
+/// but a probe that fell back to a bare name would reintroduce exactly the
+/// lookup this module exists to avoid, so the fallback is absolute too.
+const NO_OP_FALLBACK: &str = "/bin/true";
+
+/// The absolute path of the no-op a probe runs.
+///
+/// **Resolved here rather than passed as a bare name**, which is the module's
+/// own rule applied one argument to the right. The helper resolves its command
+/// against the *caller's* `PATH` — this process inherits the operator's — so
+/// `doas -n true` ran whatever `true` came first there, as root: measured on
+/// `alpine:3.21` under `permit nopass`, a planted `true` wrote to `/root` and
+/// read `/etc/shadow`. `sudo` is not exposed, since `secure_path` replaces the
+/// `PATH` before the lookup, but the probe must not depend on which helper it
+/// happens to be talking to.
+pub(super) fn no_op_command() -> String {
+    find_trusted(NO_OP).map_or_else(
+        || NO_OP_FALLBACK.to_owned(),
+        |path| path.to_string_lossy().into_owned(),
+    )
+}
+
 /// Whether a mechanism will prompt before a privileged command runs.
 ///
 /// The distinction exists because a prompt drawn while the interface holds the
@@ -187,10 +217,11 @@ impl PrivilegeEscalator for HelperEscalation {
             // Alpine's opendoas takes `-n` — confirmed against its usage line,
             // and its exit codes measured on alpine:3.23: 0 under `permit
             // nopass`, 1 when a password is wanted. There is no validate flag,
-            // so the probe runs `true` rather than nothing.
+            // so the probe runs a no-op rather than nothing — by absolute path,
+            // for the reason [`no_op_command`] records.
             DOAS => AuthNeed::Probe {
                 program: self.path.clone(),
-                args: vec!["-n".to_owned(), "true".to_owned()],
+                args: vec!["-n".to_owned(), no_op_command()],
             },
             // polkit owns run0's prompt, but run0 can still be asked whether
             // one is coming: `--no-ask-password` exits non-zero rather than
@@ -200,7 +231,7 @@ impl PrivilegeEscalator for HelperEscalation {
             // every answer looks the same.
             RUN0 => AuthNeed::Probe {
                 program: self.path.clone(),
-                args: vec!["--no-ask-password".to_owned(), "true".to_owned()],
+                args: vec!["--no-ask-password".to_owned(), no_op_command()],
             },
             // An unrecognised helper cannot be asked, so the terminal is
             // handed over regardless: a wrong "will not prompt" is what
@@ -397,6 +428,30 @@ mod tests {
     }
 
     #[test]
+    fn a_probe_never_carries_a_bare_command_name() {
+        // The same rule as `a_planted_helper_earlier_in_path_is_not_found`, one
+        // argument to the right. A helper resolves its command against the
+        // *caller's* PATH, and the caller is this process with the operator's
+        // environment — so a bare `true` runs whatever comes first there, as
+        // root. Measured on alpine:3.21 under `permit nopass`: a planted `true`
+        // wrote to /root and read /etc/shadow.
+        for program in [DOAS, RUN0] {
+            let helper = HelperEscalation::new(program, format!("/usr/bin/{program}"));
+
+            let AuthNeed::Probe { args, .. } = helper.auth_need() else {
+                panic!("{program} is probeable and must answer with a probe");
+            };
+
+            let carried = args.last().expect("a probe carries a command");
+
+            assert!(
+                carried.starts_with('/'),
+                "{program}'s probe must name an absolute path, got {carried:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_resolved_path_is_what_gets_spawned() {
         // Resolving a name and then spawning that name resolves twice, and the
         // second resolution answers to `execvp` against the untrusted PATH. The
@@ -458,11 +513,14 @@ mod tests {
         // — 0 under `permit nopass`, 1 when a password is wanted.
         let need = HelperEscalation::by_name(DOAS).auth_need();
 
+        // The no-op's path is resolved rather than spelled, so this asserts the
+        // flag and leaves the path to
+        // `a_probe_never_carries_a_bare_command_name`.
         assert_eq!(
             need,
             AuthNeed::Probe {
                 program: DOAS.to_owned(),
-                args: vec!["-n".to_owned(), "true".to_owned()],
+                args: vec!["-n".to_owned(), no_op_command()],
             }
         );
     }
@@ -478,7 +536,7 @@ mod tests {
             need,
             AuthNeed::Probe {
                 program: RUN0.to_owned(),
-                args: vec!["--no-ask-password".to_owned(), "true".to_owned()],
+                args: vec!["--no-ask-password".to_owned(), no_op_command()],
             }
         );
     }
