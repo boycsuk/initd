@@ -117,7 +117,15 @@ impl AccountWriter for BusyboxAccountWriter {
         // `adduser`, not `useradd`, and the flags differ in meaning rather
         // than in spelling: `-D` here means "do not assign a password", where
         // the shadow suite achieves the same by being given no password flag.
-        let mut args = vec!["-h", &format!("/home/{user}"), "-s", shell]
+        //
+        // No `-h`. It used to pass `/home/{user}` explicitly, which is what
+        // busybox does anyway — measured on `alpine:3.23`, an account created
+        // without the flag lands on `/home/<user>` and the directory is
+        // created. Spelling it out stated a distribution's convention from
+        // outside it, so the one place that decides where homes live would have
+        // disagreed with this backend the day Alpine moved them. `ShadowAccounts`
+        // passes `-m` and lets `useradd` resolve the path for the same reason.
+        let mut args = vec!["-s", shell]
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
@@ -299,6 +307,15 @@ mod tests {
 
         assert_eq!(command.program, "adduser");
         assert!(command.args.contains(&"-D".to_owned()), "{command:?}");
+
+        // Where the home lands is busybox's to decide. Measured on
+        // `alpine:3.23`: without `-h` the account gets `/home/<user>` and the
+        // directory is created, so naming it here only stated the convention
+        // from outside the distribution that owns it.
+        assert!(
+            !command.args.iter().any(|arg| arg == "-h"),
+            "the home directory is not this backend's to name: {command:?}"
+        );
     }
 
     #[test]
