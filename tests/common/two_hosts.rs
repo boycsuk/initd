@@ -26,7 +26,7 @@
 
 use std::process::{Command, Output};
 
-use super::{Image, LOGIN_USER, PREPARE_LOGIN_ACCOUNT, TEST_KEY, binary_for};
+use super::{Image, LOGIN_USER, PREPARE_LOGIN_ACCOUNT, binary_for};
 
 /// The oldest client worth testing against.
 ///
@@ -254,7 +254,6 @@ impl TwoHosts {
              ssh-keygen -A >/dev/null 2>&1; \
              mkdir -p /root/.ssh /run/sshd; \
              {PREPARE_LOGIN_ACCOUNT} \
-             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
              {configure} >/dev/null 2>&1; \
              touch /tmp/initd-server-ready",
             refresh = image.refresh,

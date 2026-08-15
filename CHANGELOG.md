@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The SSH hardening guard asked the wrong account, and refused on the hosts
+  it was written to protect.** `ssh.harden` and `ssh.harden-strict` both
+  required an authorised key **for root**, so a server whose root is locked —
+  the recommended posture — could run neither, while an ordinary account with a
+  key was logging into it perfectly well. The refusal told the operator to run
+  `ssh.authorize-key root`: advice that asks them to re-open root to satisfy a
+  check meant to protect access.
+
+  Wrong in two directions rather than one. Too narrow, since any account with a
+  key is a way back in; and pointed at the one account `ssh.harden` *removes* —
+  `SAFE_DIRECTIVES` writes `PermitRootLogin no`, so a root key satisfied the
+  guard and was worthless one step later. `ssh.allow-users` had already worked
+  this out and computed `root_refused` before counting keys; the two hardening
+  tiers never learned it.
+
+  The guard now asks the machine which accounts still get in once the change
+  lands: it enumerates every account through `list_ranked` — ordered by rank and
+  filtered by nothing, so a site numbering a real account below uid 1000 is
+  still found — and counts one only if it holds a key, `PermitRootLogin` does
+  not refuse it, and `AllowUsers` names it. That third condition was missing
+  entirely: a real key held by an account the daemon already refuses is not a
+  way back in.
+
+  Read from the configuration rather than assumed, which is what separates the
+  tiers: the safe one judges root by what it is about to write, the strict one
+  by what the file already says.
+
+  It still refuses when *no* account survives — that case locks everyone out
+  and is where a warning must be a wall. What changed is that it now warns
+  instead of refusing when the host is reachable: the confirmation lists the
+  accounts that keep access so the operator can check theirs is among them
+  before applying, the same shape `users.lock-root` already used.
+
+  `Lockout::NoKeyForRoot` is gone, both because it named the wrong account and
+  because the message it rendered sent operators the wrong way.
+
+  Found on a Debian 13 server. The container scenarios could not have caught
+  it: every one of them seeded a key **on root** to get past the guard, so they
+  had been agreeing with the bug rather than testing it. They now seed an
+  ordinary account, which is what the connection scenarios' own `LOGIN_USER`
+  had been documenting for a different reason all along — that root cannot log
+  in after hardening.
+
 ## [0.4.2] — 2026-08-14
 
 Three more from the same Debian 13 server, each found by the one before it

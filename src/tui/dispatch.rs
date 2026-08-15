@@ -28,6 +28,7 @@ use crate::exec::{OutputLine, Stream};
 use crate::i18n::Msg;
 use crate::tasks::network::{EnableFirewall, ManagePorts};
 use crate::tasks::params::{LiveDefault, ParamKind, ParamValues, Suggestions};
+use crate::tasks::ssh::{HardenSsh, HardenSshStrict};
 use crate::tasks::users::{Credentials, DeleteUser, Examined, LockRoot, escalated_from};
 use crate::tasks::{Confirmation, Node};
 
@@ -1157,6 +1158,8 @@ impl App {
                     DeleteUser::ID => self.deletion_warning(),
                     EnableFirewall::ID => self.firewall_warning(),
                     ManagePorts::ID => self.ports_warning(),
+                    HardenSsh::ID => self.ssh_harden_warning(true),
+                    HardenSshStrict::ID => self.ssh_harden_warning(false),
                     _ => self.lang.render(&Msg::ConfirmLockoutWarning),
                 };
 
@@ -1353,6 +1356,54 @@ impl App {
             specs: closing.join(", "),
             listening,
             closes_ssh: ssh,
+        })
+    }
+
+    /// Lists the accounts that still get in once the hardening is applied.
+    ///
+    /// The dialog runs the same scan the task does, so the operator sees the
+    /// set the guard will judge them by rather than a claim about it. Paid at
+    /// the moment the dialog opens rather than in the path of a keystroke,
+    /// which is the rule `lockout_warning` and `deletion_warning` already
+    /// follow — and cheaper than either, at one passwd lookup and one file read
+    /// per account.
+    ///
+    /// `disables_root` is the tier: the safe one writes `PermitRootLogin no`,
+    /// so it both excludes root from the scan and says so in the warning.
+    ///
+    /// Falls back to the generic warning where anything cannot be read, rather
+    /// than to silence or to a claim. The task runs the same scan again and
+    /// refuses on its own terms, which is a better place to fail than a dialog.
+    pub(super) fn ssh_harden_warning(&self, disables_root: bool) -> String {
+        let executor = self.executor.as_ref();
+        let path = self.backend.path_for(crate::backend::Capability::Ssh);
+
+        let Ok(contents) = self.backend.files().read(executor, path) else {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        let Ok(holders) = crate::tasks::ssh::accounts_keeping_ssh_access(
+            executor,
+            self.backend.as_ref(),
+            &contents,
+            disables_root,
+        ) else {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        };
+
+        let keeps = crate::tasks::ssh::keeps_access(&holders);
+
+        // Nothing to list means the task is about to refuse. Saying so here
+        // would be a second wording of a refusal the task states better, and
+        // promising a list this dialog cannot produce is worse than the generic
+        // sentence, which is at least true.
+        if keeps.is_empty() {
+            return self.lang.render(&Msg::ConfirmLockoutWarning);
+        }
+
+        self.lang.render(&Msg::ConfirmSshHardenLockout {
+            keeps_access: keeps.join(", "),
+            disables_root,
         })
     }
 

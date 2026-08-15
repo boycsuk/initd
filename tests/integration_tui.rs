@@ -24,10 +24,8 @@
 
 mod common;
 
-use std::sync::LazyLock;
-
 use common::tui::Tui;
-use common::{TEST_KEY, admin_group, create_account};
+use common::{TEST_KEY, admin_group, create_account, create_account_with_home};
 
 /// The state the interface reports while a change is applied but not kept.
 const VERIFY: &str = "VERIFY";
@@ -54,8 +52,8 @@ macro_rules! tui {
     };
 }
 
-/// Authorises a key for root, so the lockout guard permits hardening, and
-/// records the configuration for later comparison.
+/// Authorises a key for an ordinary account, so the lockout guard permits
+/// hardening, and records the configuration for later comparison.
 ///
 /// The daemon is waited for rather than assumed. `systemctl start` returns once
 /// systemd has accepted the job, not once the unit is up, and `ssh.harden`
@@ -81,11 +79,19 @@ macro_rules! tui {
 /// left the interface authorising a different one and the guard refusing to
 /// proceed. That surfaces as the verification window never opening: a TUI
 /// failure report for a drifted constant, in the file least likely to be
-/// suspected. `LazyLock` costs one allocation per binary and removes the
-/// possibility.
-static PREPARE_FOR_HARDENING: LazyLock<String> = LazyLock::new(|| {
+/// suspected.
+///
+/// The key goes to an **ordinary account** rather than to root, which is the
+/// whole point rather than a detail. `ssh.harden` writes `PermitRootLogin no`,
+/// so a key held by root authorises nothing once the task finishes and the
+/// guard does not count it. Seeding root here — as this did while the guard
+/// asked about root alone — leaves the task refusing on a host these scenarios
+/// have prepared, and the refusal surfaces as the verification window never
+/// opening: a TUI failure report for a seed that names the wrong account.
+fn prepare_for_hardening(image: &common::Image) -> String {
     format!(
-        "initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+        "{create} {HARDENING_ACCOUNT} >/dev/null 2>&1; \
+         initd authorize-key {HARDENING_ACCOUNT} '{TEST_KEY}' >/dev/null 2>&1; \
          [ -f /etc/ssh/sshd_config ] || cp /usr/etc/ssh/sshd_config /etc/ssh/sshd_config \
            2>/dev/null; \
          systemctl start ssh sshd >/dev/null 2>&1; \
@@ -93,9 +99,15 @@ static PREPARE_FOR_HARDENING: LazyLock<String> = LazyLock::new(|| {
            systemctl is-active --quiet ssh sshd && break; \
            sleep 0.2; \
          done; \
-         cp /etc/ssh/sshd_config /tmp/before"
+         cp /etc/ssh/sshd_config /tmp/before",
+        create = create_account_with_home(image),
     )
-});
+}
+
+/// The account the hardening scenarios authorise a key for.
+///
+/// An ordinary account, since root is the one `ssh.harden` disables.
+const HARDENING_ACCOUNT: &str = "initdops";
 
 /// Walks from the root of the tree to the hardening task and runs it.
 ///
@@ -230,7 +242,7 @@ for_each_image! {
     /// The tree has no other guard: without the dialog, one Enter on a
     /// highlighted row would harden a live server.
     fn a_destructive_task_asks_before_it_runs(image) {
-        let tui = tui!(image, "confirm", &*PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "confirm", &prepare_for_hardening(image));
 
         run_hardening(&tui);
 
@@ -239,9 +251,23 @@ for_each_image! {
             screen.contains("Yes") && screen.contains("No"),
             "a confirmation dialog must be on screen: {screen}"
         );
+        // The risk, in the words this task states it with. It used to be the
+        // generic "lock you out" sentence, which the hardening tiers no longer
+        // reach: they name the accounts that keep access instead, so the
+        // operator can check that theirs is among them. Both halves are
+        // asserted, because a dialog that listed accounts without saying what
+        // is being taken away would read as reassurance.
         assert!(
-            screen.contains("lock you out"),
+            screen.contains("Password authentication is going away"),
             "the dialog must state the risk: {screen}"
+        );
+        assert!(
+            screen.contains("keep SSH access"),
+            "the dialog must name the accounts that survive the change: {screen}"
+        );
+        assert!(
+            screen.contains(HARDENING_ACCOUNT),
+            "the account holding the key must be listed by name: {screen}"
         );
 
         // Nothing may have happened yet.
@@ -258,7 +284,7 @@ for_each_image! {
     /// yet kept, and an administrator who cannot get back in does nothing and
     /// gets it back. This is the state a mock cannot produce.
     fn confirming_applies_the_change_and_holds_it_open(image) {
-        let tui = tui!(image, "window", &*PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "window", &prepare_for_hardening(image));
 
         run_hardening(&tui);
         confirm_dialog(&tui);
@@ -289,7 +315,7 @@ for_each_image! {
     /// recorded — which cannot say whether the file that came back is the one
     /// that went away. This compares them.
     fn reverting_restores_the_previous_configuration(image) {
-        let tui = tui!(image, "revert", &*PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "revert", &prepare_for_hardening(image));
 
         run_hardening(&tui);
         confirm_dialog(&tui);
@@ -332,7 +358,7 @@ for_each_image! {
     /// covered above; this is the third path, and the only one an operator
     /// never chooses.
     fn losing_the_session_puts_the_configuration_back(image) {
-        let tui = tui!(image, "hangup", &*PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "hangup", &prepare_for_hardening(image));
 
         run_hardening(&tui);
         confirm_dialog(&tui);
@@ -403,7 +429,7 @@ for_each_image! {
     /// The other half, and the one that proves the window is a real choice
     /// rather than a delayed rollback: after keeping, the change must survive.
     fn keeping_leaves_the_change_in_place(image) {
-        let tui = tui!(image, "keep", &*PREPARE_FOR_HARDENING);
+        let tui = tui!(image, "keep", &prepare_for_hardening(image));
 
         run_hardening(&tui);
         confirm_dialog(&tui);

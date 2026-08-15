@@ -193,7 +193,7 @@ pub enum Msg {
     InvalidAllowUsers {
         reason: String,
     },
-    LockoutNoKeyForRoot,
+    LockoutNoAccountKeepsSshAccess,
     LockoutUnknownUser {
         user: String,
     },
@@ -847,6 +847,20 @@ pub enum Msg {
     /// what teaches an operator to stop reading the ones that mean it.
     ConfirmPortsOpeningOnly {
         opening: usize,
+    },
+    /// The lockout warning for the two SSH hardening tiers.
+    ///
+    /// Names the accounts that keep access rather than asserting that some do,
+    /// because the operator's decision is whether *theirs* is among them — a
+    /// claim they cannot check is one they have to take on trust from the
+    /// program about to end their session.
+    ///
+    /// `disables_root` separates the tiers: the safe one writes
+    /// `PermitRootLogin no`, so root losing access is a consequence of applying
+    /// it and worth stating; the strict one does not touch the directive.
+    ConfirmSshHardenLockout {
+        keeps_access: String,
+        disables_root: bool,
     },
     /// The lockout warning for `users.lock-root`, heading the accounts that
     /// keep access.

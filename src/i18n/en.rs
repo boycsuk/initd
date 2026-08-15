@@ -168,9 +168,12 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::InvalidAllowUsers { reason } => {
             format!("invalid list of allowed users: {reason}")
         }
-        Msg::LockoutNoKeyForRoot => "no authorised key found for root; disabling password \
-             authentication now would lock you out. Add a key with `ssh.authorize-key` first"
-            .to_owned(),
+        Msg::LockoutNoAccountKeepsSshAccess => {
+            "no account on this host holds an authorised key that would survive this change; \
+             disabling password authentication now would lock everyone out. Add a key with \
+             `ssh.authorize-key` first"
+                .to_owned()
+        }
         Msg::LockoutUnknownUser { user } => {
             format!(
                 "no account named {user} exists on this host; restricting SSH to it would \
@@ -843,6 +846,35 @@ pub(super) fn render(message: &Msg) -> String {
              Opening a port here says nothing about whether the provider's edge firewall \
              admits it, which is the layer most often forgotten."
         ),
+        // Lists the accounts rather than counting them, for the reason
+        // `ConfirmPortsClosing` gives: this is the last screen where the change
+        // can still be stopped, and the operator's question is whether their own
+        // account is on the list. A count answers a different question.
+        //
+        // It does not claim they are safe. A key in `authorized_keys` is not
+        // proof that the client in front of the operator offers *that* key,
+        // which is the gap the verification window exists to cover and the
+        // reason this sentence stops at what was read from the host.
+        Msg::ConfirmSshHardenLockout {
+            keeps_access,
+            disables_root,
+        } => {
+            let root = if *disables_root {
+                "\n\nroot will no longer be able to log in over SSH: this writes \
+                 PermitRootLogin no. If that is how you reach this host, stop here."
+            } else {
+                ""
+            };
+
+            format!(
+                "Password authentication is going away, so a key is the only way in \
+                 afterwards.\n\n\
+                 These accounts hold one and keep SSH access: {keeps_access}.\n\n\
+                 Check that yours is among them. Holding a key is not proof your client \
+                 offers that key — if it does not, the change reverts when the \
+                 verification window closes.{root}"
+            )
+        }
         // The path and the size are the whole point. "Also delete the home
         // directory?" is a question answered by habit; a sentence naming
         // /home/deploy and 2.4 GB is one that gets read.

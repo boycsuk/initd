@@ -22,8 +22,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// which one to fix rather than merely that something is wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lockout {
-    /// Passwords would be disabled while no key authorises root.
-    NoKeyForRoot,
+    /// Hardening would leave no account able to log in over SSH.
+    ///
+    /// Asked of every account on the host, not of root. The check this replaced
+    /// asked whether *root* held a key, which was wrong in both directions: any
+    /// account with a key is a way in, and root is the account `ssh.harden`
+    /// removes — it writes `PermitRootLogin no`, so a root key satisfied the
+    /// check and was worthless a step later. A host with root locked, which is
+    /// the recommended posture, could not run either tier at all.
+    NoAccountKeepsSshAccess,
     /// An account named in `AllowUsers` does not exist on this host.
     ///
     /// A typo produces a configuration `sshd -t` accepts and that matches
@@ -589,7 +596,7 @@ impl Error {
                 details: details.clone(),
             },
             Self::LockoutRisk { kind } => match kind {
-                Lockout::NoKeyForRoot => Msg::LockoutNoKeyForRoot,
+                Lockout::NoAccountKeepsSshAccess => Msg::LockoutNoAccountKeepsSshAccess,
                 Lockout::UnknownUser { user } => Msg::LockoutUnknownUser { user: user.clone() },
                 Lockout::NoKeyForAllowedUsers { users } => Msg::LockoutNoKeyForAllowedUsers {
                     users: users.clone(),

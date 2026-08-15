@@ -1082,12 +1082,21 @@ pub fn run_with_ssh_ready(image: &Image, script: &str) -> std::process::Output {
     run_in_container(
         image,
         &format!(
+            // The key goes to an ordinary account rather than to root, and the
+            // account is created here for it. `ssh.harden` writes
+            // `PermitRootLogin no`, so a key held by root authorises nothing
+            // once the task finishes and the lockout guard does not count it —
+            // the same reason `LOGIN_USER` exists for the connection
+            // scenarios, applied to the guard rather than to the login.
             "{} >/dev/null 2>&1; \
              {} >/dev/null 2>&1; \
              ssh-keygen -A >/dev/null 2>&1; \
-             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
+             {create} {GUARD_USER} >/dev/null 2>&1; \
+             initd authorize-key {GUARD_USER} '{TEST_KEY}' >/dev/null 2>&1; \
              {script}",
-            image.install_ssh, image.install_ssh_client
+            image.install_ssh,
+            image.install_ssh_client,
+            create = create_account_with_home(image),
         ),
     )
 }
@@ -1107,12 +1116,26 @@ pub const CONNECTED: &str = "INITD_SESSION_ESTABLISHED";
 /// refuses.
 pub const LOGIN_USER: &str = "initdtest";
 
-/// Sets up an unprivileged account with its own key pair, plus the authorised
-/// key on root the lockout guard requires.
+/// The account whose key satisfies the hardening tasks' lockout guard.
 ///
-/// Two keys, two purposes, and conflating them is what makes hardening
-/// scenarios fail confusingly: [`TEST_KEY`] satisfies the guard so `ssh.harden`
-/// will proceed at all, while the generated pair is what actually logs in.
+/// Distinct from [`LOGIN_USER`] because the two answer different questions and
+/// the scenarios that need each do not overlap: this one only has to *exist and
+/// hold a key* so `ssh.harden` proceeds, while `LOGIN_USER` also has a password
+/// and a generated pair because something actually logs in as it.
+///
+/// Not root, for the reason `LOGIN_USER` records one line up: `ssh.harden`
+/// writes `PermitRootLogin no`, so root's key authorises nothing the moment the
+/// task finishes. The guard used to ask about root alone and was satisfied by
+/// exactly the key the task made worthless.
+pub const GUARD_USER: &str = "initdguard";
+
+/// Sets up an unprivileged account with its own key pair.
+///
+/// The generated pair does both jobs here: it logs in, and — because the guard
+/// now asks every account rather than root alone — it is also what satisfies
+/// the guard, so `ssh.harden` proceeds. A separate authorised key on root used
+/// to be needed for the second job and is not: the task writes
+/// `PermitRootLogin no`, so root's key authorises nothing once it finishes.
 /// Creates the account with whichever tool the image provides.
 ///
 /// `useradd` comes from the shadow suite and Alpine ships busybox, whose
@@ -1157,8 +1180,9 @@ pub const PREPARE_LOGIN_ACCOUNT: &str = "(useradd -m -s /bin/sh initdtest || add
 ///
 /// The client key is generated in the container rather than reusing
 /// [`TEST_KEY`], whose private half is deliberately not in the repository:
-/// a key that opens a root session must not be one anybody can read here.
-/// [`TEST_KEY`] stays as the authorised key that satisfies the lockout guard.
+/// a key that opens a session must not be one anybody can read here. That
+/// generated key is also what satisfies the lockout guard, which asks every
+/// account rather than root alone.
 pub fn run_and_connect(image: &Image, configure: &str) -> std::process::Output {
     run_in_container(
         image,
@@ -1169,7 +1193,6 @@ pub fn run_and_connect(image: &Image, configure: &str) -> std::process::Output {
              ssh-keygen -A >/dev/null 2>&1; \
              mkdir -p /root/.ssh /run/sshd; \
              {PREPARE_LOGIN_ACCOUNT} \
-             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
              {configure} >/dev/null 2>&1; \
              {SSHD_START} \
              {SSH_PROBE} \
@@ -1246,7 +1269,6 @@ pub fn run_and_ask_offered_methods(image: &Image, configure: &str) -> std::proce
              ssh-keygen -A >/dev/null 2>&1; \
              mkdir -p /root/.ssh /run/sshd; \
              {PREPARE_LOGIN_ACCOUNT} \
-             initd authorize-key root '{TEST_KEY}' >/dev/null 2>&1; \
              {configure} >/dev/null 2>&1; \
              {SSHD_START} \
              {SSH_PROBE} \
