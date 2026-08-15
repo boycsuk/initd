@@ -18,6 +18,7 @@ use crate::exec::Executor;
 use crate::i18n::Msg;
 use crate::tasks::params::{Param, ParamKind, ParamValues};
 use crate::tasks::revert::Outcome;
+use crate::tasks::users::escalated_from;
 use crate::tasks::{Progress, Task, supported_everywhere};
 
 use super::{
@@ -53,16 +54,59 @@ impl Task for AuthorizeKey {
 
     fn params(&self) -> Vec<Param> {
         vec![
-            // root is offered because it is the account that always exists,
-            // not because it is the one to prefer.
+            // No starting value, for the reason `ssh.allow-users` records
+            // about its own field: seeding `root` points at the configuration
+            // `ssh.harden` exists to disable. The comment that stood here said
+            // root was offered "because it is the account that always exists,
+            // not because it is the one to prefer" — but a pre-filled field is
+            // the recommendation, whatever a comment nobody reads says about
+            // it.
+            //
+            // What that cost became a loop once the hardening guard stopped
+            // counting root: `ssh.harden` refuses and says to authorise a key
+            // first, this field offers root again, and accepting it a second
+            // time reproduces the same refusal. Reproduced on `debian:13`.
+            //
+            // `params_here` fills it from the account this session escalated
+            // through, which is the one answer that is right more often than
+            // any constant.
             Param::new(Self::USER, "Username", ParamKind::Username)
-                .with_initial("root")
                 .with_hint("the account the key authorises")
                 .suggesting_accounts()
                 .naming_an_existing_account(),
             Param::new(Self::KEY, "Public key", ParamKind::PublicKey)
                 .with_hint("paste the contents of a .pub file"),
         ]
+    }
+
+    /// Opens the account field on whoever is administering this session.
+    ///
+    /// `SUDO_USER`/`DOAS_USER` name the account that escalated into this
+    /// process, which is the account an operator authorising a key is most
+    /// often authorising it *for* — themselves, on the machine they are
+    /// already logged into. It is also the one that keeps working after
+    /// `ssh.harden`, which root does not.
+    ///
+    /// Left empty where nothing answers, rather than falling back to a
+    /// constant. A direct root login, `su -` and `run0` leave no such
+    /// variable, and the honest answer there is to ask: the previous constant
+    /// was `root`, which is exactly the value that produced the loop this
+    /// removes. An empty field asks a question; a wrong one answers it.
+    fn params_here(&self, _backend: &dyn Backend) -> Vec<Param> {
+        let Some(session) = escalated_from() else {
+            return self.params();
+        };
+
+        self.params()
+            .into_iter()
+            .map(|param| {
+                if param.name == Self::USER {
+                    param.with_initial(session.clone())
+                } else {
+                    param
+                }
+            })
+            .collect()
     }
 
     supported_everywhere!();
@@ -242,6 +286,32 @@ mod tests {
     use crate::distro::Family;
     use crate::exec::mock::{MockExecutor, Reply};
     use crate::tasks::ssh::fixtures::{ROOT_PASSWD, TEST_KEY};
+
+    #[test]
+    fn the_account_field_does_not_recommend_root() {
+        // A pre-filled field is the recommendation, whatever the comment
+        // beside it says. `root` there pointed at the configuration
+        // `ssh.harden` disables, and once the hardening guard stopped counting
+        // root it produced a loop: harden refuses saying to authorise a key,
+        // this field offers root again, and accepting it repeats the refusal.
+        //
+        // Asserted of `params`, which is the task's own declaration and what
+        // the CLI documents. `params_here` may fill it from `SUDO_USER`, which
+        // is a fact about the session rather than about the task, and cannot
+        // be asserted here without mutating the process's environment — global
+        // to every test thread.
+        let field = AuthorizeKey
+            .params()
+            .into_iter()
+            .find(|param| param.name == AuthorizeKey::USER)
+            .expect("the account field must be declared");
+
+        assert!(
+            field.initial.is_empty(),
+            "the field must ask rather than recommend an account: {:?}",
+            field.initial
+        );
+    }
 
     /// The values `AuthorizeKey` declares, as the interface would collect them.
     fn key_values(user: &str, key: &str) -> ParamValues {

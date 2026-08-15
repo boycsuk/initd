@@ -34,6 +34,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as that exact relationship rather than as equals.
 
 ### Fixed
+- **OpenRC read every runlevel to answer a question about one.** `state` ran
+  `rc-update show` bare, which lists `sysinit`, `boot`, `default` and
+  `shutdown`, while `enable_and_start` adds to `default` and
+  `disable_and_stop` deletes from it. A service the distribution put elsewhere
+  therefore read back as enabled where nothing here could disable it —
+  measured on `alpine:3.23`, whose own `openssh` package lands `sshd` in
+  `boot`: `rc-update show` prints `sshd | boot` while `rc-update show default`
+  prints nothing.
+
+- **`ssh.authorize-key` recommended the one account hardening disables.** The
+  username field opened on `root`, with a comment saying it was offered
+  "because it is the account that always exists, not because it is the one to
+  prefer" — but a pre-filled field is the recommendation, whatever the comment
+  says.
+
+  Once the hardening guard stopped counting root, that became a loop:
+  `ssh.harden` refuses and says to authorise a key first, this field offers
+  root again, and accepting it a second time reproduces the same refusal.
+  Reproduced on `debian:13`.
+
+  The field now opens on the account this session escalated through
+  (`SUDO_USER`/`DOAS_USER`) and is left empty where nothing answers — a direct
+  root login, `su -` or `run0`. An empty field asks a question; a wrong one
+  answers it.
+
 - **A saved nftables ruleset duplicated every rule when it was replayed.**
   `persist` dumped `nft list ruleset` into the file the boot reads, with no
   header. `nft -f` merges into whatever the kernel already holds rather than
