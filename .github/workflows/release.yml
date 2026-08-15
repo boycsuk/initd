@@ -26,6 +26,15 @@ on:
         description: "Existing tag to build and publish"
         required: true
 
+# Read-only by default, with `publish` widening for itself alone. Stated here
+# rather than inherited, the rule `ci.yml` already follows: the default is
+# whatever the repository settings happen to be, and this file is the one that
+# holds a token worth taking. `verify` and `build` run the whole test suite and
+# every build script in the dependency tree — the widest code-execution surface
+# in the repository — and neither needs to write anything.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -201,6 +210,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
+          # The same rule the `on.push.tags` filter applies, which a manual
+          # dispatch does not go through: the input is a free-text field, so
+          # without this the file's own comment about semantic versions held for
+          # one of its two triggers. Checked here rather than at the trigger
+          # because a workflow input cannot be constrained by pattern.
+          #
+          # `grep -Ex` rather than a `case` glob, which was the first attempt and
+          # is not the same rule: shell globs have no anchored quantifier, so
+          # `v[0-9]*.[0-9]*.[0-9]*` accepts `v1.2.3badtext` and `v1.2.3.4` —
+          # measured, not assumed. A pattern whose comment claims more than it
+          # checks is worse than none.
+          # `-z` because `-x` anchors to a *line*, and a multi-line input passes
+          # as soon as any one of its lines matches. A git tag cannot contain a
+          # newline; this input is free text and can.
+          if ! printf '%s' "$TAG" | grep -Ezxq 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::refusing to publish '$TAG': releases are tagged vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
           gh release create "$TAG" \
             --title "$TAG" \
             --notes "Static binaries for x86_64 and aarch64.
