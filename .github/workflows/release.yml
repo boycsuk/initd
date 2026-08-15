@@ -38,13 +38,13 @@ jobs:
     env:
       INITD_REQUIRE_DOCKER: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install the pinned toolchain
         run: rustup show
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@24b9dfbccc70b4733071b1fdbb506f2b70bfef14 # nextest
 
       # Both, because the container matrix mounts one per image: Debian, Arch
       # and Rocky run the ordinary build, and Alpine has no glibc to run it
@@ -96,7 +96,7 @@ jobs:
           - aarch64-unknown-linux-musl
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install the pinned toolchain
         run: rustup show
@@ -161,7 +161,7 @@ jobs:
           # an easy thing to get subtly wrong.
           sha256sum "$name" > "$name.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: initd-${{ matrix.target }}
           path: |
@@ -180,9 +180,9 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
