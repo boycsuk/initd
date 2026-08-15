@@ -141,6 +141,22 @@ pub enum ParamKind {
 /// this tool edits as root. `#` would comment out the remainder of the line.
 const CONFIG_UNSAFE: [char; 3] = ['\n', '\r', '#'];
 
+/// What a secret may not contain, which is less than [`CONFIG_UNSAFE`].
+///
+/// A password is written to `chpasswd`'s stdin as `user:password\n`, one entry
+/// per line, so a newline in the value forges a *second* entry — and the second
+/// entry may name any account, root included. Measured on `debian:13`:
+/// `password=$'a\nroot:pwned'` exits 0 and changes root's hash.
+///
+/// `#` is deliberately absent, unlike the config case: it is an ordinary
+/// character in a password and nothing here writes a secret into a file where a
+/// comment means anything. Only the line terminators are structural.
+///
+/// This says nothing about how *good* a password is — that judgement stays with
+/// PAM, which is configured per host. Rejecting a newline is not a strength
+/// rule; it stops one value from becoming two entries.
+const SECRET_UNSAFE: [char; 2] = ['\n', '\r'];
+
 /// Where the values a field can be filled from come from.
 ///
 /// Named here and resolved elsewhere, deliberately. `ParamKind` validates a
@@ -311,11 +327,12 @@ impl ParamKind {
             Self::Protocol => validate_protocol(value),
             Self::Removal => validate_removal(value),
             Self::HomeDirectory => validate_home_directory(value),
-            // Nothing to check. Empty means "no password", and the strength of
+            // Structure only. Empty means "no password", and the strength of
             // one that is not empty is the system's judgement rather than this
             // tool's: PAM is configured per host, and a rule invented here
-            // would refuse passwords the host would have accepted.
-            Self::Secret => Ok(()),
+            // would refuse passwords the host would have accepted. A line
+            // terminator is not a strength question — see [`SECRET_UNSAFE`].
+            Self::Secret => validate_secret(value),
             Self::Version => validate_version(value),
             Self::PersonName => validate_person_name(value),
             Self::Email => validate_email(value),
@@ -677,6 +694,23 @@ fn validate_path(value: &str) -> std::result::Result<(), String> {
     // back — refusing is cheaper than reasoning about where it lands.
     if value.split('/').any(|segment| segment == "..") {
         return Err("the path cannot contain '..'".to_owned());
+    }
+
+    Ok(())
+}
+
+/// Rejects a secret that would not stay one value.
+///
+/// The only rule a password is held to here, and it is about structure rather
+/// than strength — see [`SECRET_UNSAFE`] for why the two are different
+/// questions and why only this one belongs in a validator.
+///
+/// The TUI's keystroke filter already refuses control characters, on typing and
+/// on paste alike. This is the check for the route that has no keystrokes: the
+/// CLI, where the value arrives as an argument of `initd` itself.
+fn validate_secret(value: &str) -> std::result::Result<(), String> {
+    if let Some(bad) = value.chars().find(|c| SECRET_UNSAFE.contains(c)) {
+        return Err(format!("a password cannot contain {bad:?}"));
     }
 
     Ok(())
@@ -1167,6 +1201,28 @@ mod tests {
         values.forget_secrets(&params);
 
         assert_eq!(values.get("user").ok(), Some("deploy"));
+    }
+
+    #[test]
+    fn a_password_carrying_a_newline_is_refused() {
+        // `chpasswd` reads `user:password` one entry per line, so a newline
+        // forges a second entry naming any account. Measured on `debian:13`:
+        // `password=$'a\nroot:pwned'` exits 0 and changes root's hash. The TUI
+        // filters this on typing and on paste; the CLI has no such filter,
+        // which is the route this closes.
+        assert!(ParamKind::Secret.validate("a\nroot:pwned").is_err());
+        assert!(ParamKind::Secret.validate("a\rroot:pwned").is_err());
+    }
+
+    #[test]
+    fn an_ordinary_password_is_not_judged_on_its_strength() {
+        // The line this validator does not cross. `#`, spaces and punctuation
+        // are ordinary characters in a password, and how strong one has to be
+        // is PAM's judgement — configured per host, and not this tool's to
+        // second-guess. Empty stays valid: it means "no password".
+        assert!(ParamKind::Secret.validate("hunter2").is_ok());
+        assert!(ParamKind::Secret.validate("a #b $c 'd\"").is_ok());
+        assert!(ParamKind::Secret.validate("").is_ok());
     }
 
     #[test]
