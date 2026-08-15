@@ -1051,14 +1051,27 @@ impl ParamValues {
     }
 
     /// Reads a value back as a port.
+    ///
+    /// Held to the same range [`validate_port`] applies, rather than only to
+    /// being a number. The two answered differently for `0` and for anything
+    /// above [`MAX_PORT`]: the interactive form refused them at the field while
+    /// this accepted them, so which check an operator met depended on the route
+    /// they took. A task reading its own parameter back is the last place that
+    /// can still refuse.
     pub fn port(&self, name: &str) -> Result<u32> {
         let raw = self.get(name)?;
 
-        raw.parse().map_err(|_| Error::InvalidPort {
+        let port = raw.parse().map_err(|_| Error::InvalidPort {
             // A non-numeric value cannot be reported as the number it is not,
             // so the sentinel stands for "not a port at all".
             port: u32::MAX,
-        })
+        })?;
+
+        if port == 0 || port > MAX_PORT {
+            return Err(Error::InvalidPort { port });
+        }
+
+        Ok(port)
     }
 }
 
@@ -1201,6 +1214,30 @@ mod tests {
         values.forget_secrets(&params);
 
         assert_eq!(values.get("user").ok(), Some("deploy"));
+    }
+
+    #[test]
+    fn reading_a_port_back_applies_the_same_range_the_field_does() {
+        // The form refused `0` and anything above `MAX_PORT` while this
+        // accepted them, so which check an operator met depended on the route
+        // they took. `docs/cli.md` promises a port outside 1-65535 exits `1` —
+        // a task failure rather than an argument fault — and this is what makes
+        // that true rather than dependent on each task re-checking.
+        let mut values = ParamValues::new();
+
+        values.set("port", "0");
+        assert!(values.port("port").is_err(), "port 0 is not a port");
+
+        values.set("port", "70000");
+        assert!(values.port("port").is_err(), "70000 is above the range");
+
+        values.set("port", "not-a-number");
+        assert!(values.port("port").is_err());
+
+        for valid in ["1", "22", "65535"] {
+            values.set("port", valid);
+            assert!(values.port("port").is_ok(), "{valid} is a usable port");
+        }
     }
 
     #[test]
