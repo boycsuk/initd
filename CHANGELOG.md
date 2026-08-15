@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as that exact relationship rather than as equals.
 
 ### Fixed
+- **A port declared closed that the firewall could not close was reported
+  nowhere.** firewalld admits SSH on a stock RHEL host as the *service* `ssh`,
+  and `--remove-port 22/tcp` against that succeeds while changing nothing —
+  which `firewall.manage-ports` knows, and correctly declines to attempt.
+
+  The port then fell out of every set the report draws from: not in `to_close`,
+  so never attempted and never among the refused; not in `appeared`, which
+  requires the port to be absent from the snapshot, and this one is in it. The
+  operator asked to close a port, it stayed open, and the run reported
+  `closed 0` with no line naming it.
+
+  It now joins the ports reported as still open, which is the same fact from
+  the operator's side: this port is open and this run did not close it. The
+  existing message already names the cause — "admitted by a service rather
+  than by name, which removing the port does not undo".
+
 - **Deleting an account could remove `/`.** `users.delete` asked whether to
   remove the home directory and never asked *what* directory it was.
   `deluser --remove-home` and `userdel -r` remove whatever the passwd entry

@@ -662,6 +662,23 @@ impl Task for ManagePorts {
             .copied()
             .collect();
 
+        // Declared closed and not closeable: the operator asked for it, and
+        // `--remove-port` cannot do it because the zone admits the port
+        // through a *service* rather than as a port. On a stock RHEL host that
+        // is SSH, admitted as `ssh`.
+        //
+        // Collected rather than left to fall out of the filter above, which is
+        // where it was going: not closeable meant not in `to_close`, so it was
+        // never attempted, never in `refused`, and never in `appeared` — which
+        // requires the port to be absent from the snapshot, and this one is in
+        // it. Every line of the report was silent about a port the operator
+        // had asked to close and that stayed open.
+        let unclosable: Vec<Spec> = snapshot
+            .iter()
+            .filter(|spec| !desired.contains(spec) && !closeable.contains(spec))
+            .copied()
+            .collect();
+
         // A port the host admits that the operator never saw and did not
         // declare: somebody else opened it while the table was on screen.
         // Reported and left alone, because closing it would undo a change this
@@ -729,11 +746,21 @@ impl Task for ManagePorts {
             },
         );
 
-        if !refused.is_empty() {
+        // What was attempted and did not take, plus what could not be
+        // attempted at all. The two arrive here by different routes — a
+        // read-back that still finds the port, and a declaration the front-end
+        // has no way to honour — and they are the same fact to an operator:
+        // this port is still open and this run did not close it. Reported
+        // together rather than in two messages, since a second sentence
+        // distinguishing them would be describing the implementation.
+        let mut still_open = refused.clone();
+        still_open.extend(unclosable.iter().map(|spec| spec.text()));
+
+        if !still_open.is_empty() {
             report(
                 progress,
                 &Msg::TaskFirewallPortsStillOpen {
-                    specs: refused.join(", "),
+                    specs: still_open.join(", "),
                 },
             );
         }
@@ -1821,6 +1848,50 @@ mod tests {
         assert!(
             output.contains("still open") && output.contains("22/tcp"),
             "the port that stayed open must be named: {output}"
+        );
+        assert!(
+            !output.contains("closed 1"),
+            "a port that is still open must not be counted as closed: {output}"
+        );
+    }
+
+    #[test]
+    fn a_declared_closure_the_front_end_cannot_perform_is_reported() {
+        // firewalld admits SSH on a stock RHEL host as the *service* `ssh`,
+        // and `--remove-port 22/tcp` against that succeeds while changing
+        // nothing. The task correctly declines to attempt it — but the port
+        // then fell out of every set: not in `to_close`, so never attempted
+        // and never `refused`; not in `appeared`, which requires absence from
+        // the snapshot. The operator asked to close a port, it stayed open,
+        // and every line of the report was silent about it.
+        let mut values = ParamValues::new();
+        values.set(ManagePorts::PORTS, String::new());
+        values.set(ManagePorts::PORTS_WERE, "22/tcp".to_owned());
+
+        let mock = MockExecutor::with_replies([
+            Reply::ok("running"),         // is_available
+            Reply::ok("running"),         // is_enabled
+            Reply::ok(""),                // --list-ports: none by name
+            Reply::ok("ssh"),             // --list-services
+            Reply::ok("  ports: 22/tcp"), // --info-service ssh
+            Reply::ok("enabled"),         // is_persisted
+        ]);
+        let backend = for_family(Family::Rhel);
+
+        let mut lines = Vec::new();
+
+        ManagePorts
+            .run(&mock, backend.as_ref(), &values, &mut |line| {
+                lines.push(line.text);
+            })
+            .expect("a closure that cannot be performed is not a failure");
+
+        let output = lines.join("\n");
+
+        assert!(
+            output.contains("22/tcp"),
+            "a port the operator asked to close and that stayed open must be \
+             named: {output}"
         );
         assert!(
             !output.contains("closed 1"),
