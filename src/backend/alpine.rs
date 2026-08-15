@@ -45,6 +45,14 @@ const SSH_CONFIG: &str = "/etc/ssh/sshd_config";
 /// and its default configuration grants the wheel group.
 const ADMIN_GROUP: &str = "wheel";
 
+/// The login shell a new account gets here.
+///
+/// Alpine ships busybox and no bash, and `/etc/shells` names `/bin/sh` and
+/// `/bin/ash` — measured on `alpine:3.23`. `/bin/ash` of the two, being the
+/// one that says "a person logs in with this" rather than "this is the
+/// system's shell".
+const LOGIN_SHELL: &str = "/bin/ash";
+
 /// The WireGuard tools on Alpine.
 const WIREGUARD_PACKAGE: &str = "wireguard-tools";
 
@@ -237,6 +245,21 @@ impl Backend for AlpineBackend {
 
     fn admin_group(&self) -> &'static str {
         ADMIN_GROUP
+    }
+
+    /// The one family with no bash to hand a new account.
+    ///
+    /// Measured on `alpine:3.23`: the base image has `/bin/sh -> /bin/busybox`
+    /// and `/etc/shells` listing `/bin/sh` and `/bin/ash`, with no bash package
+    /// installed. The default of `/bin/bash` produced an account whose shell
+    /// does not exist — silently, since busybox `adduser` accepts the path and
+    /// exits 0.
+    ///
+    /// `/bin/ash` rather than `/bin/sh`: both exist and resolve to busybox, and
+    /// this is the one `/etc/shells` names as a login shell, which is what
+    /// `users.set-shell` offers from.
+    fn default_login_shell(&self) -> &'static str {
+        LOGIN_SHELL
     }
 
     fn packages(&self) -> &dyn PackageManager {

@@ -233,6 +233,31 @@ pub trait Backend {
     /// that still cannot escalate.
     fn admin_group(&self) -> &'static str;
 
+    /// The login shell a newly created account is given.
+    ///
+    /// A name the distribution resolves, so it belongs here rather than in the
+    /// task — the same shape as [`Backend::admin_group`], and found the same
+    /// way. It was a constant reading `/bin/bash`, justified by a comment
+    /// saying bash "is present on both families out of the box", written when
+    /// there were two families and never rechecked as three more arrived.
+    ///
+    /// Alpine ships busybox and **no bash**, and busybox `adduser` does not
+    /// validate the path: `adduser -s /bin/bash` exits 0, `users.create`
+    /// reports success, and the account cannot open a login shell by any route
+    /// — measured on `alpine:3.23`, where `su - alice` answers `can't execute
+    /// '/bin/bash': No such file or directory`. Worse than a cosmetic default,
+    /// because such an account still satisfies the lockout guards: they ask
+    /// what an account can authenticate with, never whether its shell exists.
+    ///
+    /// The default is `/bin/bash` because four families ship it and it is what
+    /// they were already getting; Alpine overrides. `/bin/sh` everywhere would
+    /// have been the smaller diff and the worse answer — it is a name every
+    /// family has, and handing an interactive administrator busybox `ash` on a
+    /// host with bash installed is a downgrade nobody asked for.
+    fn default_login_shell(&self) -> &'static str {
+        "/bin/bash"
+    }
+
     /// Makes [`Backend::admin_group`] name a group that exists.
     ///
     /// Four families ship it with the system and need nothing here. openSUSE

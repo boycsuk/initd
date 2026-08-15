@@ -481,7 +481,7 @@ impl Task for CreateUser {
         // not need one. Offered rather than fixed because that reasoning holds
         // for SSH and not for the provider's rescue console, which is a local
         // TTY where a key is not offered at all.
-        accounts.create(executor, &user, DEFAULT_SHELL, password)?;
+        accounts.create(executor, &user, backend.default_login_shell(), password)?;
 
         // The fact, never the value. What is reported here reaches the output
         // pane, which `y` copies wholesale into a bug report.
@@ -579,6 +579,26 @@ impl Task for SetShell {
                 .with_hint("must appear in /etc/shells")
                 .suggesting_shells(),
         ]
+    }
+
+    /// Opens the shell field on one this host actually has.
+    ///
+    /// `params` answers for the task and keeps `/bin/bash`, which is what the
+    /// CLI documents and what four of five families ship. This answers for the
+    /// machine: Alpine has no bash, and a field pre-filled with a path that
+    /// does not exist is one an operator accepts by pressing Enter — busybox
+    /// `adduser` takes it without complaint and the account cannot log in.
+    fn params_here(&self, backend: &dyn Backend) -> Vec<Param> {
+        self.params()
+            .into_iter()
+            .map(|param| {
+                if param.name == Self::SHELL {
+                    param.with_initial(backend.default_login_shell().to_owned())
+                } else {
+                    param
+                }
+            })
+            .collect()
     }
 
     supported_everywhere!();
@@ -1392,6 +1412,52 @@ mod tests {
 
         assert!(matches!(err, Error::AccountExists { .. }), "{err:?}");
         assert_eq!(commands.len(), 1, "nothing must be created: {commands:?}");
+    }
+
+    #[test]
+    fn a_new_account_gets_a_shell_the_family_actually_ships() {
+        // `/bin/bash` was a constant, justified by a comment saying bash "is
+        // present on both families" — written when there were two. Alpine
+        // ships busybox and no bash, and its `adduser` accepts the path
+        // without checking: the account is created, reported as provisioned,
+        // and cannot open a login shell. Measured on `alpine:3.23`, where
+        // `su - alice` answers `can't execute '/bin/bash'`.
+        //
+        // Asserted per family rather than for Alpine alone, so a future
+        // override that broke one of the other four fails here.
+        for (family, shell) in [
+            (Family::Debian, "/bin/bash"),
+            (Family::Arch, "/bin/bash"),
+            (Family::Rhel, "/bin/bash"),
+            (Family::Suse, "/bin/bash"),
+            (Family::Alpine, "/bin/ash"),
+        ] {
+            let backend = for_family(family);
+
+            assert_eq!(
+                backend.default_login_shell(),
+                shell,
+                "{family} must hand out a shell it has"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shell_field_opens_on_one_this_host_has() {
+        // The other half: a field pre-filled with a path the host lacks is one
+        // an operator accepts by pressing Enter. `params` keeps `/bin/bash`
+        // for the CLI's documentation; `params_here` answers for the machine.
+        let initial = |family| {
+            SetShell
+                .params_here(for_family(family).as_ref())
+                .into_iter()
+                .find(|param| param.name == SetShell::SHELL)
+                .map(|param| param.initial)
+                .expect("the shell field must be declared")
+        };
+
+        assert_eq!(initial(Family::Debian), "/bin/bash");
+        assert_eq!(initial(Family::Alpine), "/bin/ash");
     }
 
     #[test]

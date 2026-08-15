@@ -34,6 +34,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as that exact relationship rather than as equals.
 
 ### Fixed
+- **A saved nftables ruleset duplicated every rule when it was replayed.**
+  `persist` dumped `nft list ruleset` into the file the boot reads, with no
+  header. `nft -f` merges into whatever the kernel already holds rather than
+  replacing it, so a reload — `systemctl reload nftables`, whose `ExecReload`
+  on Debian is exactly `nft -f /etc/nftables.conf` — doubled the ruleset, and
+  the next `persist` doubled the doubled set.
+
+  Measured on `debian:13`: one `tcp dport 22 accept` before replaying the saved
+  file and two after; with the fix it stays at one across three replays, and a
+  rule another tool put in `inet filter` still survives the round trip.
+
+  The file now opens with `flush ruleset`, which is what both distributions do
+  to their own: Debian's shipped `/etc/nftables.conf` begins with that line and
+  Arch's with `destroy table inet filter`. `flush ruleset` rather than dropping
+  only this tool's table, because the dump carries every table — the file is
+  what the boot replays *instead of* the kernel's state, so it has to describe
+  all of it.
+
+- **A new account on Alpine got a shell that does not exist.** `users.create`
+  passed a `/bin/bash` constant, justified by a comment reading "it is present
+  on both families out of the box" — written when there were two families and
+  never rechecked as three more arrived.
+
+  Alpine ships busybox and no bash, and its `adduser` does not validate the
+  path: measured on `alpine:3.23`, `adduser -s /bin/bash` exits 0, the task
+  reports the account provisioned, and `su - alice` answers `can't execute
+  '/bin/bash': No such file or directory`.
+
+  Worse than a cosmetic default, because such an account still satisfies the
+  lockout guards — they ask what an account can authenticate *with*, never
+  whether its shell exists, so an unusable account could vouch for locking
+  root.
+
+  The shell is a name the distribution resolves, so it moved to the backend as
+  `default_login_shell`, the same shape as `admin_group`. Four families keep
+  `/bin/bash` through the default; Alpine answers `/bin/ash`, which is what its
+  `/etc/shells` names. `users.set-shell` opens its field on the same value
+  through `params_here`, since a field pre-filled with a path the host lacks is
+  one an operator accepts by pressing Enter.
+
 - **The SSH hardening guard asked the wrong account, and refused on the hosts
   it was written to protect.** `ssh.harden` and `ssh.harden-strict` both
   required an authorised key **for root**, so a server whose root is locked —
