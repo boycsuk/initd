@@ -190,13 +190,25 @@ pub struct KeyHolder {
 /// host with root locked by default, the recommended posture, both tasks were
 /// unreachable while an ordinary account could log in perfectly well.
 ///
-/// Three conditions, all of which must hold:
+/// Four conditions, all of which must hold:
 ///
 /// - the account has a key [`has_authorized_key`] recognises;
 /// - `PermitRootLogin` does not refuse it, which only ever excludes root;
 /// - `AllowUsers`, where the file sets it, names it. A key held by an account
 ///   the daemon already refuses is not a way back in, and this is the condition
 ///   the tiers ignored entirely.
+/// - `DenyUsers` does not name it. Unlike the three above this one only ever
+///   subtracts, and no key overrides it: an account listed there is refused
+///   however it authenticates. Counting it left the guard approving a lockout
+///   on the strength of an account sshd already turns away — and because the
+///   confirmation dialog derives from this same scan, the operator saw their
+///   own name listed as a way back in and confirmed on it.
+///
+/// `DenyGroups` and `AllowGroups` are *not* read, and the difference is what
+/// each costs: these two directives name accounts, which this scan already has,
+/// while a group directive needs the group membership of every account —
+/// another command per account, through a capability this does not take. A host
+/// whose only exclusion is by group is therefore still judged optimistically.
 ///
 /// Read from the configuration rather than assumed, so the strict tier — which
 /// writes neither directive — judges by what the file actually says while the
@@ -232,6 +244,13 @@ pub(crate) fn accounts_keeping_ssh_access(
         crate::tasks::sshd_config::directive_value(contents, "AllowUsers")
             .map(|value| value.split_whitespace().map(str::to_owned).collect());
 
+    // Absent means nobody is denied, so this needs no `Option`: an empty list
+    // and a missing directive mean the same thing here, which is the shape that
+    // distinguishes a subtraction from `AllowUsers`.
+    let denied: Vec<String> = crate::tasks::sshd_config::directive_value(contents, "DenyUsers")
+        .map(|value| value.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
+
     backend
         .accounts()
         .list_ranked(executor)?
@@ -240,7 +259,8 @@ pub(crate) fn accounts_keeping_ssh_access(
             let refused_outright = (root_refused && account.name == ROOT)
                 || allowed
                     .as_ref()
-                    .is_some_and(|names| !names.contains(&account.name));
+                    .is_some_and(|names| !names.contains(&account.name))
+                || denied.contains(&account.name);
 
             let keeps_access =
                 !refused_outright && has_authorized_key(executor, backend, &account.name)?;
@@ -397,6 +417,40 @@ mod tests {
         let holders =
             accounts_keeping_ssh_access(&mock, backend.as_ref(), "Port 22\nAllowUsers bob\n", true)
                 .expect("the scan must succeed");
+
+        assert_eq!(keeps_access(&holders), vec!["bob".to_owned()]);
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|c| c.contains("/home/alice")),
+            "an account the directive excludes is not worth a lookup: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    #[test]
+    fn a_denyusers_entry_is_not_a_way_back_in() {
+        // `DenyUsers` only ever subtracts, and no key overrides it. Counting
+        // alice left the guard approving `ssh.harden` on the strength of an
+        // account sshd already turns away — and the confirmation, which derives
+        // from this same scan, showed the operator their own name as proof they
+        // could get back in.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(THREE_ACCOUNTS), // cat /etc/passwd
+            Reply::ok("bob:x:1001:1001::/home/bob:/bin/sh"),
+            Reply::ok(""),       // bob's authorized_keys exists
+            Reply::ok(TEST_KEY), // and holds a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let holders = accounts_keeping_ssh_access(
+            &mock,
+            backend.as_ref(),
+            "Port 22\nDenyUsers alice\n",
+            true,
+        )
+        .expect("the scan must succeed");
 
         assert_eq!(keeps_access(&holders), vec!["bob".to_owned()]);
         assert!(
