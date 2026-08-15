@@ -99,6 +99,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could arrive already in the habit of pressing. Now `Y`, the asymmetry the
   verification window's `K` and `R` already carry.
 
+- **The release workflow ran its widest jobs on inherited permissions.** Only
+  `publish` narrowed, so `verify` and `build` held whatever the repository
+  defaults grant while running the whole test suite and every build script in
+  the dependency tree — the widest code-execution surface here. `ci.yml` already
+  stated `contents: read` at the top and explained why; the more sensitive file
+  did not.
+
+- **Third-party actions were pinned to mutable tags.** `checkout@v4`,
+  `install-action@nextest`, `upload-artifact@v4`, `download-artifact@v4`,
+  `cargo-deny-action@v2` and `rust-cache@v2` all resolve to whatever the tag
+  points at today. This matters more here than in most repositories: releases
+  are deliberately unsigned, so compromise of the publishing side *is* the
+  accepted threat model, and an unpinned action in the job holding the release
+  token is a route straight into it. All nineteen uses now name a commit SHA
+  with the tag kept as a trailing comment.
+
+- **A manual dispatch could publish under any tag name.** The `on.push.tags`
+  filter constrains the automatic trigger to `vMAJOR.MINOR.PATCH`;
+  `workflow_dispatch` takes a free-text input that reached `gh release create`
+  unchecked, so the file's own comment about semantic versions held for one of
+  its two triggers. Validated in the job, since a workflow input cannot be
+  constrained by pattern.
+
 - **`cargo deny` passed on an advisory it was never checking.** Informational
   advisories default to `workspace`, which covers only *direct* dependencies —
   four here against 182 crates in the lock. So `RUSTSEC-2026-0253`, a
