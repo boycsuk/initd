@@ -208,8 +208,30 @@ impl PrivilegeEscalator for HelperEscalation {
     fn auth_need(&self) -> AuthNeed {
         match self.program.as_str() {
             // `sudo -n -v` answers whether the timestamp is still valid without
-            // prompting, which is the question, since Arch expires it after
+            // prompting, which is *most* of the question: Arch expires it after
             // five minutes and a long task outlives that.
+            //
+            // Not all of it, and the gap is worth naming rather than leaving
+            // for the next reader to find. `-v` reports on the user's
+            // credential cache, not on the command about to run, so a sudoers
+            // granting `NOPASSWD` for one command and requiring a password for
+            // others answers 0 here and then asks. Measured: with
+            // `op ALL=(ALL) NOPASSWD: /usr/bin/id` and nothing else, `sudo -n -v`
+            // exits 0 while `sudo -n cat /etc/shadow` reports `a password is
+            // required`.
+            //
+            // Not covered, and the honest statement of what that costs is that
+            // the terminal is not handed over: `wrap` builds `sudo <program>`
+            // with no `-n`, so on such a host the prompt is raised under the
+            // alternate screen — the outcome this probe exists to prevent, for
+            // a sudoers shape it cannot see.
+            //
+            // Left alone because the fix is worse than the gap. Probing the
+            // actual command means `sudo -n -l <program> <args>` before every
+            // privileged call, doubling the invocations, and `-l` answers about
+            // a command line rather than about what running it will do. A host
+            // configured this way is also one where `sudo -v` at startup
+            // already establishes nothing.
             SUDO => AuthNeed::Probe {
                 program: self.path.clone(),
                 args: vec!["-n".to_owned(), "-v".to_owned()],
