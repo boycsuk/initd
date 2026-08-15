@@ -130,6 +130,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   informational classes are now `all`, and `lru` moved to the patched 0.18.2.
 
 ### Fixed
+- **A port read back from a task's own parameters skipped the range check.**
+  `ParamValues::port` parsed a number and stopped there, while the interactive
+  form refused `0` and anything above 65535 at the field — so which check an
+  operator met depended on the route they took. `docs/cli.md` promises a port
+  outside 1–65535 exits `1`, and this is what makes that true rather than
+  dependent on each task re-checking. `change-port`'s own parse is deliberately
+  unchanged: the documented split between exit `2` for a non-number and exit `1`
+  for an out-of-range port is a contract scripts read, and a test pins it.
+
+- **`busybox_accounts::create` named the home directory Alpine already
+  chooses.** It passed `-h /home/{user}` explicitly. Measured on `alpine:3.23`:
+  `adduser` without the flag lands the account on `/home/<user>` and creates the
+  directory, so the flag stated a distribution's convention from outside it and
+  would have kept writing `/home` the day Alpine moved. `ShadowAccounts` passes
+  `-m` and lets `useradd` resolve the path for the same reason.
+
+- **The install script discarded the error it was diagnosing.** `install`'s
+  stderr went to `/dev/null` and every failure was reported as "could not
+  write", steering the reader towards `INITD_INSTALL_DIR` — the one answer that
+  can leave a working binary somewhere nothing looks for it. A full disk, a
+  read-only mount and a refused escalation all reached that same sentence. The
+  real error is now shown above it.
+
+- **`transcript()` re-read the locale from the environment.** Every other module
+  that draws holds the `Lang` its caller resolved once; this was the one site
+  calling `from_env()` again, on the path that redacts a WireGuard private key.
+  Not a disclosure — the placeholder replaces the value either way.
+
 - **An indented directive was read back as its whole line.** `directive_value`
   matched on the trimmed line and split the raw one, so `    PermitRootLogin no`
   returned `PermitRootLogin no` rather than `no` — and the idempotence check
