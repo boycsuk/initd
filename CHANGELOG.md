@@ -34,6 +34,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as that exact relationship rather than as equals.
 
 ### Fixed
+- **Applying the same SSH hardening twice grew the file.** `set_directive`
+  commented the old line and wrote a new one without ever asking whether the
+  value was already what it wanted, and `is_directive_line` stripped a leading
+  `#` before comparing — so a line that was *already* commented counted as a
+  directive and was commented again. Measured on `debian:13`: 143 lines became
+  162 on the second identical run, and `# X11Forwarding yes` became
+  `# # X11Forwarding yes`, gaining a level per pass.
+
+  Three changes, and together they mean the file is now written where each
+  directive already lives:
+
+  - Setting a directive to the value it already holds writes nothing. Three
+    runs now leave the file byte-identical after the first — measured, 126
+    lines each time.
+  - A directive whose line exists commented out is **uncommented in place**
+    rather than appended below, so the file keeps its own order. A stock
+    `sshd_config` is mostly such lines: 53 commented against 7 active.
+  - `unset_directive` comments a line back out, which is the inverse and what
+    a switch turning off will mean.
+
+  Two things the parser now has to tell apart, both present in Debian's shipped
+  file. Prose that mentions a directive (`# the setting of "PermitRootLogin
+  prohibit-password".`) is separated from a commented directive
+  (`#PermitRootLogin prohibit-password`) by whether the `#` touches the
+  keyword. And a directive under a **commented** `Match` block is a per-user
+  override that is inert because its header is off — uncommenting it would
+  write into a block whose `Match` is still commented, so the scan stops there.
+
+  The file it lands on is only +2 lines over the pristine one, against +19
+  before.
+
 - **firewalld's reads ran unprivileged, so a refused query answered "nothing
   is open".** Every write here escalated and none of the reads did. firewalld
   authorizes reads through polkit, and there is no polkit agent under a TUI —
