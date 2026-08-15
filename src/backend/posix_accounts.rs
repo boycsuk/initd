@@ -298,6 +298,10 @@ pub fn set_password(executor: &dyn Executor, user: &str, password: &str) -> Resu
 /// password. A missing entry answers false rather than erroring: the question
 /// is whether this account can authenticate, and one that is not in the file
 /// cannot.
+///
+/// A file that could not be *read* is a different answer from an account that
+/// is not in it, and raises [`Error::AccountStateUnreadable`] — see
+/// [`is_locked`], which draws the same line for the same reason.
 pub fn has_password(executor: &dyn Executor, user: &str) -> Result<bool> {
     let command = Command::new("grep")
         .args([&format!("^{user}:"), SHADOW_FILE])
@@ -306,6 +310,19 @@ pub fn has_password(executor: &dyn Executor, user: &str) -> Result<bool> {
     let output = executor.run(&command)?;
 
     if !output.success() {
+        // The same split [`is_locked`] makes, and for the same reason: `grep`
+        // exits 1 for "no matching line" and 2 for "could not read the file",
+        // and only the first is an answer. Reading the second as "no password"
+        // makes every account on the host look unable to authenticate, so the
+        // guard in `users.lock-root` reports a machine as stranded when what
+        // actually happened is that `/etc/shadow` could not be read — sending
+        // the operator to fix an account rather than the read.
+        if !output.stderr.trim().is_empty() {
+            return Err(Error::AccountStateUnreadable {
+                user: user.to_owned(),
+            });
+        }
+
         return Ok(false);
     }
 
@@ -527,6 +544,44 @@ mod tests {
             MockExecutor::with_replies([Reply::failure(1, "cat: /etc/passwd: No such file")]);
 
         assert!(list_accounts(&mock).is_err());
+    }
+
+    #[test]
+    fn an_unreadable_shadow_file_is_an_error_rather_than_an_absent_password() {
+        // `grep` exits 2 when it cannot read the file, and reading that as "no
+        // password" makes every account look unable to authenticate — so
+        // `users.lock-root` reports a host as stranded on the strength of a
+        // failed read. `/etc/shadow` is mode 640, so this is what an
+        // unprivileged caller gets, not an exotic case.
+        let mock =
+            MockExecutor::with_replies([Reply::failure(2, "grep: /etc/shadow: Permission denied")]);
+
+        assert!(matches!(
+            has_password(&mock, "alice"),
+            Err(Error::AccountStateUnreadable { .. })
+        ));
+    }
+
+    #[test]
+    fn an_account_absent_from_shadow_has_no_password_rather_than_erroring() {
+        // The other half of the same split: exit 1 with nothing on stderr is an
+        // answer, and an account that is not in the file cannot authenticate.
+        let mock = MockExecutor::with_replies([Reply::failure(1, "")]);
+
+        assert!(!has_password(&mock, "alice").expect("exit 1 is an answer"));
+    }
+
+    #[test]
+    fn an_unreadable_shadow_file_is_an_error_for_the_expiry_read_too() {
+        // The guard `has_password` was missing, pinned on the function that
+        // already had it so the pair cannot drift apart again.
+        let mock =
+            MockExecutor::with_replies([Reply::failure(2, "grep: /etc/shadow: Permission denied")]);
+
+        assert!(matches!(
+            is_locked(&mock, "alice"),
+            Err(Error::AccountStateUnreadable { .. })
+        ));
     }
 
     #[test]
