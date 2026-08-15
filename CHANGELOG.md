@@ -34,6 +34,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as that exact relationship rather than as equals.
 
 ### Fixed
+- **firewalld's reads ran unprivileged, so a refused query answered "nothing
+  is open".** Every write here escalated and none of the reads did. firewalld
+  authorizes reads through polkit, and there is no polkit agent under a TUI —
+  measured on `rockylinux:9` against a running daemon, where an unprivileged
+  `--list-ports`, `--list-services`, `--info-service` and `--state` each
+  answer `NotAuthorizedException: Not Authorized(uid)` and exit 253, while the
+  same commands under `sudo` answer `cockpit dhcpv6-client ssh` and `running`.
+
+  Two consequences, both silent. `close` confirms `--remove-port` by reading
+  the zone back, and a listing that could not be read answers "the port is
+  gone" — for the one case `--remove-port` cannot handle, a port admitted as a
+  *service*, which on a stock RHEL host is SSH. And `is_available` mapped the
+  refusal to `false`, which promotes nftables: this tool would then write
+  `inet initd` with `policy drop` over a host whose ruleset firewalld holds,
+  the exact outcome `RhelBackend::firewalls` orders the two to prevent.
+
+  The reads now escalate, and a refusal is reported rather than read as an
+  empty answer — the shape `nftables::state` was already fixed for, one
+  front-end along. `is_available` stays unprivileged, because it runs while
+  the tree is drawn and escalating there would prompt for a password nobody
+  asked for; it reads 253 as *present*, since polkit only has something to
+  refuse when the daemon is there to answer.
+
 - **A port declared closed that the firewall could not close was reported
   nowhere.** firewalld admits SSH on a stock RHEL host as the *service* `ssh`,
   and `--remove-port 22/tcp` against that succeeds while changing nothing —
