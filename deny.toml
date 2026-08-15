@@ -19,6 +19,16 @@ targets = [
 # A known vulnerability or an unmaintained crate fails the build rather than
 # printing a warning nobody reads.
 yanked = "deny"
+# Informational advisories default to `workspace`, which covers only *direct*
+# dependencies — and this project has four of those against 182 crates in the
+# lock, so the default was checking a fiftieth of what ships. It went unnoticed
+# because the check still answered `advisories ok`: RUSTSEC-2026-0253, a
+# use-after-free in `lru`, reached the binary through `ratatui` and was never
+# counted, while `cargo audit` reported it all along. Both classes are set to
+# `all` because a transitive crate is linked into the same static binary as a
+# direct one.
+unsound = "all"
+unmaintained = "all"
 ignore = []
 
 [licenses]
