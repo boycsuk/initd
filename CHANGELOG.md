@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The account chooser offers what a person logs in as, and says so.** It
+  listed every entry in `/etc/passwd`, ordered so the human accounts came
+  first. Measured on freshly provisioned hosts, that is **18** rows on
+  `debian:13`, 17 on `alpine:3.23` and 14 on `rockylinux:9` — of which exactly
+  one is ever the answer.
+
+  The rows nobody reads are the ones a mis-click lands on, and some of them are
+  expensive: `nobody`'s home is `/` on both Alpine and Rocky, and `daemon`'s is
+  `/usr/sbin` on Debian, so `users.delete` offering them put a whole tree one
+  keystroke from removal.
+
+  Filtered, never refused. The field still accepts a name the list does not
+  carry, so `www-data` — which owns a home a key can legitimately be installed
+  into — stays reachable by typing it. That was already the chooser's stated
+  contract and is what makes filtering safe here.
+
+  The overlay's title names the rule (`Username — login accounts only`) rather
+  than claiming to be everything the host holds, because an operator who cannot
+  find an account needs to know whether it is missing or merely not offered.
+
+  `list_ranked` is untouched and still filters by nothing: `users.lock-root`
+  reasons over every account, and a scan that skipped one would report a host
+  as stranded while somebody was logged into it. A test now pins the two lists
+  as that exact relationship rather than as equals.
+
 ### Fixed
 - **The SSH hardening guard asked the wrong account, and refused on the hosts
   it was written to protect.** `ssh.harden` and `ssh.harden-strict` both

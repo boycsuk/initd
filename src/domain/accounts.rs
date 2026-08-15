@@ -15,7 +15,8 @@ pub trait AccountReader {
     /// Whether an account with this name exists.
     fn exists(&self, executor: &dyn Executor, user: &str) -> Result<bool>;
 
-    /// Every account on the host, the ones a person logs in as first.
+    /// The accounts a person logs in as: `root` and the uids above the
+    /// distributions' threshold, service accounts left out.
     ///
     /// A default rather than a method each family answers, unlike the two
     /// above it: those differ because `getent` is absent from busybox, and the
@@ -28,7 +29,11 @@ pub trait AccountReader {
     /// Offered to the operator as suggestions, never as the permitted set: an
     /// account can be created between one form opening and the next, and a
     /// chooser that refused what it had not listed would be wrong exactly when
-    /// the operator knows more than the file does.
+    /// the operator knows more than the file does. That is what makes the
+    /// filtering safe — a service account stays reachable by typing its name,
+    /// and only stops being *offered*. Anything that has to reason about the
+    /// accounts rather than suggest one wants [`AccountReader::list_ranked`],
+    /// which filters by nothing.
     fn list(&self, executor: &dyn Executor) -> Result<Vec<String>> {
         crate::backend::posix_accounts::list_accounts(executor)
     }
@@ -153,16 +158,20 @@ mod tests {
     }
 
     #[test]
-    fn the_chooser_contract_is_unchanged_by_the_ranked_list_existing() {
-        // `list` is what the form offers as suggestions, and its contract —
-        // suggestions, never the permitted set — is one this addition must not
-        // touch. Pinned here rather than assumed, since the two now share a
-        // parse.
+    fn the_chooser_offers_the_accounts_a_person_logs_in_as() {
+        // `list` is what the form offers as suggestions, and it leaves out the
+        // service accounts: a stock host carries fourteen to eighteen entries
+        // and one of them is ever the answer. The contract it does *not*
+        // change is that these are suggestions rather than the permitted set,
+        // so a name left out here is still accepted when typed.
+        //
+        // Reached through the trait rather than the free function, because
+        // what the interface holds is a `&dyn AccountReader`.
         let mock = MockExecutor::with_replies([Reply::ok(PASSWD)]);
 
         assert_eq!(
             UnixAccounts.list(&mock).expect("the names must list"),
-            vec!["root", "alice", "www-data"]
+            vec!["root", "alice"]
         );
     }
 

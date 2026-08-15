@@ -515,6 +515,24 @@ pub enum Msg {
     FormOptionsTitle {
         label: String,
     },
+    /// The same title, where the list is a filtered subset of what the host
+    /// holds.
+    ///
+    /// Separate from [`Msg::FormOptionsTitle`] rather than a flag on it,
+    /// because the two make different promises: that one says "this is what
+    /// the host has", and a filtered list saying so would be a lie the
+    /// operator only catches by knowing the account is missing. Naming the
+    /// rule is what lets them decide to type a name the list does not carry.
+    FormOptionsTitleFiltered {
+        label: String,
+        rule: String,
+    },
+    /// The rule the account chooser filters by, named in the overlay's title.
+    ///
+    /// Its own message rather than a literal at the call site, so the sentence
+    /// an operator reads when an account is missing from the list is
+    /// translated with everything else.
+    FormOptionsLoginAccountsOnly,
     /// What `Enter` does in the options overlay.
     FormOptionsChoose,
     FormKeyField,

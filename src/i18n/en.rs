@@ -554,6 +554,16 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::FormFieldUnset => "(unset)".to_owned(),
         Msg::FormKeyList => "list".to_owned(),
         Msg::FormOptionsTitle { label } => format!(" {label} on this host "),
+        // Names the rule rather than only the subset, because the operator's
+        // question on not finding an account is whether it is missing or
+        // merely not offered — and the field still accepts what the list
+        // leaves out.
+        Msg::FormOptionsTitleFiltered { label, rule } => format!(" {label} — {rule} "),
+        // "login accounts" rather than "uid >= 1000", which is the rule and
+        // not the reason: an operator scanning for a missing name needs to
+        // know what kind of account was left out, and root is on the list
+        // while sitting below any threshold the number would state.
+        Msg::FormOptionsLoginAccountsOnly => "login accounts only".to_owned(),
         Msg::FormOptionsChoose => "choose".to_owned(),
         Msg::FormKeyField => "field".to_owned(),
         Msg::FormKeyContinue => "continue".to_owned(),

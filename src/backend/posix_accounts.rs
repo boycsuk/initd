@@ -95,14 +95,28 @@ const NON_LOGIN_SHELLS: [&str; 9] = [
 /// the file this reads. Listing is not one of the operations the two suites
 /// disagree about.
 ///
-/// Ordered rather than filtered. A system account is a legitimate answer —
-/// `www-data` owns a home a key can be installed into — so hiding it would
-/// leave the form refusing to offer something the system accepts. But there
-/// are forty of them on a stock Debian and two of the other kind, and a
-/// chooser that opens on `_apt` is one nobody reads to the end.
+/// Filtered to the accounts a person logs in as: `root` and everything from
+/// [`FIRST_HUMAN_UID`] up. What that leaves out is measured rather than
+/// estimated — a freshly provisioned host offers **18** accounts on
+/// `debian:13`, 17 on `alpine:3.23` and 14 on `rockylinux:9`, and exactly one
+/// of them is the answer in every case.
+///
+/// Suggestions only, which is what makes filtering safe here and wrong in
+/// [`list_ranked_accounts`]. The field still accepts a name that is not on the
+/// list, so `www-data` — which owns a home a key can legitimately be installed
+/// into — stays reachable by typing it. What is removed is the chooser
+/// offering forty rows nobody reads to the end, and with it the accident the
+/// rows invite: `nobody`'s home is `/` on both Alpine and Rocky, and `daemon`'s
+/// is `/usr/sbin` on Debian, so a mis-click in `users.delete` reached a
+/// removal of the whole tree.
+///
+/// The rank is what decides, rather than the uid directly, so `root` survives
+/// a filter written in terms of a threshold it sits below — it is the account
+/// an administrator reaches for most and exists on every host.
 pub fn list_accounts(executor: &dyn Executor) -> Result<Vec<String>> {
     Ok(list_ranked_accounts(executor)?
         .into_iter()
+        .filter(|account| account.rank != Rank::System)
         .map(|account| account.name)
         .collect())
 }
@@ -418,19 +432,47 @@ mod tests {
     }
 
     #[test]
-    fn a_system_account_is_ordered_down_rather_than_hidden() {
-        // `www-data` owns a home a key can be installed into, so refusing to
-        // offer it would leave the form rejecting what the system accepts.
+    fn a_system_account_is_left_out_of_the_suggestions() {
+        // The chooser offers what a person logs in as. A stock host has 14 to
+        // 18 accounts and one of them is ever the answer, and the rows nobody
+        // reads are the ones a mis-click lands on: `nobody`'s home is `/` on
+        // Alpine and Rocky, so `users.delete` offering it put the whole tree
+        // one keystroke from removal.
+        //
+        // Suggestions only — the field still accepts a name that is not on the
+        // list, which is what keeps `www-data` reachable for the key it can
+        // legitimately hold. That property belongs to the field and is pinned
+        // there; what this asserts is that the list stops *offering* it.
         let mock = MockExecutor::with_replies([Reply::ok(PASSWD)]);
 
         let accounts = list_accounts(&mock).expect("a readable file lists its accounts");
 
         assert!(
-            accounts.contains(&"www-data".to_owned()),
-            "got {accounts:?}"
+            !accounts.contains(&"www-data".to_owned()),
+            "a service account must not be offered: {accounts:?}"
         );
-        assert!(accounts.contains(&"nobody".to_owned()), "got {accounts:?}");
-        assert_eq!(accounts.len(), 7, "every entry survives: {accounts:?}");
+        assert!(
+            !accounts.contains(&"nobody".to_owned()),
+            "the account whose home is `/` must not be offered: {accounts:?}"
+        );
+    }
+
+    #[test]
+    fn the_suggestions_keep_root_and_the_human_accounts() {
+        // The other half of the filter, asserted separately so a change that
+        // hid everything would fail here rather than pass the exclusions above.
+        let mock = MockExecutor::with_replies([Reply::ok(PASSWD)]);
+
+        let accounts = list_accounts(&mock).expect("a readable file lists its accounts");
+
+        assert!(
+            accounts.contains(&"root".to_owned()),
+            "root exists on every host and is the likeliest answer: {accounts:?}"
+        );
+        assert!(
+            accounts.contains(&"alice".to_owned()),
+            "a person's account must be offered: {accounts:?}"
+        );
     }
 
     #[test]
@@ -448,12 +490,18 @@ mod tests {
     fn a_login_shell_of_false_counts_as_no_login() {
         // `/bin/false` shares none of `nologin`'s spelling and does the same
         // job, which is why the list names shells rather than matching a
-        // substring. `backup` has one, so it must not lead.
+        // substring. `backup` has one, so it must rank below a person's
+        // account.
+        //
+        // Asked of the ranked list rather than the names: the shell is what
+        // decides the rank, and the suggestions now drop everything that ranks
+        // as a system account — so a test reading `list_accounts` would find
+        // `backup` absent and pass without ever testing the shell.
         let mock = MockExecutor::with_replies([Reply::ok(PASSWD)]);
 
-        let accounts = list_accounts(&mock).expect("a readable file lists its accounts");
-        let backup = accounts.iter().position(|name| name == "backup");
-        let alice = accounts.iter().position(|name| name == "alice");
+        let accounts = list_ranked_accounts(&mock).expect("a readable file lists its accounts");
+        let backup = accounts.iter().position(|entry| entry.name == "backup");
+        let alice = accounts.iter().position(|entry| entry.name == "alice");
 
         assert!(backup > alice, "got {accounts:?}");
     }
@@ -557,19 +605,32 @@ mod tests {
     }
 
     #[test]
-    fn the_ranked_list_is_the_one_the_names_come_from() {
-        // The two must not drift: `list_accounts` is the chooser's contract and
-        // is now a projection of this. Asserted as an equality rather than by
-        // eye, because a second parse that agreed today is one that can stop
-        // agreeing.
+    fn the_names_are_the_ranked_list_with_the_service_accounts_dropped() {
+        // The two must not drift, and they are no longer equal: the chooser
+        // suggests what a person logs in as, while anything that has to
+        // *reason* about the host reads the ranked list and must still reach
+        // every account. `users.lock-root` is the caller that would report a
+        // machine as stranded if this projection ever became the one it read.
+        //
+        // Asserted as an exact relationship rather than by eye, because a
+        // filter that quietly widened — or that started dropping root — would
+        // otherwise pass.
         let names = MockExecutor::with_replies([Reply::ok(PASSWD)]);
         let ranked = MockExecutor::with_replies([Reply::ok(PASSWD)]);
 
+        let ranked: Vec<RankedAccount> =
+            list_ranked_accounts(&ranked).expect("the ranked list must list");
+
+        assert!(
+            ranked.iter().any(|entry| entry.rank == Rank::System),
+            "the fixture must hold a system account for this to prove anything"
+        );
+
         assert_eq!(
             list_accounts(&names).expect("the names must list"),
-            list_ranked_accounts(&ranked)
-                .expect("the ranked list must list")
+            ranked
                 .into_iter()
+                .filter(|account| account.rank != Rank::System)
                 .map(|account| account.name)
                 .collect::<Vec<_>>()
         );
