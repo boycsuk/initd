@@ -271,7 +271,7 @@ impl App {
             return;
         }
 
-        if clipboard::copy(&self.output.transcript()) {
+        if clipboard::copy(&self.output.transcript(self.lang)) {
             return;
         }
 

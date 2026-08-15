@@ -137,8 +137,13 @@ impl OutputPane {
     /// saying where the value went sends them back to the screen, which is the
     /// only place it exists. The value itself does not cross the SSH hop into a
     /// clipboard history the same way `write_uncopied` keeps it out of a backup.
-    pub fn transcript(&self) -> String {
-        let redacted = Lang::from_env().render(&Msg::TranscriptRedacted);
+    ///
+    /// Takes the language rather than resolving it, the rule the rest of the
+    /// interface follows: a module that draws holds the `Lang` its caller
+    /// resolved once, and `from_env()` here was the one site reading the
+    /// environment again — on the path that redacts a WireGuard private key.
+    pub fn transcript(&self, lang: Lang) -> String {
+        let redacted = lang.render(&Msg::TranscriptRedacted);
         let mut text = self.lines.iter().fold(String::new(), |mut text, line| {
             text.push_str(if line.sensitive {
                 &redacted
@@ -729,7 +734,7 @@ mod tests {
             "usermod: no changes".to_owned(),
         ));
 
-        let transcript = pane.transcript();
+        let transcript = pane.transcript(Lang::default());
 
         assert_eq!(
             transcript,
@@ -852,7 +857,7 @@ mod tests {
         pane.push(line("[Interface]"));
         pane.push(OutputLine::new(Stream::Stdout, "PrivateKey = wO3n1x=".to_owned()).sensitive());
 
-        let transcript = pane.transcript();
+        let transcript = pane.transcript(Lang::default());
 
         assert!(!transcript.contains("wO3n1x="), "{transcript}");
         assert!(
@@ -871,7 +876,7 @@ mod tests {
         let mut pane = OutputPane::new();
         pane.push(OutputLine::new(Stream::Stdout, "PresharedKey = k7=".to_owned()).sensitive());
 
-        let transcript = pane.transcript();
+        let transcript = pane.transcript(Lang::default());
 
         assert_eq!(transcript.lines().count(), 1, "{transcript}");
         assert!(!transcript.trim().is_empty(), "{transcript}");
@@ -883,7 +888,7 @@ mod tests {
         let mut pane = OutputPane::new();
         pane.push(line("only line"));
 
-        assert!(pane.transcript().ends_with('\n'));
+        assert!(pane.transcript(Lang::default()).ends_with('\n'));
     }
 
     #[test]

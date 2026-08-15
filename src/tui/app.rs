@@ -4025,7 +4025,7 @@ mod tests {
 
         // In the transcript, which is where the command it stopped before is
         // named: the operator is otherwise left guessing what ran.
-        let transcript = app.output.transcript();
+        let transcript = app.output.transcript(Lang::default());
         assert!(
             transcript.contains("systemctl restart ssh.service"),
             "got {transcript:?}"
@@ -4309,7 +4309,7 @@ mod tests {
 
         app.finish_run("ssh.install", Ok(Outcome::Done), true);
 
-        let transcript = app.output.transcript();
+        let transcript = app.output.transcript(Lang::default());
         assert!(
             !transcript.contains("CANCELLED"),
             "a task that finished must not be reported as stopped: {transcript}"
@@ -4348,7 +4348,7 @@ mod tests {
             false,
         );
 
-        let transcript = app.output.transcript();
+        let transcript = app.output.transcript(Lang::default());
         assert!(
             transcript.contains("ssh.install"),
             "a vanished task must be reported: {transcript}"
@@ -4640,7 +4640,7 @@ mod tests {
             false,
         );
 
-        let transcript = app.output.transcript();
+        let transcript = app.output.transcript(Lang::default());
 
         assert!(
             transcript.contains("FAILED — docker.rootless-off"),
@@ -4675,7 +4675,7 @@ mod tests {
             false,
         );
 
-        let transcript = app.output.transcript();
+        let transcript = app.output.transcript(Lang::default());
         let expected = app
             .lang
             .render(&crate::error::Error::NoPrivilegeEscalator.to_msg());
@@ -4714,7 +4714,7 @@ mod tests {
         // check, standing in for a file edited by hand since this tool wrote it.
         app.revert_change();
 
-        let transcript = app.output.transcript();
+        let transcript = app.output.transcript(Lang::default());
 
         assert!(
             transcript.contains("COULD NOT RESTORE"),
