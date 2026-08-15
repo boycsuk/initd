@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-15
+
+One key binding changed in a way an operator will notice: **a confirmation is
+now accepted with `Y`, not `y`**. The lowercase letter no longer answers the
+dialog at all. See the entry under Security for why, and `docs/ui.md` for the
+key table.
+
+Nothing in the programmatic contract moved — the subcommands, arguments and
+exit codes in `docs/cli.md` are unchanged, so a script written against 0.4.2
+keeps working.
+
 ### Changed
 - **The account chooser offers what a person logs in as, and says so.** It
   listed every entry in `/etc/passwd`, ordered so the human accounts came
