@@ -51,9 +51,9 @@ jobs:
     name: Dependency policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check
 
@@ -62,7 +62,7 @@ jobs:
     name: Format, lint, and test on Debian
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # `rustup show` installs whatever `rust-toolchain.toml` pins — channel,
       # components and both musl targets. Installing `stable` and setting it as
@@ -71,7 +71,7 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -91,7 +91,7 @@ jobs:
         run: cargo check --release --all-targets
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@24b9dfbccc70b4733071b1fdbb506f2b70bfef14 # nextest
 
       # Subsumed by the container step below, and kept anyway: it needs no
       # Docker and finishes in seconds, so an ordinary logic error surfaces
@@ -142,15 +142,15 @@ jobs:
     # commit. `check` is the gate.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install the pinned toolchain
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@24b9dfbccc70b4733071b1fdbb506f2b70bfef14 # nextest
 
       - name: Build the binary the container tests mount
         run: cargo build
@@ -180,15 +180,15 @@ jobs:
     # unusable the day a runner image tightens it.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install the pinned toolchain
         run: rustup show
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@24b9dfbccc70b4733071b1fdbb506f2b70bfef14 # nextest
 
       # The TUI scenarios expand across every image, Alpine included, so this
       # job needs the musl build as much as the gate does.
@@ -216,7 +216,7 @@ jobs:
     name: Build on the declared minimum Rust version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # `rust-version` in Cargo.toml is a claim about which compilers accept
       # this crate. Nothing enforces it, so it drifts the first time a newer
@@ -228,7 +228,7 @@ jobs:
           rustup toolchain install "$MSRV" --profile minimal
           echo "MSRV=$MSRV" >> "$GITHUB_ENV"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # `cargo +TOOLCHAIN` rather than `rustup default`: `rust-toolchain.toml`
       # overrides the default, so setting one would have this job build with
