@@ -143,8 +143,17 @@ main() {
     # case, a binary that is *running*: the file is replaced by inode, so a
     # session someone left open in another terminal goes on working against the
     # copy it started with.
-    $escalate install -m 0755 "$workdir/initd-$target" "$install_dir/initd" 2>/dev/null \
-        || fail "could not write to $install_dir — set INITD_INSTALL_DIR to somewhere writable"
+    # `install`'s own stderr is kept and shown rather than discarded. It used to
+    # go to /dev/null with every failure reported as "could not write", which
+    # names one cause out of several — a full disk, a read-only mount, a missing
+    # directory and a refused escalation all reached the same sentence, and it
+    # steered the reader towards `INITD_INSTALL_DIR`, the one answer that can
+    # leave a working binary somewhere nothing looks for it.
+    if ! install_error=$($escalate install -m 0755 \
+        "$workdir/initd-$target" "$install_dir/initd" 2>&1); then
+        [ -n "$install_error" ] && echo "install: $install_error" >&2
+        fail "could not install to $install_dir — see the error above, or set INITD_INSTALL_DIR to somewhere writable"
+    fi
 
     echo "installed $install_dir/initd"
 
