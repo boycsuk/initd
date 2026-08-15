@@ -159,12 +159,17 @@ for_each_image! {
     fn hardening_reloads_the_unit_without_stopping_it(image) {
         let container = systemd_container!(image, "reload");
 
+        // The key goes to an ordinary account rather than to root: `ssh.harden`
+        // writes `PermitRootLogin no`, so a root key authorises nothing once
+        // the task finishes and its guard does not count it.
         let output = container.exec(&format!(
             "initd run ssh.install >/dev/null 2>&1; \
-             initd authorize-key root '{key}' >/dev/null 2>&1; \
+             {create} initdops >/dev/null 2>&1; \
+             initd authorize-key initdops '{key}' >/dev/null 2>&1; \
              initd run ssh.harden >/dev/null 2>&1; \
              {wait} \
              systemctl is-active {unit}",
+            create = common::create_account_with_home(image),
             key = common::TEST_KEY,
             wait = wait_until_settled(image.ssh_unit),
             unit = image.ssh_unit

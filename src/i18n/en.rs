@@ -168,9 +168,12 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::InvalidAllowUsers { reason } => {
             format!("invalid list of allowed users: {reason}")
         }
-        Msg::LockoutNoKeyForRoot => "no authorised key found for root; disabling password \
-             authentication now would lock you out. Add a key with `ssh.authorize-key` first"
-            .to_owned(),
+        Msg::LockoutNoAccountKeepsSshAccess => {
+            "no account on this host holds an authorised key that would survive this change; \
+             disabling password authentication now would lock everyone out. Add a key with \
+             `ssh.authorize-key` first"
+                .to_owned()
+        }
         Msg::LockoutUnknownUser { user } => {
             format!(
                 "no account named {user} exists on this host; restricting SSH to it would \
@@ -334,6 +337,16 @@ pub(super) fn render(message: &Msg) -> String {
                  the administrative group, before locking root"
             )
         }
+        // Names the answer, not only the refusal: the account can still be
+        // deleted and the field that decides is in the same form. A message
+        // reading only "refused" would send an operator looking for a flag
+        // that does not exist.
+        Msg::HomeIsNotThisAccounts { user, path, root } => format!(
+            "{user}'s home is {path}, which is not under {root} — it is a directory the \
+             system shares, and removing it would take everything in it. Delete the \
+             account with the home kept instead, and remove {path} by hand if it really \
+             belongs to this account"
+        ),
         Msg::CannotDeleteRoot => "root cannot be deleted. Locking it is offered instead, \
              which refuses unless another account can still get in — a machine \
              with no root is not one this tool can put back"
@@ -551,6 +564,16 @@ pub(super) fn render(message: &Msg) -> String {
         Msg::FormFieldUnset => "(unset)".to_owned(),
         Msg::FormKeyList => "list".to_owned(),
         Msg::FormOptionsTitle { label } => format!(" {label} on this host "),
+        // Names the rule rather than only the subset, because the operator's
+        // question on not finding an account is whether it is missing or
+        // merely not offered — and the field still accepts what the list
+        // leaves out.
+        Msg::FormOptionsTitleFiltered { label, rule } => format!(" {label} — {rule} "),
+        // "login accounts" rather than "uid >= 1000", which is the rule and
+        // not the reason: an operator scanning for a missing name needs to
+        // know what kind of account was left out, and root is on the list
+        // while sitting below any threshold the number would state.
+        Msg::FormOptionsLoginAccountsOnly => "login accounts only".to_owned(),
         Msg::FormOptionsChoose => "choose".to_owned(),
         Msg::FormKeyField => "field".to_owned(),
         Msg::FormKeyContinue => "continue".to_owned(),
@@ -843,6 +866,35 @@ pub(super) fn render(message: &Msg) -> String {
              Opening a port here says nothing about whether the provider's edge firewall \
              admits it, which is the layer most often forgotten."
         ),
+        // Lists the accounts rather than counting them, for the reason
+        // `ConfirmPortsClosing` gives: this is the last screen where the change
+        // can still be stopped, and the operator's question is whether their own
+        // account is on the list. A count answers a different question.
+        //
+        // It does not claim they are safe. A key in `authorized_keys` is not
+        // proof that the client in front of the operator offers *that* key,
+        // which is the gap the verification window exists to cover and the
+        // reason this sentence stops at what was read from the host.
+        Msg::ConfirmSshHardenLockout {
+            keeps_access,
+            disables_root,
+        } => {
+            let root = if *disables_root {
+                "\n\nroot will no longer be able to log in over SSH: this writes \
+                 PermitRootLogin no. If that is how you reach this host, stop here."
+            } else {
+                ""
+            };
+
+            format!(
+                "Password authentication is going away, so a key is the only way in \
+                 afterwards.\n\n\
+                 These accounts hold one and keep SSH access: {keeps_access}.\n\n\
+                 Check that yours is among them. Holding a key is not proof your client \
+                 offers that key — if it does not, the change reverts when the \
+                 verification window closes.{root}"
+            )
+        }
         // The path and the size are the whole point. "Also delete the home
         // directory?" is a question answered by habit; a sentence naming
         // /home/deploy and 2.4 GB is one that gets read.

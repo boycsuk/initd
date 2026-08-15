@@ -22,8 +22,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// which one to fix rather than merely that something is wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lockout {
-    /// Passwords would be disabled while no key authorises root.
-    NoKeyForRoot,
+    /// Hardening would leave no account able to log in over SSH.
+    ///
+    /// Asked of every account on the host, not of root. The check this replaced
+    /// asked whether *root* held a key, which was wrong in both directions: any
+    /// account with a key is a way in, and root is the account `ssh.harden`
+    /// removes — it writes `PermitRootLogin no`, so a root key satisfied the
+    /// check and was worthless a step later. A host with root locked, which is
+    /// the recommended posture, could not run either tier at all.
+    NoAccountKeepsSshAccess,
     /// An account named in `AllowUsers` does not exist on this host.
     ///
     /// A typo produces a configuration `sshd -t` accepts and that matches
@@ -288,6 +295,24 @@ pub enum Error {
     /// guard that another way in exists — and deleting it is not: the two are
     /// not the same operation, and only one is undone by a rescue console.
     CannotDeleteRoot,
+
+    /// A deletion would have removed a directory that is not the account's own.
+    ///
+    /// `deluser --remove-home` and `userdel -r` remove whatever the passwd
+    /// entry points at, and stock images point service accounts at shared
+    /// directories: `/` for `nobody` on Alpine and Rocky, `/usr/sbin` for
+    /// `daemon` on Debian, `/bin` on all four. Deleting one of those with the
+    /// home removed takes the tree with it and exits 0.
+    ///
+    /// The account itself is not refused — only taking the directory with it —
+    /// which is why this names the path and the answer rather than reading as
+    /// a refusal to delete. "Keep the home" is one keystroke away in the same
+    /// form.
+    HomeIsNotThisAccounts {
+        user: String,
+        path: String,
+        root: String,
+    },
 
     /// A deletion named the account this session escalated from.
     ///
@@ -589,7 +614,7 @@ impl Error {
                 details: details.clone(),
             },
             Self::LockoutRisk { kind } => match kind {
-                Lockout::NoKeyForRoot => Msg::LockoutNoKeyForRoot,
+                Lockout::NoAccountKeepsSshAccess => Msg::LockoutNoAccountKeepsSshAccess,
                 Lockout::UnknownUser { user } => Msg::LockoutUnknownUser { user: user.clone() },
                 Lockout::NoKeyForAllowedUsers { users } => Msg::LockoutNoKeyForAllowedUsers {
                     users: users.clone(),
@@ -667,6 +692,11 @@ impl Error {
                 examined: *examined,
             },
             Self::CannotDeleteRoot => Msg::CannotDeleteRoot,
+            Self::HomeIsNotThisAccounts { user, path, root } => Msg::HomeIsNotThisAccounts {
+                user: user.clone(),
+                path: path.clone(),
+                root: root.clone(),
+            },
             Self::CannotDeleteOwnAccount { user } => {
                 Msg::CannotDeleteOwnAccount { user: user.clone() }
             }
@@ -885,6 +915,10 @@ impl Error {
             | Self::FirewallNotEnabled
             | Self::NoPrivilegeEscalator
             | Self::CannotDeleteRoot
+            // Its three values are the sentence rather than a table: the path
+            // only means something beside the root it is not under, and the
+            // remedy names both.
+            | Self::HomeIsNotThisAccounts { .. }
             | Self::WireguardNotConfigured
             // Carries no field worth labelling: the whole answer is the
             // sentence naming the task to run first.

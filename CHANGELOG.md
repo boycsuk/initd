@@ -7,6 +7,255 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The account chooser offers what a person logs in as, and says so.** It
+  listed every entry in `/etc/passwd`, ordered so the human accounts came
+  first. Measured on freshly provisioned hosts, that is **18** rows on
+  `debian:13`, 17 on `alpine:3.23` and 14 on `rockylinux:9` — of which exactly
+  one is ever the answer.
+
+  The rows nobody reads are the ones a mis-click lands on, and some of them are
+  expensive: `nobody`'s home is `/` on both Alpine and Rocky, and `daemon`'s is
+  `/usr/sbin` on Debian, so `users.delete` offering them put a whole tree one
+  keystroke from removal.
+
+  Filtered, never refused. The field still accepts a name the list does not
+  carry, so `www-data` — which owns a home a key can legitimately be installed
+  into — stays reachable by typing it. That was already the chooser's stated
+  contract and is what makes filtering safe here.
+
+  The overlay's title names the rule (`Username — login accounts only`) rather
+  than claiming to be everything the host holds, because an operator who cannot
+  find an account needs to know whether it is missing or merely not offered.
+
+  `list_ranked` is untouched and still filters by nothing: `users.lock-root`
+  reasons over every account, and a scan that skipped one would report a host
+  as stranded while somebody was logged into it. A test now pins the two lists
+  as that exact relationship rather than as equals.
+
+### Fixed
+- **A directive written twice was read from the wrong line.** sshd honours the
+  *first* active line for a keyword and ignores every later one;
+  `directive_value` returned the last. Measured on `debian:13`:
+  `MaxAuthTries 3` above `MaxAuthTries 9` leaves `sshd -T` reporting `3`, the
+  reverse order reports `9`, and `sshd -t` exits 0 either way — so nothing
+  warns about the repetition.
+
+  The case it got wrong is the one nobody looks at. A file carrying the same
+  directive twice is what an administrator's own edit above this tool's
+  appended line produces, and the reported value was the one the daemon
+  ignores. The idempotence check added alongside compares against exactly
+  this, so a run could conclude there was nothing to write and report success
+  over a daemon still doing the opposite.
+
+  Commented lines were already excluded and still are, now through
+  `is_directive_line` rather than a second guard beside it.
+
+- **Applying the same SSH hardening twice grew the file.** `set_directive`
+  commented the old line and wrote a new one without ever asking whether the
+  value was already what it wanted, and `is_directive_line` stripped a leading
+  `#` before comparing — so a line that was *already* commented counted as a
+  directive and was commented again. Measured on `debian:13`: 143 lines became
+  162 on the second identical run, and `# X11Forwarding yes` became
+  `# # X11Forwarding yes`, gaining a level per pass.
+
+  Three changes, and together they mean the file is now written where each
+  directive already lives:
+
+  - Setting a directive to the value it already holds writes nothing. Three
+    runs now leave the file byte-identical after the first — measured, 126
+    lines each time.
+  - A directive whose line exists commented out is **uncommented in place**
+    rather than appended below, so the file keeps its own order. A stock
+    `sshd_config` is mostly such lines: 53 commented against 7 active.
+  - `unset_directive` comments a line back out, which is the inverse and what
+    a switch turning off will mean.
+
+  Two things the parser now has to tell apart, both present in Debian's shipped
+  file. Prose that mentions a directive (`# the setting of "PermitRootLogin
+  prohibit-password".`) is separated from a commented directive
+  (`#PermitRootLogin prohibit-password`) by whether the `#` touches the
+  keyword. And a directive under a **commented** `Match` block is a per-user
+  override that is inert because its header is off — uncommenting it would
+  write into a block whose `Match` is still commented, so the scan stops there.
+
+  The file it lands on is only +2 lines over the pristine one, against +19
+  before.
+
+- **firewalld's reads ran unprivileged, so a refused query answered "nothing
+  is open".** Every write here escalated and none of the reads did. firewalld
+  authorizes reads through polkit, and there is no polkit agent under a TUI —
+  measured on `rockylinux:9` against a running daemon, where an unprivileged
+  `--list-ports`, `--list-services`, `--info-service` and `--state` each
+  answer `NotAuthorizedException: Not Authorized(uid)` and exit 253, while the
+  same commands under `sudo` answer `cockpit dhcpv6-client ssh` and `running`.
+
+  Two consequences, both silent. `close` confirms `--remove-port` by reading
+  the zone back, and a listing that could not be read answers "the port is
+  gone" — for the one case `--remove-port` cannot handle, a port admitted as a
+  *service*, which on a stock RHEL host is SSH. And `is_available` mapped the
+  refusal to `false`, which promotes nftables: this tool would then write
+  `inet initd` with `policy drop` over a host whose ruleset firewalld holds,
+  the exact outcome `RhelBackend::firewalls` orders the two to prevent.
+
+  The reads now escalate, and a refusal is reported rather than read as an
+  empty answer — the shape `nftables::state` was already fixed for, one
+  front-end along. `is_available` stays unprivileged, because it runs while
+  the tree is drawn and escalating there would prompt for a password nobody
+  asked for; it reads 253 as *present*, since polkit only has something to
+  refuse when the daemon is there to answer.
+
+- **A port declared closed that the firewall could not close was reported
+  nowhere.** firewalld admits SSH on a stock RHEL host as the *service* `ssh`,
+  and `--remove-port 22/tcp` against that succeeds while changing nothing —
+  which `firewall.manage-ports` knows, and correctly declines to attempt.
+
+  The port then fell out of every set the report draws from: not in `to_close`,
+  so never attempted and never among the refused; not in `appeared`, which
+  requires the port to be absent from the snapshot, and this one is in it. The
+  operator asked to close a port, it stayed open, and the run reported
+  `closed 0` with no line naming it.
+
+  It now joins the ports reported as still open, which is the same fact from
+  the operator's side: this port is open and this run did not close it. The
+  existing message already names the cause — "admitted by a service rather
+  than by name, which removing the port does not undo".
+
+- **Deleting an account could remove `/`.** `users.delete` asked whether to
+  remove the home directory and never asked *what* directory it was.
+  `deluser --remove-home` and `userdel -r` remove whatever the passwd entry
+  points at, with no guard of their own, and stock images point service
+  accounts at shared directories — measured across four images: `nobody`'s
+  home is `/` on `alpine:3.23` and `rockylinux:9`, `daemon`'s is `/usr/sbin`
+  on `debian:13`, and `bin` points at `/bin` on all four. Answering "delete"
+  for one of those took the tree with it, exited 0, and was reported as a
+  successful deletion.
+
+  The removal is now refused unless the home is under `/home` — an allow-list
+  by shape rather than a list of forbidden paths, because the forbidden set is
+  open-ended while "where a person's home lives" can be stated. `/home` itself
+  is refused too, holding every other account's files, and a path containing
+  `..` refuses rather than being resolved.
+
+  Refused in code rather than warned about in the dialog, which is the shape
+  the two refusals beside it already use: a confirmation is dismissible, and
+  this is not a decision an operator should be able to make by pressing
+  through one. The account itself stays deletable — only taking the directory
+  with it is refused — and the message says so, since "keep the home" is the
+  answer and it is one keystroke away in the same form.
+
+  Two things limited the blast radius and neither is a defence: `users.delete`
+  is reachable only from the interactive interface, and the chooser no longer
+  offers service accounts. Typing the name still reached it.
+
+- **OpenRC read every runlevel to answer a question about one.** `state` ran
+  `rc-update show` bare, which lists `sysinit`, `boot`, `default` and
+  `shutdown`, while `enable_and_start` adds to `default` and
+  `disable_and_stop` deletes from it. A service the distribution put elsewhere
+  therefore read back as enabled where nothing here could disable it —
+  measured on `alpine:3.23`, whose own `openssh` package lands `sshd` in
+  `boot`: `rc-update show` prints `sshd | boot` while `rc-update show default`
+  prints nothing.
+
+- **`ssh.authorize-key` recommended the one account hardening disables.** The
+  username field opened on `root`, with a comment saying it was offered
+  "because it is the account that always exists, not because it is the one to
+  prefer" — but a pre-filled field is the recommendation, whatever the comment
+  says.
+
+  Once the hardening guard stopped counting root, that became a loop:
+  `ssh.harden` refuses and says to authorise a key first, this field offers
+  root again, and accepting it a second time reproduces the same refusal.
+  Reproduced on `debian:13`.
+
+  The field now opens on the account this session escalated through
+  (`SUDO_USER`/`DOAS_USER`) and is left empty where nothing answers — a direct
+  root login, `su -` or `run0`. An empty field asks a question; a wrong one
+  answers it.
+
+- **A saved nftables ruleset duplicated every rule when it was replayed.**
+  `persist` dumped `nft list ruleset` into the file the boot reads, with no
+  header. `nft -f` merges into whatever the kernel already holds rather than
+  replacing it, so a reload — `systemctl reload nftables`, whose `ExecReload`
+  on Debian is exactly `nft -f /etc/nftables.conf` — doubled the ruleset, and
+  the next `persist` doubled the doubled set.
+
+  Measured on `debian:13`: one `tcp dport 22 accept` before replaying the saved
+  file and two after; with the fix it stays at one across three replays, and a
+  rule another tool put in `inet filter` still survives the round trip.
+
+  The file now opens with `flush ruleset`, which is what both distributions do
+  to their own: Debian's shipped `/etc/nftables.conf` begins with that line and
+  Arch's with `destroy table inet filter`. `flush ruleset` rather than dropping
+  only this tool's table, because the dump carries every table — the file is
+  what the boot replays *instead of* the kernel's state, so it has to describe
+  all of it.
+
+- **A new account on Alpine got a shell that does not exist.** `users.create`
+  passed a `/bin/bash` constant, justified by a comment reading "it is present
+  on both families out of the box" — written when there were two families and
+  never rechecked as three more arrived.
+
+  Alpine ships busybox and no bash, and its `adduser` does not validate the
+  path: measured on `alpine:3.23`, `adduser -s /bin/bash` exits 0, the task
+  reports the account provisioned, and `su - alice` answers `can't execute
+  '/bin/bash': No such file or directory`.
+
+  Worse than a cosmetic default, because such an account still satisfies the
+  lockout guards — they ask what an account can authenticate *with*, never
+  whether its shell exists, so an unusable account could vouch for locking
+  root.
+
+  The shell is a name the distribution resolves, so it moved to the backend as
+  `default_login_shell`, the same shape as `admin_group`. Four families keep
+  `/bin/bash` through the default; Alpine answers `/bin/ash`, which is what its
+  `/etc/shells` names. `users.set-shell` opens its field on the same value
+  through `params_here`, since a field pre-filled with a path the host lacks is
+  one an operator accepts by pressing Enter.
+
+- **The SSH hardening guard asked the wrong account, and refused on the hosts
+  it was written to protect.** `ssh.harden` and `ssh.harden-strict` both
+  required an authorised key **for root**, so a server whose root is locked —
+  the recommended posture — could run neither, while an ordinary account with a
+  key was logging into it perfectly well. The refusal told the operator to run
+  `ssh.authorize-key root`: advice that asks them to re-open root to satisfy a
+  check meant to protect access.
+
+  Wrong in two directions rather than one. Too narrow, since any account with a
+  key is a way back in; and pointed at the one account `ssh.harden` *removes* —
+  `SAFE_DIRECTIVES` writes `PermitRootLogin no`, so a root key satisfied the
+  guard and was worthless one step later. `ssh.allow-users` had already worked
+  this out and computed `root_refused` before counting keys; the two hardening
+  tiers never learned it.
+
+  The guard now asks the machine which accounts still get in once the change
+  lands: it enumerates every account through `list_ranked` — ordered by rank and
+  filtered by nothing, so a site numbering a real account below uid 1000 is
+  still found — and counts one only if it holds a key, `PermitRootLogin` does
+  not refuse it, and `AllowUsers` names it. That third condition was missing
+  entirely: a real key held by an account the daemon already refuses is not a
+  way back in.
+
+  Read from the configuration rather than assumed, which is what separates the
+  tiers: the safe one judges root by what it is about to write, the strict one
+  by what the file already says.
+
+  It still refuses when *no* account survives — that case locks everyone out
+  and is where a warning must be a wall. What changed is that it now warns
+  instead of refusing when the host is reachable: the confirmation lists the
+  accounts that keep access so the operator can check theirs is among them
+  before applying, the same shape `users.lock-root` already used.
+
+  `Lockout::NoKeyForRoot` is gone, both because it named the wrong account and
+  because the message it rendered sent operators the wrong way.
+
+  Found on a Debian 13 server. The container scenarios could not have caught
+  it: every one of them seeded a key **on root** to get past the guard, so they
+  had been agreeing with the bug rather than testing it. They now seed an
+  ordinary account, which is what the connection scenarios' own `LOGIN_USER`
+  had been documenting for a different reason all along — that root cannot log
+  in after hardening.
+
 ## [0.4.2] — 2026-08-14
 
 Three more from the same Debian 13 server, each found by the one before it

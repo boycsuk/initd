@@ -667,8 +667,11 @@ TUI or CLI:
   and records which key each login used.
   - Acceptance: the previous configuration is copied aside before anything is
     written.
-  - Acceptance: the operation is refused, with an explanation, when no
-    authorised key exists — otherwise it would lock me out.
+  - Acceptance: the operation is refused, with an explanation, when no account
+    that survives the change holds an authorised key — otherwise it would lock
+    everyone out. Root does not count, since this task disables root logins.
+  - Acceptance: before applying, I am shown which accounts keep SSH access, so
+    I can check that mine is among them.
   - Acceptance: a configuration rejected by `sshd -t` is rolled back and the
     service is not reloaded.
   - Acceptance: a directive this version of OpenSSH does not recognise is

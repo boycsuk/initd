@@ -193,7 +193,7 @@ pub enum Msg {
     InvalidAllowUsers {
         reason: String,
     },
-    LockoutNoKeyForRoot,
+    LockoutNoAccountKeepsSshAccess,
     LockoutUnknownUser {
         user: String,
     },
@@ -283,6 +283,12 @@ pub enum Msg {
         examined: usize,
     },
     CannotDeleteRoot,
+    /// A deletion would have taken a directory that is not the account's own.
+    HomeIsNotThisAccounts {
+        user: String,
+        path: String,
+        root: String,
+    },
     CannotDeleteOwnAccount {
         user: String,
     },
@@ -515,6 +521,24 @@ pub enum Msg {
     FormOptionsTitle {
         label: String,
     },
+    /// The same title, where the list is a filtered subset of what the host
+    /// holds.
+    ///
+    /// Separate from [`Msg::FormOptionsTitle`] rather than a flag on it,
+    /// because the two make different promises: that one says "this is what
+    /// the host has", and a filtered list saying so would be a lie the
+    /// operator only catches by knowing the account is missing. Naming the
+    /// rule is what lets them decide to type a name the list does not carry.
+    FormOptionsTitleFiltered {
+        label: String,
+        rule: String,
+    },
+    /// The rule the account chooser filters by, named in the overlay's title.
+    ///
+    /// Its own message rather than a literal at the call site, so the sentence
+    /// an operator reads when an account is missing from the list is
+    /// translated with everything else.
+    FormOptionsLoginAccountsOnly,
     /// What `Enter` does in the options overlay.
     FormOptionsChoose,
     FormKeyField,
@@ -847,6 +871,20 @@ pub enum Msg {
     /// what teaches an operator to stop reading the ones that mean it.
     ConfirmPortsOpeningOnly {
         opening: usize,
+    },
+    /// The lockout warning for the two SSH hardening tiers.
+    ///
+    /// Names the accounts that keep access rather than asserting that some do,
+    /// because the operator's decision is whether *theirs* is among them — a
+    /// claim they cannot check is one they have to take on trust from the
+    /// program about to end their session.
+    ///
+    /// `disables_root` separates the tiers: the safe one writes
+    /// `PermitRootLogin no`, so root losing access is a consequence of applying
+    /// it and worth stating; the strict one does not touch the directive.
+    ConfirmSshHardenLockout {
+        keeps_access: String,
+        disables_root: bool,
     },
     /// The lockout warning for `users.lock-root`, heading the accounts that
     /// keep access.

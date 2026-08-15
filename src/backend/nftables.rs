@@ -51,6 +51,16 @@ fn answered_that_no_table_exists(stderr: &str) -> bool {
     said.contains("no such file or directory") || said.contains("no such table")
 }
 
+/// What the saved ruleset opens with, so replaying it replaces rather than
+/// appends.
+///
+/// `nft -f` merges into whatever the kernel holds; without this a reload —
+/// `systemctl reload nftables`, whose `ExecReload` on Debian is exactly
+/// `nft -f /etc/nftables.conf` — doubles every rule, and the next `persist`
+/// doubles the doubled set. Both distributions open their own shipped file
+/// this way.
+const FLUSH_HEADER: &str = "flush ruleset";
+
 /// The table this tool owns.
 ///
 /// Named for the tool so its rules are distinguishable from the distribution's
@@ -450,12 +460,30 @@ impl FirewallManager for Nftables {
 
         let (rules_file, service) = Self::persistence_target(executor)?;
 
+        // Replayed into a kernel that already holds the ruleset, a bare dump
+        // *adds* to it: `nft -f` on `table inet initd { … }` appends the rules
+        // rather than replacing them. A cold boot is fine, since the kernel
+        // starts empty — a reload is not, and `ExecReload` on Debian's shipped
+        // unit is exactly `nft -f /etc/nftables.conf`. Measured on `debian:13`:
+        // one `tcp dport 22 accept` before the replay and two after, doubling
+        // again on each subsequent `persist`, since this dumps whatever the
+        // kernel currently holds.
+        //
+        // Both distributions guard their own file the same way — Debian's
+        // `/etc/nftables.conf` opens with `flush ruleset`, Arch's with
+        // `destroy table inet filter` — so this is the file's own convention
+        // rather than an invention. `flush ruleset` over `destroy table`
+        // because the dump below carries *every* table, not just this tool's:
+        // the file is what the boot replays instead of the kernel's state, so
+        // it has to describe the whole of it.
+        let replayable = format!("{FLUSH_HEADER}\n{}", output.stdout);
+
         // Through `tee` on stdin for the same reason the ruleset above is fed
         // on stdin: it carries newlines and braces, and anything needing shell
         // escaping is a root-level injection.
         let write = Command::new("tee")
             .arg(rules_file)
-            .stdin(output.stdout)
+            .stdin(replayable)
             .privileged();
 
         run_checked(executor, &write)?;
@@ -730,7 +758,43 @@ mod tests {
             .and_then(|command| command.stdin)
             .expect("the ruleset travels on stdin");
 
-        assert_eq!(saved, whole);
+        assert!(
+            saved.ends_with(whole),
+            "every table must survive, not just this tool's: {saved}"
+        );
+    }
+
+    #[test]
+    fn the_saved_ruleset_replaces_rather_than_appends_on_replay() {
+        // `nft -f` merges into the kernel's ruleset. Without a flush, a reload
+        // doubles every rule and the next save doubles the doubled set —
+        // measured on `debian:13`: one `tcp dport 22 accept` before replaying
+        // the saved file and two after. Debian's own `/etc/nftables.conf`
+        // opens with this line and Arch's with `destroy table`, so the file
+        // convention is what is being followed rather than invented.
+        let mock = MockExecutor::with_replies([
+            Reply::ok("table inet initd {\n}\n"),
+            Reply::ok("systemd 257"),
+            Reply::ok(""),
+            Reply::ok(""),
+        ]);
+
+        Nftables::new()
+            .persist(&mock)
+            .expect("persisting must succeed");
+
+        let saved = mock
+            .recorded()
+            .into_iter()
+            .find(|command| command.program == "tee")
+            .and_then(|command| command.stdin)
+            .expect("the ruleset travels on stdin");
+
+        assert!(
+            saved.starts_with(FLUSH_HEADER),
+            "the saved file must open by clearing what a replay would merge \
+             into: {saved}"
+        );
     }
 
     #[test]

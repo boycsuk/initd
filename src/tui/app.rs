@@ -2231,7 +2231,12 @@ mod tests {
         let screen = render_to_rows(&mut app, 80, 24).join("\n");
 
         assert!(screen.contains("root"), "the first account: {screen}");
-        assert!(screen.contains("1/5 on this host"), "got {screen}");
+
+        // Three of the fixture's five: `daemon` and `www-data` are service
+        // accounts and the chooser offers what a person logs in as. The count
+        // is asserted rather than the names, so a filter that widened silently
+        // fails here.
+        assert!(screen.contains("1/3"), "got {screen}");
     }
 
     #[test]
@@ -2270,11 +2275,10 @@ mod tests {
         let rows = render_to_rows(&mut app, 80, 24);
         let screen = rows.join("\n");
 
-        // The overlay's own title carries "on this host" too, so the list is
-        // found by its border and the field by its label — anchoring both on
-        // the same phrase would compare the overlay against itself.
+        // Found by the overlay's own title, which for an account chooser names
+        // the filter rather than claiming to be everything the host holds.
         assert!(
-            screen.contains("Username on this host"),
+            screen.contains("Username — login accounts only"),
             "the list must be drawn: {screen}"
         );
 

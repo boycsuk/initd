@@ -127,6 +127,21 @@ fn classify(executor: &dyn Executor, command: &Command) -> Result<Validation> {
 /// `without-password` for every other user, so a task that reported success
 /// would have hardened nobody but `deployer`.
 pub fn set_directive(contents: &str, directive: &str, value: &str) -> String {
+    // Already what was asked for: nothing to write, and writing anyway is what
+    // made this file grow. A second identical run must leave the bytes alone,
+    // which is the property the whole task is judged on — measured before this
+    // check existed, the file went from 143 lines to 162 on the second run.
+    if directive_value(contents, directive).as_deref() == Some(value) {
+        return contents.to_owned();
+    }
+
+    // The line the file already carries for this directive, commented out.
+    // Uncommenting it in place keeps the file in its own order, where
+    // appending would leave the shipped default above a contradicting copy.
+    if let Some(index) = commented_directive_line(contents, directive) {
+        return rewrite_line(contents, index, &format!("{directive} {value}"));
+    }
+
     let mut result = String::with_capacity(contents.len() + 64);
     let mut replaced = false;
 
@@ -162,6 +177,40 @@ pub fn set_directive(contents: &str, directive: &str, value: &str) -> String {
     result
 }
 
+/// The commented-out line a directive would be uncommented from.
+///
+/// Stops at the first `Match`, commented or not, for the reason
+/// [`opens_any_match_block`] records: a directive under a commented `Match` is
+/// a per-user override rather than the server's, and uncommenting it would
+/// change what the block around it means.
+fn commented_directive_line(contents: &str, directive: &str) -> Option<usize> {
+    contents
+        .lines()
+        .take_while(|line| !opens_any_match_block(line))
+        .position(|line| is_commented_directive(line, directive))
+}
+
+/// Replaces one line, leaving every other byte and the trailing newline alone.
+///
+/// Rebuilt from `lines()` rather than spliced by offset, so a file with `\r\n`
+/// or without a final newline comes back in the shape the rest of this module
+/// writes — which is what the byte-for-byte round trip depends on.
+fn rewrite_line(contents: &str, index: usize, replacement: &str) -> String {
+    let mut result = String::with_capacity(contents.len() + 64);
+
+    for (position, line) in contents.lines().enumerate() {
+        if position == index {
+            result.push_str(replacement);
+        } else {
+            result.push_str(line);
+        }
+
+        result.push('\n');
+    }
+
+    result
+}
+
 /// Whether a line opens a `Match` block.
 ///
 /// Keywords are case-insensitive, and a commented-out `Match` opens nothing.
@@ -175,10 +224,30 @@ fn is_match_line(line: &str) -> bool {
 }
 
 /// Reads the effective value of a directive, ignoring commented-out lines.
+///
+/// **The first occurrence wins, not the last.** sshd takes the earliest active
+/// line for a keyword and ignores every later one, and `sshd -t` does not
+/// complain about the repetition — measured on `debian:13`, where
+/// `MaxAuthTries 3` above `MaxAuthTries 9` leaves `sshd -T` reporting `3`, the
+/// reverse order reports `9`, and validation exits 0 either way.
+///
+/// This read the *last* one until that was measured, which mattered most where
+/// it is least visible. A file carrying the same directive twice is what an
+/// administrator's own edit above this tool's appended line produces, and the
+/// value reported was the one the daemon *ignores* — so
+/// [`set_directive`]'s idempotence check could compare against it, decide
+/// there was nothing to write, and report success over a daemon still doing
+/// the opposite.
+///
+/// The commented case needs no test of its own here: [`is_directive_line`]
+/// answers `false` for those, which is the same fix and the reason the
+/// `starts_with('#')` guard that stood beside this is gone. Verified in the
+/// same container run — a commented duplicate changes nothing whichever side
+/// of the active line it sits on.
 pub fn directive_value(contents: &str, directive: &str) -> Option<String> {
     contents
         .lines()
-        .rfind(|line| is_directive_line(line, directive) && !line.trim_start().starts_with('#'))
+        .find(|line| is_directive_line(line, directive))
         .and_then(|line| line.split_once(char::is_whitespace))
         .map(|(_, value)| value.trim().to_owned())
 }
@@ -236,17 +305,82 @@ fn port_in_dump(dump: &str) -> Option<u32> {
         .and_then(|(_, value)| value.trim().parse().ok())
 }
 
-/// Whether a line defines the given directive, commented out or not.
+/// Whether a line *sets* the given directive: uncommented, and this keyword.
 ///
-/// `sshd_config` keywords are case-insensitive, and a commented line still
-/// counts here so that replacing a directive also neutralises its commented
-/// variants rather than leaving a confusing duplicate.
+/// `sshd_config` keywords are case-insensitive. A commented line is **not** one
+/// of these — that is [`is_commented_directive`], and conflating the two is
+/// what made this file grow on every run. The predicate that stood here
+/// stripped leading `#` before comparing, so a line already commented out
+/// answered `true` and `set_directive` commented it again: measured on
+/// `debian:13`, `# X11Forwarding yes` became `# # X11Forwarding yes`, gaining a
+/// level per pass and the file 19 lines.
 fn is_directive_line(line: &str, directive: &str) -> bool {
-    let trimmed = line.trim_start().trim_start_matches('#').trim_start();
+    let trimmed = line.trim_start();
+
+    if trimmed.starts_with('#') {
+        return false;
+    }
 
     trimmed
         .split_once(char::is_whitespace)
         .is_some_and(|(keyword, _)| keyword.eq_ignore_ascii_case(directive))
+}
+
+/// Whether a line is this directive, commented out — the shipped default.
+///
+/// A stock `sshd_config` is mostly these: 53 commented lines against 7 active
+/// on `debian:13`. They are the file's own documentation of what the daemon
+/// does without being told, and turning a switch on means uncommenting the one
+/// that is already in place rather than appending a second line for the same
+/// keyword.
+///
+/// Separating a commented *directive* from prose that merely mentions one is
+/// what this has to get right, and the file itself provides the separator.
+/// Line 33 is `#PermitRootLogin prohibit-password`; line 83 is
+/// `# the setting of "PermitRootLogin prohibit-password".` inside a paragraph.
+/// Every commented directive has `#` immediately against the keyword, and
+/// every prose line has `# ` with a space — measured across the shipped file,
+/// where the rule matches 52 lines and every one of them is a directive.
+///
+/// Whitespace *inside* the comment is a different signal and is deliberately
+/// not trimmed away before the `#` test: `#\tX11Forwarding no` is indented
+/// because it sits inside a commented `Match` block, and the caller uses that.
+fn is_commented_directive(line: &str, directive: &str) -> bool {
+    let Some(body) = line.trim_start().strip_prefix('#') else {
+        return false;
+    };
+
+    // Prose. `# ` opens a sentence; `#Keyword` opens a directive.
+    if body.starts_with([' ', '\t']) {
+        return false;
+    }
+
+    body.split_once(char::is_whitespace)
+        .is_some_and(|(keyword, _)| keyword.eq_ignore_ascii_case(directive))
+}
+
+/// Whether a line opens a `Match` block, commented out or not.
+///
+/// The commented case is what [`is_match_line`] deliberately excludes and this
+/// deliberately includes, and the difference decides whether a line below it
+/// is global. Debian ships:
+///
+/// ```text
+/// #Match User anoncvs
+/// #    X11Forwarding no
+/// ```
+///
+/// That `X11Forwarding` is not the server's — it is a per-user override that
+/// is inert because its header is commented. Uncommenting it would write a
+/// directive into a block whose `Match` is still off, changing what every line
+/// around it means. So the scan for a line to uncomment stops here, exactly as
+/// the scan for where to *insert* stops at a live `Match`.
+fn opens_any_match_block(line: &str) -> bool {
+    let body = line.trim_start().trim_start_matches('#').trim_start();
+
+    body.split_whitespace()
+        .next()
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("match"))
 }
 
 /// Warns about directives the daemon will not honour as written.
@@ -450,6 +584,137 @@ pub fn write_validated(
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    /// The shape a stock `sshd_config` has, in the parts that matter here.
+    ///
+    /// Copied from `debian:13` rather than invented: the commented defaults,
+    /// a prose paragraph that names a directive, an active line, and the
+    /// commented `Match` block the file ends with. Every trap this module has
+    /// to avoid is in these fourteen lines.
+    const SHIPPED: &str = "Include /etc/ssh/sshd_config.d/*.conf\n\
+         \n\
+         #PermitRootLogin prohibit-password\n\
+         #PasswordAuthentication yes\n\
+         KbdInteractiveAuthentication no\n\
+         \n\
+         # PAM authentication via KbdInteractiveAuthentication may bypass\n\
+         # the setting of \"PermitRootLogin prohibit-password\".\n\
+         \n\
+         X11Forwarding yes\n\
+         \n\
+         # Example of overriding settings on a per-user basis\n\
+         #Match User anoncvs\n\
+         #\tX11Forwarding no\n";
+
+    #[test]
+    fn the_first_occurrence_of_a_repeated_directive_is_the_effective_one() {
+        // sshd takes the earliest active line for a keyword and ignores every
+        // later one, and `sshd -t` does not complain about the repetition.
+        // Measured on `debian:13`: `MaxAuthTries 3` above `MaxAuthTries 9`
+        // leaves `sshd -T` reporting 3, the reverse reports 9, and validation
+        // exits 0 both ways.
+        //
+        // This read the last one until it was measured, and the case it got
+        // wrong is the one nobody looks at: a file carrying an administrator's
+        // own line above this tool's appended one reported the value the
+        // daemon was *ignoring*. `set_directive`'s idempotence check compares
+        // against exactly this, so a run could decide there was nothing to
+        // write and report success over a daemon still doing the opposite.
+        let repeated = "MaxAuthTries 3\nMaxAuthTries 9\n";
+
+        assert_eq!(
+            directive_value(repeated, "MaxAuthTries").as_deref(),
+            Some("3"),
+            "the first active line is the one sshd honours"
+        );
+
+        let reversed = "MaxAuthTries 9\nMaxAuthTries 3\n";
+
+        assert_eq!(
+            directive_value(reversed, "MaxAuthTries").as_deref(),
+            Some("9")
+        );
+    }
+
+    #[test]
+    fn a_commented_duplicate_is_not_an_occurrence() {
+        // Verified in the same container run: a commented copy changes nothing
+        // whichever side of the active line it sits on.
+        let before = "#MaxAuthTries 9\nMaxAuthTries 3\n";
+        let after = "MaxAuthTries 3\n#MaxAuthTries 9\n";
+
+        assert_eq!(
+            directive_value(before, "MaxAuthTries").as_deref(),
+            Some("3")
+        );
+        assert_eq!(directive_value(after, "MaxAuthTries").as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn setting_a_directive_to_what_it_already_says_changes_nothing() {
+        // The bug this whole change exists for. `set_directive` commented the
+        // old line and wrote a new one without ever asking whether the value
+        // was already right, so a task run twice grew its own file — measured
+        // on `debian:13` at 143 lines becoming 162, with `# X11Forwarding yes`
+        // becoming `# # X11Forwarding yes` and gaining a `#` per pass.
+        let once = set_directive(SHIPPED, "X11Forwarding", "no");
+        let twice = set_directive(&once, "X11Forwarding", "no");
+
+        assert_eq!(once, twice, "a second identical run must write nothing");
+    }
+
+    #[test]
+    fn turning_a_directive_on_uncomments_the_line_the_file_already_carries() {
+        // A stock file is mostly commented defaults — 53 of them against 7
+        // active on `debian:13` — and the value belongs where the file already
+        // states it rather than appended below.
+        let updated = set_directive(SHIPPED, "PermitRootLogin", "no");
+
+        assert!(
+            updated.contains("PermitRootLogin no\n"),
+            "the directive must be set: {updated}"
+        );
+        assert!(
+            !updated.contains("#PermitRootLogin"),
+            "the commented default must have become the directive: {updated}"
+        );
+        assert_eq!(
+            updated.matches("PermitRootLogin no").count(),
+            1,
+            "exactly one line may set it: {updated}"
+        );
+    }
+
+    #[test]
+    fn prose_naming_a_directive_is_not_mistaken_for_one() {
+        // Line 83 of the shipped file reads `# the setting of
+        // "PermitRootLogin prohibit-password".` inside a paragraph. A
+        // commented directive has `#` against the keyword; prose has `# `.
+        let updated = set_directive(SHIPPED, "PermitRootLogin", "no");
+
+        assert!(
+            updated.contains("# the setting of \"PermitRootLogin prohibit-password\"."),
+            "the paragraph must survive untouched: {updated}"
+        );
+    }
+
+    #[test]
+    fn a_directive_under_a_commented_match_block_is_left_alone() {
+        // The trap, and it ships with Debian: `#\tX11Forwarding no` beneath
+        // `#Match User anoncvs` is a per-user override that is inert because
+        // its header is commented. Uncommenting it would write a directive
+        // into a block whose `Match` is still off.
+        let updated = set_directive(SHIPPED, "X11Forwarding", "no");
+
+        assert!(
+            updated.contains("#\tX11Forwarding no"),
+            "the commented Match block must stay commented: {updated}"
+        );
+        assert!(
+            updated.contains("#Match User anoncvs"),
+            "and so must its header: {updated}"
+        );
+    }
 
     #[test]
     fn the_port_comes_from_the_daemon_rather_than_the_file() {

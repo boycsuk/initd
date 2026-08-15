@@ -17,7 +17,7 @@ use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 use super::field::Field;
 use super::{layout, render, style};
 use crate::i18n::{Lang, Msg};
-use crate::tasks::params::{Param, ParamValues};
+use crate::tasks::params::{Param, ParamValues, Suggestions};
 
 /// Width the dialog is drawn at, before clamping to the terminal.
 ///
@@ -250,6 +250,20 @@ impl Form {
         }
 
         let label = field.param.label.to_owned();
+
+        // A list the host was filtered down to must not be titled as though it
+        // were everything the host holds. The accounts chooser leaves out
+        // service accounts — `nobody`, whose home is `/` on two of the five
+        // families — and an operator who cannot find one needs to know it was
+        // withheld rather than absent, since typing it still works.
+        let title = match field.param.suggestions {
+            Some(Suggestions::Accounts) => Msg::FormOptionsTitleFiltered {
+                label,
+                rule: lang.render(&Msg::FormOptionsLoginAccountsOnly),
+            },
+            _ => Msg::FormOptionsTitle { label },
+        };
+
         let options = field.options();
 
         // Sized to the content up to a ceiling, so three shells do not get the
@@ -268,10 +282,7 @@ impl Form {
 
         let block = layout::framed(
             style::DIALOG_BORDER_INPUT,
-            Span::styled(
-                lang.render(&Msg::FormOptionsTitle { label }),
-                style::EMPHASIS,
-            ),
+            Span::styled(lang.render(&title), style::EMPHASIS),
         )
         // The spaces framing it are what hold the border off the words;
         // without them the footer reads as the frame having been drawn

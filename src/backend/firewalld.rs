@@ -46,6 +46,24 @@ const NOT_RUNNING: i32 = 252;
 /// nothing.
 const RUNNING_BUT_FAILED: i32 = 251;
 
+/// Exit status reported when polkit refused the query.
+///
+/// Not an answer, unlike the two above it, and that difference is the whole
+/// reason it is named. firewalld authorizes *reads* through polkit — measured
+/// on `rockylinux:9` against a running daemon, where an unprivileged
+/// `--list-services`, `--list-ports`, `--info-service` and `--state` each
+/// answer `NotAuthorizedException: Not Authorized(uid)` and exit 253, while
+/// the same commands under `sudo` answer `cockpit dhcpv6-client ssh` and
+/// `running`.
+///
+/// A refusal read as an empty listing is the failure `nftables::state` was
+/// already fixed for, one front-end along: `close` asks `is_allowed` to
+/// confirm what `--remove-port` did, and a listing that could not be read
+/// answers "the port is gone" for the one case `--remove-port` cannot
+/// handle — a port the zone admits as a service, which on a stock RHEL host
+/// is SSH.
+const NOT_AUTHORIZED: i32 = 253;
+
 /// Manages filtering through `firewall-cmd`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Firewalld;
@@ -124,9 +142,19 @@ impl Firewalld {
     /// Read from `--info-service`, whose `ports:` line lists them space
     /// separated in the same `port/protocol` form as `--list-ports`.
     fn service_ports(executor: &dyn Executor, service: &str) -> Result<Vec<String>> {
-        let command = Command::new("firewall-cmd").args(["--info-service", service]);
+        // Privileged for the reason [`NOT_AUTHORIZED`] records: firewalld
+        // authorizes reads through polkit, and there is no polkit agent under
+        // a TUI. Every write here already escalates; the reads did not, and
+        // answered nothing on a live RHEL host.
+        let command = Command::new("firewall-cmd")
+            .args(["--info-service", service])
+            .privileged();
 
         let output = executor.run(&command)?;
+
+        if output.code == NOT_AUTHORIZED {
+            return Err(Error::FirewallStateUnreadable);
+        }
 
         if !output.success() {
             // A service firewalld cannot describe contributes no ports rather
@@ -145,9 +173,20 @@ impl Firewalld {
 
     /// The services currently admitted in the zone.
     fn services(executor: &dyn Executor) -> Result<Vec<String>> {
-        let command = Command::new("firewall-cmd").args(["--zone", ZONE, "--list-services"]);
+        let command = Command::new("firewall-cmd")
+            .args(["--zone", ZONE, "--list-services"])
+            .privileged();
 
         let output = executor.run(&command)?;
+
+        // A refusal is not "this zone admits no services". Reported, because
+        // the difference decides whether `close` may believe its own
+        // read-back: on a stock RHEL host SSH is admitted as a service, and an
+        // empty list here is what let a port that stayed open be reported as
+        // closed.
+        if output.code == NOT_AUTHORIZED {
+            return Err(Error::FirewallStateUnreadable);
+        }
 
         if !output.success() {
             return Ok(Vec::new());
@@ -189,9 +228,15 @@ impl Firewalld {
     /// as written is both the honest description and the closeable unit;
     /// expanding it would offer eighty-one removals, none of which work.
     fn admitted(executor: &dyn Executor) -> Result<Vec<AllowedPort>> {
-        let command = Command::new("firewall-cmd").args(["--zone", ZONE, "--list-ports"]);
+        let command = Command::new("firewall-cmd")
+            .args(["--zone", ZONE, "--list-ports"])
+            .privileged();
 
         let output = executor.run(&command)?;
+
+        if output.code == NOT_AUTHORIZED {
+            return Err(Error::FirewallStateUnreadable);
+        }
 
         let mut ports: Vec<AllowedPort> = if output.success() {
             output
@@ -286,6 +331,22 @@ impl FirewallManager for Firewalld {
 
         if matches!(output.code, NOT_RUNNING | RUNNING_BUT_FAILED) {
             return Ok(false);
+        }
+
+        // A refusal proves the opposite of absence: polkit only has something
+        // to refuse when the daemon is there to answer. Left unprivileged
+        // deliberately — this runs while the tree is drawn, where escalating
+        // would raise a password prompt for a row nobody asked for — so the
+        // refusal is read rather than avoided.
+        //
+        // The direction matters more here than anywhere else in this file.
+        // firewalld is the *first* candidate RHEL offers, so answering `false`
+        // promotes nftables, and this tool would then write `inet initd` with
+        // `policy drop` over a host whose ruleset firewalld holds — the exact
+        // outcome `RhelBackend::firewalls` orders the two to prevent, reached
+        // by the one path that ordering cannot see.
+        if output.code == NOT_AUTHORIZED {
+            return Ok(true);
         }
 
         Ok(output.success())
@@ -481,6 +542,72 @@ impl FirewallManager for Firewalld {
 mod tests {
     use super::*;
     use crate::exec::mock::{MockExecutor, Reply};
+
+    #[test]
+    fn a_refused_query_does_not_read_as_an_absent_daemon() {
+        // polkit only has something to refuse when the daemon is there to
+        // answer, so 253 proves presence. Answering `false` would promote
+        // nftables — the first candidate RHEL offers being firewalld — and
+        // write a `policy drop` table of this tool's own over a host whose
+        // ruleset firewalld holds.
+        let mock = MockExecutor::with_replies([Reply::failure(NOT_AUTHORIZED, "Not Authorized")]);
+
+        let available = Firewalld::new()
+            .is_available(&mock)
+            .expect("a refusal must not raise");
+
+        assert!(
+            available,
+            "a daemon that refused the question is still the daemon in charge"
+        );
+        assert!(
+            !mock.any_privileged(),
+            "the probe runs while the tree is drawn and must not prompt"
+        );
+    }
+
+    #[test]
+    fn a_refused_listing_is_not_read_as_an_empty_one() {
+        // The failure `nftables::state` was already fixed for, one front-end
+        // along. `close` confirms `--remove-port` through `is_allowed`, and a
+        // listing that could not be read answers "the port is gone" for the
+        // one case `--remove-port` cannot handle: a port the zone admits as a
+        // service, which on a stock RHEL host is SSH.
+        let mock = MockExecutor::with_replies([Reply::failure(NOT_AUTHORIZED, "Not Authorized")]);
+
+        let err = Firewalld::new()
+            .is_allowed(&mock, 22, Protocol::Tcp)
+            .expect_err("a refused listing must not answer the question");
+
+        assert!(matches!(err, Error::FirewallStateUnreadable), "{err:?}");
+    }
+
+    #[test]
+    fn closing_a_port_reads_it_back_through_a_privileged_listing() {
+        // Measured on `rockylinux:9` against a running daemon: unprivileged,
+        // every read answers `NotAuthorizedException` and exits 253; through
+        // `sudo` the same commands answer `cockpit dhcpv6-client ssh` and
+        // `running`. The writes always escalated and the reads did not.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(""), // --remove-port, runtime
+            Reply::ok(""), // --remove-port, permanent
+            Reply::ok(""), // --list-ports
+            Reply::ok(""), // --list-services
+        ]);
+
+        Firewalld::new()
+            .close(&mock, 22, Protocol::Tcp)
+            .expect("closing must succeed");
+
+        assert!(
+            mock.recorded()
+                .iter()
+                .filter(|command| command.args.iter().any(|arg| arg.starts_with("--list")))
+                .all(|command| command.needs_root),
+            "every listing must escalate: {:?}",
+            mock.recorded_lines()
+        );
+    }
 
     #[test]
     fn a_stopped_daemon_is_not_available() {

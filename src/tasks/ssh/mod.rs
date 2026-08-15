@@ -24,6 +24,7 @@ use crate::error::Result;
 use crate::exec::Executor;
 use crate::i18n::Msg;
 use crate::tasks::revert::{Outcome, Revert};
+use crate::tasks::users::ROOT;
 use crate::tasks::{Category, Node, Progress, report};
 
 /// Where a user's authorised keys live, relative to their home directory.
@@ -170,6 +171,100 @@ pub(crate) fn has_authorized_key(
         .any(|line| is_valid_public_key(line.trim()).is_ok()))
 }
 
+/// One account, and why it is or is not a way back in over SSH.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyHolder {
+    /// The account, as `/etc/passwd` names it.
+    pub user: String,
+    /// Whether it keeps SSH access once the hardening is applied.
+    pub keeps_access: bool,
+}
+
+/// Every account that still gets in over SSH once hardening is applied.
+///
+/// The question both tiers rest on, asked of the machine rather than of one
+/// name. It replaces a guard that asked whether **root** held a key, which was
+/// wrong twice over: any account with a key is a way in, and root is the one
+/// account [`harden::HardenSsh`] takes away — it writes `PermitRootLogin no`,
+/// so a root key satisfied the old check and was worthless a step later. On a
+/// host with root locked by default, the recommended posture, both tasks were
+/// unreachable while an ordinary account could log in perfectly well.
+///
+/// Three conditions, all of which must hold:
+///
+/// - the account has a key [`has_authorized_key`] recognises;
+/// - `PermitRootLogin` does not refuse it, which only ever excludes root;
+/// - `AllowUsers`, where the file sets it, names it. A key held by an account
+///   the daemon already refuses is not a way back in, and this is the condition
+///   the tiers ignored entirely.
+///
+/// Read from the configuration rather than assumed, so the strict tier — which
+/// writes neither directive — judges by what the file actually says while the
+/// safe tier is judged by what it is about to write. The caller passes
+/// `refuses_root` accordingly.
+///
+/// Ordered by rank so human accounts come first and **filtered by nothing**,
+/// the rule [`crate::domain::accounts::AccountReader::list_ranked`] states: the
+/// uid threshold is a convention of the five families rather than a rule, so a
+/// site numbering a real account below it still finds it here.
+///
+/// It does not stop at the first account that passes. The confirmation lists
+/// every one so the operator can check that *theirs* is among them, and a scan
+/// that returned early would leave them looking at a list of one and cancelling
+/// — the rule `users.lock-root`'s own scan already follows.
+///
+/// The cost is one passwd lookup and one file read per account, cheaper than
+/// that scan, which also spends an `id -nG`, a shadow read and a `sudo -l`.
+pub(crate) fn accounts_keeping_ssh_access(
+    executor: &dyn Executor,
+    backend: &dyn Backend,
+    contents: &str,
+    refuses_root: bool,
+) -> Result<Vec<KeyHolder>> {
+    let root_refused = refuses_root
+        || crate::tasks::sshd_config::directive_value(contents, "PermitRootLogin")
+            .is_some_and(|value| value.eq_ignore_ascii_case("no"));
+
+    // Absent means every account is permitted, which is not the same as an
+    // empty list and is why this stays an `Option` rather than defaulting to
+    // one. A file that sets it names the only accounts sshd will consider.
+    let allowed: Option<Vec<String>> =
+        crate::tasks::sshd_config::directive_value(contents, "AllowUsers")
+            .map(|value| value.split_whitespace().map(str::to_owned).collect());
+
+    backend
+        .accounts()
+        .list_ranked(executor)?
+        .into_iter()
+        .map(|account| {
+            let refused_outright = (root_refused && account.name == ROOT)
+                || allowed
+                    .as_ref()
+                    .is_some_and(|names| !names.contains(&account.name));
+
+            let keeps_access =
+                !refused_outright && has_authorized_key(executor, backend, &account.name)?;
+
+            Ok(KeyHolder {
+                user: account.name,
+                keeps_access,
+            })
+        })
+        .collect()
+}
+
+/// The accounts from a scan that keep access, by name.
+///
+/// Both the guard and the confirmation need exactly this, and deriving it twice
+/// is how the dialog comes to promise what the task then refuses.
+pub(crate) fn keeps_access(holders: &[KeyHolder]) -> Vec<String> {
+    holders
+        .iter()
+        .filter(|holder| holder.keeps_access)
+        .map(|holder| holder.user.clone())
+        .collect()
+}
+
 /// Reloads SSH so a new configuration takes effect.
 ///
 /// Reload rather than restart: restarting drops the very session the
@@ -226,6 +321,90 @@ mod tests {
                 .iter()
                 .any(|c| c.contains("/srv/alice/.ssh/authorized_keys")),
             "the key must be looked for where passwd says the home is: {:?}",
+            mock.recorded_lines()
+        );
+    }
+
+    /// Root plus two ordinary accounts, so a scan can be seen not to stop.
+    const THREE_ACCOUNTS: &str = "root:x:0:0:root:/root:/bin/bash\n\
+         alice:x:1000:1000::/home/alice:/bin/sh\n\
+         bob:x:1001:1001::/home/bob:/bin/sh\n";
+
+    #[test]
+    fn the_scan_reports_every_account_that_keeps_access() {
+        // Not just the first. The confirmation lists them so the operator can
+        // check that theirs is among them, and a scan that returned after the
+        // first would leave them looking at a list of one and cancelling.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(THREE_ACCOUNTS), // cat /etc/passwd
+            Reply::ok("alice:x:1000:1000::/home/alice:/bin/sh"),
+            Reply::ok(""),       // alice's authorized_keys exists
+            Reply::ok(TEST_KEY), // and holds a valid key
+            Reply::ok("bob:x:1001:1001::/home/bob:/bin/sh"),
+            Reply::ok(""),       // bob's exists too
+            Reply::ok(TEST_KEY), // and holds a key as well
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let holders = accounts_keeping_ssh_access(&mock, backend.as_ref(), "Port 22\n", true)
+            .expect("the scan must succeed");
+
+        assert_eq!(
+            keeps_access(&holders),
+            vec!["alice".to_owned(), "bob".to_owned()],
+            "both accounts hold a key and both must be reported"
+        );
+    }
+
+    #[test]
+    fn the_scan_reports_an_account_that_holds_no_key() {
+        // Reported rather than dropped: `keeps_access` filters, and a scan that
+        // filtered too would leave the two indistinguishable from a host whose
+        // passwd file could not be read.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(THREE_ACCOUNTS), // cat /etc/passwd
+            Reply::ok("alice:x:1000:1000::/home/alice:/bin/sh"),
+            Reply::failure(1, ""), // alice has no authorized_keys
+            Reply::ok("bob:x:1001:1001::/home/bob:/bin/sh"),
+            Reply::ok(""),       // bob's exists
+            Reply::ok(TEST_KEY), // and holds a key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let holders = accounts_keeping_ssh_access(&mock, backend.as_ref(), "Port 22\n", true)
+            .expect("the scan must succeed");
+
+        assert_eq!(
+            holders.len(),
+            3,
+            "every account is reported, whether or not it passed: {holders:?}"
+        );
+        assert_eq!(keeps_access(&holders), vec!["bob".to_owned()]);
+    }
+
+    #[test]
+    fn an_allowusers_list_narrows_the_scan_to_what_it_names() {
+        // A real key held by an account the daemon already refuses is not a way
+        // back in. Only bob is named, so alice is never even looked up.
+        let mock = MockExecutor::with_replies([
+            Reply::ok(THREE_ACCOUNTS), // cat /etc/passwd
+            Reply::ok("bob:x:1001:1001::/home/bob:/bin/sh"),
+            Reply::ok(""),       // bob's authorized_keys exists
+            Reply::ok(TEST_KEY), // and holds a valid key
+        ]);
+        let backend = for_family(Family::Debian);
+
+        let holders =
+            accounts_keeping_ssh_access(&mock, backend.as_ref(), "Port 22\nAllowUsers bob\n", true)
+                .expect("the scan must succeed");
+
+        assert_eq!(keeps_access(&holders), vec!["bob".to_owned()]);
+        assert!(
+            !mock
+                .recorded_lines()
+                .iter()
+                .any(|c| c.contains("/home/alice")),
+            "an account the directive excludes is not worth a lookup: {:?}",
             mock.recorded_lines()
         );
     }

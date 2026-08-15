@@ -30,3 +30,4 @@ credentials/
 
 # Graphify knowledge-graph build output (rebuilt by /graphify .; commit only if sharing the graph)
 graphify-out/
+

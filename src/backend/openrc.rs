@@ -96,7 +96,17 @@ impl ServiceManager for OpenRcServices {
         // service name as a whole word: `sshd` is a substring of `sshdgenkeys`
         // on some systems, and a substring check would report a service as
         // enabled on the strength of an unrelated one.
-        let listed = executor.run(&Command::new("rc-update").arg("show"))?;
+        //
+        // Asked about one runlevel rather than all of them, because that is
+        // the question the answer is used for: `enable_and_start` adds to
+        // `RUNLEVEL` and `disable_and_stop` deletes from it, so a service in
+        // another one is not enabled as far as anything here can act on it.
+        // Bare, this reported a distribution's `sshd` — which Alpine's package
+        // puts in `boot` — as enabled in `default`, where `rc-update del`
+        // would then find nothing to remove. Measured on `alpine:3.23`:
+        // `rc-update show` lists `sshd | boot` while `rc-update show default`
+        // is empty.
+        let listed = executor.run(&Command::new("rc-update").args(["show", RUNLEVEL]))?;
 
         let enabled = listed.stdout.lines().any(|line| {
             line.split_whitespace()
@@ -219,6 +229,33 @@ mod tests {
         assert!(
             !state.enabled,
             "sshdgenkeys must not satisfy a check for sshd"
+        );
+    }
+
+    #[test]
+    fn enablement_is_asked_of_the_runlevel_this_tool_manages() {
+        // `rc-update show` with no runlevel lists every one of them, and
+        // Alpine's own `openssh` package puts `sshd` in `boot` rather than in
+        // `default`. Bare, that read back as enabled — while `disable_and_stop`
+        // deletes from `default` and would find nothing there to remove.
+        // Measured on `alpine:3.23`: `rc-update show` prints `sshd | boot`
+        // where `rc-update show default` prints nothing.
+        let mock = MockExecutor::with_replies([Reply::ok(""), Reply::ok("")]);
+
+        let state = OpenRcServices::new()
+            .state(&mock, "sshd")
+            .expect("the query must succeed");
+
+        assert!(
+            !state.enabled,
+            "a service in another runlevel is not enabled in the one managed here"
+        );
+        assert!(
+            mock.recorded_lines()
+                .iter()
+                .any(|line| line == "rc-update show default"),
+            "the runlevel must be named, or every one of them answers: {:?}",
+            mock.recorded_lines()
         );
     }
 

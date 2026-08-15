@@ -70,9 +70,13 @@ fn hardening_applies_even_when_every_validation_is_inconclusive() {
     let output = run_in_container(
         &ARCH,
         &format!(
+            // The key goes to an ordinary account rather than to root:
+            // `ssh.harden` writes `PermitRootLogin no`, so a root key
+            // authorises nothing afterwards and its guard does not count it.
             "pacman -S --needed --noconfirm openssh >/dev/null 2>&1; \
              rm -f /etc/ssh/ssh_host_*; \
-             initd authorize-key root '{}' >/dev/null 2>&1; \
+             useradd -m initdops >/dev/null 2>&1; \
+             initd authorize-key initdops '{}' >/dev/null 2>&1; \
              initd run ssh.harden >/dev/null 2>&1; \
              grep -c '^MaxAuthTries 3' /etc/ssh/sshd_config",
             common::TEST_KEY
