@@ -177,41 +177,6 @@ pub fn set_directive(contents: &str, directive: &str, value: &str) -> String {
     result
 }
 
-/// Comments out a directive, so the daemon's compiled-in default returns.
-///
-/// What a switch turning off means. Commented rather than deleted, for the
-/// reason [`set_directive`] keeps the old line: the value stays readable to
-/// whoever opens the file next, and an administrator expects to find it.
-///
-/// The inverse of the uncommenting half of `set_directive` in the only sense
-/// that is achievable: a directive switched on and then off is inert again, on
-/// the same line, with the file no longer or shorter. What does **not** come
-/// back is the shipped text — uncommenting `#PermitRootLogin prohibit-password`
-/// and commenting the result leaves `#PermitRootLogin no`, the documented
-/// default having been overwritten and never stored. Recovering it would mean
-/// holding the original beside the change, which the `.initd.bak` copy and the
-/// backup index already do for the whole file.
-///
-/// A directive the file does not set is already off, and this returns the
-/// contents untouched rather than writing a commented line for it — an
-/// absent directive and a commented one mean the same thing to sshd, and
-/// inventing the second would be a change with no effect.
-pub fn unset_directive(contents: &str, directive: &str) -> String {
-    let Some(index) = contents
-        .lines()
-        .position(|line| is_directive_line(line, directive))
-    else {
-        return contents.to_owned();
-    };
-
-    let commented = contents
-        .lines()
-        .nth(index)
-        .map_or_else(String::new, |line| format!("#{}", line.trim_end()));
-
-    rewrite_line(contents, index, &commented)
-}
-
 /// The commented-out line a directive would be uncommented from.
 ///
 /// Stops at the first `Match`, commented or not, for the reason
@@ -259,10 +224,30 @@ fn is_match_line(line: &str) -> bool {
 }
 
 /// Reads the effective value of a directive, ignoring commented-out lines.
+///
+/// **The first occurrence wins, not the last.** sshd takes the earliest active
+/// line for a keyword and ignores every later one, and `sshd -t` does not
+/// complain about the repetition — measured on `debian:13`, where
+/// `MaxAuthTries 3` above `MaxAuthTries 9` leaves `sshd -T` reporting `3`, the
+/// reverse order reports `9`, and validation exits 0 either way.
+///
+/// This read the *last* one until that was measured, which mattered most where
+/// it is least visible. A file carrying the same directive twice is what an
+/// administrator's own edit above this tool's appended line produces, and the
+/// value reported was the one the daemon *ignores* — so
+/// [`set_directive`]'s idempotence check could compare against it, decide
+/// there was nothing to write, and report success over a daemon still doing
+/// the opposite.
+///
+/// The commented case needs no test of its own here: [`is_directive_line`]
+/// answers `false` for those, which is the same fix and the reason the
+/// `starts_with('#')` guard that stood beside this is gone. Verified in the
+/// same container run — a commented duplicate changes nothing whichever side
+/// of the active line it sits on.
 pub fn directive_value(contents: &str, directive: &str) -> Option<String> {
     contents
         .lines()
-        .rfind(|line| is_directive_line(line, directive) && !line.trim_start().starts_with('#'))
+        .find(|line| is_directive_line(line, directive))
         .and_then(|line| line.split_once(char::is_whitespace))
         .map(|(_, value)| value.trim().to_owned())
 }
@@ -622,6 +607,50 @@ mod tests {
          #\tX11Forwarding no\n";
 
     #[test]
+    fn the_first_occurrence_of_a_repeated_directive_is_the_effective_one() {
+        // sshd takes the earliest active line for a keyword and ignores every
+        // later one, and `sshd -t` does not complain about the repetition.
+        // Measured on `debian:13`: `MaxAuthTries 3` above `MaxAuthTries 9`
+        // leaves `sshd -T` reporting 3, the reverse reports 9, and validation
+        // exits 0 both ways.
+        //
+        // This read the last one until it was measured, and the case it got
+        // wrong is the one nobody looks at: a file carrying an administrator's
+        // own line above this tool's appended one reported the value the
+        // daemon was *ignoring*. `set_directive`'s idempotence check compares
+        // against exactly this, so a run could decide there was nothing to
+        // write and report success over a daemon still doing the opposite.
+        let repeated = "MaxAuthTries 3\nMaxAuthTries 9\n";
+
+        assert_eq!(
+            directive_value(repeated, "MaxAuthTries").as_deref(),
+            Some("3"),
+            "the first active line is the one sshd honours"
+        );
+
+        let reversed = "MaxAuthTries 9\nMaxAuthTries 3\n";
+
+        assert_eq!(
+            directive_value(reversed, "MaxAuthTries").as_deref(),
+            Some("9")
+        );
+    }
+
+    #[test]
+    fn a_commented_duplicate_is_not_an_occurrence() {
+        // Verified in the same container run: a commented copy changes nothing
+        // whichever side of the active line it sits on.
+        let before = "#MaxAuthTries 9\nMaxAuthTries 3\n";
+        let after = "MaxAuthTries 3\n#MaxAuthTries 9\n";
+
+        assert_eq!(
+            directive_value(before, "MaxAuthTries").as_deref(),
+            Some("3")
+        );
+        assert_eq!(directive_value(after, "MaxAuthTries").as_deref(), Some("3"));
+    }
+
+    #[test]
     fn setting_a_directive_to_what_it_already_says_changes_nothing() {
         // The bug this whole change exists for. `set_directive` commented the
         // old line and wrote a new one without ever asking whether the value
@@ -684,66 +713,6 @@ mod tests {
         assert!(
             updated.contains("#Match User anoncvs"),
             "and so must its header: {updated}"
-        );
-    }
-
-    #[test]
-    fn turning_a_directive_off_puts_the_file_back() {
-        // The round trip. On, then off, must leave a file the daemon reads
-        // identically to the original: same line count, same position, the
-        // directive commented out again.
-        //
-        // Not asserted byte for byte, which was the first shape of this test
-        // and was wrong. Uncommenting `#PermitRootLogin prohibit-password` and
-        // then commenting the result yields `#PermitRootLogin no` — the line
-        // is inert again and the *documented default* is gone, because the
-        // shipped text was never stored anywhere to put back. Recovering it
-        // would mean keeping the original beside the change, which is what
-        // `.initd.bak` and the backup index already do for the whole file. So
-        // what this pins is what the daemon sees, and the comment above
-        // `unset_directive` says the same rather than promising more.
-        let on = set_directive(SHIPPED, "PermitRootLogin", "no");
-        let off = unset_directive(&on, "PermitRootLogin");
-
-        assert_eq!(
-            directive_value(&off, "PermitRootLogin"),
-            None,
-            "the directive must be inert again: {off}"
-        );
-        assert_eq!(
-            off.lines().count(),
-            SHIPPED.lines().count(),
-            "no line may be added or lost across the round trip: {off}"
-        );
-        assert_eq!(
-            off.lines()
-                .position(|line| line.contains("PermitRootLogin no")),
-            SHIPPED
-                .lines()
-                .position(|line| line.contains("PermitRootLogin prohibit-password")),
-            "and it must come back where it was: {off}"
-        );
-    }
-
-    #[test]
-    fn turning_off_a_directive_the_file_never_set_changes_nothing() {
-        // Absent and commented mean the same thing to sshd, so writing a
-        // commented line for a directive that was never there would be a
-        // change with no effect.
-        assert_eq!(unset_directive(SHIPPED, "AllowTcpForwarding"), SHIPPED);
-    }
-
-    #[test]
-    fn turning_off_an_active_directive_comments_it_in_place() {
-        let updated = unset_directive(SHIPPED, "KbdInteractiveAuthentication");
-
-        assert!(
-            updated.contains("#KbdInteractiveAuthentication no"),
-            "the line must be commented where it stood: {updated}"
-        );
-        assert!(
-            !updated.contains("\nKbdInteractiveAuthentication no"),
-            "and must no longer be active: {updated}"
         );
     }
 

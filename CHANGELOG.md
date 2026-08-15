@@ -34,6 +34,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as that exact relationship rather than as equals.
 
 ### Fixed
+- **A directive written twice was read from the wrong line.** sshd honours the
+  *first* active line for a keyword and ignores every later one;
+  `directive_value` returned the last. Measured on `debian:13`:
+  `MaxAuthTries 3` above `MaxAuthTries 9` leaves `sshd -T` reporting `3`, the
+  reverse order reports `9`, and `sshd -t` exits 0 either way — so nothing
+  warns about the repetition.
+
+  The case it got wrong is the one nobody looks at. A file carrying the same
+  directive twice is what an administrator's own edit above this tool's
+  appended line produces, and the reported value was the one the daemon
+  ignores. The idempotence check added alongside compares against exactly
+  this, so a run could conclude there was nothing to write and report success
+  over a daemon still doing the opposite.
+
+  Commented lines were already excluded and still are, now through
+  `is_directive_line` rather than a second guard beside it.
+
 - **Applying the same SSH hardening twice grew the file.** `set_directive`
   commented the old line and wrote a new one without ever asking whether the
   value was already what it wanted, and `is_directive_line` stripped a leading
