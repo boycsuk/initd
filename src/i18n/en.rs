@@ -337,6 +337,16 @@ pub(super) fn render(message: &Msg) -> String {
                  the administrative group, before locking root"
             )
         }
+        // Names the answer, not only the refusal: the account can still be
+        // deleted and the field that decides is in the same form. A message
+        // reading only "refused" would send an operator looking for a flag
+        // that does not exist.
+        Msg::HomeIsNotThisAccounts { user, path, root } => format!(
+            "{user}'s home is {path}, which is not under {root} — it is a directory the \
+             system shares, and removing it would take everything in it. Delete the \
+             account with the home kept instead, and remove {path} by hand if it really \
+             belongs to this account"
+        ),
         Msg::CannotDeleteRoot => "root cannot be deleted. Locking it is offered instead, \
              which refuses unless another account can still get in — a machine \
              with no root is not one this tool can put back"

@@ -325,6 +325,44 @@ fn examine(
     Ok(Ok(Credentials { key, password }))
 }
 
+/// Where the homes of accounts a person logs in as live.
+///
+/// The five families agree on this one: `useradd -m` and `adduser` both create
+/// under it, and every account whose home is elsewhere in a stock image is a
+/// service account — measured across `debian:13`, `alpine:3.23`,
+/// `rockylinux:9` and `archlinux`, whose passwd files between them point homes
+/// at `/`, `/bin`, `/sbin`, `/dev`, `/usr/sbin`, `/usr/games`, `/var/mail`,
+/// `/var/spool/*`, `/srv/http` and `/var/lib/libuuid`. Not one of those is a
+/// directory this tool should ever remove.
+const HOME_ROOT: &str = "/home";
+
+/// Whether a path is a home directory this tool may remove with its account.
+///
+/// An allow-list by shape rather than a list of forbidden paths, because the
+/// forbidden set is open: `/`, `/bin` and `/usr/sbin` are the ones stock
+/// images ship, and a site can point a service account anywhere. What can be
+/// stated positively is where a person's home lives.
+///
+/// A path must be *under* the root and not the root itself: `/home` holds
+/// every other account's files, so an entry pointing there is the same defect
+/// one level up.
+///
+/// Trailing slashes are trimmed first, so `/home/deploy/` is the directory it
+/// names rather than a near miss, and `..` anywhere refuses outright rather
+/// than being resolved — resolving it needs the filesystem, and a path that
+/// climbs is one nothing here should be reasoning about.
+fn is_within_home_root(path: &str) -> bool {
+    let trimmed = path.trim_end_matches('/');
+
+    if trimmed.split('/').any(|segment| segment == "..") {
+        return false;
+    }
+
+    trimmed
+        .strip_prefix(HOME_ROOT)
+        .is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+}
+
 /// Default login shell for a newly created account.
 ///
 /// `/bin/bash` rather than anything more opinionated: it is present on both
@@ -954,6 +992,29 @@ impl Task for DeleteUser {
         // naming what was kept would have nothing to name.
         let home = backend.accounts().home_dir(executor, &user)?;
 
+        // A home that is not one. `deluser --remove-home` and `userdel -r`
+        // both remove whatever the passwd field points at, with no guard of
+        // their own — and stock images point it at shared directories: `/` for
+        // `nobody` on Alpine and Rocky, `/usr/sbin` for `daemon` on Debian,
+        // `/bin` on all four, `/var/mail`, `/sbin`. Deleting such an account
+        // with the home removed takes the tree with it, exits 0, and is
+        // reported as a successful deletion.
+        //
+        // Refused in code rather than warned about in the dialog, which is the
+        // shape `users.lock-root` and the two refusals above already use: a
+        // confirmation is dismissible, and this is not a decision an operator
+        // should be able to make by pressing through one. The account itself is
+        // still deletable — only taking the directory with it is refused, and
+        // the message says so, since "keep the home" is the answer and it is
+        // one keystroke away in the same form.
+        if remove_home && !is_within_home_root(&home) {
+            return Err(Error::HomeIsNotThisAccounts {
+                user,
+                path: home,
+                root: HOME_ROOT.to_owned(),
+            });
+        }
+
         backend
             .account_writer()
             .delete(executor, &user, remove_home)?;
@@ -1412,6 +1473,109 @@ mod tests {
 
         assert!(matches!(err, Error::AccountExists { .. }), "{err:?}");
         assert_eq!(commands.len(), 1, "nothing must be created: {commands:?}");
+    }
+
+    #[test]
+    fn a_home_that_is_a_shared_directory_is_not_removed() {
+        // Every path here came out of a stock image's own `/etc/passwd`:
+        // `nobody`'s home is `/` on `alpine:3.23` and `rockylinux:9`,
+        // `daemon`'s is `/usr/sbin` on `debian:13`, and `bin` points at `/bin`
+        // on all four. `deluser --remove-home` and `userdel -r` remove
+        // whatever the field names, exit 0, and report a successful deletion.
+        for path in [
+            "/",
+            "/bin",
+            "/sbin",
+            "/usr/sbin",
+            "/dev",
+            "/var/mail",
+            "/srv",
+            "/home",
+        ] {
+            assert!(
+                !is_within_home_root(path),
+                "{path} is a directory the system shares and must not be removed"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_home_is_removable() {
+        // The other direction, so a guard that refused everything would fail
+        // here rather than pass by being maximally cautious.
+        for path in ["/home/deploy", "/home/alice/", "/home/a"] {
+            assert!(
+                is_within_home_root(path),
+                "{path} is an ordinary home and must stay removable"
+            );
+        }
+    }
+
+    #[test]
+    fn a_home_that_climbs_out_of_the_root_is_refused() {
+        // Resolving `..` needs the filesystem, and a path that climbs is one
+        // nothing here should be reasoning about — so it refuses rather than
+        // being normalised into something that looks acceptable.
+        assert!(!is_within_home_root("/home/../etc"));
+        assert!(!is_within_home_root("/home/deploy/../.."));
+    }
+
+    #[test]
+    fn removing_a_shared_directory_as_a_home_is_refused_before_anything_runs() {
+        // `nobody`'s home is `/` on Alpine and Rocky, and the chooser used to
+        // offer it. Answering "delete" handed `/` to `deluser --remove-home`,
+        // which removes it and exits 0.
+        let mut values = values(DeleteUser::USER, "nobody");
+        values.set(DeleteUser::HOME, DeleteUser::DELETE_HOME);
+
+        let (outcome, commands) = run(
+            &DeleteUser,
+            Family::Alpine,
+            vec![
+                Reply::ok(""),
+                Reply::ok("nobody:x:65534:65534::/:/sbin/nologin"),
+            ],
+            &values,
+        );
+
+        let err = outcome.expect_err("removing `/` must be refused");
+
+        assert!(
+            matches!(err, Error::HomeIsNotThisAccounts { .. }),
+            "{err:?}"
+        );
+        assert!(
+            !commands.iter().any(|command| command.contains("deluser")),
+            "the refusal must precede the deletion: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn deleting_the_account_is_still_offered_when_its_home_is_not_removable() {
+        // The refusal is about the directory, not the account. An operator who
+        // answered "keep" gets the deletion they asked for — the alternative
+        // would be a service account nothing can remove.
+        let mut values = values(DeleteUser::USER, "nobody");
+        values.set(DeleteUser::HOME, "keep");
+
+        let (outcome, _) = run(
+            &DeleteUser,
+            Family::Alpine,
+            vec![
+                // `grep -q` for existence: the exit code is the answer.
+                Reply::ok(""),
+                // The passwd line, which `home_dir` reads the sixth field of.
+                Reply::ok("nobody:x:65534:65534::/:/sbin/nologin"),
+                // `deluser`, with no `--remove-home`.
+                Reply::ok(""),
+            ],
+            &values,
+        );
+
+        assert!(
+            outcome.is_ok(),
+            "the account must still be deletable: {outcome:?}"
+        );
     }
 
     #[test]

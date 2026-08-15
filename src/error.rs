@@ -296,6 +296,24 @@ pub enum Error {
     /// not the same operation, and only one is undone by a rescue console.
     CannotDeleteRoot,
 
+    /// A deletion would have removed a directory that is not the account's own.
+    ///
+    /// `deluser --remove-home` and `userdel -r` remove whatever the passwd
+    /// entry points at, and stock images point service accounts at shared
+    /// directories: `/` for `nobody` on Alpine and Rocky, `/usr/sbin` for
+    /// `daemon` on Debian, `/bin` on all four. Deleting one of those with the
+    /// home removed takes the tree with it and exits 0.
+    ///
+    /// The account itself is not refused — only taking the directory with it —
+    /// which is why this names the path and the answer rather than reading as
+    /// a refusal to delete. "Keep the home" is one keystroke away in the same
+    /// form.
+    HomeIsNotThisAccounts {
+        user: String,
+        path: String,
+        root: String,
+    },
+
     /// A deletion named the account this session escalated from.
     ///
     /// Refused rather than warned about, because it can now be known: the
@@ -674,6 +692,11 @@ impl Error {
                 examined: *examined,
             },
             Self::CannotDeleteRoot => Msg::CannotDeleteRoot,
+            Self::HomeIsNotThisAccounts { user, path, root } => Msg::HomeIsNotThisAccounts {
+                user: user.clone(),
+                path: path.clone(),
+                root: root.clone(),
+            },
             Self::CannotDeleteOwnAccount { user } => {
                 Msg::CannotDeleteOwnAccount { user: user.clone() }
             }
@@ -892,6 +915,10 @@ impl Error {
             | Self::FirewallNotEnabled
             | Self::NoPrivilegeEscalator
             | Self::CannotDeleteRoot
+            // Its three values are the sentence rather than a table: the path
+            // only means something beside the root it is not under, and the
+            // remedy names both.
+            | Self::HomeIsNotThisAccounts { .. }
             | Self::WireguardNotConfigured
             // Carries no field worth labelling: the whole answer is the
             // sentence naming the task to run first.

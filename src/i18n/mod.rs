@@ -283,6 +283,12 @@ pub enum Msg {
         examined: usize,
     },
     CannotDeleteRoot,
+    /// A deletion would have taken a directory that is not the account's own.
+    HomeIsNotThisAccounts {
+        user: String,
+        path: String,
+        root: String,
+    },
     CannotDeleteOwnAccount {
         user: String,
     },

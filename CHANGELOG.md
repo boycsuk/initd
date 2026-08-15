@@ -34,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as that exact relationship rather than as equals.
 
 ### Fixed
+- **Deleting an account could remove `/`.** `users.delete` asked whether to
+  remove the home directory and never asked *what* directory it was.
+  `deluser --remove-home` and `userdel -r` remove whatever the passwd entry
+  points at, with no guard of their own, and stock images point service
+  accounts at shared directories — measured across four images: `nobody`'s
+  home is `/` on `alpine:3.23` and `rockylinux:9`, `daemon`'s is `/usr/sbin`
+  on `debian:13`, and `bin` points at `/bin` on all four. Answering "delete"
+  for one of those took the tree with it, exited 0, and was reported as a
+  successful deletion.
+
+  The removal is now refused unless the home is under `/home` — an allow-list
+  by shape rather than a list of forbidden paths, because the forbidden set is
+  open-ended while "where a person's home lives" can be stated. `/home` itself
+  is refused too, holding every other account's files, and a path containing
+  `..` refuses rather than being resolved.
+
+  Refused in code rather than warned about in the dialog, which is the shape
+  the two refusals beside it already use: a confirmation is dismissible, and
+  this is not a decision an operator should be able to make by pressing
+  through one. The account itself stays deletable — only taking the directory
+  with it is refused — and the message says so, since "keep the home" is the
+  answer and it is one keystroke away in the same form.
+
+  Two things limited the blast radius and neither is a defence: `users.delete`
+  is reachable only from the interactive interface, and the chooser no longer
+  offers service accounts. Typing the name still reached it.
+
 - **OpenRC read every runlevel to answer a question about one.** `state` ran
   `rc-update show` bare, which lists `sysinit`, `boot`, `default` and
   `shutdown`, while `enable_and_start` adds to `default` and
