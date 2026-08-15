@@ -33,7 +33,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as stranded while somebody was logged into it. A test now pins the two lists
   as that exact relationship rather than as equals.
 
+### Security
+- **`ssh.harden` could report success over a root login it had been asked to
+  close.** `set_directive` took a shortcut: where the file carried a *commented*
+  line for the directive it rewrote that one and returned, without asking
+  whether an **active** line sat above it. sshd honours the first active
+  occurrence, so the old value went on deciding. Reproduced against the real
+  function — `PermitRootLogin yes` above `#PermitRootLogin prohibit-password`
+  comes back with the `yes` still first and `no` below it — and `sshd -t`
+  approves that file, since repeating a directive is valid.
+
+  The case it got wrong is the one an administrator's own edit produces: a value
+  set by hand above the default the distribution ships commented out. The
+  existing tests only covered a file with no active line, so they passed
+  throughout.
+
+- **The lockout guard did not read `DenyUsers`, and the dialog repeated its
+  answer.** `accounts_keeping_ssh_access` excluded an account for exactly two
+  reasons — root refused, or absent from `AllowUsers` — so an account named in
+  `DenyUsers` counted as a way back in if it held a key. `DenyUsers`,
+  `DenyGroups` and `AllowGroups` appeared nowhere in `src/`.
+
+  Unlike the two conditions already checked, this one only ever subtracts and no
+  key overrides it. And because the confirmation dialog derives from this same
+  scan, the operator saw their own account listed as proof they could get back
+  in — and confirmed on it. `DenyGroups` and `AllowGroups` stay unread, which the
+  function now states rather than leaves implied: a group directive needs the
+  membership of every account, which is another command each.
+
+- **A password could carry a newline into `chpasswd`.** `ParamKind::Secret`
+  validated nothing, and the value reaches stdin as `user:password\n` — one
+  entry per line — so a newline forged a second entry naming any account.
+  Measured on `debian:13`: `password=$'a\nroot:pwned'` exits 0 and changes
+  root's hash.
+
+  Not a privilege escalation: `chpasswd` is privileged, so anyone who can run
+  the task can already run `chpasswd root` directly. What it closes is a script
+  interpolating a password from an untrusted source. The rule is about
+  structure, not strength — `#`, spaces and an empty value stay valid, because
+  how strong a password must be is PAM's judgement and not this tool's.
+
+- **The escalation probes ran a bare `true`, which the helper resolved against
+  the operator's `PATH`.** The module looks the *helper* up in a fixed set of
+  trusted directories precisely so a planted `sudo` cannot be found; the command
+  handed to that helper was still a bare name. Measured on `alpine:3.21` under
+  `permit nopass`: a planted `true` earlier in `PATH` ran as uid 0, wrote to
+  `/root` and read `/etc/shadow`, where the same binary as an unprivileged user
+  is refused.
+
+  `sudo` was never exposed — `secure_path` replaces `PATH` before the lookup —
+  but the probe must not depend on which helper it is talking to. All three
+  sites now resolve an absolute path through the same `find_trusted` the helper
+  uses.
+
+- **Cancelling a confirmation dropped the typed password without overwriting
+  it.** `finish_bookkeeping` clears secrets for a task that *ran*, including on
+  the failure path. Filling `users.create`'s form and answering `n` never
+  reaches it, so the value was freed intact — an ordinary path, since that task
+  asks a plain `Confirmation::Change`.
+
+- **A single lowercase `y` accepted a confirmation.** It went straight to
+  accept, where `Enter` consults which answer the dialog is sitting on. The
+  dialog opens on **No** for that reason, and the key bypassed it. `y` is also
+  the output pane's copy-transcript key, so it was the one letter an operator
+  could arrive already in the habit of pressing. Now `Y`, the asymmetry the
+  verification window's `K` and `R` already carry.
+
+- **`cargo deny` passed on an advisory it was never checking.** Informational
+  advisories default to `workspace`, which covers only *direct* dependencies —
+  four here against 182 crates in the lock. So `RUSTSEC-2026-0253`, a
+  use-after-free in `lru` reached through `ratatui`, was reported by `cargo
+  audit` and answered `advisories ok` by `cargo deny` throughout. Both
+  informational classes are now `all`, and `lru` moved to the patched 0.18.2.
+
 ### Fixed
+- **An indented directive was read back as its whole line.** `directive_value`
+  matched on the trimmed line and split the raw one, so `    PermitRootLogin no`
+  returned `PermitRootLogin no` rather than `no` — and the idempotence check
+  compares against exactly that value. Both an `Include`d drop-in and a `Match`
+  block indent.
+
+- **`has_password` read an unreadable `/etc/shadow` as "no password".** `grep`
+  exits 1 for "no matching line" and 2 for "could not read the file", and both
+  became `Ok(false)`. Its sibling `is_locked`, forty lines below in the same
+  file, already separated them and raised `AccountStateUnreadable`; the fix had
+  been written once and not carried across. A failed read made every account
+  look unable to authenticate, so `users.lock-root` reported a host as stranded
+  when nothing about its accounts had been established. Both functions are now
+  pinned, in both directions.
+
 - **A directive written twice was read from the wrong line.** sshd honours the
   *first* active line for a keyword and ignores every later one;
   `directive_value` returned the last. Measured on `debian:13`:
