@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- Serena and Graphify MCP servers, their hooks and `.serena/` (dotclaude no longer ships them).
+
 ## [0.5.0] — 2026-08-15
 
 One key binding changed in a way an operator will notice: **a confirmation is

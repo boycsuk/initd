@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy this file to settings.local.json (without the .example suffix) for personal overrides that should NOT be committed. Add it to .gitignore.",
+  "_examples": {
+    "permissions": {
+      "allow": [
+        "Bash(my-personal-tool:*)"
+      ],
+      "ask": [],
+      "deny": [],
+      "disableAutoMode": "disable | Optional. The CENTRAL ~/.claude/settings.json (installed from dotclaude's global/.claude/settings.json) sets disableBypassPermissionsMode to lock out --dangerously-skip-permissions (which bypasses every allow/ask/deny rule and PreToolUse guard hook). Auto mode is NOT blocked by default because it runs with background safety checks and still honors deny/ask rules and blocking hooks. If you also want to forbid auto mode on this machine, add permissions.disableAutoMode = \"disable\" here. To RE-ALLOW bypass mode there is no override flag — remove disableBypassPermissionsMode from global/.claude/settings.json in the dotclaude repo and re-run ./install.sh."
+    },
+    "allowPushToMain": "true | If you intentionally work entirely on main (solo project, prototype, scratch repo), set this to true to disable the push-to-main guard. Force pushes are NEVER allowed regardless of this flag — they stay blocked because they can rewrite shared history.",
+    "allowCommitTrailers": "true | The guard-commit hook denies Co-Authored-By / Signed-off-by trailers, -s/--signoff and --trailer on every commit. Set this to true only if this project requires one (e.g. DCO sign-off). Emoji and non-English messages stay blocked regardless."
+  }
+}

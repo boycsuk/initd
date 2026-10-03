@@ -31,3 +31,7 @@ credentials/
 # Graphify knowledge-graph build output (rebuilt by /graphify .; commit only if sharing the graph)
 graphify-out/
 
+
+# --- dotclaude template ---
+# codebase-memory-mcp repo snapshot (only written with its persistence: true; the index lives in ~/.cache)
+.codebase-memory/
